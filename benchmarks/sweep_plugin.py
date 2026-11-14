@@ -15,6 +15,11 @@ chosen by environment variables the sweep sets:
     module with what is left.
 ``SWEEP_COLLECT``
     Write each collected item's node id, one JSON object a line, and nothing else.
+``SWEEP_SKIP``
+    A JSON-lines file of rows not to run, in ``incomplete.jsonl``'s form (``module``, ``group``,
+    ``params``, ``status``, ``detail``): each matching row is recorded as that failure,
+    predicted, and skipped. For rows an earlier sweep saw run out of memory or take the machine
+    down, which must not run again.
 
 **Predicted rows.** A row on a scan mesh whose cell (module, group, other parameters, library)
 already timed out or ran out of memory on a smaller scan mesh in this sweep is recorded as the same
@@ -48,6 +53,7 @@ from benchmarks.meshes import MESH_ORDER, MESHES_BY_NAME
 _DIR = os.environ.get("SWEEP_DIR")
 _TIMEOUT = float(os.environ.get("SWEEP_TIMEOUT", "600"))
 _COLLECT = os.environ.get("SWEEP_COLLECT")
+_SKIP = os.environ.get("SWEEP_SKIP")
 _LOCK = threading.Lock()
 _FAILED = pytest.StashKey[bool]()
 _PREDICTED = pytest.StashKey[str]()
@@ -56,6 +62,8 @@ _PREDICTED = pytest.StashKey[str]()
 _Series = tuple[str, str, results.Rest, str]
 # Per series and scan mesh, the failures that predict the larger meshes.
 _FAILURES: dict[_Series, dict[str, str]] = {}
+# ``(module, group, params)`` of a row ``SWEEP_SKIP`` names, to its ``(status, detail)``.
+_SKIPPED: dict[tuple[str, str, str], tuple[str, str]] = {}
 
 
 def _append(name: str, record: dict[str, Any]) -> None:
@@ -84,6 +92,12 @@ def _identity(item: pytest.Item) -> tuple[str | None, dict[str, Any]]:
     return group, dict(callspec.params) if callspec is not None else {}
 
 
+def _row_key(module: str, group: object, params: dict[str, Any]) -> tuple[str, str, str]:
+    """Return a row's identity as ``started.jsonl`` and ``incomplete.jsonl`` spell it."""
+    canonical = json.loads(json.dumps(params, default=str))
+    return module, str(group), json.dumps(canonical, sort_keys=True)
+
+
 def _series(module: str, group: object, params: dict[str, Any]) -> tuple[_Series, str] | None:
     """Return a row's series and scan mesh, or ``None`` off the scan ladder."""
     library, mesh_name, rest = results.split_params(params)
@@ -101,6 +115,12 @@ def pytest_configure() -> None:
     """Read the failures this sweep already recorded."""
     if _DIR is None:
         return
+    if _SKIP is not None:
+        for line in Path(_SKIP).read_text().splitlines():
+            if line.strip():
+                row = json.loads(line)
+                key = _row_key(row["module"], row["group"], row["params"])
+                _SKIPPED[key] = str(row["status"]), f"not run: {row['detail']}"
     identity = {s["nodeid"]: s for s in _read("started.jsonl") if "params" in s}
     for outcome in _read("outcomes.jsonl"):
         start = identity.get(outcome["nodeid"])
@@ -143,11 +163,15 @@ def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None) -> 
     _append(
         "started.jsonl", {"nodeid": item.nodeid, "t": time.time(), "group": group, "params": params}
     )
-    found = _series(results.module_of(item.nodeid), group, params)
-    prediction = predict(*found) if found is not None else None
-    if found is not None and prediction is not None:
+    module = results.module_of(item.nodeid)
+    found = _series(module, group, params)
+    prediction = _SKIPPED.get(_row_key(module, group, params))
+    if prediction is None and found is not None:
+        prediction = predict(*found)
+    if prediction is not None:
         status, detail = prediction
-        _note_failure(*found, status)
+        if found is not None:
+            _note_failure(*found, status)
         item.stash[_PREDICTED] = detail
         record = {"nodeid": item.nodeid, "outcome": "predicted", "status": status}
         _append("outcomes.jsonl", {**record, "detail": detail, "seconds": _TIMEOUT})

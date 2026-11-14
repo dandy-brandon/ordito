@@ -15,7 +15,9 @@ a process kind, merged:
 ``--device cpu`` runs with ``CUDA_VISIBLE_DEVICES=""`` (an ``ordito-cpu`` row timed in a
 CUDA-initialised process is inflated, ``tools/devices.py``), so it times ``ordito-cpu`` and every
 CPU reference; the CUDA sweep then keeps the two device libraries with ``-k``. ``--done
-<json_dir>`` skips the rows a previous run's ``--benchmark-json`` files already time.
+<json_dir>`` skips the rows a previous run's ``--benchmark-json`` files already time, and ``--skip
+<file>`` records the rows an ``incomplete.jsonl``-form file names as those failures without running
+them (a reference that ran out of memory or took the machine down last time).
 
 ``run`` collects every row under the uncapped flags, drops the ones already in ``--done``, writes
 the rest to ``<sweep_dir>/pending.txt`` and runs them module by module through
@@ -78,6 +80,7 @@ class Settings:
     min_available: float = 0.0
     max_foreign_gpu: float = 4.0
     max_foreign_host: float = 24.0
+    skip: Path | None = None
 
     def flags(self) -> list[str]:
         """Return the pytest flags of the sweep's rows."""
@@ -89,6 +92,8 @@ class Settings:
         env = dict(os.environ, **extra)
         if self.device == "cpu":
             env["CUDA_VISIBLE_DEVICES"] = ""
+        if self.skip is not None:
+            env["SWEEP_SKIP"] = str(self.skip.resolve())
         return env
 
 
@@ -467,6 +472,11 @@ def main(argv: list[str] | None = None) -> None:
         default=24.0,
         help="GiB of host memory other processes may hold before failures rerun",
     )
+    run_parser.add_argument(
+        "--skip",
+        type=Path,
+        help="incomplete.jsonl-form file of rows to record as predicted failures and not run",
+    )
     merge_parser = commands.add_parser("merge", help="merge sweeps into one directory")
     merge_parser.add_argument("out_dir", type=Path)
     merge_parser.add_argument("sweep_dirs", type=Path, nargs="+")
@@ -480,6 +490,7 @@ def main(argv: list[str] | None = None) -> None:
             min_available=args.min_available,
             max_foreign_gpu=args.max_foreign_gpu,
             max_foreign_host=args.max_foreign_host,
+            skip=args.skip,
         )
         run(args.sweep_dir, args.done, args.timeout, settings)
     else:

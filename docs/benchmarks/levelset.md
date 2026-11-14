@@ -9,12 +9,12 @@ search:
 
 Benchmarks of [`ordito.levelset`](../api/ordito/levelset.md) against every library that computes the same thing. Each chart shows the time of every library relative to ordito on CUDA (1x, in green): a longer bar took longer. The table under each chart lists every input the function was measured on. See [Benchmarks](index.md) for how to read and reproduce these numbers.
 
-*Measured on GPU: NVIDIA GeForce RTX 5090 · CPU: Intel Xeon w7-2495X*
+*Measured on GPU: not recorded · CPU: Intel Xeon w7-2495X*
 
 ## Summary
 
 <figure class="bench-figure">
-<svg class="bench-chart" width="640" height="162" viewBox="0 0 640 162" role="img" aria-label="levelset: time relative to ordito"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="144"/><text class="bench-tick" x="196.0" y="157" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="274.0" y1="0" x2="274.0" y2="144"/><text class="bench-tick" x="274.0" y="157" text-anchor="middle">1x</text><line class="bench-grid" x1="352.0" y1="0" x2="352.0" y2="144"/><text class="bench-tick" x="352.0" y="157" text-anchor="middle">10x</text><line class="bench-grid" x1="430.0" y1="0" x2="430.0" y2="144"/><text class="bench-tick" x="430.0" y="157" text-anchor="middle">100x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="144"/><text class="bench-tick" x="508.0" y="157" text-anchor="middle">1000x</text><g><title>ordito (CUDA): the reference, 1x</title><rect class="bench-subject" x="196" y="9.0" width="78.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="279.0" y="18.0">1x</text></g><g><title>Open3D: 7.2x ordito&#x27;s time, geometric mean over 1 functions; slower than ordito in 1</title><rect class="bench-reference" x="196" y="29.0" width="144.9" height="10"/><image class="bench-logo bench-logo-open3d" href="../assets/logos/open3d.png" x="172.0" y="26.2" width="18.0" height="15.6"/><text class="bench-label" x="166" y="38.0" text-anchor="end">Open3D</text><text class="bench-value" x="345.9" y="38.0">7.2x  (1)</text></g><g><title>PyTorch3D (CUDA): 19x ordito&#x27;s time, geometric mean over 1 functions; slower than ordito in 1</title><rect class="bench-reference" x="196" y="49.0" width="177.9" height="10"/><image class="bench-logo bench-logo-pytorch3d" href="../assets/logos/pytorch3d.png" x="173.0" y="45.0" width="15.9" height="18.0"/><text class="bench-label" x="166" y="58.0" text-anchor="end">PyTorch3D (CUDA)</text><text class="bench-value" x="378.9" y="58.0">19x  (1)</text></g><g><title>PyVista: 54x ordito&#x27;s time, geometric mean over 1 functions; slower than ordito in 1</title><rect class="bench-reference" x="196" y="69.0" width="213.4" height="10"/><image class="bench-logo bench-logo-pyvista" href="../assets/logos/pyvista.png" x="172.0" y="71.0" width="18.0" height="6.0"/><text class="bench-label" x="166" y="78.0" text-anchor="end">PyVista</text><text class="bench-value" x="414.4" y="78.0">54x  (1)</text></g><g><title>MeshLib: 66x ordito&#x27;s time, geometric mean over 3 functions; slower than ordito in 3</title><rect class="bench-reference" x="196" y="89.0" width="220.2" height="10"/><image class="bench-logo bench-logo-meshlib" href="../assets/logos/meshlib.png" x="172.0" y="87.5" width="18.0" height="13.0"/><text class="bench-label" x="166" y="98.0" text-anchor="end">MeshLib</text><text class="bench-value" x="421.2" y="98.0">66x  (3)</text></g><g><title>libigl: 87x ordito&#x27;s time, geometric mean over 1 functions; slower than ordito in 1</title><rect class="bench-reference" x="196" y="109.0" width="229.4" height="10"/><text class="bench-label" x="166" y="118.0" text-anchor="end">libigl</text><text class="bench-value" x="430.4" y="118.0">87x  (1)</text></g><g><title>MeshLab: 260x ordito&#x27;s time, geometric mean over 1 functions; slower than ordito in 1</title><rect class="bench-reference" x="196" y="129.0" width="266.3" height="10"/><image class="bench-logo bench-logo-meshlab" href="../assets/logos/meshlab.png" x="172.0" y="125.0" width="18.0" height="18.0"/><text class="bench-label" x="166" y="138.0" text-anchor="end">MeshLab</text><text class="bench-value" x="467.3" y="138.0">260x  (1)</text></g></svg>
+<svg class="bench-chart" width="640" height="162" viewBox="0 0 640 162" role="img" aria-label="levelset: time relative to ordito"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="144"/><text class="bench-tick" x="196.0" y="157" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="274.0" y1="0" x2="274.0" y2="144"/><text class="bench-tick" x="274.0" y="157" text-anchor="middle">1x</text><line class="bench-grid" x1="352.0" y1="0" x2="352.0" y2="144"/><text class="bench-tick" x="352.0" y="157" text-anchor="middle">10x</text><line class="bench-grid" x1="430.0" y1="0" x2="430.0" y2="144"/><text class="bench-tick" x="430.0" y="157" text-anchor="middle">100x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="144"/><text class="bench-tick" x="508.0" y="157" text-anchor="middle">1000x</text><g><title>ordito (CUDA): the reference, 1x</title><rect class="bench-subject" x="196" y="9.0" width="78.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="279.0" y="18.0">1x</text></g><g><title>Open3D: 15x ordito&#x27;s time, geometric mean over 1 functions; slower than ordito in 1</title><rect class="bench-reference" x="196" y="29.0" width="169.5" height="10"/><image class="bench-logo bench-logo-open3d" href="../assets/logos/open3d.png" x="172.0" y="26.2" width="18.0" height="15.6"/><text class="bench-label" x="166" y="38.0" text-anchor="end">Open3D</text><text class="bench-value" x="370.5" y="38.0">15x  (1)</text></g><g><title>PyTorch3D (CUDA): 18x ordito&#x27;s time, geometric mean over 1 functions; slower than ordito in 1</title><rect class="bench-reference" x="196" y="49.0" width="176.3" height="10"/><image class="bench-logo bench-logo-pytorch3d" href="../assets/logos/pytorch3d.png" x="173.0" y="45.0" width="15.9" height="18.0"/><text class="bench-label" x="166" y="58.0" text-anchor="end">PyTorch3D (CUDA)</text><text class="bench-value" x="377.3" y="58.0">18x  (1)</text></g><g><title>MeshLib: 42x ordito&#x27;s time, geometric mean over 3 functions; slower than ordito in 3</title><rect class="bench-reference" x="196" y="69.0" width="204.4" height="10"/><image class="bench-logo bench-logo-meshlib" href="../assets/logos/meshlib.png" x="172.0" y="67.5" width="18.0" height="13.0"/><text class="bench-label" x="166" y="78.0" text-anchor="end">MeshLib</text><text class="bench-value" x="405.4" y="78.0">42x  (3)</text></g><g><title>PyVista: 51x ordito&#x27;s time, geometric mean over 1 functions; slower than ordito in 1</title><rect class="bench-reference" x="196" y="89.0" width="211.0" height="10"/><image class="bench-logo bench-logo-pyvista" href="../assets/logos/pyvista.png" x="172.0" y="91.0" width="18.0" height="6.0"/><text class="bench-label" x="166" y="98.0" text-anchor="end">PyVista</text><text class="bench-value" x="412.0" y="98.0">51x  (1)</text></g><g><title>libigl: 83x ordito&#x27;s time, geometric mean over 1 functions; slower than ordito in 1</title><rect class="bench-reference" x="196" y="109.0" width="227.7" height="10"/><text class="bench-label" x="166" y="118.0" text-anchor="end">libigl</text><text class="bench-value" x="428.7" y="118.0">83x  (1)</text></g><g><title>MeshLab: 292x ordito&#x27;s time, geometric mean over 1 functions; slower than ordito in 1</title><rect class="bench-reference" x="196" y="129.0" width="270.3" height="10"/><image class="bench-logo bench-logo-meshlab" href="../assets/logos/meshlab.png" x="172.0" y="125.0" width="18.0" height="18.0"/><text class="bench-label" x="166" y="138.0" text-anchor="end">MeshLab</text><text class="bench-value" x="471.3" y="138.0">292x  (1)</text></g></svg>
 <figcaption>Time relative to ordito (CUDA), geometric mean over the levelset functions both implement; in parentheses, the number of functions. Log scale. Runs stopped at the time limit are left out.</figcaption>
 </figure>
 
@@ -22,17 +22,17 @@ Benchmarks of [`ordito.levelset`](../api/ordito/levelset.md) against every libra
 
     | Library | Time relative to ordito | Functions compared | ordito faster in |
     |---|---|---|---|
-    | Open3D | 7.2x | 1 | 1 |
-    | PyTorch3D (CUDA) | 19x | 1 | 1 |
-    | PyVista | 54x | 1 | 1 |
-    | MeshLib | 66x | 3 | 3 |
-    | libigl | 87x | 1 | 1 |
-    | MeshLab | 260x | 1 | 1 |
+    | Open3D | 15x | 1 | 1 |
+    | PyTorch3D (CUDA) | 18x | 1 | 1 |
+    | MeshLib | 42x | 3 | 3 |
+    | PyVista | 51x | 1 | 1 |
+    | libigl | 83x | 1 | 1 |
+    | MeshLab | 292x | 1 | 1 |
 
 ## `offset_mesh`
 
 <figure class="bench-figure">
-<svg class="bench-chart" width="640" height="82" viewBox="0 0 640 82" role="img" aria-label="offset_mesh on dragon (871 414 faces) · divisor=64"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="64"/><text class="bench-tick" x="196.0" y="77" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="274.0" y1="0" x2="274.0" y2="64"/><text class="bench-tick" x="274.0" y="77" text-anchor="middle">1x</text><line class="bench-grid" x1="352.0" y1="0" x2="352.0" y2="64"/><text class="bench-tick" x="352.0" y="77" text-anchor="middle">10x</text><line class="bench-grid" x1="430.0" y1="0" x2="430.0" y2="64"/><text class="bench-tick" x="430.0" y="77" text-anchor="middle">100x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="64"/><text class="bench-tick" x="508.0" y="77" text-anchor="middle">1000x</text><g><title>ordito (CUDA): 5.22 ms, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="78.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="279.0" y="18.0">1x · 5.22 ms</text></g><g><title>MeshLib: 136.63 ms, 26x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="188.6" height="10"/><image class="bench-logo bench-logo-meshlib" href="../assets/logos/meshlib.png" x="172.0" y="27.5" width="18.0" height="13.0"/><text class="bench-label" x="166" y="38.0" text-anchor="end">MeshLib</text><text class="bench-value" x="389.6" y="38.0">26x · 136.63 ms</text></g><g><title>MeshLab: 1.374 s, 263x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="49.0" width="266.8" height="10"/><image class="bench-logo bench-logo-meshlab" href="../assets/logos/meshlab.png" x="172.0" y="45.0" width="18.0" height="18.0"/><text class="bench-label" x="166" y="58.0" text-anchor="end">MeshLab</text><text class="bench-value" x="467.8" y="58.0">263x · 1.374 s</text></g></svg>
+<svg class="bench-chart" width="640" height="82" viewBox="0 0 640 82" role="img" aria-label="offset_mesh on dragon (871 414 faces) · divisor=64"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="64"/><text class="bench-tick" x="196.0" y="77" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="274.0" y1="0" x2="274.0" y2="64"/><text class="bench-tick" x="274.0" y="77" text-anchor="middle">1x</text><line class="bench-grid" x1="352.0" y1="0" x2="352.0" y2="64"/><text class="bench-tick" x="352.0" y="77" text-anchor="middle">10x</text><line class="bench-grid" x1="430.0" y1="0" x2="430.0" y2="64"/><text class="bench-tick" x="430.0" y="77" text-anchor="middle">100x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="64"/><text class="bench-tick" x="508.0" y="77" text-anchor="middle">1000x</text><g><title>ordito (CUDA): 4.76 ms, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="78.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="279.0" y="18.0">1x · 4.76 ms</text></g><g><title>MeshLib: 131.89 ms, 28x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="190.5" height="10"/><image class="bench-logo bench-logo-meshlib" href="../assets/logos/meshlib.png" x="172.0" y="27.5" width="18.0" height="13.0"/><text class="bench-label" x="166" y="38.0" text-anchor="end">MeshLib</text><text class="bench-value" x="391.5" y="38.0">28x · 131.89 ms</text></g><g><title>MeshLab: 1.365 s, 287x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="49.0" width="269.7" height="10"/><image class="bench-logo bench-logo-meshlab" href="../assets/logos/meshlab.png" x="172.0" y="45.0" width="18.0" height="18.0"/><text class="bench-label" x="166" y="58.0" text-anchor="end">MeshLab</text><text class="bench-value" x="470.7" y="58.0">287x · 1.365 s</text></g></svg>
 <figcaption>dragon (871 414 faces) · divisor=64 · time relative to ordito, log scale</figcaption>
 </figure>
 
@@ -40,37 +40,37 @@ Benchmarks of [`ordito.levelset`](../api/ordito/levelset.md) against every libra
 
     | Library | Median | Relative to ordito |
     |---|---|---|
-    | ordito (CUDA) | 5.22 ms | 1x |
-    | MeshLib | 136.63 ms | 26x |
-    | MeshLab | 1.374 s | 263x |
+    | ordito (CUDA) | 4.76 ms | 1x |
+    | MeshLib | 131.89 ms | 28x |
+    | MeshLab | 1.365 s | 287x |
 
 ??? note "All inputs"
 
     | Input | ordito (CUDA) | MeshLab | MeshLib |
     |---|---|---|---|
-    | sphere_small divisor=64 | 790.8 µs |  |  |
-    | sphere_small divisor=128 | 848.7 µs |  |  |
-    | sphere_small divisor=256 | 1.86 ms |  |  |
-    | bunny_decimated divisor=64 | 1.41 ms | 212.57 ms | 34.20 ms |
-    | bunny_decimated divisor=128 | 3.22 ms | 355.95 ms | 59.43 ms |
-    | bunny_decimated divisor=256 | 5.47 ms |  |  |
-    | bunny divisor=64 | 2.05 ms | 378.52 ms | 44.13 ms |
-    | bunny divisor=128 | 4.41 ms | 591.94 ms | 73.96 ms |
-    | bunny divisor=256 | 9.75 ms |  |  |
-    | dragon divisor=64 | 5.22 ms | 1.374 s | 136.63 ms |
-    | dragon divisor=128 | 5.46 ms | 1.886 s | 172.39 ms |
-    | dragon divisor=256 | 11.56 ms |  |  |
-    | happy_buddha divisor=64 | 4.81 ms | 1.827 s | 166.64 ms |
-    | happy_buddha divisor=128 | 5.26 ms | 2.650 s | 198.24 ms |
-    | happy_buddha divisor=256 | 7.51 ms |  |  |
-    | lucy divisor=64 | 81.51 ms | 34.391 s | 2.475 s |
-    | lucy divisor=128 | 76.96 ms | 35.419 s | 2.550 s |
-    | lucy divisor=256 | 90.24 ms |  |  |
+    | sphere_small divisor=64 | 758.5 µs |  |  |
+    | sphere_small divisor=128 | 940.9 µs |  |  |
+    | sphere_small divisor=256 | 1.70 ms |  |  |
+    | bunny_decimated divisor=64 | 1.41 ms | 211.95 ms | 31.40 ms |
+    | bunny_decimated divisor=128 | 2.04 ms | 350.57 ms | 55.64 ms |
+    | bunny_decimated divisor=256 | 3.96 ms |  |  |
+    | bunny divisor=64 | 2.04 ms | 383.08 ms | 41.12 ms |
+    | bunny divisor=128 | 2.90 ms | 590.85 ms | 70.08 ms |
+    | bunny divisor=256 | 5.54 ms |  |  |
+    | dragon divisor=64 | 4.76 ms | 1.365 s | 131.89 ms |
+    | dragon divisor=128 | 5.05 ms | 1.827 s | 163.28 ms |
+    | dragon divisor=256 | 9.28 ms |  |  |
+    | happy_buddha divisor=64 | 4.74 ms | 1.825 s | 161.06 ms |
+    | happy_buddha divisor=128 | 5.23 ms | 2.643 s | 189.66 ms |
+    | happy_buddha divisor=256 | 7.44 ms |  |  |
+    | lucy divisor=64 | 80.07 ms | 37.396 s | 2.472 s |
+    | lucy divisor=128 | 76.31 ms | 37.731 s | 2.540 s |
+    | lucy divisor=256 | 89.73 ms |  |  |
 
 ## `thicken_mesh`
 
 <figure class="bench-figure">
-<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="thicken_mesh on sphere_med (81 920 faces)"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="258.4" y1="0" x2="258.4" y2="44"/><text class="bench-tick" x="258.4" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="320.8" y1="0" x2="320.8" y2="44"/><text class="bench-tick" x="320.8" y="57" text-anchor="middle">10x</text><line class="bench-grid" x1="383.2" y1="0" x2="383.2" y2="44"/><text class="bench-tick" x="383.2" y="57" text-anchor="middle">100x</text><line class="bench-grid" x1="445.6" y1="0" x2="445.6" y2="44"/><text class="bench-tick" x="445.6" y="57" text-anchor="middle">1000x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">10000x</text><g><title>ordito (CUDA): 161.9 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="62.4" height="10"/><image class="bench-logo bench-logo-ordito" href="../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="263.4" y="18.0">1x · 161.9 µs</text></g><g><title>MeshLib: 254.54 ms, 1572x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="261.9" height="10"/><image class="bench-logo bench-logo-meshlib" href="../assets/logos/meshlib.png" x="172.0" y="27.5" width="18.0" height="13.0"/><text class="bench-label" x="166" y="38.0" text-anchor="end">MeshLib</text><text class="bench-value" x="462.9" y="38.0">1572x · 254.54 ms</text></g></svg>
+<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="thicken_mesh on sphere_med (81 920 faces)"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="258.4" y1="0" x2="258.4" y2="44"/><text class="bench-tick" x="258.4" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="320.8" y1="0" x2="320.8" y2="44"/><text class="bench-tick" x="320.8" y="57" text-anchor="middle">10x</text><line class="bench-grid" x1="383.2" y1="0" x2="383.2" y2="44"/><text class="bench-tick" x="383.2" y="57" text-anchor="middle">100x</text><line class="bench-grid" x1="445.6" y1="0" x2="445.6" y2="44"/><text class="bench-tick" x="445.6" y="57" text-anchor="middle">1000x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">10000x</text><g><title>ordito (CUDA): 172.3 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="62.4" height="10"/><image class="bench-logo bench-logo-ordito" href="../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="263.4" y="18.0">1x · 172.3 µs</text></g><g><title>MeshLib: 246.89 ms, 1433x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="259.3" height="10"/><image class="bench-logo bench-logo-meshlib" href="../assets/logos/meshlib.png" x="172.0" y="27.5" width="18.0" height="13.0"/><text class="bench-label" x="166" y="38.0" text-anchor="end">MeshLib</text><text class="bench-value" x="460.3" y="38.0">1433x · 246.89 ms</text></g></svg>
 <figcaption>sphere_med (81 920 faces) · time relative to ordito, log scale</figcaption>
 </figure>
 
@@ -78,21 +78,21 @@ Benchmarks of [`ordito.levelset`](../api/ordito/levelset.md) against every libra
 
     | Library | Median | Relative to ordito |
     |---|---|---|
-    | ordito (CUDA) | 161.9 µs | 1x |
-    | MeshLib | 254.54 ms | 1572x |
+    | ordito (CUDA) | 172.3 µs | 1x |
+    | MeshLib | 246.89 ms | 1433x |
 
 ??? note "All inputs"
 
     | Input | ordito (CUDA) | MeshLib |
     |---|---|---|
-    | sphere_small | 138.5 µs | 8.08 ms |
-    | sphere_med | 161.9 µs | 254.54 ms |
-    | sphere_large | 228.2 µs |  |
+    | sphere_small | 155.8 µs | 5.08 ms |
+    | sphere_med | 172.3 µs | 246.89 ms |
+    | sphere_large | 252.9 µs |  |
 
 ## `signed_distance_grid`
 
 <figure class="bench-figure">
-<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="signed_distance_grid on dragon (871 414 faces) · divisor=64"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="352.0" y1="0" x2="352.0" y2="44"/><text class="bench-tick" x="352.0" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">10x</text><g><title>ordito (CUDA): 6.41 ms, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="156.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="357.0" y="18.0">1x · 6.41 ms</text></g><g><title>Open3D: 41.14 ms, 6.4x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="282.0" height="10"/><image class="bench-logo bench-logo-open3d" href="../assets/logos/open3d.png" x="172.0" y="26.2" width="18.0" height="15.6"/><text class="bench-label" x="166" y="38.0" text-anchor="end">Open3D</text><text class="bench-value" x="483.0" y="38.0">6.4x · 41.14 ms</text></g></svg>
+<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="signed_distance_grid on dragon (871 414 faces) · divisor=64"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="352.0" y1="0" x2="352.0" y2="44"/><text class="bench-tick" x="352.0" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">10x</text><g><title>ordito (CUDA): 6.04 ms, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="156.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="357.0" y="18.0">1x · 6.04 ms</text></g><g><title>Open3D: 40.50 ms, 6.7x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="285.0" height="10"/><image class="bench-logo bench-logo-open3d" href="../assets/logos/open3d.png" x="172.0" y="26.2" width="18.0" height="15.6"/><text class="bench-label" x="166" y="38.0" text-anchor="end">Open3D</text><text class="bench-value" x="486.0" y="38.0">6.7x · 40.50 ms</text></g></svg>
 <figcaption>dragon (871 414 faces) · divisor=64 · time relative to ordito, log scale</figcaption>
 </figure>
 
@@ -100,30 +100,30 @@ Benchmarks of [`ordito.levelset`](../api/ordito/levelset.md) against every libra
 
     | Library | Median | Relative to ordito |
     |---|---|---|
-    | ordito (CUDA) | 6.41 ms | 1x |
-    | Open3D | 41.14 ms | 6.4x |
+    | ordito (CUDA) | 6.04 ms | 1x |
+    | Open3D | 40.50 ms | 6.7x |
 
 ??? note "All inputs"
 
     | Input | ordito (CUDA) | Open3D |
     |---|---|---|
-    | sphere_small divisor=64 | 4.50 ms |  |
-    | sphere_small divisor=128 | 7.97 ms |  |
-    | bunny_decimated divisor=64 | 2.37 ms | 12.00 ms |
-    | bunny_decimated divisor=128 | 4.50 ms | 64.79 ms |
-    | bunny divisor=64 | 3.96 ms | 22.62 ms |
-    | bunny divisor=128 | 8.11 ms | 118.15 ms |
-    | dragon divisor=64 | 6.41 ms | 41.14 ms |
-    | dragon divisor=128 | 14.55 ms | 185.87 ms |
-    | happy_buddha divisor=64 | 7.03 ms | 30.07 ms |
-    | happy_buddha divisor=128 | 13.72 ms | 130.96 ms |
-    | lucy divisor=64 | 116.06 ms | 299.17 ms |
-    | lucy divisor=128 | 161.79 ms | 1.152 s |
+    | sphere_small divisor=64 | 4.57 ms |  |
+    | sphere_small divisor=128 | 8.00 ms |  |
+    | bunny_decimated divisor=64 | 2.05 ms | 12.16 ms |
+    | bunny_decimated divisor=128 | 3.71 ms | 67.56 ms |
+    | bunny divisor=64 | 3.62 ms | 22.99 ms |
+    | bunny divisor=128 | 6.83 ms | 121.24 ms |
+    | dragon divisor=64 | 6.04 ms | 40.50 ms |
+    | dragon divisor=128 | 13.24 ms | 190.91 ms |
+    | happy_buddha divisor=64 | 6.52 ms | 30.80 ms |
+    | happy_buddha divisor=128 | 12.04 ms | 132.00 ms |
+    | lucy divisor=64 | 114.39 ms | 12.353 s |
+    | lucy divisor=128 | 160.41 ms | 13.227 s |
 
 ## `marching_cubes`
 
 <figure class="bench-figure">
-<svg class="bench-chart" width="640" height="122" viewBox="0 0 640 122" role="img" aria-label="marching_cubes on resolution=64"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="104"/><text class="bench-tick" x="196.0" y="117" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="300.0" y1="0" x2="300.0" y2="104"/><text class="bench-tick" x="300.0" y="117" text-anchor="middle">1x</text><line class="bench-grid" x1="404.0" y1="0" x2="404.0" y2="104"/><text class="bench-tick" x="404.0" y="117" text-anchor="middle">10x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="104"/><text class="bench-tick" x="508.0" y="117" text-anchor="middle">100x</text><g><title>ordito (CUDA): 92.1 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="104.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="305.0" y="18.0">1x · 92.1 µs</text></g><g><title>PyTorch3D (CUDA): 1.12 ms, 12x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="216.8" height="10"/><image class="bench-logo bench-logo-pytorch3d" href="../assets/logos/pytorch3d.png" x="173.0" y="25.0" width="15.9" height="18.0"/><text class="bench-label" x="166" y="38.0" text-anchor="end">PyTorch3D (CUDA)</text><text class="bench-value" x="417.8" y="38.0">12x · 1.12 ms</text></g><g><title>PyVista: 2.47 ms, 27x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="49.0" width="252.5" height="10"/><image class="bench-logo bench-logo-pyvista" href="../assets/logos/pyvista.png" x="172.0" y="51.0" width="18.0" height="6.0"/><text class="bench-label" x="166" y="58.0" text-anchor="end">PyVista</text><text class="bench-value" x="453.5" y="58.0">27x · 2.47 ms</text></g><g><title>MeshLib: 2.66 ms, 29x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="69.0" width="255.9" height="10"/><image class="bench-logo bench-logo-meshlib" href="../assets/logos/meshlib.png" x="172.0" y="67.5" width="18.0" height="13.0"/><text class="bench-label" x="166" y="78.0" text-anchor="end">MeshLib</text><text class="bench-value" x="456.9" y="78.0">29x · 2.66 ms</text></g><g><title>libigl: 3.81 ms, 41x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="89.0" width="272.1" height="10"/><text class="bench-label" x="166" y="98.0" text-anchor="end">libigl</text><text class="bench-value" x="473.1" y="98.0">41x · 3.81 ms</text></g></svg>
+<svg class="bench-chart" width="640" height="122" viewBox="0 0 640 122" role="img" aria-label="marching_cubes on resolution=64"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="104"/><text class="bench-tick" x="196.0" y="117" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="300.0" y1="0" x2="300.0" y2="104"/><text class="bench-tick" x="300.0" y="117" text-anchor="middle">1x</text><line class="bench-grid" x1="404.0" y1="0" x2="404.0" y2="104"/><text class="bench-tick" x="404.0" y="117" text-anchor="middle">10x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="104"/><text class="bench-tick" x="508.0" y="117" text-anchor="middle">100x</text><g><title>ordito (CUDA): 89.5 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="104.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="305.0" y="18.0">1x · 89.5 µs</text></g><g><title>MeshLib: 777.7 µs, 8.7x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="201.7" height="10"/><image class="bench-logo bench-logo-meshlib" href="../assets/logos/meshlib.png" x="172.0" y="27.5" width="18.0" height="13.0"/><text class="bench-label" x="166" y="38.0" text-anchor="end">MeshLib</text><text class="bench-value" x="402.7" y="38.0">8.7x · 777.7 µs</text></g><g><title>PyTorch3D (CUDA): 1.07 ms, 12x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="49.0" width="216.1" height="10"/><image class="bench-logo bench-logo-pytorch3d" href="../assets/logos/pytorch3d.png" x="173.0" y="45.0" width="15.9" height="18.0"/><text class="bench-label" x="166" y="58.0" text-anchor="end">PyTorch3D (CUDA)</text><text class="bench-value" x="417.1" y="58.0">12x · 1.07 ms</text></g><g><title>PyVista: 2.31 ms, 26x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="69.0" width="250.9" height="10"/><image class="bench-logo bench-logo-pyvista" href="../assets/logos/pyvista.png" x="172.0" y="71.0" width="18.0" height="6.0"/><text class="bench-label" x="166" y="78.0" text-anchor="end">PyVista</text><text class="bench-value" x="451.9" y="78.0">26x · 2.31 ms</text></g><g><title>libigl: 3.87 ms, 43x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="89.0" width="274.2" height="10"/><text class="bench-label" x="166" y="98.0" text-anchor="end">libigl</text><text class="bench-value" x="475.2" y="98.0">43x · 3.87 ms</text></g></svg>
 <figcaption>resolution=64 · time relative to ordito, log scale</figcaption>
 </figure>
 
@@ -131,18 +131,18 @@ Benchmarks of [`ordito.levelset`](../api/ordito/levelset.md) against every libra
 
     | Library | Median | Relative to ordito |
     |---|---|---|
-    | ordito (CUDA) | 92.1 µs | 1x |
-    | PyTorch3D (CUDA) | 1.12 ms | 12x |
-    | PyVista | 2.47 ms | 27x |
-    | MeshLib | 2.66 ms | 29x |
-    | libigl | 3.81 ms | 41x |
+    | ordito (CUDA) | 89.5 µs | 1x |
+    | MeshLib | 777.7 µs | 8.7x |
+    | PyTorch3D (CUDA) | 1.07 ms | 12x |
+    | PyVista | 2.31 ms | 26x |
+    | libigl | 3.87 ms | 43x |
 
 ??? note "All inputs"
 
     | Input | ordito (CUDA) | libigl | MeshLib | PyTorch3D (CUDA) | PyVista |
     |---|---|---|---|---|---|
-    | resolution=64 | 92.1 µs | 3.81 ms | 2.66 ms | 1.12 ms | 2.47 ms |
-    | resolution=128 | 141.8 µs | 26.13 ms | 6.52 ms | 4.26 ms | 15.67 ms |
+    | resolution=64 | 89.5 µs | 3.87 ms | 777.7 µs | 1.07 ms | 2.31 ms |
+    | resolution=128 | 158.0 µs | 25.14 ms | 2.57 ms | 4.37 ms | 15.73 ms |
 
 ## Without a reference
 
@@ -150,5 +150,6 @@ No other library computes these, so they have no comparison. ordito (CUDA)'s med
 
 | Function | Input | ordito (CUDA) |
 |---|---|---|
-| `signed_distance_level_set` | lucy divisor=128 | 76.71 ms |
+| `signed_distance_level_set` | lucy divisor=128 | 76.08 ms |
+| `marching_cubes_lewiner` | resolution=128 | 451.1 µs |
 

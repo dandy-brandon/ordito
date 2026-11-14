@@ -343,7 +343,9 @@ uv run python -m benchmarks.tools.render_docs merged/
 ```
 
 `--done results/` skips the rows a previous run's `--benchmark-json` files already time, and
-`merge --done results/` merges over a copy of them.
+`merge --done results/` merges over a copy of them. `--skip rows.jsonl` takes rows in
+`incomplete.jsonl`'s form and records each as that failure, predicted, without running it: the
+references that ran out of memory last time, or a row that took the machine down.
 
 - **A row runs at most `--timeout` seconds (600), setup included.** One that runs past it is
   recorded as a timeout, and its module restarts at the next row. A long call into a compiled
