@@ -2371,8 +2371,8 @@
  },
  "benchmarks/test_heat.py::test_fast_marching_distance[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 6,
-   "alloc": 4,
+   "launch": 7,
+   "alloc": 5,
    "memset": 2,
    "d2d": 1,
    "h2d": 1,

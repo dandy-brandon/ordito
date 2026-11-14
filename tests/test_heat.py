@@ -46,6 +46,7 @@ import potpourri3d as pp3d
 import pymeshlab as ml
 import pytest
 import scipy.sparse as sp
+import scipy.sparse.csgraph
 import scipy.sparse.linalg as spla
 import trimesh as tm
 import warp as wp
@@ -1008,34 +1009,36 @@ def _surface_distances_meshlib(mesh_tm: tm.Trimesh, sources: list[int], updates:
     )
 
 
-@pytest.mark.parametrize("sources", ["first", "middle", "three"])
-@pytest.mark.parametrize("mesh_name", [*MESHES, "torus_irregular_holes"])
+# One source on well-shaped meshes: every vertex is reached from the one start and no face update
+# is rejected, which is where the reference's serial front and the call's rounds meet (below).
+_FAST_MARCHING_WELL_SHAPED = ["sphere_well_shaped", "torus_well_shaped", "sphere_well_shaped_open"]
+
+
+@pytest.mark.parametrize("sources", ["first", "middle"])
+@pytest.mark.parametrize("mesh_name", _FAST_MARCHING_WELL_SHAPED)
 @pytest.mark.parity("fast_marching_distance", "meshlib")
 def test_fast_marching_distance_matches_meshlib(
     request: pytest.FixtureRequest, mesh_name: str, sources: str
 ) -> None:
     """
-    Class A: MeshLib's ``computeSurfaceDistances`` run with ``maxVertUpdates=255``.
+    Class A: MeshLib's ``computeSurfaceDistances`` from one source, uncapped.
 
-    Both answer the fixpoint of the same edge and face updates, MeshLib by a serial queue and
-    ordito by parallel rounds; uncapped, the queue reaches it. Measured on the CPU device the two
-    fields are equal bit for bit on every case here; on CUDA within 2.9e-6 of the range (fused
-    multiply-adds). The three fixtures are the needles and obtuse faces where the face update's
-    rejection tests decide most, and the holed torus adds several rims. Three sources make the
-    fronts meet.
+    MeshLib pops the nearest vertex and offers a face only where an edge did not lower the
+    neighbour, reading the corners as they then stand; the call offers every update each round to
+    the fixpoint. From one source every vertex's distance comes from that start, so the face
+    update is always the circular field around it, and on well-shaped meshes, where no update is
+    rejected, the order MeshLib visits in decides nothing: measured equal bit for bit on the CPU
+    in every case here, within 2.3e-8 of the range on CUDA (fused multiply-adds). The hard
+    fixtures break that premise (MeshLib's answer there follows its ring and queue order:
+    0.6 % of the range on ``sphere_irregular`` from vertex 0), and so do several starts on any
+    mesh; ``test_fast_marching_distance_tracks_meshlib_from_several_starts`` covers both.
 
-    The cap is what the default call differs by: at MeshLib's default of three updates a vertex the
-    queue re-opens a fourth time keeps its stale distance (up to 2.9 % of the range on these
-    fixtures), which ``test_fast_marching_distance_is_not_the_capped_front`` pins.
+    ``maxVertUpdates=255`` is uncapped in MeshLib 3.2: its update counter is a signed ``char``, so
+    the ``>= 255`` cap never trips.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = len(mesh_tm.vertices)
-    chosen = {
-        "first": [0],
-        "middle": [n_vertices // 2],
-        "three": [0, n_vertices // 3, n_vertices // 2],
-    }
-    sources_np = np.array(chosen[sources], dtype=np.int32)
+    sources_np = np.array({"first": [0], "middle": [n_vertices // 2]}[sources], dtype=np.int32)
 
     distance_ml = _surface_distances_meshlib(mesh_tm, sources_np.tolist(), 255)
     distance_wp = od.heat.fast_marching_distance(
@@ -1045,6 +1048,84 @@ def test_fast_marching_distance_matches_meshlib(
     assert np.all(distance_ml < _FLT_MAX)  # every vertex reached: one component
     assert np.ptp(distance_ml) > 1.0
     assert np.allclose(distance_wp, distance_ml, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("starts", ["three", "line", "region"])
+@pytest.mark.parametrize("mesh_name", [*MESHES, "torus_irregular_holes"])
+@pytest.mark.parity("fast_marching_distance", "meshlib")
+def test_fast_marching_distance_tracks_meshlib_from_several_starts(
+    request: pytest.FixtureRequest, mesh_name: str, starts: str
+) -> None:
+    """
+    Class C (the field's gap and its accuracy against the exact geodesic distance): several starts.
+
+    Three far-apart sources, a line of sources (a shortest edge path between two far vertices) and
+    a region (a vertex and its ring), on the hard fixtures. Here MeshLib's answer follows the order
+    its serial front visits vertices in, which no order-free front reproduces (see
+    ``test_fast_marching_distance_matches_meshlib``), so the comparison is of what both
+    approximate: the median relative error to ``igl.exact_geodesic`` (MMP) over vertices beyond 5 %
+    of the range, which must stay within 1.35x MeshLib's, and the largest gap between the two
+    fields, within 14 % of the range. Measured (CPU): ratios 0.84-1.12, gaps up to 4.6 % of the
+    range (``sphere_irregular``, three sources; ``saddle_graded`` within 2.4e-4 everywhere).
+
+    Excludes a front that ignores where a distance came from: mutation probe, the plane-wave
+    front this method ran before (MeshLib 3.1's), at ratios 1.9-880x on every point and line case
+    here, with a gap of 15 % of the range on ``sphere_irregular`` from three sources. Near a
+    region both fronts take the plane wave (ratios 1.00-1.07), so those cases bound the region
+    handling rather than tell the two apart.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
+    faces_np = np.asarray(mesh_tm.faces, dtype=np.int64)
+    n_vertices = len(vertices_np)
+    if starts == "three":
+        chosen = [0, n_vertices // 3, n_vertices // 2]
+    elif starts == "line":
+        edges_np = np.asarray(mesh_tm.edges_unique)
+        lengths_np = np.linalg.norm(
+            vertices_np[edges_np[:, 0]] - vertices_np[edges_np[:, 1]], axis=1
+        )
+        graph = sp.coo_matrix(
+            (lengths_np, (edges_np[:, 0], edges_np[:, 1])), shape=(n_vertices, n_vertices)
+        )
+        _, predecessors_np = scipy.sparse.csgraph.dijkstra(
+            graph.tocsr(), directed=False, indices=np.array([0]), return_predecessors=True
+        )
+        predecessors = np.asarray(predecessors_np)[0]
+        chosen = [n_vertices // 2]
+        while chosen[-1] != 0:
+            chosen.append(int(predecessors[chosen[-1]]))
+        assert len(chosen) >= 2  # a line: at least one start edge (one on the holed torus)
+    else:
+        chosen = sorted({n_vertices // 3} | set(mesh_tm.vertex_neighbors[n_vertices // 3]))
+    sources_np = np.array(chosen, dtype=np.int32)
+
+    distance_ml = _surface_distances_meshlib(mesh_tm, chosen, 255)
+    distance_wp = od.heat.fast_marching_distance(
+        mesh_wp.points, mesh_wp.indices, wp.array(sources_np, dtype=wp.int32, device=mesh_wp.device)
+    ).numpy()
+    exact_igl = np.asarray(
+        igl.exact_geodesic(
+            vertices_np,
+            faces_np,
+            sources_np.astype(np.int64),
+            np.array([], dtype=np.int64),
+            np.arange(n_vertices, dtype=np.int64),
+            np.array([], dtype=np.int64),
+        ),
+        dtype=np.float64,
+    )
+
+    scale = float(np.ptp(distance_ml))
+    assert np.all(distance_ml < _FLT_MAX)  # non-vacuity: one reached component
+    assert scale > 0.5
+    far = exact_igl > 0.05 * exact_igl.max()
+
+    def median_error(field: np.ndarray) -> float:
+        return float(np.median(np.abs(field[far] - exact_igl[far]) / exact_igl[far]))
+
+    assert median_error(distance_wp) <= 1.35 * median_error(distance_ml)
+    assert np.abs(distance_wp - distance_ml).max() <= 0.14 * scale
 
 
 def test_fast_marching_distance_is_not_the_capped_front(
@@ -1124,8 +1205,9 @@ def test_fast_marching_distance_meshlab_matches_pymeshlab(
     2026-11-01, settled 46 dragon vertices more than 1e-5 of the range off from one source, and
     1.75e-2 of the range off on ``saddle_graded`` near where three sources' regions meet.
 
-    Mutation probe: the default ``"meshlib"`` front on the same inputs is more than 1e-3 of the
-    range off, asserted here so the comparison cannot pass on either front.
+    The default ``"meshlib"`` front is no probe for this comparison: from one source it now takes
+    the same circular field (within 1.5e-7 of the range on ``saddle_graded`` from vertex 0), and the
+    two part only where their rejection tests and seams differ.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = len(mesh_tm.vertices)
@@ -1144,9 +1226,6 @@ def test_fast_marching_distance_meshlab_matches_pymeshlab(
         mesh_wp.points, mesh_wp.indices, sources_wp, method="meshlab"
     ).numpy()
     assert np.allclose(distance_wp, distance_pml, rtol=0.0, atol=1e-5 * scale)
-
-    default_wp = od.heat.fast_marching_distance(mesh_wp.points, mesh_wp.indices, sources_wp)
-    assert np.abs(default_wp.numpy() - distance_pml).max() > 1e-3 * scale
 
 
 @pytest.mark.parametrize("n_sources", [1, 3])

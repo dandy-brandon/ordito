@@ -355,26 +355,27 @@ def _mesh_ml(bench_case: BenchCase) -> mm.Mesh:
 @pytest.mark.noparity(
     "potpourri3d",
     reason="D2 another front: geometry-central's fast marching takes a different face update and "
-    "acceptance order. Measured from vertex 0, 9.4 % (sphere_irregular), 0.44 % (saddle_graded) "
-    "and 6.5 % (torus_irregular) of the range at worst from ordito's field, means 1.8 %, 0.002 % "
-    "and 1.5 %; against igl.exact_geodesic potpourri3d itself is 21 %, 2.7 % and 11 % off.",
+    "acceptance order. Measured from vertex 0, 20.8 % (sphere_irregular), 2.6 % (saddle_graded) "
+    "and 11.9 % (torus_irregular) of the range at worst from ordito's field, means 4.9 %, 1.5 % "
+    "and 3.5 %; against igl.exact_geodesic potpourri3d itself is 21 %, 2.7 % and 11 % off.",
 )
 @pytest.mark.noparity(
     "igl",
     reason="D2 the exact polyhedral distance (MMP windows), not a first-order front: ordito's "
-    "field is 12.5 % (sphere_irregular), 2.7 % (saddle_graded) and 6.3 % (torus_irregular) of the "
+    "field is 4.5 % (sphere_irregular), 0.14 % (saddle_graded) and 3.8 % (torus_irregular) of the "
     "range from it at worst, the method's own discretization error.",
 )
 def test_fast_marching_distance(bench_case: BenchCase) -> None:
     """
     The serial single-source fronts, for scale against the heat solvers on the same meshes.
 
-    ordito's row is ``heat.fast_marching_distance``: the fixpoint of the label-correcting front's
-    edge and face updates, reached by relaxing every face in parallel rounds instead of popping a
-    queue (``tests/test_heat.py::test_fast_marching_distance_matches_meshlib``, Class A against
-    meshlib's front uncapped). A round is one face pass and the round count follows the mesh's
-    diameter in edges, so its work is ``n_faces`` times that diameter where a serial front's is
-    ``n log n``: the GPU's width against the extra work is what this row prices.
+    ordito's row is ``heat.fast_marching_distance``: the fixpoint of meshlib's edge and face
+    updates (the circular field from the source), reached by relaxing every face in parallel rounds
+    instead of popping a queue (``tests/test_heat.py::test_fast_marching_distance_matches_meshlib``,
+    Class A against meshlib's front uncapped from one source on well-shaped meshes). A round is one
+    face pass and the round count follows the mesh's diameter in edges, so its work is ``n_faces``
+    times that diameter where a serial front's is ``n log n``: the GPU's width against the extra
+    work is what this row prices.
 
     Three reference rows, three serial fronts: potpourri3d's fast marching solves the local Eikonal
     update per triangle, **libigl's ``exact_geodesic``** propagates the MMP exact windows -- the
@@ -382,8 +383,9 @@ def test_fast_marching_distance(bench_case: BenchCase) -> None:
     is the front ordito reproduces, the only one of the three that is multi-threaded. MeshLab's
     front, which unfolds face pairs, has its own group (``fast_marching_distance_meshlab``), timed
     against ordito's reproduction of it. meshlib runs at its default ``maxVertUpdates`` of 3, the
-    call a user makes; the cap changes the answer (the parity test runs 255) but not the cost
-    (1.00x either way on a jittered ``icosphere(6)`` and ``icosphere(7)``).
+    call a user makes; the cap changes the answer (the parity test runs 255, uncapped in meshlib
+    3.2) but not the cost (255 at 0.95-0.97x the default on a jittered ``icosphere(6)`` and
+    ``(7)``).
 
     **igl is capped at ``sphere_small`` with ``rounds=1``, and the slope says why.** At one source
     with every vertex as a target it rises by well over an order of magnitude per 4x step, so the

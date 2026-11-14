@@ -624,6 +624,11 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # The same tickets for faces: ``hits`` on the nearest-centroid fast path, ``claimed`` the
     # compare-and-swap claims of the tie path, each read only through its atomic's return.
     ("equality", "flag_unmatched_triangles"): frozenset({"hits"}),
+    # The fast-marching start tables: ``fill`` is each row's arrival counter (scratch, read only
+    # through ``atomic_add``'s return), and ``sort_start_rows`` orders each row of ``neighbors``
+    # in place.
+    ("heat", "fill_start_halfedges"): frozenset({"fill"}),
+    ("heat", "sort_start_rows"): frozenset({"neighbors"}),
     ("equality", "claim_matching_triangles"): frozenset({"claimed"}),
     # ``holes``' two DP tables are in place, and they ride inside ``HoleFillTables`` rather than in
     # the signature because their pointers are invariant across the whole span sweep and a launch

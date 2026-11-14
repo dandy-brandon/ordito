@@ -2223,8 +2223,8 @@
  },
  "benchmarks/test_heat.py::test_fast_marching_distance[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 2,
-   "alloc": 4,
+   "launch": 3,
+   "alloc": 5,
    "h2h": 2,
    "readback": 1
   }

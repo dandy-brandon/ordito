@@ -75,7 +75,6 @@ from ordito.kernels.scatter import (
     scatter_add_vector,
 )
 from ordito.kernels.triangles import (
-    corner_triple,
     face_normals_and_area,
     face_unit_gradient,
     face_vertices,
@@ -1202,17 +1201,176 @@ def cover_unit_gradient_divergence(
 # --------------------------------------------------------------------------------------
 
 
+# The front's state is one ``uint64`` key a vertex: its distance's ``float32`` bits above its label,
+# so one ``atomic_min`` keeps the smallest distance and, between equal ones, the lowest label. A
+# label names where the distance comes from, as the reference's ``(source, line end)`` pair:
+# ``[0, n_sources)`` a start point ``s`` (a source ordinal); ``n_sources + h`` the start halfedge
+# ``h`` of the start-edge rows (``s`` to its neighbour ``r``, the distance from the line of that
+# edge); ``n_sources + n_start_halfedges + s`` the linear field near the region of ``s``. An
+# unreached vertex holds ``FRONT_UNREACHED``: an infinite distance, every label bit set.
+FRONT_UNREACHED = wp.uint64(0x7F800000FFFFFFFF)
+
+
+@wp.func
+def front_key(distance: wp.float32, label: wp.int32) -> wp.uint64:
+    # A distance and its label as one key; a non-negative float's bits order as the float does.
+    return (wp.uint64(wp.cast(distance, wp.uint32)) << wp.uint64(32)) | wp.uint64(
+        wp.cast(label, wp.uint32)
+    )
+
+
+@wp.func
+def front_key_distance(key: wp.uint64) -> wp.float32:
+    return wp.cast(wp.uint32(key >> wp.uint64(32)), wp.float32)
+
+
+@wp.func
+def front_key_label(key: wp.uint64) -> wp.int32:
+    return wp.cast(wp.uint32(key & wp.uint64(0xFFFFFFFF)), wp.int32)
+
+
 @wp.kernel
-def seed_front_sources(
-    sources: wp.array[wp.int32], out_labels: wp.array[wp.float32], out_invalid: wp.array[wp.int32]
+def seed_front_source(
+    sources: wp.array[wp.int32], out_keys: wp.array[wp.uint64], out_invalid: wp.array[wp.int32]
 ) -> None:
-    # Distance zero at each source (``out_labels`` filled with ``+inf``, "unreached", by the
-    # caller); an out-of-range source writes nothing and raises ``out_invalid[0]``.
-    t = wp.int32(wp.tid())
-    v = sources[t]
-    if flag_out_of_range(v, out_labels.shape[0], out_invalid):
+    # dim=1, a lone source: start point 0 at distance zero, or ``out_invalid[0]`` raised when it is
+    # out of range.
+    v = sources[0]
+    if flag_out_of_range(v, out_keys.shape[0], out_invalid):
         return
-    out_labels[v] = wp.float32(0.0)
+    out_keys[v] = front_key(wp.float32(0.0), wp.int32(0))
+
+
+@wp.kernel
+def mark_front_sources(
+    sources: wp.array[wp.int32], out_unreached: wp.array[wp.uint64], out_invalid: wp.array[wp.int32]
+) -> None:
+    # Validate each source; an out-of-range one raises ``out_invalid[0]``. ``out_unreached`` only
+    # sizes the range.
+    t = wp.int32(wp.tid())
+    flag_out_of_range(sources[t], out_unreached.shape[0], out_invalid)
+
+
+@wp.kernel
+def seed_front_keys(
+    source_vertex: wp.array[wp.int32],
+    out_keys: wp.array[wp.uint64],
+    out_start_of: wp.array[wp.int32],
+) -> None:
+    # Source ordinal ``s`` (ascending vertex order) at distance zero, as a start point; and the
+    # vertex -> ordinal map the start edges are read through (``-1`` elsewhere).
+    s = wp.int32(wp.tid())
+    v = source_vertex[s]
+    out_keys[v] = front_key(wp.float32(0.0), s)
+    out_start_of[v] = s
+
+
+@wp.func
+def halfedge_representative(mates: wp.array[wp.int32], h: wp.int32) -> wp.bool:
+    # Whether ``h`` speaks for its undirected edge: alone on it, the lower of a pair, or the lowest
+    # of three or more.
+    mate = mates[h]
+    if mate == wp.int32(-1):
+        return True
+    return h <= mate_halfedge(mate)
+
+
+@wp.kernel
+def count_start_halfedges(
+    faces: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    start_of: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
+) -> None:
+    # Each start edge -- a mesh edge whose two ends are sources -- counted once in each end's row.
+    h = wp.int32(wp.tid())
+    if not halfedge_representative(mates, h):
+        return
+    o, d = halfedge_endpoints(faces, h)
+    s0 = start_of[o]
+    s1 = start_of[d]
+    if s0 >= 0 and s1 >= 0 and s0 != s1:
+        wp.atomic_add(out_counts, s0 + 1, 1)
+        wp.atomic_add(out_counts, s1 + 1, 1)
+
+
+@wp.kernel
+def fill_start_halfedges(
+    faces: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    start_of: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    fill: wp.array[wp.int32],
+    out_neighbors: wp.array[wp.int32],
+    out_edges: wp.array2d[wp.int32],
+) -> None:
+    # ``count_start_halfedges``' edges into their rows (arrival order; ``sort_start_rows`` orders
+    # them), and each undirected start edge once as an ``(s0, s1)`` row for the groups.
+    h = wp.int32(wp.tid())
+    if not halfedge_representative(mates, h):
+        return
+    o, d = halfedge_endpoints(faces, h)
+    s0 = start_of[o]
+    s1 = start_of[d]
+    if s0 >= 0 and s1 >= 0 and s0 != s1:
+        out_neighbors[offsets[s0] + wp.atomic_add(fill, s0, 1)] = s1
+        out_neighbors[offsets[s1] + wp.atomic_add(fill, s1, 1)] = s0
+        row = wp.atomic_add(fill, fill.shape[0] - 1, 1)
+        out_edges[row, 0] = s0
+        out_edges[row, 1] = s1
+
+
+@wp.kernel
+def sort_start_rows(
+    offsets: wp.array[wp.int32],
+    neighbors: wp.array[wp.int32],
+    out_halfedge_source: wp.array[wp.int32],
+) -> None:
+    # Each source's start neighbours in ascending order (an insertion sort: a row holds a vertex's
+    # few start neighbours), and each start halfedge's own source.
+    s = wp.int32(wp.tid())
+    start = offsets[s]
+    stop = offsets[s + 1]
+    for i in range(start, stop):
+        out_halfedge_source[i] = s
+        value = neighbors[i]
+        j = i - 1
+        while j >= start and neighbors[j] > value:
+            neighbors[j + 1] = neighbors[j]
+            j -= 1
+        neighbors[j + 1] = value
+
+
+@wp.kernel
+def flag_region_groups(
+    offsets: wp.array[wp.int32], group: wp.array[wp.int32], out_region_group: wp.array[wp.int32]
+) -> None:
+    # A group of sources is a region, not a line, once one of them has more than three start
+    # neighbours (a plain store: every writer stores 1).
+    s = wp.int32(wp.tid())
+    if offsets[s + 1] - offsets[s] > 3:
+        out_region_group[group[s]] = 1
+
+
+@wp.kernel
+def spread_region_flags(
+    group: wp.array[wp.int32], region_group: wp.array[wp.int32], out_region: wp.array[wp.int32]
+) -> None:
+    s = wp.int32(wp.tid())
+    out_region[s] = region_group[group[s]]
+
+
+@wp.kernel
+def opposite_vertices(
+    faces: wp.array[wp.int32], mates: wp.array[wp.int32], out_opposite: wp.array[wp.int32]
+) -> None:
+    # The vertex across each halfedge's edge: the third corner of its mate's face, ``-1`` on a rim
+    # or an edge three or more faces share.
+    h = wp.int32(wp.tid())
+    mate = mates[h]
+    out_opposite[h] = wp.int32(-1)
+    if mate >= 0:
+        out_opposite[h] = faces[halfedge_prev(mate)]
 
 
 @wp.func
@@ -1272,45 +1430,716 @@ def front_triangle_step(b: wp.vec3, c: wp.vec3, vb: wp.float32) -> wp.float32:
 
 
 @wp.func
-def front_corner_label(
-    pa: wp.vec3, pb: wp.vec3, pc: wp.vec3, va: wp.float32, vb: wp.float32, vc: wp.float32
+def front_label_ends(
+    label: wp.int32,
+    n_sources: wp.int32,
+    halfedge_source: wp.array[wp.int32],
+    start_neighbors: wp.array[wp.int32],
+) -> tuple[wp.int32, wp.int32]:
+    # A label as the reference's ``(source, line end)``: ``(s, -1)`` a start point, ``(s, r)`` the
+    # line of start edge ``s``-``r``, ``(s, s)`` the linear field near the region of ``s``.
+    if label < n_sources:
+        return label, wp.int32(-1)
+    h = label - n_sources
+    if h < start_neighbors.shape[0]:
+        return halfedge_source[h], start_neighbors[h]
+    s = h - start_neighbors.shape[0]
+    return s, s
+
+
+@wp.func
+def start_halfedge(
+    s0: wp.int32,
+    s1: wp.int32,
+    start_offsets: wp.array[wp.int32],
+    start_neighbors: wp.array[wp.int32],
+) -> wp.int32:
+    # The start halfedge from ``s0`` to ``s1`` in ``s0``'s sorted row, or ``-1``.
+    lo = start_offsets[s0]
+    hi = start_offsets[s0 + 1]
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if start_neighbors[mid] < s1:
+            lo = mid + 1
+        else:
+            hi = mid
+    if lo < start_offsets[s0 + 1]:
+        if start_neighbors[lo] == s1:
+            return lo
+    return wp.int32(-1)
+
+
+@wp.func
+def front_label_of(
+    s0: wp.int32,
+    s1: wp.int32,
+    n_sources: wp.int32,
+    start_offsets: wp.array[wp.int32],
+    start_neighbors: wp.array[wp.int32],
+) -> wp.int32:
+    # ``front_label_ends``' inverse; a line end ``s1`` is always a start neighbour of ``s0``.
+    if s1 < 0:
+        return s0
+    if s1 == s0:
+        return n_sources + start_neighbors.shape[0] + s0
+    return n_sources + start_halfedge(s0, s1, start_offsets, start_neighbors)
+
+
+@wp.func
+def unit_by_reciprocal(d: wp.vec3) -> wp.vec3:
+    # ``d`` scaled by ``1 / |d|``, the reference's normalization (a reciprocal, then three
+    # products), zero for a zero vector.
+    norm = wp.sqrt(wp.length_sq(d))
+    if norm <= wp.float32(0.0):
+        return wp.vec3(0.0, 0.0, 0.0)
+    return (wp.float32(1.0) / norm) * d
+
+
+@wp.func
+def point_source_distance(
+    a: wp.vec3, b: wp.vec3, c: wp.vec3, da: wp.float64, db: wp.float64, check_cross: wp.int32
+) -> wp.float64:
+    # The distance to ``c`` from a point source on the far side of line ``ab`` from ``c``, at ``da``
+    # from ``a`` and ``db`` from ``b``: the source placed in the face's unfolded plane by the two
+    # distances, in ``float64``. ``-1`` when the three do not place it (or, with ``check_cross``,
+    # when its straight path to ``c`` misses the open segment ``ab``). Coordinates are scaled by
+    # ``|ab|``: ``a = (0, 0)``, ``b = (e2, 0)``, ``c = (cx, cy)``, the source ``(sx, sy)``.
+    ab = to_vec3d(b) - to_vec3d(a)
+    ac = to_vec3d(c) - to_vec3d(a)
+    e2 = wp.dot(ab, ab)
+    cx = wp.dot(ac, ab)
+    cy2 = e2 * wp.dot(ac, ac) - cx * cx
+    if not (e2 > wp.float64(0.0) and cy2 > wp.float64(0.0)):
+        return wp.float64(-1.0)
+    sx = ((da - db) * (da + db) + e2) / wp.float64(2.0)
+    sy2 = da * da * e2 - sx * sx
+    if not (sy2 > wp.float64(-1e-6) * (e2 * e2)):
+        return wp.float64(-1.0)
+    cy = wp.sqrt(cy2)
+    sy = -wp.sqrt(wp.max(sy2, wp.float64(0.0)))
+    t = (cx - sx) * sy
+    h = sy - cy
+    if check_cross != 0:
+        if not (sx * h + t < wp.float64(0.0) and (sx - e2) * h + t > wp.float64(0.0)):
+            return wp.float64(-1.0)
+    return wp.sqrt(((cx - sx) * (cx - sx) + (cy - sy) * (cy - sy)) / e2)
+
+
+@wp.func
+def linear_field_at(
+    a: wp.vec3, va: wp.float32, b: wp.vec3, vb: wp.float32, c: wp.vec3
 ) -> wp.float32:
-    # The smallest label the front offers corner ``c`` of one face from its other corners ``a`` and
-    # ``b`` (in the face's order after ``c``), never above ``vc``: along each edge, and across the
-    # face from the nearer of the two once both are reached. On a tie ``a`` is the origin.
-    best = vc
-    if va < wp.inf:
-        best = wp.min(best, front_past(va, front_edge_step(pa, pc)))
-    if vb < wp.inf:
-        best = wp.min(best, front_past(vb, front_edge_step(pb, pc)))
-        if va < wp.inf:
-            if vb < va:
-                step = front_triangle_step(pa - pb, pc - pb, va - vb)
-                if step >= wp.float32(0.0):
-                    best = wp.min(best, front_past(vb, step))
+    # The plane wave through ``a`` and ``b`` (values ``va``, ``vb``) carried to ``c``, or ``-1``.
+    if vb < va:
+        step = front_triangle_step(a - b, c - b, va - vb)
+        if step < wp.float32(0.0):
+            return wp.float32(-1.0)
+        return vb + step
+    step = front_triangle_step(b - a, c - a, vb - va)
+    if step < wp.float32(0.0):
+        return wp.float32(-1.0)
+    return va + step
+
+
+@wp.func
+def distance_to_start(
+    v: wp.int32,
+    s0: wp.int32,
+    s1: wp.int32,
+    vertices: wp.array[wp.vec3],
+    keys: wp.array[wp.uint64],
+    source_vertex: wp.array[wp.int32],
+    halfedge_source: wp.array[wp.int32],
+    start_neighbors: wp.array[wp.int32],
+) -> wp.float64:
+    # Reached vertex ``v``'s distance to start point ``s0`` (``s1 = -1``) or to the line of start
+    # edge ``s0``-``s1``, from its own distance and label, or ``-1`` where that label does not
+    # tell: equal for the same start, and between a start edge and its end point the right
+    # triangle of ``v``'s offset along the edge.
+    key = keys[v]
+    vs, ve = front_label_ends(
+        front_key_label(key), source_vertex.shape[0], halfedge_source, start_neighbors
+    )
+    dv = wp.float64(front_key_distance(key))
+    if (ve >= 0) == (s1 >= 0):
+        if (vs == s0 and ve == s1) or (vs == s1 and ve == s0):
+            return dv
+        return wp.float64(-1.0)
+    s = s0
+    r = s1
+    if s1 >= 0:
+        if vs != s0 and vs != s1:
+            return wp.float64(-1.0)
+        s = vs
+        r = wp.where(vs == s0, s1, s0)
+    else:
+        if vs != s0 and ve != s0:
+            return wp.float64(-1.0)
+        r = wp.where(vs == s0, ve, vs)
+    ps = vertices[source_vertex[s]]
+    t = wp.float64(wp.dot(vertices[v] - ps, unit_by_reciprocal(vertices[source_vertex[r]] - ps)))
+    if s1 >= 0:
+        return wp.sqrt(wp.max(wp.float64(0.0), dv * dv - t * t))
+    return wp.sqrt(dv * dv + t * t)
+
+
+@wp.func
+def nearest_start_edge(
+    p: wp.vec3,
+    s0: wp.int32,
+    s1: wp.int32,
+    vertices: wp.array[wp.vec3],
+    source_vertex: wp.array[wp.int32],
+    start_offsets: wp.array[wp.int32],
+    start_neighbors: wp.array[wp.int32],
+) -> tuple[wp.int32, wp.int32]:
+    # Given ``p`` near the line through start points ``s0`` and ``s1`` of one group: that start
+    # edge if ``p`` projects inside it; otherwise the start edge beyond its end that ``p``
+    # projects into, walking at most 16 edges along the line, or the end point (``s1 = -1``) where
+    # none does. Start neighbours are tried in ascending order, the last one ``p`` lies beyond
+    # leading the walk.
+    p0 = vertices[source_vertex[s0]]
+    d = vertices[source_vertex[s1]] - p0
+    t = wp.dot(p - p0, d)
+    if t >= wp.float32(0.0) and t <= wp.length_sq(d):
+        return s0, s1
+    s = wp.where(t < wp.float32(0.0), s0, s1)
+    other = wp.where(t < wp.float32(0.0), s1, s0)
+    for step in range(16):
+        ps = vertices[source_vertex[s]]
+        next_start = wp.int32(-1)
+        for h in range(start_offsets[s], start_offsets[s + 1]):
+            r = start_neighbors[h]
+            if r != other:
+                dr = vertices[source_vertex[r]] - ps
+                tr = wp.dot(p - ps, dr)
+                if tr >= wp.float32(0.0):
+                    if tr <= wp.length_sq(dr):
+                        return s, r
+                    next_start = r
+        if next_start < 0:
+            return s, wp.int32(-1)
+        if step == 15:
+            return s, next_start
+        other = s
+        s = next_start
+    return s, wp.int32(-1)
+
+
+@wp.func
+def distance_at_corner(
+    pa: wp.vec3,
+    pb: wp.vec3,
+    pc: wp.vec3,
+    s0: wp.int32,
+    s1: wp.int32,
+    da: wp.float64,
+    db: wp.float64,
+    check_cross: wp.int32,
+    vertices: wp.array[wp.vec3],
+    source_vertex: wp.array[wp.int32],
+    start_offsets: wp.array[wp.int32],
+    start_neighbors: wp.array[wp.int32],
+) -> wp.float64:
+    # The distance to ``c`` from start point ``s0`` (``s1 = -1``) or the line of start edge
+    # ``s0``-``s1``, given ``a``'s and ``b``'s distances to it; ``-1`` where the circular field is
+    # not placed or ``c`` is not beside that start edge.
+    if s1 < 0:
+        return point_source_distance(pa, pb, pc, da, db, check_cross)
+    step = wp.float32(-1.0)
+    if db < da:
+        step = front_triangle_step(pa - pb, pc - pb, wp.float32(wp.abs(db - da)))
+    else:
+        step = front_triangle_step(pb - pa, pc - pa, wp.float32(wp.abs(db - da)))
+    if step < wp.float32(0.0):
+        return wp.float64(-1.0)
+    e0, e1 = nearest_start_edge(pc, s0, s1, vertices, source_vertex, start_offsets, start_neighbors)
+    if e0 != s0 or e1 != s1:
+        return wp.float64(-1.0)
+    return wp.min(da, db) + wp.float64(step)
+
+
+@wp.func
+def straight_distance_to_start(
+    p: wp.vec3,
+    s0: wp.int32,
+    s1: wp.int32,
+    infinite_line: wp.int32,
+    vertices: wp.array[wp.vec3],
+    source_vertex: wp.array[wp.int32],
+) -> wp.float64:
+    # The straight-line distance from ``p`` to start point ``s0`` or start edge ``s0``-``s1`` (or
+    # its whole line), never above the distance along the surface.
+    p0 = vertices[source_vertex[s0]]
+    if s1 < 0:
+        return wp.float64(wp.sqrt(wp.length_sq(p - p0)))
+    p1 = vertices[source_vertex[s1]]
+    d = p1 - p0
+    if infinite_line == 0:
+        dt = wp.dot(p - p0, d)
+        closest = p0
+        if dt > wp.float32(0.0):
+            if dt >= wp.length_sq(d):
+                closest = p1
             else:
-                step = front_triangle_step(pb - pa, pc - pa, vb - va)
-                if step >= wp.float32(0.0):
-                    best = wp.min(best, front_past(va, step))
+                ratio = dt / wp.length_sq(d)
+                closest = (wp.float32(1.0) - ratio) * p0 + ratio * p1
+        return wp.float64(wp.sqrt(wp.length_sq(p - closest)))
+    if not (wp.length_sq(d) > wp.float32(0.0)):
+        return wp.float64(wp.sqrt(wp.length_sq(p - p0)))
+    param = wp.dot(d, p - p0) / wp.length_sq(d)
+    return wp.float64(wp.sqrt(wp.length_sq(p - (p0 + param * d))))
+
+
+@wp.func
+def between_groups_offer(
+    a: wp.int32,
+    b: wp.int32,
+    c: wp.int32,
+    w: wp.int32,
+    va: wp.float32,
+    vertices: wp.array[wp.vec3],
+    keys: wp.array[wp.uint64],
+    source_vertex: wp.array[wp.int32],
+    start_offsets: wp.array[wp.int32],
+    start_neighbors: wp.array[wp.int32],
+    halfedge_source: wp.array[wp.int32],
+    region: wp.array[wp.int32],
+) -> wp.uint64:
+    # Corner ``c`` where ``a`` and ``b`` (``va <= vb``) were reached from starts of different
+    # groups: the straight path from a start to ``c`` can cross ``ab`` near the seam, so each
+    # start's field is carried to the other corner through the face across ``ab`` (corner ``w``),
+    # and to ``c`` from there, never below the straight-line distance. Where a region's front
+    # meets another, the plane wave through ``a`` and ``b``. ``FRONT_UNREACHED`` when nothing is
+    # offered.
+    n_sources = source_vertex.shape[0]
+    has_w = False
+    if w >= 0:
+        has_w = front_key_distance(keys[w]) < wp.inf
+    best = wp.float32(wp.inf)
+    best_label = wp.int32(-1)
+    vc_now = front_key_distance(keys[c])
+    pc = vertices[c]
+    for side in range(2):
+        x = wp.where(side == 0, a, b)
+        y = wp.where(side == 0, b, a)
+        if has_w:
+            label_x = front_key_label(keys[x])
+            s0, s1 = front_label_ends(label_x, n_sources, halfedge_source, start_neighbors)
+            if region[s0] == 0:
+                min_vc = straight_distance_to_start(pc, s0, s1, 0, vertices, source_vertex)
+                if min_vc < wp.float64(wp.min(best, vc_now)):
+                    dx = wp.float64(front_key_distance(keys[x]))
+                    dw = distance_to_start(
+                        w, s0, s1, vertices, keys, source_vertex, halfedge_source, start_neighbors
+                    )
+                    if dw >= wp.float64(0.0):
+                        vy = distance_at_corner(
+                            vertices[x],
+                            vertices[w],
+                            vertices[y],
+                            s0,
+                            s1,
+                            dx,
+                            dw,
+                            0,
+                            vertices,
+                            source_vertex,
+                            start_offsets,
+                            start_neighbors,
+                        )
+                        if vy >= wp.float64(0.0):
+                            dy = wp.max(
+                                vy,
+                                straight_distance_to_start(
+                                    vertices[y], s0, s1, 0, vertices, source_vertex
+                                ),
+                            )
+                            vc = distance_at_corner(
+                                vertices[x],
+                                vertices[y],
+                                pc,
+                                s0,
+                                s1,
+                                dx,
+                                dy,
+                                1,
+                                vertices,
+                                source_vertex,
+                                start_offsets,
+                                start_neighbors,
+                            )
+                            if vc >= wp.float64(0.0):
+                                v = wp.float32(wp.max(vc, min_vc))
+                                if s1 >= 0:
+                                    v = wp.max(v, next_up(va))
+                                if v < best:
+                                    best = v
+                                    best_label = label_x
+    if best == wp.inf:
+        sa, _ea = front_label_ends(
+            front_key_label(keys[a]), n_sources, halfedge_source, start_neighbors
+        )
+        sb, _eb = front_label_ends(
+            front_key_label(keys[b]), n_sources, halfedge_source, start_neighbors
+        )
+        if region[sa] != 0 or region[sb] != 0:
+            vb = front_key_distance(keys[b])
+            field = linear_field_at(vertices[a], va, vertices[b], vb, pc)
+            if field >= wp.float32(0.0):
+                best = wp.max(field, next_up(va))
+                s = wp.where(region[sa] != 0, sa, sb)
+                best_label = front_label_of(s, s, n_sources, start_offsets, start_neighbors)
+    if best < wp.inf:
+        return front_key(best, best_label)
+    return FRONT_UNREACHED
+
+
+@wp.func
+def near_starts_try(
+    a: wp.int32,
+    b: wp.int32,
+    s0: wp.int32,
+    s1: wp.int32,
+    va: wp.float32,
+    pc: wp.vec3,
+    vertices: wp.array[wp.vec3],
+    keys: wp.array[wp.uint64],
+    source_vertex: wp.array[wp.int32],
+    start_offsets: wp.array[wp.int32],
+    start_neighbors: wp.array[wp.int32],
+    halfedge_source: wp.array[wp.int32],
+) -> wp.float32:
+    # One start's offer to ``c`` from ``a`` and ``b``'s distances to it, or ``inf``.
+    da = distance_to_start(
+        a, s0, s1, vertices, keys, source_vertex, halfedge_source, start_neighbors
+    )
+    if da < wp.float64(0.0):
+        return wp.float32(wp.inf)
+    db = distance_to_start(
+        b, s0, s1, vertices, keys, source_vertex, halfedge_source, start_neighbors
+    )
+    if db < wp.float64(0.0):
+        return wp.float32(wp.inf)
+    dc = distance_at_corner(
+        vertices[a],
+        vertices[b],
+        pc,
+        s0,
+        s1,
+        da,
+        db,
+        1,
+        vertices,
+        source_vertex,
+        start_offsets,
+        start_neighbors,
+    )
+    if dc < wp.float64(0.0):
+        return wp.float32(wp.inf)
+    vc = wp.float32(dc)
+    if s1 >= 0:
+        vc = wp.max(vc, next_up(va))
+    return vc
+
+
+@wp.func
+def near_starts_offer(
+    a: wp.int32,
+    b: wp.int32,
+    c: wp.int32,
+    w: wp.int32,
+    va: wp.float32,
+    vb: wp.float32,
+    vertices: wp.array[wp.vec3],
+    keys: wp.array[wp.uint64],
+    source_vertex: wp.array[wp.int32],
+    start_offsets: wp.array[wp.int32],
+    start_neighbors: wp.array[wp.int32],
+    halfedge_source: wp.array[wp.int32],
+    region: wp.array[wp.int32],
+) -> wp.uint64:
+    # Corner ``c`` where ``a`` and ``b`` (``va <= vb``) were reached from starts of one group, not
+    # both from one start point: near a region the plane wave through them; near a line each is
+    # labelled with its nearest start point or start edge, and ``c`` takes the circular field of
+    # a point or the linear field of an edge, the start nearest ``c`` if neither of theirs reaches
+    # it, and the plane wave, floored by the straight line, if that does not either.
+    n_sources = source_vertex.shape[0]
+    pa = vertices[a]
+    pb = vertices[b]
+    pc = vertices[c]
+    label_a = front_key_label(keys[a])
+    label_b = front_key_label(keys[b])
+    source, end_a = front_label_ends(label_a, n_sources, halfedge_source, start_neighbors)
+    source_b, end_b = front_label_ends(label_b, n_sources, halfedge_source, start_neighbors)
+    plane = linear_field_at(pa, va, pb, vb, pc)
+    plane_wave = wp.float32(wp.inf)
+    if plane >= wp.float32(0.0):
+        plane_wave = wp.max(plane, next_up(va))
+    if region[source] != 0:
+        if plane_wave < wp.inf:
+            return front_key(
+                plane_wave,
+                front_label_of(source, source, n_sources, start_offsets, start_neighbors),
+            )
+        return FRONT_UNREACHED
+    if end_a < 0 and end_b < 0:
+        if start_halfedge(source, source_b, start_offsets, start_neighbors) < 0:
+            return between_groups_offer(
+                a,
+                b,
+                c,
+                w,
+                va,
+                vertices,
+                keys,
+                source_vertex,
+                start_offsets,
+                start_neighbors,
+                halfedge_source,
+                region,
+            )
+    best = near_starts_try(
+        a,
+        b,
+        source,
+        end_a,
+        va,
+        pc,
+        vertices,
+        keys,
+        source_vertex,
+        start_offsets,
+        start_neighbors,
+        halfedge_source,
+    )
+    best_label = label_a
+    if not (source_b == source and end_b == end_a) and not (
+        end_a >= 0 and source_b == end_a and end_b == source
+    ):
+        vc = near_starts_try(
+            a,
+            b,
+            source_b,
+            end_b,
+            va,
+            pc,
+            vertices,
+            keys,
+            source_vertex,
+            start_offsets,
+            start_neighbors,
+            halfedge_source,
+        )
+        if vc < best:
+            best = vc
+            best_label = label_b
+    if end_a < 0 and end_b < 0:
+        vc = near_starts_try(
+            a,
+            b,
+            source,
+            source_b,
+            va,
+            pc,
+            vertices,
+            keys,
+            source_vertex,
+            start_offsets,
+            start_neighbors,
+            halfedge_source,
+        )
+        if vc < best:
+            best = vc
+            best_label = front_label_of(source, source_b, n_sources, start_offsets, start_neighbors)
+    if best < wp.inf:
+        return front_key(best, best_label)
+    s0 = source
+    s1 = source_b
+    if end_a >= 0:
+        s1 = end_a
+    elif end_b >= 0:
+        s0 = source_b
+        s1 = end_b
+    s0, s1 = nearest_start_edge(pc, s0, s1, vertices, source_vertex, start_offsets, start_neighbors)
+    vc = near_starts_try(
+        a,
+        b,
+        s0,
+        s1,
+        va,
+        pc,
+        vertices,
+        keys,
+        source_vertex,
+        start_offsets,
+        start_neighbors,
+        halfedge_source,
+    )
+    label = front_label_of(s0, s1, n_sources, start_offsets, start_neighbors)
+    if vc < wp.inf:
+        return front_key(vc, label)
+    if plane_wave < wp.inf:
+        min_vc = wp.min(
+            straight_distance_to_start(pc, source, end_a, 1, vertices, source_vertex),
+            straight_distance_to_start(pc, source_b, end_b, 1, vertices, source_vertex),
+        )
+        return front_key(wp.max(plane_wave, wp.float32(min_vc)), label)
+    return FRONT_UNREACHED
+
+
+@wp.func
+def triangle_offer(
+    a: wp.int32,
+    b: wp.int32,
+    c: wp.int32,
+    w: wp.int32,
+    vertices: wp.array[wp.vec3],
+    keys: wp.array[wp.uint64],
+    source_vertex: wp.array[wp.int32],
+    start_offsets: wp.array[wp.int32],
+    start_neighbors: wp.array[wp.int32],
+    halfedge_source: wp.array[wp.int32],
+    group: wp.array[wp.int32],
+    region: wp.array[wp.int32],
+) -> wp.uint64:
+    # Corner ``c``'s offer across its face from the other two, ``a`` then ``b`` in the face's order
+    # (``w`` the corner across ``ab``), both reached: the nearer of them first, nothing when ``c``
+    # is already no farther; one start point's circular field when both came straight from it,
+    # otherwise the seam between groups or the starts of one group.
+    va = front_key_distance(keys[a])
+    vb = front_key_distance(keys[b])
+    if vb < va:
+        t = a
+        a = b
+        b = t
+        tv = va
+        va = vb
+        vb = tv
+    if front_key_distance(keys[c]) <= va:
+        return FRONT_UNREACHED
+    n_sources = source_vertex.shape[0]
+    label_a = front_key_label(keys[a])
+    label_b = front_key_label(keys[b])
+    if label_a == label_b and label_a < n_sources:
+        dc = point_source_distance(
+            vertices[a], vertices[b], vertices[c], wp.float64(va), wp.float64(vb), 1
+        )
+        if dc >= wp.float64(0.0):
+            return front_key(wp.float32(dc), label_a)
+        return FRONT_UNREACHED
+    sa, _ea = front_label_ends(label_a, n_sources, halfedge_source, start_neighbors)
+    sb, _eb = front_label_ends(label_b, n_sources, halfedge_source, start_neighbors)
+    if group[sa] != group[sb]:
+        return between_groups_offer(
+            a,
+            b,
+            c,
+            w,
+            va,
+            vertices,
+            keys,
+            source_vertex,
+            start_offsets,
+            start_neighbors,
+            halfedge_source,
+            region,
+        )
+    return near_starts_offer(
+        a,
+        b,
+        c,
+        w,
+        va,
+        vb,
+        vertices,
+        keys,
+        source_vertex,
+        start_offsets,
+        start_neighbors,
+        halfedge_source,
+        region,
+    )
+
+
+@wp.func
+def front_corner_offer(
+    f: wp.int32,
+    k: wp.int32,
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    opposite: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    source_vertex: wp.array[wp.int32],
+    start_offsets: wp.array[wp.int32],
+    start_neighbors: wp.array[wp.int32],
+    halfedge_source: wp.array[wp.int32],
+    group: wp.array[wp.int32],
+    region: wp.array[wp.int32],
+) -> wp.uint64:
+    # The smallest key face ``f`` offers its corner ``k`` from the other two, ``a`` and ``b`` in
+    # the face's order after it: along each edge (the origin's label, the distance strictly past
+    # it), and across the face once both are reached.
+    c = faces[3 * f + k]
+    a = faces[3 * f + (k + 1) % 3]
+    b = faces[3 * f + (k + 2) % 3]
+    pc = vertices[c]
+    key_a = keys[a]
+    key_b = keys[b]
+    va = front_key_distance(key_a)
+    vb = front_key_distance(key_b)
+    best = FRONT_UNREACHED
+    if va < wp.inf:
+        best = wp.min(
+            best,
+            front_key(front_past(va, front_edge_step(vertices[a], pc)), front_key_label(key_a)),
+        )
+    if vb < wp.inf:
+        best = wp.min(
+            best,
+            front_key(front_past(vb, front_edge_step(vertices[b], pc)), front_key_label(key_b)),
+        )
+        if va < wp.inf:
+            w = wp.int32(-1)
+            if opposite.shape[0] > 0:
+                w = opposite[3 * f + (k + 1) % 3]
+            best = wp.min(
+                best,
+                triangle_offer(
+                    a,
+                    b,
+                    c,
+                    w,
+                    vertices,
+                    keys,
+                    source_vertex,
+                    start_offsets,
+                    start_neighbors,
+                    halfedge_source,
+                    group,
+                    region,
+                ),
+            )
     return best
 
 
 @wp.func
-def lower_front_label(
-    labels: wp.array[wp.float32],
+def lower_front_key(
+    keys: wp.array[wp.uint64],
     v: wp.int32,
-    offer: wp.float32,
-    out_labels: wp.array[wp.float32],
+    offer: wp.uint64,
+    out_keys: wp.array[wp.uint64],
     out_state: wp.array[wp.int32],
 ) -> None:
-    # Commit an offer below the round's label of ``v``: an ``atomic_min``, exact and independent of
-    # arrival order, and the round's progress flag (a plain store; every writer stores ``1``).
-    # ``out_labels[v]`` is first lowered to the round's own label, which it may still be above.
-    label = labels[v]
-    if label < out_labels[v]:
-        wp.atomic_min(out_labels, v, label)
-    if offer < label:
-        wp.atomic_min(out_labels, v, offer)
+    # Commit an offer whose distance is below the round's distance of ``v`` (a smaller label at
+    # the same distance is no offer): an ``atomic_min``, exact and independent of arrival order,
+    # and the round's progress flag (a plain store; every writer stores ``1``). ``out_keys[v]``
+    # is first lowered to the round's own key, which it may still be above.
+    key = keys[v]
+    if key < out_keys[v]:
+        wp.atomic_min(out_keys, v, key)
+    if front_key_distance(offer) < front_key_distance(key):
+        wp.atomic_min(out_keys, v, offer)
         out_state[LOOP_PROGRESS] = 1
 
 
@@ -1319,70 +2148,148 @@ def fast_marching_face(
     f: wp.int32,
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    labels: wp.array[wp.float32],
-    out_labels: wp.array[wp.float32],
+    opposite: wp.array[wp.int32],
+    source_vertex: wp.array[wp.int32],
+    start_offsets: wp.array[wp.int32],
+    start_neighbors: wp.array[wp.int32],
+    halfedge_source: wp.array[wp.int32],
+    group: wp.array[wp.int32],
+    region: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    out_keys: wp.array[wp.uint64],
     out_state: wp.array[wp.int32],
 ) -> None:
     # One thread of ``fast_marching_pass``: face ``f``'s offers to its three corners.
-    i0, i1, i2 = corner_triple(faces, f)
-    p0 = vertices[i0]
-    p1 = vertices[i1]
-    p2 = vertices[i2]
-    v0 = labels[i0]
-    v1 = labels[i1]
-    v2 = labels[i2]
-    lower_front_label(labels, i0, front_corner_label(p1, p2, p0, v1, v2, v0), out_labels, out_state)
-    lower_front_label(labels, i1, front_corner_label(p2, p0, p1, v2, v0, v1), out_labels, out_state)
-    lower_front_label(labels, i2, front_corner_label(p0, p1, p2, v0, v1, v2), out_labels, out_state)
+    for k in range(3):
+        offer = front_corner_offer(
+            f,
+            k,
+            vertices,
+            faces,
+            opposite,
+            keys,
+            source_vertex,
+            start_offsets,
+            start_neighbors,
+            halfedge_source,
+            group,
+            region,
+        )
+        lower_front_key(keys, faces[3 * f + k], offer, out_keys, out_state)
 
 
 @wp.kernel
 def fast_marching_pass(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    labels: wp.array[wp.float32],
-    out_labels: wp.array[wp.float32],
+    opposite: wp.array[wp.int32],
+    source_vertex: wp.array[wp.int32],
+    start_offsets: wp.array[wp.int32],
+    start_neighbors: wp.array[wp.int32],
+    halfedge_source: wp.array[wp.int32],
+    group: wp.array[wp.int32],
+    region: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    out_keys: wp.array[wp.uint64],
     out_state: wp.array[wp.int32],
 ) -> None:
-    # One face's offers to its three corners from the round's ``labels``, lowered into
-    # ``out_labels``, which holds the round before ``labels`` on entry (the wrapper alternates
-    # the two buffers): labels only fall, so lowering each corner to ``labels`` first
-    # (``lower_front_label``) makes the result ``labels`` lowered by the offers, a vertex on no
-    # face never changing. Every offer reads the previous round only, so a round is a pure
-    # function of ``labels``, the same on both devices and under any interleaving.
+    # One face's offers to its three corners from the round's ``keys``, lowered into ``out_keys``,
+    # which holds the round before ``keys`` on entry (the wrapper alternates the two buffers):
+    # keys only fall, so lowering each corner to ``keys`` first (``lower_front_key``) makes the
+    # result ``keys`` lowered by the offers, a vertex on no face never changing. Every offer
+    # reads the previous round only, so a round is a pure function of ``keys``, the same on both
+    # devices and under any interleaving.
     #
-    # The serial label-correcting front pops the nearest vertex and offers its neighbours the
-    # same two updates, the triangle one only where the edge one did not lower the neighbour;
-    # run uncapped, its answer is this fixpoint (the triangle offer it skips is never below the
-    # edge offer it made instead). A serial front that caps the times a vertex is re-opened
-    # answers differently, by the order its queue happened to pop in.
+    # The reference front pops the nearest vertex and offers its neighbours along each edge, and
+    # across each face only where the edge did not lower the neighbour, reading its state as it
+    # then stands; its updates read the labels too, so its answer follows the order its queue
+    # pops in (and the order it walks each vertex's ring). This is the fixpoint of the same
+    # updates with every one offered each round: equal on well-shaped meshes, a few per cent of
+    # the range lower where needles and obtuse faces reject updates, and as close to the exact
+    # geodesic distance.
     #
     # Declined (2026-10-30): choosing the direction here by the round's parity, so a captured
     # body is one pass rather than two: 0.97-1.07x the copy-back it replaced on CUDA
     # (``icosphere(4)`` to ``(7)``), where two passes a body ran 0.75-0.82x.
-    fast_marching_face(wp.int32(wp.tid()), vertices, faces, labels, out_labels, out_state)
+    fast_marching_face(
+        wp.int32(wp.tid()),
+        vertices,
+        faces,
+        opposite,
+        source_vertex,
+        start_offsets,
+        start_neighbors,
+        halfedge_source,
+        group,
+        region,
+        keys,
+        out_keys,
+        out_state,
+    )
 
 
 @wp.kernel
 def fast_marching_rounds_serial(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
+    opposite: wp.array[wp.int32],
+    source_vertex: wp.array[wp.int32],
+    start_offsets: wp.array[wp.int32],
+    start_neighbors: wp.array[wp.int32],
+    halfedge_source: wp.array[wp.int32],
+    group: wp.array[wp.int32],
+    region: wp.array[wp.int32],
     max_rounds: wp.int32,
-    labels: wp.array[wp.float32],
-    relaxed: wp.array[wp.float32],
+    keys: wp.array[wp.uint64],
+    relaxed: wp.array[wp.uint64],
     state: wp.array[wp.int32],
 ) -> None:
     # dim=1, the CPU device's round loop: each round's two ``fast_marching_pass`` launches and its
     # ``loop_advance``, as one thread's loops in the order a device running each launch's threads
-    # one after another runs them, until the state's condition stops the loop -- so ``labels``
-    # (the answer) and ``relaxed`` come out as the launched loop leaves them.
+    # one after another runs them, until the state's condition stops the loop -- so ``keys`` (the
+    # answer) and ``relaxed`` come out as the launched loop leaves them.
     n_faces = faces.shape[0] // 3
     while state[LOOP_CONDITION] != 0:
         for f in range(n_faces):
-            fast_marching_face(f, vertices, faces, labels, relaxed, state)
+            fast_marching_face(
+                f,
+                vertices,
+                faces,
+                opposite,
+                source_vertex,
+                start_offsets,
+                start_neighbors,
+                halfedge_source,
+                group,
+                region,
+                keys,
+                relaxed,
+                state,
+            )
         for f in range(n_faces):
-            fast_marching_face(f, vertices, faces, relaxed, labels, state)
+            fast_marching_face(
+                f,
+                vertices,
+                faces,
+                opposite,
+                source_vertex,
+                start_offsets,
+                start_neighbors,
+                halfedge_source,
+                group,
+                region,
+                relaxed,
+                keys,
+                state,
+            )
         advance_round_loop(max_rounds, state)
+
+
+@wp.kernel
+def front_distances(keys: wp.array[wp.uint64], out_distances: wp.array[wp.float32]) -> None:
+    # The fixpoint's distances, ``inf`` where no start was reached.
+    v = wp.int32(wp.tid())
+    out_distances[v] = front_key_distance(keys[v])
 
 
 # The unfolding front (``method="meshlab"``) runs in ``float64``, as the reference does: its tests

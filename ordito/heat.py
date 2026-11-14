@@ -63,7 +63,13 @@ import ordito as od
 import ordito.linalg as twl
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import read_scalar, read_values, require_same_device, run_device_loop
+from ordito._common import (
+    read_scalar,
+    read_values,
+    require_same_device,
+    run_device_loop,
+    scan_count_checked,
+)
 from ordito.cholesky import SparseCholesky, held_nbytes
 from ordito.config import is_deterministic
 from ordito.constants import TILE_1D, TOLERANCE_MOLLIFY
@@ -610,23 +616,31 @@ def fast_marching_distance(
 
     Each vertex's distance is the smallest a front from the sources offers it: along an edge from a
     reached neighbour, ``d(a) + |a c|``, or across a face whose other two corners ``a`` and ``b``
-    are reached, as the planar wave through them (the first-order Eikonal update of fast marching)
-    where that wave enters the face between ``a c`` and ``b c``. The answer is the fixpoint of the
-    two rules, which a serial front reaches by popping vertices nearest first and the call reaches
-    by relaxing every face against the previous round's distances until nothing moves.
+    are reached. Every vertex also records where its distance came from, and the face update
+    follows it: from one source point it is the straight line from the virtual source that ``a``'s
+    and ``b``'s distances place in the face's unfolded plane, where that line crosses ``a b``.
+    Sources joined by mesh edges make lines and regions: near a line a vertex takes its distance
+    from the nearest source point or edge of the line, near a region from the plane wave through
+    ``a`` and ``b``. Where the fronts of separate sources meet, each front is carried across the
+    seam through the face beyond ``a b``, never below the straight-line distance to its source.
 
     Unlike [`heat_geodesic`][ordito.heat.heat_geodesic] there is no linear solve and no diffusion
-    time: the field is a first-order approximation of the geodesic distance, within about a per
-    cent on well-shaped meshes and coarser across needles and obtuse faces, where the face update
-    is rejected and the front falls back to edges. The default front runs in ``float32``.
+    time. The field approximates the geodesic distance of the mesh's own surface: on well-shaped
+    meshes a median relative error of a few 1e-3 or better, coarser across needles and obtuse
+    faces, where face updates are rejected and the front falls back to edges, and a little short
+    of the true distance where many fronts meet (the far side of a sphere from one source). The
+    default front runs in ``float32``, its face updates from a point in ``float64``.
 
     ``method`` names whose rules the front reproduces:
 
-    - ``"meshlib"``: that library's surface-distance front, with its edge offer, its face update
-      and the update's rejection tests, and its rule that an offer always lands strictly past its
-      origin. Allowed to re-open a vertex 255 times, its serial front reaches this fixpoint and the
-      two agree to rounding. At its default of three re-openings a vertex is left where its queue
-      happened to stop, up to a few per cent of the range on irregular meshes.
+    - ``"meshlib"``: that library's surface-distance front, with its edge offer, its face updates
+      and their rejection tests, and its rule that an offer always lands strictly past its origin.
+      The library pops vertices nearest first and offers a face only where an edge did not lower
+      the neighbour, reading each corner's distance and origin as they then stand, so its answer
+      can follow the order it visits vertices in. The call reaches the fixpoint of the same updates
+      with every one offered each round. From one source on a well-shaped mesh the two agree to
+      rounding; from several sources, a line or a region, or across needles, they part by up to a
+      few per cent of the range, the call no further from the exact geodesic distance.
     - ``"meshlab"``: that library's geodesic front (its per-vertex geodesic distance filters). An
       edge offer as above, and across a face the straight line from the virtual source that the
       two corners' distances place in the face's unfolded plane, used only where the corners were
@@ -665,14 +679,16 @@ def fast_marching_distance(
 
     Notes
     -----
-    ``"meshlib"``: one face pass a round, each a pure function of the previous round's distances,
-    so the answer is the same on both devices and under any thread order. A round carries the
-    front about one ring further, so the number of rounds is about the mesh's diameter in edges,
-    plus the rounds a face update takes to undercut an edge path already laid. ``"meshlab"``: a
-    step pops every vertex the queue would pop before anything near it, so the number of steps
-    follows the front's length as well as the mesh's diameter, and each step costs about one
-    vertex's offers; on a mesh of a few ten thousand vertices this is slower than the default
-    front's rounds. On CUDA either loop runs as one conditional graph, with no readback.
+    ``"meshlib"``: one face pass a round, each a pure function of the previous round's distances
+    and origins, so the answer is the same under any thread order, and on both devices up to
+    rounding. A round carries the front about one ring further, so the number of rounds is about
+    the mesh's diameter in edges, plus the rounds a face update takes to undercut an edge path
+    already laid, which grow where the fronts of several sources creep along their seam. Several
+    sources cost one readback before the rounds, to size the table of mesh edges between them.
+    ``"meshlab"``: a step pops every vertex the queue would pop before anything near it, so the
+    number of steps follows the front's length as well as the mesh's diameter, and each step costs
+    about one vertex's offers; on a mesh of a few ten thousand vertices this is slower than the
+    default front's rounds. On CUDA either loop runs as one conditional graph, with no readback.
 
     See Also
     --------
@@ -681,8 +697,9 @@ def fast_marching_distance(
 
     Examples
     --------
-    Pole to pole on a unit sphere the true geodesic distance is ``pi``; the front is within a
-    per cent of it:
+    Pole to pole on a unit icosphere the faceted surface's own geodesic distance is 3.13 (``pi``
+    on the sphere it approximates); the far pole, where every front meets, is the front's worst
+    point:
 
     ```python
     import numpy as np
@@ -695,7 +712,7 @@ def fast_marching_distance(
     north, south = int(np.argmax(heights)), int(np.argmin(heights))
     distance = od.heat.fast_marching_distance(vertices, faces, wp.array([north], dtype=wp.int32))
     print(distance.numpy()[north])  # 0.0
-    print(f"{distance.numpy()[south]:.2f}")  # 3.11
+    print(f"{distance.numpy()[south]:.2f}")  # 3.08
     ```
     """
     require_same_device(vertices=vertices, faces=faces, sources=sources)
@@ -706,22 +723,161 @@ def fast_marching_distance(
     device = vertices.device
     n_vertices = vertices.size
     n_faces = faces.size // 3
-    labels = _launch.full(n_vertices, math.inf, dtype=wp.float32, device=device)
-    if sources.size == 0:
-        return labels
-    invalid = _launch.zeros(1, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_heat.seed_front_sources,
-        dim=sources.size,
-        inputs=[sources],
-        outputs=[labels, invalid],
-        device=device,
+    keys = _launch.full(
+        n_vertices, int(kernel_heat.FRONT_UNREACHED), dtype=wp.uint64, device=device
     )
-    _require_indices_in_range(invalid, n_vertices, "fast_marching_distance", "sources")
-    if n_faces == 0:
-        return labels
+    distances = _launch.empty(n_vertices, dtype=wp.float32, device=device)
+    if sources.size > 0:
+        invalid = _launch.zeros(1, dtype=wp.int32, device=device)
+        # A lone source is validated and seeded in one launch; several are validated before their
+        # sort, and seeded with the tables that join them (``_FrontStarts``).
+        _launch.launch(
+            kernel_heat.seed_front_source if sources.size == 1 else kernel_heat.mark_front_sources,
+            dim=1 if sources.size == 1 else sources.size,
+            inputs=[sources],
+            outputs=[keys, invalid],
+            device=device,
+        )
+        _require_indices_in_range(invalid, n_vertices, "fast_marching_distance", "sources")
+        starts = _FrontStarts(faces, sources, n_vertices, keys)
+        if n_faces > 0:
+            _march_front(vertices, faces, starts, keys)
+    if n_vertices > 0:
+        _launch.launch(
+            kernel_heat.front_distances,
+            dim=n_vertices,
+            inputs=[keys],
+            outputs=[distances],
+            device=device,
+        )
+    return distances
 
-    relaxed = _launch.clone(labels)
+
+class _FrontStarts:
+    """
+    The sources of ``fast_marching_distance(method="meshlib")`` and how they join, seeded.
+
+    Each source vertex is a start, numbered in ascending vertex order. Two sources joined by a mesh
+    edge are a start edge; start edges join their sources into groups (a line, or a region once a
+    source has more than three start neighbours), and the front reads its labels through them.
+    With one source there is nothing to join and every table is empty.
+    """
+
+    def __init__(
+        self,
+        faces: wp.array[wp.int32],
+        sources: wp.array[wp.int32],
+        n_vertices: int,
+        keys: wp.array[wp.uint64],
+    ) -> None:
+        device = faces.device
+        empty = _launch.empty(0, dtype=wp.int32, device=device)
+        self.opposite = empty
+        self.start_offsets = empty
+        self.start_neighbors = empty
+        self.halfedge_source = empty
+        self.group = empty
+        self.region = empty
+        self.source_vertex = sources
+        if sources.size == 1:
+            # Seeded by ``kernels/heat.seed_front_source``; nothing to join.
+            return
+        self.source_vertex = od.grouping.unique_1d(sources, max_value=n_vertices)
+        n_sources = self.source_vertex.size
+        start_of = _launch.full(n_vertices, -1, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_heat.seed_front_keys,
+            dim=n_sources,
+            inputs=[self.source_vertex],
+            outputs=[keys, start_of],
+            device=device,
+        )
+        if n_sources == 1 or faces.size == 0:
+            return
+        mates = od.halfedge.halfedge_mates(faces, n_vertices)
+        n_halfedges = faces.size
+        self.opposite = _launch.empty(n_halfedges, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_heat.opposite_vertices,
+            dim=n_halfedges,
+            inputs=[faces, mates],
+            outputs=[self.opposite],
+            device=device,
+        )
+        counts = _launch.zeros(n_sources + 2, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_heat.count_start_halfedges,
+            dim=n_halfedges,
+            inputs=[faces, mates, start_of],
+            outputs=[counts],
+            device=device,
+        )
+        # The start halfedges size the rows: one readback (twice the start edges).
+        n_start = scan_count_checked(counts, "fast_marching_distance's start edges")
+        self.start_offsets = _launch.view(counts, 0, n_sources + 1)
+        self.start_neighbors = _launch.empty(n_start, dtype=wp.int32, device=device)
+        self.halfedge_source = _launch.empty(n_start, dtype=wp.int32, device=device)
+        edges = odt.empty_2d((n_start // 2, 2), wp.int32, device=device)
+        fill = _launch.zeros(n_sources + 1, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_heat.fill_start_halfedges,
+            dim=n_halfedges,
+            inputs=[faces, mates, start_of, self.start_offsets, fill],
+            outputs=[self.start_neighbors, edges],
+            device=device,
+        )
+        _launch.launch(
+            kernel_heat.sort_start_rows,
+            dim=n_sources,
+            inputs=[self.start_offsets, self.start_neighbors],
+            outputs=[self.halfedge_source],
+            device=device,
+        )
+        self.group = od.graph.connected_component_labels_from_edges(
+            edges, n_sources, validate=False
+        )
+        region_group = _launch.zeros(n_sources, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_heat.flag_region_groups,
+            dim=n_sources,
+            inputs=[self.start_offsets, self.group],
+            outputs=[region_group],
+            device=device,
+        )
+        self.region = _launch.empty(n_sources, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_heat.spread_region_flags,
+            dim=n_sources,
+            inputs=[self.group, region_group],
+            outputs=[self.region],
+            device=device,
+        )
+
+    def tables(self) -> list[wp.array[wp.int32]]:
+        """Return the front's read-only start tables, in the round kernels' argument order."""
+        return [
+            self.opposite,
+            self.source_vertex,
+            self.start_offsets,
+            self.start_neighbors,
+            self.halfedge_source,
+            self.group,
+            self.region,
+        ]
+
+
+def _march_front(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    starts: _FrontStarts,
+    keys: wp.array[wp.uint64],
+) -> None:
+    # The front's rounds to their fixpoint, left in ``keys``.
+    device = vertices.device
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
+    relaxed = _launch.clone(keys)
+    tables = starts.tables()
     # The shared round-loop word (``kernels/array.py``), its condition seeded non-zero because
     # ``wp.capture_while`` reads it before the first round. Each pair of rounds lowers at least one
     # distance or ends the loop; the cap of ``n_vertices`` pairs is insurance for a captured loop,
@@ -734,27 +890,26 @@ def fast_marching_distance(
         _launch.launch(
             kernel_heat.fast_marching_rounds_serial,
             dim=1,
-            inputs=[vertices, faces, max_rounds, labels, relaxed, state],
+            inputs=[vertices, faces, *tables, max_rounds, keys, relaxed, state],
             device=device,
         )
-        return labels
+        return
 
     def front_rounds() -> None:
-        # Two rounds, ``labels`` into ``relaxed`` and back: a captured body replays the pointers it
+        # Two rounds, ``keys`` into ``relaxed`` and back: a captured body replays the pointers it
         # recorded, so the buffers cannot swap names between bodies, and the second round leaves
-        # the answer in ``labels``. A round past the fixpoint changes nothing.
-        for source, target in ((labels, relaxed), (relaxed, labels)) * _FRONT_ROUND_PAIRS:
+        # the answer in ``keys``. A round past the fixpoint changes nothing.
+        for source, target in ((keys, relaxed), (relaxed, keys)) * _FRONT_ROUND_PAIRS:
             _launch.launch(
                 kernel_heat.fast_marching_pass,
                 dim=n_faces,
-                inputs=[vertices, faces, source],
+                inputs=[vertices, faces, *tables, source],
                 outputs=[target, state],
                 device=device,
             )
         _launch.launch(kernel_array.loop_advance, dim=1, inputs=[max_rounds, state], device=device)
 
     run_device_loop(device, odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), front_rounds)
-    return labels
 
 
 def _unfolding_front(
