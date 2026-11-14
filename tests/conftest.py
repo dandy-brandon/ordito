@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ctypes
 import os
+import sys
 
 # Cap the reference libraries' thread pools **before** NumPy is imported, because OpenBLAS reads
 # these at library load and never again. One thread per core is not a mild pessimisation on a
@@ -109,6 +111,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    _keep_none_alive()
     # Warp reads the flag at each launch, so setting it here -- before any test launches -- is
     # enough. On the CPU device ``wp.launch_tiled`` otherwise runs one lane per block, which hides
     # every kernel whose lanes partition work by anything but ``wp.block_dim()`` and keeps
@@ -147,6 +150,22 @@ def pytest_configure(config: pytest.Config) -> None:
         "device or the process. --skip-device-agnostic deselects it unless it uses the device "
         "fixture (test_docstring_examples_run does), so a second device pass does not repeat it.",
     )
+
+
+def _keep_none_alive() -> None:
+    """
+    Pin ``None``'s reference count out of reach, as CPython 3.12 makes it immortal.
+
+    MeshLib 3.2's bindings drop one reference to ``None`` on every constructor call
+    (``Vector3f(...)``, ``VertId(i)``, ``FaceId(i)``; attribute reads and iteration do not). Before
+    Python 3.12 ``None`` is an ordinary object, so a few hundred thousand constructions -- a loop
+    over a scan mesh's points, or a whole module of small ones in one process -- free it, and the
+    interpreter aborts with ``none_dealloc``. Adding ``2**40`` to the count, once a session, leaves
+    the leak nowhere to go.
+    """
+    if sys.version_info >= (3, 12):
+        return
+    ctypes.c_ssize_t.from_address(id(None)).value += 1 << 40
 
 
 def _selected_devices(config: pytest.Config) -> list[str]:

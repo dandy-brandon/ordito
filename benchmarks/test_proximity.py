@@ -76,7 +76,14 @@ from scipy.spatial import Delaunay
 
 import ordito as od
 import ordito.typing as odt
-from conftest import BenchCase, BenchLibrary, mesh_ml_from_numpy, skip_larger_than
+from conftest import (
+    BenchCase,
+    BenchLibrary,
+    mesh_ml_from_numpy,
+    skip_larger_than,
+    std_points_ml,
+    vert_coords_ml,
+)
 
 if TYPE_CHECKING:
     from typing_extensions import Buffer
@@ -121,17 +128,14 @@ def _query_points_ml(bench_case: BenchCase, count: int = _N_QUERIES) -> mm.std_v
     """
     Build the query cloud as a MeshLib vector, cached per ``(mesh, count)``.
 
-    Every batched MeshLib query here takes ``std_vector_Vector3_float``, and filling it is a Python
-    loop over ``count`` ``Vector3f`` constructions -- 10 000 of them, which is comparable to the
-    query itself. It is the query's *input*, so it is cached outside the timed callable exactly as
-    the ``wp.array`` and ``o3d.core.Tensor`` clouds are.
+    ``FastWindingNumber.calcFromVector`` takes ``std_vector_Vector3_float``
+    ([`std_points_ml`][conftest.std_points_ml]); the projector takes ``VertCoords`` instead
+    ([`vert_coords_ml`][conftest.vert_coords_ml]). It is the query's *input*, so it is cached
+    outside the timed callable exactly as the ``wp.array`` and ``o3d.core.Tensor`` clouds are.
     """
     key = (bench_case.mesh_name, "meshlib", count)
     if key not in _ml_query_cache:
-        points_ml = mm.std_vector_Vector3_float()
-        for point_np in _query_points_np(bench_case, count):
-            points_ml.append(mm.Vector3f(*point_np.tolist()))
-        _ml_query_cache[key] = points_ml
+        _ml_query_cache[key] = std_points_ml(_query_points_np(bench_case, count))
     return _ml_query_cache[key]
 
 
@@ -302,7 +306,7 @@ def test_closest_point_on_mesh(bench_case: BenchCase) -> None:
         return
     if bench_case.kind == "meshlib":
         mesh_ml = bench_case.new_mesh_ml()  # must outlive the projector: it holds a raw pointer
-        points_ml = _query_points_ml(bench_case)
+        points_ml = vert_coords_ml(_query_points_np(bench_case))
         projector_ml = mm.PointsToMeshProjector()
         projector_ml.updateMeshData(mesh_ml)
 

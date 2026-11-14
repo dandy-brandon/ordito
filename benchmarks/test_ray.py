@@ -77,7 +77,7 @@ import warp as wp
 from meshlib import mrmeshpy as mm
 
 import ordito as od
-from conftest import BenchCase
+from conftest import BenchCase, std_points_ml
 
 if TYPE_CHECKING:
     import open3d as o3d
@@ -140,15 +140,11 @@ def _rays_wp(bench_case: BenchCase) -> tuple[wp.array[wp.vec3], wp.array[wp.vec3
 def _rays_ml(
     bench_case: BenchCase,
 ) -> tuple[mm.std_vector_Vector3_float, mm.std_vector_Vector3_float]:
-    """Build the rays as MeshLib vectors once: the fill is a 10 000-iteration Python loop."""
+    """Build the rays as MeshLib vectors once: they are the query's input."""
     if bench_case.mesh_name not in _ray_ml_cache:
         origins_np, directions_np = _rays_np(bench_case)
-        origins_ml = mm.std_vector_Vector3_float()
-        directions_ml = mm.std_vector_Vector3_float()
-        for origin_np, direction_np in zip(origins_np, directions_np, strict=True):
-            origins_ml.append(mm.Vector3f(*origin_np.tolist()))
-            directions_ml.append(mm.Vector3f(*direction_np.tolist()))
-        _ray_ml_cache[bench_case.mesh_name] = (origins_ml, directions_ml)
+        rays_ml = (std_points_ml(origins_np), std_points_ml(directions_np))
+        _ray_ml_cache[bench_case.mesh_name] = rays_ml
     return _ray_ml_cache[bench_case.mesh_name]
 
 

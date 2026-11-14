@@ -58,10 +58,12 @@ Flags
 
 from __future__ import annotations
 
+import ctypes
 import functools
 import json
 import operator
 import os
+import sys
 import time
 import warnings
 from collections import defaultdict
@@ -529,24 +531,69 @@ def mesh_ml_from_numpy(vertices: np.ndarray, faces: np.ndarray) -> mm.Mesh:
 
 
 def face_bitset_ml(mask_np: np.ndarray) -> mm.FaceBitSet:
+    """Load a dense face mask into a ``FaceBitSet`` through [`bitset_ml`][conftest.bitset_ml]."""
+    from meshlib import mrmeshpy as mm
+
+    return mm.FaceBitSet(bitset_ml(mask_np))
+
+
+def vert_coords_ml(points_np: np.ndarray) -> mm.VertCoords:
     """
-    Load a dense face mask into a ``FaceBitSet`` through the packed blocks, not a per-face loop.
+    Load ``(n, 3)`` points into MeshLib's ``VertCoords`` in one vectorized copy.
 
-    The benchmark-side twin of ``tests.conversions.numpy_to_meshlib_bitset`` (the two suites do not
-    import each other). Three details that are each a silent wrong answer on their own:
-    ``BitSet.fromBlocks`` takes ``uint64`` blocks and rejects a NumPy array (pass ``.tolist()``),
-    ``bitorder="little"`` is not NumPy's default and is not optional, and ``fromBlocks`` rounds the
-    size up to whole 64-bit blocks so the domain has to be restored afterwards.
+    What MeshLib 3.2's batched projections (``PointsToMeshProjector.findProjections``,
+    ``PointsProjector.findProjections``) take, in place of the ``std_vector_Vector3_float`` a
+    per-point Python loop filled before.
+    """
+    from meshlib import mrmeshnumpy as mn
 
-    Orders of magnitude faster than the per-face ``set()`` loop it replaces.
+    # ``Buffer``: see mesh_ml_from_numpy.
+    return mn.fromNumpyArray(cast("Buffer", np.ascontiguousarray(points_np, dtype=np.float32)))
+
+
+def std_points_ml(points_np: np.ndarray) -> mm.std_vector_Vector3_float:
+    """
+    Load ``(n, 3)`` points into a ``std_vector_Vector3_float`` in one vectorized copy.
+
+    What MeshLib's older batched calls (``accumulatePoints``, ``multiRayMeshIntersect``,
+    ``FastWindingNumber.calcFromVector``, a ``Polyline3`` contour) take. Filled point by point it
+    was a Python loop of ``Vector3f`` constructions, each of which leaks a reference to ``None`` in
+    MeshLib 3.2 ([`pytest_configure`][conftest.pytest_configure]); this copies the ``VertCoords``
+    [`vert_coords_ml`][conftest.vert_coords_ml] builds instead.
     """
     from meshlib import mrmeshpy as mm
 
-    packed_np = np.packbits(np.ascontiguousarray(mask_np, dtype=bool), bitorder="little")
+    return mm.std_vector_Vector3_float(vert_coords_ml(points_np).vec)
+
+
+def bitset_ml(flags_np: np.ndarray) -> mm.BitSet:
+    """
+    Load a flat ``bool`` array into a ``BitSet`` through the packed blocks, not a per-bit loop.
+
+    The benchmark-side twin of ``tests.conversions.numpy_to_meshlib_bitset`` (the two suites do not
+    import each other). Three details that are each a silent wrong answer or a failure on their
+    own: ``BitSet.fromBlocks`` takes MeshLib's bound ``std::vector<uint64_t>`` (MeshLib 3.2 stopped
+    converting a Python list; the type's name is platform-dependent), ``bitorder="little"`` is not
+    NumPy's default and is not optional, and ``fromBlocks`` rounds the size up to whole 64-bit
+    blocks so the domain has to be restored afterwards. Flatten ``flags_np`` in the target
+    element's own order first; wrap the result in the typed set the call wants.
+
+    Orders of magnitude faster than the per-element ``set()`` loop it replaces.
+    """
+    from meshlib import mrmeshpy as mm
+
+    blocks_type = (
+        mm.std_vector_unsigned_long_Allocator_unsigned_long
+        if hasattr(mm, "std_vector_unsigned_long_Allocator_unsigned_long")
+        # The macOS and Windows name, absent from the Linux stubs.
+        else mm.std_vector_unsigned_long_long_Allocator_unsigned_long_long  # pyright: ignore[reportAttributeAccessIssue]
+    )
+    flat_np = np.ascontiguousarray(flags_np, dtype=bool).ravel()
+    packed_np = np.packbits(flat_np, bitorder="little")
     packed_np = np.pad(packed_np, (0, (-packed_np.size) % 8)).view(np.uint64)
-    bitset_ml = mm.BitSet.fromBlocks(packed_np.tolist())
-    bitset_ml.resize(int(mask_np.size))
-    return mm.FaceBitSet(bitset_ml)
+    bitset = mm.BitSet.fromBlocks(blocks_type(packed_np.tolist()))
+    bitset.resize(int(flat_np.size))
+    return bitset
 
 
 def _new_mesh_ml(name: str) -> mm.Mesh:
@@ -854,6 +901,7 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    _keep_none_alive()
     config.addinivalue_line(
         "markers",
         "benchlibs(*kinds): library kinds "
@@ -905,6 +953,22 @@ def pytest_configure(config: pytest.Config) -> None:
     od.config.set_deterministic(False)
     global _size_caps  # read by skip_larger_than, which gets no config
     _size_caps = not config.getoption("--no-size-caps")
+
+
+def _keep_none_alive() -> None:
+    """
+    Pin ``None``'s reference count out of reach, as CPython 3.12 makes it immortal.
+
+    MeshLib 3.2's bindings drop one reference to ``None`` on every constructor call
+    (``Vector3f(...)``, ``VertId(i)``, ``FaceId(i)``; attribute reads and iteration do not). Before
+    Python 3.12 ``None`` is an ordinary object, so a few hundred thousand constructions -- a loop
+    over a scan mesh's points, or a whole module of small ones in one process -- free it, and the
+    interpreter aborts with ``none_dealloc``. Adding ``2**40`` to the count, once a session, leaves
+    the leak nowhere to go.
+    """
+    if sys.version_info >= (3, 12):
+        return
+    ctypes.c_ssize_t.from_address(id(None)).value += 1 << 40
 
 
 def pytest_benchmark_update_machine_info(

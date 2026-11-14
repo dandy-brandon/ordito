@@ -16,6 +16,7 @@ from ordito.kernels import polyline as kernel_polyline
 from tests.comparisons import lexsort_rows
 from tests.conversions import (
     meshlib_to_trimesh,
+    numpy_to_meshlib_point_vector,
     points_to_warp,
     points_to_warp_uv,
     polyline_to_pyvista,
@@ -50,10 +51,7 @@ def _polyline_ml(pts_np: np.ndarray) -> mm.Polyline3:
 
 def _contour_ml(pts_np: np.ndarray) -> mm.std_vector_Vector3_float:
     """Build the same points as the bare contour ``calcLength`` takes."""
-    contour_ml = mm.std_vector_Vector3_float()
-    for point_np in np.asarray(pts_np, dtype=np.float64):
-        contour_ml.append(mm.Vector3f(*point_np.tolist()))
-    return contour_ml
+    return numpy_to_meshlib_point_vector(np.asarray(pts_np, dtype=np.float64))
 
 
 def _ordered_ml(polyline_ml: mm.Polyline3) -> np.ndarray:

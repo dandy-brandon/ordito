@@ -215,7 +215,7 @@ def test_ambient_occlusion_matches_meshlib_sky_view_factor(
         mm.computeSkyViewFactor(
             mesh_ml,
             # The stub names ``VertCoords``; pybind converts this vector implicitly.
-            mn.fromNumpyArray(cast("Buffer", origins_np)),  # pyright: ignore[reportArgumentType]
+            mn.fromNumpyArray(cast("Buffer", origins_np)),
             valid_ml,
             patches_ml,
         )

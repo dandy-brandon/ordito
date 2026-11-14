@@ -55,7 +55,7 @@ from meshlib import mrmeshpy as mm
 from pytorch3d.loss import point_mesh_distance as p3d_point_mesh_distance
 
 import ordito as od
-from conftest import BenchCase, points_torch_from_numpy, skip_larger_than
+from conftest import BenchCase, points_torch_from_numpy, skip_larger_than, vert_coords_ml
 
 _TRANSLATION_FRACTION = 0.05
 
@@ -513,9 +513,7 @@ def test_chamfer_points_to_mesh(bench_case: BenchCase) -> None:
         mesh_ml = bench_case.new_mesh_ml()
         projector_ml = mm.PointsToMeshProjector()
         projector_ml.updateMeshData(mesh_ml)
-        points_ml = mm.std_vector_Vector3_float()
-        for point in cloud_np:
-            points_ml.append(mm.Vector3f(float(point[0]), float(point[1]), float(point[2])))
+        points_ml = vert_coords_ml(cloud_np)
         warmup_ml = mm.std_vector_MeshProjectionResult()
         projector_ml.findProjections(
             warmup_ml, points_ml, mm.AffineXf3f(), mm.AffineXf3f(), _MESHLIB_FLT_MAX, 0.0

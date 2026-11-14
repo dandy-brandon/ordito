@@ -174,7 +174,7 @@ def _cloud_ml(bench_case: BenchCase) -> mm.PointCloud:
         cloud_ml = mn.pointCloudFromPoints(
             cast("Buffer", np.ascontiguousarray(bench_case.vertices_np, dtype=np.float64))
         )
-        cloud_ml.normals = mn.fromNumpyArray(  # pyright: ignore[reportAttributeAccessIssue]
+        cloud_ml.normals = mn.fromNumpyArray(
             cast(
                 "Buffer", np.ascontiguousarray(np.asarray(mesh_tm.vertex_normals), dtype=np.float64)
             )

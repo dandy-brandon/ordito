@@ -11,6 +11,7 @@ from meshlib import mrmeshpy as mm
 
 import ordito as od
 from tests.conversions import (
+    numpy_to_meshlib_point_vector,
     points_to_pyvista,
     points_to_warp,
     trimesh_to_meshlib,
@@ -138,11 +139,8 @@ def _multi_ray_intersect_ml(
     and ``multiRayMeshIntersect`` fills only the ones already holding a container. A result read
     without this step is all ``None`` with no error raised anywhere.
     """
-    origins_ml = mm.std_vector_Vector3_float()
-    directions_ml = mm.std_vector_Vector3_float()
-    for origin_np, direction_np in zip(origins_np, directions_np, strict=True):
-        origins_ml.append(mm.Vector3f(*np.asarray(origin_np, dtype=float).tolist()))
-        directions_ml.append(mm.Vector3f(*np.asarray(direction_np, dtype=float).tolist()))
+    origins_ml = numpy_to_meshlib_point_vector(np.asarray(origins_np, dtype=np.float64))
+    directions_ml = numpy_to_meshlib_point_vector(np.asarray(directions_np, dtype=np.float64))
 
     result_ml = mm.MultiRayMeshIntersectResult()
     result_ml.isectFaces = mm.std_vector_Id_FaceTag()

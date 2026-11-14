@@ -32,6 +32,7 @@ from ordito import _common
 from ordito.kernels import metrics as kernel_metrics
 from tests.comparisons import assert_nonconstant
 from tests.conversions import (
+    numpy_to_meshlib_coords,
     numpy_to_warp,
     points_to_open3d,
     points_to_pymeshlab,
@@ -578,9 +579,7 @@ def test_chamfer_points_to_mesh_forward_matches_meshlib(
     mesh_ml = trimesh_to_meshlib(mesh_tm)  # must outlive the projector: it stores a raw pointer
     projector_ml = mm.PointsToMeshProjector()
     projector_ml.updateMeshData(mesh_ml)
-    points_ml = mm.std_vector_Vector3_float()
-    for point in points_np:
-        points_ml.append(mm.Vector3f(float(point[0]), float(point[1]), float(point[2])))
+    points_ml = numpy_to_meshlib_coords(points_np)
     results_ml = mm.std_vector_MeshProjectionResult()
     projector_ml.findProjections(
         results_ml, points_ml, mm.AffineXf3f(), mm.AffineXf3f(), _MESHLIB_FLT_MAX, 0.0

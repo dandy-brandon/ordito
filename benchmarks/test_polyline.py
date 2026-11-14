@@ -98,7 +98,7 @@ import warp as wp
 from meshlib import mrmeshpy as mm
 
 import ordito as od
-from conftest import BenchCase, BenchLibrary, skip_larger_than
+from conftest import BenchCase, BenchLibrary, skip_larger_than, std_points_ml
 
 # MeshLib expresses several gates as *absolute* lengths whose defaults assume a unit-scale input
 # (``DecimatePolylineSettings.maxError`` is 1e-3). Passing this instead disables the gate outright,
@@ -226,10 +226,7 @@ def _contour_ml(bench_case: BenchCase) -> mm.std_vector_Vector3_float:
     """
     key = (bench_case.mesh_name, "contour")
     if key not in _contour_ml_cache:
-        contour_ml = mm.std_vector_Vector3_float()
-        for point_np in _polyline_np(bench_case):
-            contour_ml.append(mm.Vector3f(*point_np.tolist()))
-        _contour_ml_cache[key] = contour_ml
+        _contour_ml_cache[key] = std_points_ml(_polyline_np(bench_case))
     return _contour_ml_cache[key]
 
 

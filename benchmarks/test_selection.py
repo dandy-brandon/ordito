@@ -60,7 +60,7 @@ from meshlib import mrmeshpy as mm
 
 import ordito as od
 import ordito.typing as odt
-from conftest import BenchCase
+from conftest import BenchCase, face_bitset_ml
 
 if TYPE_CHECKING:
     from typing_extensions import Buffer
@@ -455,23 +455,6 @@ def _cap_region(bench_case: BenchCase) -> tuple[wp.array[wp.bool], np.ndarray]:
     return _region_cache[key]
 
 
-def _face_mask_ml(mask_np: np.ndarray) -> mm.FaceBitSet:
-    """
-    Load a dense face mask into a MeshLib ``FaceBitSet``, through the packed blocks.
-
-    The benchmark-side twin of ``tests.conversions.numpy_to_meshlib_bitset`` (the two suites do not
-    import each other), and the same reason it is one ``np.packbits`` rather than a per-face
-    ``set()`` loop: ``BitSet.fromBlocks`` takes ``uint64`` blocks, ``bitorder="little"`` is not
-    NumPy's default and is not optional, and ``fromBlocks`` rounds up to whole blocks so the size is
-    trimmed back after. It is ``setup`` work either way -- the region is an input.
-    """
-    packed_np = np.packbits(mask_np, bitorder="little")
-    packed_np = np.pad(packed_np, (0, (-packed_np.size) % 8)).view(np.uint64)
-    bitset_ml = mm.BitSet.fromBlocks(packed_np.tolist())
-    bitset_ml.resize(int(mask_np.size))
-    return mm.FaceBitSet(bitset_ml)
-
-
 @pytest.mark.benchmark(group="delete_region_keep_boundary")
 @pytest.mark.benchmeshes("sphere_med")
 @pytest.mark.benchlibs("ordito", "meshlib")
@@ -498,7 +481,7 @@ def test_delete_region_keep_boundary(bench_case: BenchCase) -> None:
     """
     if bench_case.kind == "meshlib":
         _mask_wp, mask_np = _cap_region(bench_case)
-        region_ml = _face_mask_ml(mask_np)
+        region_ml = face_bitset_ml(mask_np)
 
         loops_ml = bench_case.run(
             lambda mesh: mm.delRegionKeepBd(mesh, region_ml, False), setup=bench_case.new_mesh_ml

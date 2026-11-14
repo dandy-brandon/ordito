@@ -547,6 +547,29 @@ def points_to_meshlib(points_np: np.ndarray, normals_np: np.ndarray | None = Non
     return mn.pointCloudFromPoints(points_ml, cast("Buffer", np.ascontiguousarray(normals_np)))
 
 
+def numpy_to_meshlib_coords(points_np: np.ndarray) -> mm.VertCoords:
+    """
+    Load ``(n, 3)`` points into MeshLib's ``VertCoords`` in one vectorized copy.
+
+    What MeshLib 3.2's batched projections (``PointsToMeshProjector.findProjections``,
+    ``PointsProjector.findProjections``) take, in place of a ``std_vector_Vector3_float``.
+    """
+    # ``Buffer``: see numpy_to_meshlib.
+    return mn.fromNumpyArray(cast("Buffer", np.ascontiguousarray(points_np, dtype=np.float32)))
+
+
+def numpy_to_meshlib_point_vector(points_np: np.ndarray) -> mm.std_vector_Vector3_float:
+    """
+    Load ``(n, 3)`` points into a ``std_vector_Vector3_float`` in one vectorized copy.
+
+    What MeshLib's older batched calls (``accumulatePoints``, ``multiRayMeshIntersect``, a
+    ``Polyline3`` contour) take, copied from the ``VertCoords`` of
+    [`numpy_to_meshlib_coords`][tests.conversions.numpy_to_meshlib_coords] rather than filled by a
+    loop of ``Vector3f`` constructions, each of which leaks a reference to ``None`` in MeshLib 3.2.
+    """
+    return mm.std_vector_Vector3_float(numpy_to_meshlib_coords(points_np).vec)
+
+
 def meshlib_triangulation_to_numpy(triangulation_ml: mm.Triangulation) -> np.ndarray:
     """
     Read a ``meshlib.mrmeshpy.Triangulation`` (a vector of vertex triples) as ``(n, 3)`` ``int32``.
@@ -554,10 +577,10 @@ def meshlib_triangulation_to_numpy(triangulation_ml: mm.Triangulation) -> np.nda
     The binding exposes no array view of it, only the vector's data pointer; each triple is three
     ``int32`` vertex ids, packed.
     """
-    n = triangulation_ml.vec_.size()
+    n = triangulation_ml.vec.size()
     if n == 0:
         return np.zeros((0, 3), dtype=np.int32)
-    buffer = (ctypes.c_int32 * (3 * n)).from_address(triangulation_ml.vec_.data_pointer())
+    buffer = (ctypes.c_int32 * (3 * n)).from_address(triangulation_ml.vec.data_pointer())
     return np.ctypeslib.as_array(buffer).reshape(n, 3).copy()
 
 
@@ -574,7 +597,7 @@ def meshlib_local_triangulations_to_numpy(
     The records are read through the vector's data pointer (``border`` and ``firstNei``, two
     32-bit words each); the neighbour buffer only iterates.
     """
-    records_ml = fans_ml.fanRecords.vec_
+    records_ml = fans_ml.fanRecords.vec
     n_records = records_ml.size()
     buffer = (ctypes.c_int32 * (2 * n_records)).from_address(records_ml.data_pointer())
     records = np.ctypeslib.as_array(buffer).reshape(n_records, 2).copy()
@@ -604,9 +627,19 @@ def numpy_to_meshlib_triangulation(rows_np: np.ndarray) -> mm.Triangulation:
     triangulation_ml = mm.Triangulation()
     triangulation_ml.resize(rows.size // 3)
     if rows.size > 0:
-        buffer = (ctypes.c_int32 * rows.size).from_address(triangulation_ml.vec_.data_pointer())
+        buffer = (ctypes.c_int32 * rows.size).from_address(triangulation_ml.vec.data_pointer())
         np.ctypeslib.as_array(buffer)[:] = rows
     return triangulation_ml
+
+
+# MeshLib's bound ``std::vector<uint64_t>``, the type ``BitSet.fromBlocks`` takes: ``unsigned long``
+# on Linux, ``unsigned long long`` on macOS and Windows.
+_MESHLIB_BLOCKS = (
+    mm.std_vector_unsigned_long_Allocator_unsigned_long
+    if hasattr(mm, "std_vector_unsigned_long_Allocator_unsigned_long")
+    # The macOS and Windows name, absent from the Linux stubs.
+    else mm.std_vector_unsigned_long_long_Allocator_unsigned_long_long  # pyright: ignore[reportAttributeAccessIssue]
+)
 
 
 def numpy_to_meshlib_bitset(flags_np: np.ndarray) -> mm.BitSet:
@@ -620,11 +653,10 @@ def numpy_to_meshlib_bitset(flags_np: np.ndarray) -> mm.BitSet:
     difference between a benchmarkable reference and one whose row would time the load.
 
     Two mechanical points. ``bitorder="little"`` is not optional: the block's bit *i* is index
-    ``i``, which is NumPy's non-default order. And ``fromBlocks`` rejects a NumPy ``uint64`` array
-    with ``TypeError`` but takes a Python list, which also sidesteps the bound vector type's
-    platform-dependent name (``std_vector_unsigned_long`` on Linux, ``_long_long`` on macOS) -- then
-    rounds the size up to whole 64-bit blocks, so the ``resize`` trims the padding back to the
-    caller's domain.
+    ``i``, which is NumPy's non-default order. And ``fromBlocks`` takes MeshLib's bound
+    ``std::vector<uint64_t>`` (MeshLib 3.2 stopped converting a Python list to it), whose name is
+    platform-dependent (``_MESHLIB_BLOCKS``) -- then rounds the size up to whole 64-bit blocks, so
+    the ``resize`` trims the padding back to the caller's domain.
 
     ``flags_np`` must already be flattened in the target element's own order; for a
     ``VoxelBitSet`` addressed by a ``VolumeIndexer`` that is ``x`` fastest, i.e.
@@ -639,7 +671,7 @@ def numpy_to_meshlib_bitset(flags_np: np.ndarray) -> mm.BitSet:
     flat_np = np.ascontiguousarray(flags_np, dtype=bool).ravel()
     packed_np = np.packbits(flat_np, bitorder="little")
     packed_np = np.pad(packed_np, (0, (-packed_np.size) % 8)).view(np.uint64)
-    bitset_ml = mm.BitSet.fromBlocks(packed_np.tolist())
+    bitset_ml = mm.BitSet.fromBlocks(_MESHLIB_BLOCKS(packed_np.tolist()))
     bitset_ml.resize(flat_np.size)
     return bitset_ml
 
@@ -705,7 +737,7 @@ def meshlib_indices_to_numpy(indices_ml: _MeshlibIndices) -> np.ndarray:
     return np.fromiter((int(index_ml) for index_ml in indices_ml), np.int64, indices_ml.size())
 
 
-def meshlib_bitset_to_numpy(bitset_ml: mm.BitSet, size: int) -> np.ndarray:
+def meshlib_bitset_to_numpy(bitset_ml: mm.ConstBitSet, size: int) -> np.ndarray:
     """
     Read a MeshLib bitset as a ``bool`` array of exactly ``size`` entries.
 
@@ -722,7 +754,9 @@ def meshlib_bitset_to_numpy(bitset_ml: mm.BitSet, size: int) -> np.ndarray:
     stated by the caller. A bitset *longer* than ``size`` is a genuine domain mismatch (the wrong
     element type, or a converter that dropped elements) and raises.
     """
-    flags_np = mn.getNumpyBitSet(bitset_ml)
+    # The binding reads a const set too (``getValidFaces``' ``ConstFaceBitSet``); the stub names
+    # only ``BitSet``.
+    flags_np = mn.getNumpyBitSet(cast("mm.BitSet", bitset_ml))
     if flags_np.size > size:
         raise ValueError(f"bitset holds {flags_np.shape[0]} bits, more than the {size} elements")
     return np.pad(flags_np, (0, size - flags_np.size))

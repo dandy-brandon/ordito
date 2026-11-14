@@ -102,7 +102,13 @@ from meshlib import mrmeshpy as mm
 
 import ordito as od
 import ordito.typing as odt
-from conftest import BenchCase, BenchLibrary, points_torch_from_numpy, skip_larger_than
+from conftest import (
+    BenchCase,
+    BenchLibrary,
+    points_torch_from_numpy,
+    skip_larger_than,
+    std_points_ml,
+)
 
 if TYPE_CHECKING:
     from typing_extensions import Buffer
@@ -357,12 +363,9 @@ def _cloud_ml(bench_case: BenchCase) -> mm.PointCloud:
 
 
 def _points_ml(bench_case: BenchCase) -> mm.std_vector_Vector3_float:
-    """Build the vertices as a MeshLib vector, cached: the fill is a per-point Python loop."""
+    """Build the vertices as a MeshLib vector, cached: it is the fit's input."""
     if bench_case.mesh_name not in _points_ml_cache:
-        points_ml = mm.std_vector_Vector3_float()
-        for point_np in bench_case.vertices_np:
-            points_ml.append(mm.Vector3f(*point_np.tolist()))
-        _points_ml_cache[bench_case.mesh_name] = points_ml
+        _points_ml_cache[bench_case.mesh_name] = std_points_ml(bench_case.vertices_np)
     return _points_ml_cache[bench_case.mesh_name]
 
 

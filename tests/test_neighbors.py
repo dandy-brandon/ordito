@@ -34,6 +34,7 @@ from tests.conversions import (
     meshlib_indices_to_numpy,
     meshlib_scalars_to_numpy,
     numpy_to_meshlib_bitset,
+    numpy_to_meshlib_coords,
     numpy_to_warp,
     points_to_meshlib,
     points_to_open3d,
@@ -2599,9 +2600,7 @@ def test_query_nearest_matches_meshlib(
     # rather than raising, the same trap ``PointsToMeshProjector`` carries in test_proximity.py.
     queries_np = rng.random((40, 3)) * 5.0
     queries_wp = points_to_warp(queries_np, device)
-    queries_ml = mm.std_vector_Vector3_float()
-    for query_np in queries_np:
-        queries_ml.append(mm.Vector3f(*query_np.tolist()))
+    queries_ml = numpy_to_meshlib_coords(queries_np)
     cloud_ml = points_to_meshlib(points_np)  # must outlive the projector: it holds a raw pointer
     projector_ml = mm.PointsProjector()
     projector_ml.setPointCloud(cloud_ml)

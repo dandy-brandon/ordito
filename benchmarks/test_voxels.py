@@ -88,7 +88,7 @@ from meshlib import mrmeshpy as mm
 
 import ordito as od
 import ordito.typing as odt
-from conftest import BenchCase, BenchLibrary, points_torch_from_numpy, skip_larger_than
+from conftest import BenchCase, BenchLibrary, bitset_ml, points_torch_from_numpy, skip_larger_than
 
 if TYPE_CHECKING:
     from typing_extensions import Buffer
@@ -549,22 +549,15 @@ def _voxel_mask_ml(occupancy_np: np.ndarray) -> mm.VoxelBitSet:
     """
     Load a dense occupancy array into a MeshLib ``VoxelBitSet``, in ``VoxelId`` order.
 
-    The benchmark-side twin of ``tests.conversions.numpy_to_meshlib_bitset`` (the two suites do not
-    import each other). ``BitSet.fromBlocks`` takes the packed ``uint64`` blocks as a Python
-    list, which is why this is one ``np.packbits`` and not a per-cell
-    ``set()`` loop -- two orders of magnitude cheaper. ``VolumeIndexer`` decodes
-    ``x + dims.x * y + dims.x * dims.y * z``, so ``x`` runs fastest and the array flattens with
-    ``order="F"``; ``fromBlocks`` rounds up to whole blocks, so the size is trimmed back after.
+    Through [`bitset_ml`][conftest.bitset_ml]'s packed blocks, not a per-cell ``set()`` loop -- two
+    orders of magnitude cheaper. ``VolumeIndexer`` decodes ``x + dims.x * y + dims.x * dims.y * z``,
+    so ``x`` runs fastest and the array flattens with ``order="F"``.
 
     This is ``setup`` work, not timed work: ``expandVoxelsMask`` **mutates** the bitset, so every
     round needs a fresh one, and since the load costs more than the dilation, building it inside the
     timed callable would report the load instead of the morphology.
     """
-    packed_np = np.packbits(occupancy_np.ravel(order="F"), bitorder="little")
-    packed_np = np.pad(packed_np, (0, (-packed_np.size) % 8)).view(np.uint64)
-    bitset_ml = mm.BitSet.fromBlocks(packed_np.tolist())
-    bitset_ml.resize(occupancy_np.size)
-    return mm.VoxelBitSet(bitset_ml)
+    return mm.VoxelBitSet(bitset_ml(occupancy_np.ravel(order="F")))
 
 
 def _expand_ml(mask_ml: mm.VoxelBitSet, indexer_ml: mm.VolumeIndexer) -> mm.VoxelBitSet:

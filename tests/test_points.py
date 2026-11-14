@@ -29,6 +29,7 @@ from tests.comparisons import assert_same_up_to_sign, lexsort_rows
 from tests.conversions import (
     meshlib_bitset_to_numpy,
     meshlib_indices_to_numpy,
+    numpy_to_meshlib_point_vector,
     numpy_to_warp,
     points_to_meshlib,
     points_to_open3d,
@@ -317,14 +318,10 @@ def _point_accumulator_ml(points_np: np.ndarray) -> mm.PointAccumulator:
     """
     Accumulate a NumPy cloud into a ``PointAccumulator``, the object behind both fitting oracles.
 
-    ``accumulatePoints`` takes a ``std_vector_Vector3_float``, so the fill is a per-point Python
-    loop -- fine at test size, and the reason neither of these pairs carries a benchmark row of its
-    own beyond the ones already there.
+    ``accumulatePoints`` takes a ``std_vector_Vector3_float``.
     """
     accumulator_ml = mm.PointAccumulator()
-    points_ml = mm.std_vector_Vector3_float()
-    for point_np in np.asarray(points_np, dtype=np.float64):
-        points_ml.append(mm.Vector3f(*point_np.tolist()))
+    points_ml = numpy_to_meshlib_point_vector(np.asarray(points_np, dtype=np.float64))
     mm.accumulatePoints(accumulator_ml, points_ml)
     return accumulator_ml
 

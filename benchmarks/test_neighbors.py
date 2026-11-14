@@ -97,7 +97,7 @@ from meshlib import mrmeshpy as mm
 from scipy.spatial import KDTree
 
 import ordito as od
-from conftest import BenchCase, points_torch_from_numpy, skip_larger_than
+from conftest import BenchCase, points_torch_from_numpy, skip_larger_than, vert_coords_ml
 
 if TYPE_CHECKING:
     import open3d as o3d
@@ -144,7 +144,7 @@ _bvh_cache: dict[tuple[str, str, int], wp.Bvh] = {}
 _kdtree_cache: dict[str, KDTree] = {}
 _pcd_o3d_cache: dict[str, o3d.geometry.PointCloud] = {}
 _cloud_ml_cache: dict[str, mm.PointCloud] = {}
-_queries_ml_cache: dict[str, mm.std_vector_Vector3_float] = {}
+_queries_ml_cache: dict[str, mm.VertCoords] = {}
 
 
 def _queries_np(bench_case: BenchCase) -> np.ndarray:
@@ -192,13 +192,10 @@ def _cloud_ml(bench_case: BenchCase) -> mm.PointCloud:
     return _cloud_ml_cache[bench_case.mesh_name]
 
 
-def _queries_ml(bench_case: BenchCase) -> mm.std_vector_Vector3_float:
-    """Build the query cloud as a MeshLib vector, cached: the fill is a per-point Python loop."""
+def _queries_ml(bench_case: BenchCase) -> mm.VertCoords:
+    """Build the query cloud as MeshLib ``VertCoords``, cached: it is the query's input."""
     if bench_case.mesh_name not in _queries_ml_cache:
-        queries_ml = mm.std_vector_Vector3_float()
-        for query_np in _queries_np(bench_case):
-            queries_ml.append(mm.Vector3f(*query_np.tolist()))
-        _queries_ml_cache[bench_case.mesh_name] = queries_ml
+        _queries_ml_cache[bench_case.mesh_name] = vert_coords_ml(_queries_np(bench_case))
     return _queries_ml_cache[bench_case.mesh_name]
 
 
