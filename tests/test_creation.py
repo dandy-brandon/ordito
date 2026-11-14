@@ -183,9 +183,8 @@ class _Topology(NamedTuple):
 
 
 # Every column measured against pyvista at ``clean=True`` and trimesh, and each row is a class of
-# input the rest of the suite has no other example of. ``klein`` is deliberately here despite its
-# name: as VTK parameterizes it, it welds to two boundary loops and is *orientable*, so only
-# ``figure8_klein`` is the closed non-orientable chi = 0 surface.
+# input the rest of the suite has no other example of. ``klein`` and ``figure8_klein`` are the two
+# closed non-orientable chi = 0 surfaces, the Klein bottle immersed two ways.
 _PARAMETRIC_TABLE: dict[str, _Topology] = {
     "bohemian_dome": _Topology(1521, 3042, 0, 0, 0, True, True, 0),
     "bour": _Topology(1522, 3003, 39, 1, 1, True, False, 1),
@@ -197,7 +196,7 @@ _PARAMETRIC_TABLE: dict[str, _Topology] = {
     "enneper": _Topology(1600, 3042, 156, 1, 1, True, False, 0),
     "figure8_klein": _Topology(1521, 3042, 0, 0, 0, False, True, 0),
     "henneberg": _Topology(1560, 3042, 78, 0, 1, False, False, 0),
-    "klein": _Topology(1560, 3042, 78, 0, 2, True, False, 0),
+    "klein": _Topology(1521, 3042, 0, 0, 0, False, True, 0),
     "kuen": _Topology(1561, 3003, 117, 1, 1, True, False, 1),
     "mobius": _Topology(1560, 3042, 78, 0, 1, False, False, 0),
     "plucker_conoid": _Topology(1560, 3042, 78, 0, 2, True, False, 0),
@@ -1816,7 +1815,11 @@ def test_parametric_surface_matches_pyvista(device: str, surface: _Surface) -> N
     non-orientable surfaces here are the first inputs in the suite for which it answers ``False`` —
     without them the comparison is one-sided and a predicate returning a constant would pass it.
     """
-    vertices_wp, faces_wp = _build_parametric(surface, 40, device)
+    # pyvista builds the Klein bottle itself (since 0.49), sampling ``u_res`` rows of the half-open
+    # domain and stitching both seams, where ordito's resolution counts the glued end too: the
+    # same lattice is ordito's 41 against pyvista's 40.
+    resolution = 41 if surface == "klein" else 40
+    vertices_wp, faces_wp = _build_parametric(surface, resolution, device)
     vertices_np = vertices_wp.numpy().astype(np.float64)
     faces_np = faces_wp.numpy().reshape(-1, 3)
 
@@ -1832,12 +1835,20 @@ def test_parametric_surface_matches_pyvista(device: str, surface: _Surface) -> N
         # triangles that thereby became degenerate. ordito keeps the sheets apart.
         assert (reference_pv.n_points, reference_pv.n_faces) == (1560, 3040)
         assert np.max(cKDTree(vertices_np).query(points_pv)[0]) < 1e-5
+        assert (len(vertices_np), len(faces_np)) == (expected.points, expected.faces)
+    elif surface == "klein":
+        # The table is at ordito's resolution 40; this lattice is one row larger each way.
+        assert (reference_pv.n_points, reference_pv.n_faces) == (1600, 3200)
+        assert euler_characteristic(np.asarray(reference_pv.regular_faces)) == expected.chi
+        assert np.max(cKDTree(points_pv).query(vertices_np)[0]) < 1e-5
+        assert np.max(cKDTree(vertices_np).query(points_pv)[0]) < 1e-5
+        assert (len(vertices_np), len(faces_np)) == (1600, 3200)
     else:
         assert (reference_pv.n_points, reference_pv.n_faces) == (expected.points, expected.faces)
         assert euler_characteristic(np.asarray(reference_pv.regular_faces)) == expected.chi
         assert np.max(cKDTree(points_pv).query(vertices_np)[0]) < 1e-5
         assert np.max(cKDTree(vertices_np).query(points_pv)[0]) < 1e-5
-    assert (len(vertices_np), len(faces_np)) == (expected.points, expected.faces)
+        assert (len(vertices_np), len(faces_np)) == (expected.points, expected.faces)
 
     centroid_np, normal_np = _face_frames(vertices_np, faces_np)
     centroid_pv, normal_pv = _face_frames(points_pv, np.asarray(reference_pv.regular_faces))
@@ -2112,7 +2123,17 @@ def test_invalid_arguments_raise(device: str) -> None:
 
 @pytest.mark.parametrize(
     "surface",
-    ["boy", "cross_cap", "klein", "mobius", "dini", "conic_spiral", "henneberg", "roman", "kuen"],
+    [
+        "boy",
+        "cross_cap",
+        "bohemian_dome",
+        "mobius",
+        "dini",
+        "conic_spiral",
+        "henneberg",
+        "roman",
+        "kuen",
+    ],
 )
 @pytest.mark.parametrize(
     ("u_resolution", "v_resolution"), [(7, 5), (17, 33), (2, 4), (3, 9), (4, 4)]
@@ -2129,7 +2150,7 @@ def test_parametric_lattice_matches_numpy_lattice(
     whole-lattice form: canonicalise every sample, ``numpy.unique`` the keys, drop the triangles
     with two equal corners. Faces must match exactly, row order included. The surfaces straddle
     the gluing rules: a twisted wrap with two collapsed pole rows (``boy``, ``cross_cap``), a wrap
-    in each direction (``klein``), a twist with a boundary (``mobius``), a plain open patch
+    in each direction (``bohemian_dome``), a twist with a boundary (``mobius``), a plain open patch
     (``dini``), a pole on one end only (``conic_spiral``, ``kuen``), a v-twist (``henneberg``) and a
     u-twist with a v-wrap (``roman``); the lattices straddle the four-sample floor below which every
     edge cell is checked corner by corner, and are non-square so a transposed index shows.

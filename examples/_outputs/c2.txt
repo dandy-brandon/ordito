@@ -1,2 +1,2 @@
-closed: bohemian_dome, boy, cross_cap, figure8_klein, roman
-non-orientable: boy, cross_cap, figure8_klein, henneberg, mobius, roman
+closed: bohemian_dome, boy, cross_cap, figure8_klein, klein, roman
+non-orientable: boy, cross_cap, figure8_klein, henneberg, klein, mobius, roman

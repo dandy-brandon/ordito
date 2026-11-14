@@ -2471,14 +2471,13 @@ def parametric_surface(
         Which surface to build:
 
         - non-orientable and closed — ``"boy"`` and ``"cross_cap"`` (the two immersions of the real
-          projective plane, both with Euler characteristic 1), ``"figure8_klein"`` (the Klein
-          bottle) and ``"roman"`` (Steiner's surface, with three double lines).
+          projective plane, both with Euler characteristic 1), ``"figure8_klein"`` and
+          ``"klein"`` (two immersions of the Klein bottle, Euler characteristic 0) and ``"roman"``
+          (Steiner's surface, with three double lines).
         - non-orientable with a boundary — ``"mobius"`` and ``"henneberg"``.
         - closed of genus 1 — ``"bohemian_dome"``, and see
           [`super_toroid`][ordito.creation.super_toroid].
-        - open, with two boundary loops — ``"klein"`` (which is *not* a Klein bottle as VTK
-          parameterizes it: it is orientable and has a boundary), ``"plucker_conoid"`` and
-          ``"pseudosphere"``.
+        - open, with two boundary loops — ``"plucker_conoid"`` and ``"pseudosphere"``.
         - open, with one boundary loop — ``"bour"``, ``"catalan_minimal"``, ``"conic_spiral"``,
           ``"dini"``, ``"enneper"`` and ``"kuen"``. ``"dini"`` and ``"enneper"`` are the strongly
           graded ones.
@@ -2917,8 +2916,17 @@ _PARAMETRIC_SPECS: dict[str, _ParametricSpec] = {
         v_wrap=True,
         v_twist=True,
     ),
+    # The Klein bottle: the map sends ``(pi, v)`` where it sends ``(0, pi - v)``. The u-twist glues
+    # ``(u_max, v)`` to ``(u_min, v_min + v_max - v)``, a reflection about the middle of the v
+    # range, so the period ``[0, 2 pi]`` is shifted to centre on ``pi / 2``; on a wrapped axis that
+    # moves no point.
     "klein": _ParametricSpec(
-        kernel_creation.SURFACE_KLEIN, (0.0, math.pi), (0.0, 2.0 * math.pi), v_wrap=True
+        kernel_creation.SURFACE_KLEIN,
+        (0.0, math.pi),
+        (-0.5 * math.pi, 1.5 * math.pi),
+        u_wrap=True,
+        u_twist=True,
+        v_wrap=True,
     ),
     "kuen": _ParametricSpec(
         kernel_creation.SURFACE_KUEN, (-4.5, 4.5), (0.0, math.pi), pole_v_max=True

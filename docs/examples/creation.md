@@ -90,8 +90,8 @@ print("non-orientable:", ", ".join(k for k, m in surfaces.items() if not m.is_or
 ```
 
 ```text title="Output"
-closed: bohemian_dome, boy, cross_cap, figure8_klein, roman
-non-orientable: boy, cross_cap, figure8_klein, henneberg, mobius, roman
+closed: bohemian_dome, boy, cross_cap, figure8_klein, klein, roman
+non-orientable: boy, cross_cap, figure8_klein, henneberg, klein, mobius, roman
 ```
 
 ![Parametric surfaces](../assets/examples/c2.webp)
