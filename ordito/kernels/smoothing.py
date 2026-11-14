@@ -2931,13 +2931,14 @@ def mumford_shah_face_values(
     out_values: wp.array[wp.float64],
 ) -> None:
     # Row ``f`` of the face system (eq. 19): ``n_f + sum_e w_e (n_f - n_r) = n0_f`` over the faces
-    # ``r`` across ``f``'s edges, ``w_e = gamma |e| v_e^2 / P``. The indicator ``v_e`` is 1 on the
-    # first solve and otherwise ``mumford_shah_edge_indicator`` of the previous solve's normals.
+    # ``r`` across ``f``'s edges, ``w_e = gamma |e| v_e^2 * 2 / (P_f + P_r)``. The indicator ``v_e``
+    # is 1 on the first solve and otherwise ``mumford_shah_edge_indicator`` of the previous solve's
+    # normals.
     #
-    # ``P`` is a face's perimeter, which makes the stencil row-scaled and so not symmetric: the
-    # diagonal takes ``f``'s own, and the coupling of a face pair the *higher-numbered* face's,
-    # which symmetrizes the system as a solver reading only its lower triangle does. A face with
-    # a zero perimeter couples to nothing through its own row.
+    # ``P`` is a face's perimeter. The weight takes the pair's mean perimeter, so it is symmetric in
+    # ``(f, r)`` and the system symmetric positive definite, as ``method="meshlib"``'s reference
+    # builds it; the diagonal sums the same weights. A pair whose perimeters sum to zero couples
+    # nothing.
     f = wp.int32(wp.tid())
     own = perimeters[f]
     normal = wp.vec3(0.0, 0.0, 0.0)
@@ -2948,15 +2949,22 @@ def mumford_shah_face_values(
     for k in range(3):
         mate = mates[3 * f + k]
         if mate >= 0:
-            indicator = wp.float32(1.0)
-            if first == 0:
-                indicator = mumford_shah_edge_indicator(
-                    normal, solved_normal(solution, mate // 3), gamma, beta
+            pair_perimeter = own + perimeters[mate // 3]
+            if pair_perimeter > wp.float32(0.0):
+                indicator = wp.float32(1.0)
+                if first == 0:
+                    indicator = mumford_shah_edge_indicator(
+                        normal, solved_normal(solution, mate // 3), gamma, beta
+                    )
+                weight = (
+                    gamma
+                    * lengths[3 * f + k]
+                    * (indicator * indicator)
+                    * wp.float32(2.0)
+                    / pair_perimeter
                 )
-            weight = gamma * lengths[3 * f + k] * (indicator * indicator)
-            weights[k] = weight
-            if own > wp.float32(0.0):
-                central += weight / own
+                weights[k] = weight
+                central += weight
     for entry in range(offsets[f], offsets[f + 1]):
         value = wp.float64(0.0)
         for p in range(starts[entry], starts[entry + 1]):
@@ -2964,10 +2972,7 @@ def mumford_shah_face_values(
             if k == 3:
                 value += wp.float64(central)
             else:
-                partner = mates[3 * f + k] // 3
-                scale = perimeters[wp.max(f, partner)]
-                if scale > wp.float32(0.0):
-                    value -= wp.float64(weights[k] / scale)
+                value -= wp.float64(weights[k])
         out_values[entry] = value
 
 
@@ -2982,11 +2987,11 @@ def normalize_solved_normals(
 
 @wp.func
 def corner_pair_gram(i: wp.int32, j: wp.int32) -> wp.float64:
-    # Entry ``(i, j)`` of ``G^T G`` for a face's two shape rows ``G = [[2, -1, -1], [-1, 2, -1]]``
-    # (corner 0's and corner 1's offset from the other two): ``[[5, -4, -1], [-4, 5, -1],
-    # [-1, -1, 2]]``. Integers, so any summation order is exact.
-    diagonal = wp.where(i == 2, wp.float64(2.0), wp.float64(5.0))
-    coupling = wp.where(i + j == 1, wp.float64(-4.0), wp.float64(-1.0))
+    # Entry ``(i, j)`` of ``G^T G`` for a face's two shape rows ``G = [[1, -1, 0], [1, 0, -1]]``
+    # (its two edges from corner 0): ``[[2, -1, -1], [-1, 1, 0], [-1, 0, 1]]``.
+    # Integers, so any summation order is exact.
+    diagonal = wp.where(i == 0, wp.float64(2.0), wp.float64(1.0))
+    coupling = wp.where(i == 0 or j == 0, wp.float64(-1.0), wp.float64(0.0))
     return wp.where(i == j, diagonal, coupling)
 
 
@@ -3071,7 +3076,7 @@ def project_to_target_normals(
     # Each face's target shape for the vertex update: the current triangle (the ``float32``
     # rounding of the solution columns) projected onto the plane through its centroid with the
     # face's target normal, or collapsed onto a line when the projection turns it over. Its two
-    # shape rows ``d0 = 2 q0 - q1 - q2`` and ``d1 = 2 q1 - q0 - q2`` enter the right-hand side as
+    # shape rows ``d0 = q0 - q1`` and ``d1 = q0 - q2`` enter the right-hand side as
     # ``G^T (d0, d1)``, written per corner for ``normals_to_points_rhs`` to gather.
     f = wp.int32(wp.tid())
     i0, i1, i2 = corner_triple(faces, f)
@@ -3085,12 +3090,11 @@ def project_to_target_normals(
     q2 = p2 - n * wp.dot(n, p2 - c)
     if wp.dot(n, wp.cross(q1 - q0, q2 - q0)) < wp.float32(0.0):
         q0, q1, q2 = collapse_to_line(q0, q1, q2)
-    d0 = wp.vec3d(wp.float32(2.0) * q0 - q1 - q2)
-    d1 = wp.vec3d(wp.float32(2.0) * q1 - q0 - q2)
-    two = wp.float64(2.0)
-    out_corner_terms[3 * f] = two * d0 - d1
-    out_corner_terms[3 * f + 1] = two * d1 - d0
-    out_corner_terms[3 * f + 2] = -d0 - d1
+    d0 = wp.vec3d(q0 - q1)
+    d1 = wp.vec3d(q0 - q2)
+    out_corner_terms[3 * f] = d0 + d1
+    out_corner_terms[3 * f + 1] = -d0
+    out_corner_terms[3 * f + 2] = -d1
 
 
 @wp.kernel

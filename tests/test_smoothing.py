@@ -3798,14 +3798,14 @@ def test_filter_normals_meshlib_method_matches_meshlib(
     One solve (``iterations=1``) is a single ``denoiseNormals`` call with every edge indicator 1;
     the default ten are ``meshDenoiseViaNormals``' normal half, ``denoiseNormals`` from the
     original normals then ``updateIndicatorFast``, ten times at ``beta = 0.01``. The face system
-    is the one meshlib's ``SimplicialLDLT`` factors, which reads only the lower triangle of its
-    non-symmetric matrix: each coupling takes the higher-numbered face's perimeter, and ordito's
-    conjugate gradient stands in for the factorization. Measured max over the four cases
-    **1.1e-6** on CUDA and **1.2e-6** on the CPU (the graded saddle; the cube 2.2e-7 / 2.4e-7, the
-    sphere 8.1e-7 on both), against the reference moving the normals by 0.26-1.9. Mutation
-    probes (CUDA): the lower-numbered face's perimeter instead is 1.8e-2 to 1.9 away in every
-    case, and an indicator held at 1 is 0.49-1.9 away in the three ten-solve cases (the one-solve
-    case reads no indicator).
+    is the symmetric one meshlib's ``SimplicialLDLT`` factors since 3.2, each pair weighted by its
+    mean perimeter, and ordito's conjugate gradient stands in for the factorization. Measured max
+    over the four cases **1.5e-6** on CUDA and **1.7e-6** on the CPU (the graded saddle; the cube
+    1.2e-7 / 2.1e-7, the sphere 6.9e-7 on both), against the reference moving the normals by
+    0.26-1.9. Mutation probes: meshlib 3.1's rule (the face's own perimeter on the diagonal, the
+    higher-numbered face's on each coupling) is 1.0e-2 to 1.7 away in every case (CPU), and an
+    indicator held at 1 is 0.48-1.9 away in the three ten-solve cases (CUDA; the one-solve case
+    reads no indicator).
     """
     noisy_np, faces_np = _mumford_shah_input(mesh_name)
     mesh_ml = numpy_to_meshlib(noisy_np, faces_np)
@@ -3962,11 +3962,13 @@ def test_filter_two_step_meshlib_method_matches_meshlib(device: str, mesh_name: 
     solves, unit guide weight, the fast indicator), which are this method's: the normals as in
     [`test_filter_normals_meshlib_method_matches_meshlib`][tests.test_smoothing.test_filter_normals_meshlib_method_matches_meshlib],
     then ``NormalsToPoints``' least-squares update solved twenty times (ordito iterates it where
-    meshlib factors it). Measured max **7.2e-7** on both devices (the sphere; the cube 8.9e-8, the
-    saddle 3.6e-7 / 2.4e-7 CUDA / CPU), against meshlib moving the vertices by 0.018-0.19.
-    Mutation probes (CUDA): projecting a turned-over triangle without collapsing it onto a line is
-    1.2e-2 away on the saddle and the sphere (the cube turns none over), the lower-numbered face's
-    perimeter 1.4e-3 to 0.11 away, and an indicator held at 1 2.8e-2 to 0.20 away.
+    meshlib factors it), whose shape rows are each face's two edges from its first corner and whose
+    guide weight is ``1 / sqrt(3)`` since meshlib 3.2. Measured max **7.2e-7** on both devices (the
+    sphere; the cube 1.2e-7 / 8.9e-8 CUDA / CPU, the saddle 2.4e-7), against meshlib moving the
+    vertices by 0.018-0.19. Mutation probes: meshlib 3.1's shape rows (each corner's offset from
+    the other two, unit guide weight) are 1.8e-3 to 2.7e-2 away (CPU); projecting a turned-over
+    triangle without collapsing it onto a line 6.0e-3 to 1.1e-2 on the saddle and the sphere (the
+    cube turns none over), and an indicator held at 1 2.7e-2 to 0.26 away (CUDA).
     """
     noisy_np, faces_np = _mumford_shah_input(mesh_name)
     mesh_ml = numpy_to_meshlib(noisy_np, faces_np)

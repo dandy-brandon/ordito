@@ -4648,9 +4648,9 @@ def filter_normals(
           (2015), eqs. 19-20, with the closed-form edge indicator. Each solve restarts from the
           original normals ``n0`` and solves the linear system ``n_f + sum_e w_e (n_f - n_r) =
           n0_f`` over the faces ``r`` across face ``f``'s edges, with
-          ``w_e = gamma |e| v_e^2 / P``, ``|e|`` the edge's length and ``P`` the perimeter of
-          ``f`` (rim edges included) for the diagonal and of the higher-numbered face of the pair
-          for the coupling, which makes the system symmetric. The answer is normalized and sets
+          ``w_e = gamma |e| v_e^2 * 2 / (P_f + P_r)``, ``|e|`` the edge's length and ``P`` a
+          face's perimeter (rim edges included): the pair's mean perimeter, which makes the
+          system symmetric. The answer is normalized and sets
           each edge's indicator for the next solve, ``v_e = rho / (rho + 2 gamma |n_f - n_r|^2)``
           with ``rho = beta / 0.002``: near ``1`` on a smooth edge and near ``0`` across a crease,
           which stops the crease from diffusing. The first solve takes ``v = 1``.
@@ -4838,11 +4838,11 @@ def filter_two_step(
           (2015), both steps: the normals are
           [`filter_normals`][ordito.smoothing.filter_normals]'s ``method="meshlib"`` at
           ``gamma``, ``beta`` and ``normal_iterations``, and the vertices then solve the linear
-          least-squares problem ``min |x - g|^2 + sum_f |G x_f - d_f|^2`` ``fit_iterations``
-          times, ``g`` the pass's input positions. ``G x_f`` is face ``f``'s two corner offsets
-          ``2 x_0 - x_1 - x_2`` and ``2 x_1 - x_0 - x_2``, and ``d_f`` the same offsets of the
-          current triangle projected onto the plane through its centroid with the filtered normal
-          (collapsed onto a line when the projection turns it over).
+          least-squares problem ``min w^2 |x - g|^2 + sum_f |G x_f - d_f|^2`` ``fit_iterations``
+          times, ``g`` the pass's input positions and ``w = 1 / sqrt(3)``. ``G x_f`` is face
+          ``f``'s two edges from its first corner, ``x_0 - x_1`` and ``x_0 - x_2``, and ``d_f``
+          the same edges of the current triangle projected onto the plane through its centroid
+          with the filtered normal (collapsed onto a line when the projection turns it over).
     gamma
         The smoothing weight of ``method="meshlib"``; see
         [`filter_normals`][ordito.smoothing.filter_normals]. Default ``5``.
@@ -5247,14 +5247,21 @@ class _MumfordShahNormals:
         return filtered
 
 
+# The vertex update's guide weight ``1 / sqrt(3)``, rounded to ``float32`` (``0x1.279a74p-1``) as
+# ``method="meshlib"``'s reference forms it: against shape rows that are a face's two edges from
+# corner 0, it keeps the balance a unit weight had against each corner's offset from the other two.
+_MUMFORD_SHAH_GUIDE_WEIGHT = 0.5773502588272095
+
+
 class _NormalsToPoints:
     """
-    The Mumford-Shah vertex update over one face set: ``(I + M^T M) x = g + M^T d``, assembled once.
+    The Mumford-Shah vertex update over one face set: ``(w^2 I + M^T M) x = w^2 g + M^T d``.
 
     ``M`` stacks two shape rows per face (``kernels/smoothing.corner_pair_gram``), so the operator
     depends on the topology alone. A solve's right-hand side is the guide plus each face's
-    projected shape, gathered over the vertex -> corner rows. Iterated, never factored: the
-    operator's spectrum lies in ``[1, 1 + |M|^2]``, and each solve warm-starts from the last
+    projected shape, gathered over the vertex -> corner rows. Assembled once. Iterated, never
+    factored: the operator's spectrum lies in ``[w^2, w^2 + |M|^2]``, and each solve warm-starts
+    from the last
     (``_MUMFORD_SHAH_POINT_TOLERANCE``).
     """
 
@@ -5263,8 +5270,8 @@ class _NormalsToPoints:
         n = vertices.size
         n_faces = faces.size // 3
         self._faces = faces
-        # The guide's weight ``w``: every point is drawn to its pass's input with unit weight.
-        self._guide_weight_sq = wp.float64(1.0)
+        # The guide's weight ``w``: every point is drawn to its pass's input.
+        self._guide_weight_sq = wp.float64(_MUMFORD_SHAH_GUIDE_WEIGHT * _MUMFORD_SHAH_GUIDE_WEIGHT)
         count = 9 * n_faces + n
         keys, order = od.array.csr_key_buffers(count, device)
         values = _launch.empty(count, dtype=wp.float64, device=device)

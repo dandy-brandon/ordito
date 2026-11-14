@@ -48,19 +48,16 @@ ACC_A_SUM = wp.int32(1)  # vec3, slots 1..3:   sum w (a - p)
 ACC_B_SUM = wp.int32(4)  # vec3, slots 4..6:   sum w (b - q)
 ACC_A_SQ = wp.int32(7)  # sum w |a - p|^2
 ACC_B_SQ = wp.int32(8)  # sum w |b - q|^2
-ACC_COV = wp.int32(9)  # mat33, slots 9..17: sum_{w>0} outer(b - q, a - p), row-major
-ACC_MASK_A = wp.int32(18)  # vec3, slots 18..20: sum_{w>0} (a - p)
-ACC_MASK_B = wp.int32(21)  # vec3, slots 21..23: sum_{w>0} (b - q)
-ACC_MASK_N = wp.int32(24)  # count of w > 0
-# The moment slots, ``ACC_W_SUM`` through ``ACC_MASK_N``: what one block of
+ACC_COV = wp.int32(9)  # mat33, slots 9..17: sum w outer(b - q, a - p), row-major
+# The moment slots, ``ACC_W_SUM`` through ``ACC_COV``: what one block of
 # ``accumulate_procrustes_moments`` folds. A plain constant, since a vector length must be one.
-PROCRUSTES_MOMENT_SLOTS = 25
-ACC_COST = wp.int32(25)  # weighted mean squared residual
-PROCRUSTES_ACC_SIZE = 26
+PROCRUSTES_MOMENT_SLOTS = 18
+ACC_COST = wp.int32(18)  # weighted mean squared residual
+PROCRUSTES_ACC_SIZE = 19
 # ``icp``'s loop carries one slot more: the cost of the fit it has kept so far, which
 # ``point_to_point_round`` writes and never zeroes (``inf`` if round 0 was weightless).
-ACC_KEPT_COST = wp.int32(26)
-ICP_POINT_ACC_SIZE = 27
+ACC_KEPT_COST = wp.int32(19)
+ICP_POINT_ACC_SIZE = 20
 
 # Point-to-plane accumulator, one ``float32`` buffer for the same reason the moments above share
 # one: the normal matrix, its right-hand side and the two scalars ``accumulate_point_to_plane``
@@ -175,9 +172,6 @@ def accumulate_procrustes_moments_block(
     a_sq = wp.float32(0.0)
     b_sq = wp.float32(0.0)
     cov = wp.mat33(wp.float32(0.0))
-    mask_a = wp.vec3(wp.float32(0.0), wp.float32(0.0), wp.float32(0.0))
-    mask_b = wp.vec3(wp.float32(0.0), wp.float32(0.0), wp.float32(0.0))
-    mask_n = wp.float32(0.0)
 
     for k in range(lane, count, wp.block_dim()):
         index = offset + k
@@ -189,13 +183,9 @@ def accumulate_procrustes_moments_block(
         b_sum += w * bv
         a_sq += w * wp.length_sq(av)
         b_sq += w * wp.length_sq(bv)
-        # The covariance is weighted by *membership*, not magnitude — trimesh's convention, and
-        # what ``test_procrustes_matches_trimesh[binary_weights]`` pins.
-        if w > wp.float32(0.0):
-            cov += wp.outer(bv, av)
-            mask_a += av
-            mask_b += bv
-            mask_n += wp.float32(1.0)
+        # The covariance is weighted like every other moment, so the rotation is the one optimal
+        # for the weights (trimesh's convention since 5.2.1).
+        cov += w * wp.outer(bv, av)
 
     # Packed into the accumulator's own slot layout and folded by **one** block reduction, which
     # is block-collective, so it runs outside the ``lane == 0`` guard and only the commit is
@@ -204,12 +194,9 @@ def accumulate_procrustes_moments_block(
     packed[ACC_W_SUM] = w_sum
     packed[ACC_A_SQ] = a_sq
     packed[ACC_B_SQ] = b_sq
-    packed[ACC_MASK_N] = mask_n
     for c in range(3):
         packed[ACC_A_SUM + c] = a_sum[c]
         packed[ACC_B_SUM + c] = b_sum[c]
-        packed[ACC_MASK_A + c] = mask_a[c]
-        packed[ACC_MASK_B + c] = mask_b[c]
         for r in range(3):
             packed[ACC_COV + c * 3 + r] = cov[c, r]
     store_block_sum(chunk, lane, packed, out_acc, 0, stride)
@@ -298,17 +285,17 @@ def procrustes_matrix(
         ascale = wp.sqrt(wp.max(acc[ACC_A_SQ] / ws - wp.length_sq(a_rel), wp.float32(1e-20)))
         bscale = wp.sqrt(wp.max(acc[ACC_B_SQ] / ws - wp.length_sq(b_rel), wp.float32(1e-20)))
 
-    # Shifted cross-moment identity, over the membership-masked subset:
-    # H = sum_m outer(b - bc, a - ac)
-    #   = M - outer(Sm_b, ac') - outer(bc', Sm_a) + N_m outer(bc', ac')
+    # Shifted weighted cross-moment identity:
+    # H = sum w outer(b - bc, a - ac)
+    #   = M - outer(S_b, ac') - outer(bc', S_a) + S_w outer(bc', ac')
     cov = wp.matrix_from_rows(
         acc_vec3(acc, ACC_COV + 0), acc_vec3(acc, ACC_COV + 3), acc_vec3(acc, ACC_COV + 6)
     )
     cov = (
         cov
-        - wp.outer(acc_vec3(acc, ACC_MASK_B), a_rel)
-        - wp.outer(b_rel, acc_vec3(acc, ACC_MASK_A))
-        + acc[ACC_MASK_N] * wp.outer(b_rel, a_rel)
+        - wp.outer(acc_vec3(acc, ACC_B_SUM), a_rel)
+        - wp.outer(b_rel, acc_vec3(acc, ACC_A_SUM))
+        + ws * wp.outer(b_rel, a_rel)
     )
 
     # Normalise cross-covariance by scale product
