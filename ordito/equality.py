@@ -9,6 +9,9 @@ differently and are both right. The functions here compare what remains.
 - [`meshes_allclose`][ordito.equality.meshes_allclose] is the whole comparison: positions within a
   tolerance, each vertex matched to exactly one of the other mesh's, and the same faces under that
   match.
+- [`triangles_allclose`][ordito.equality.triangles_allclose] is the looser comparison of the
+  triangles alone, each face as its three corner positions: how the faces share their vertices
+  does not count, so a mesh equals its copy with coincident vertices unwelded.
 - [`faces_equal`][ordito.equality.faces_equal] is the comparison of two face buffers over one
   vertex buffer, where the vertex numbering is already shared.
 - [`canonical_faces`][ordito.equality.canonical_faces] is the form both compare through: every
@@ -34,9 +37,19 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import checked_index_bound, index_extrema, read_scalar, require_same_device
+from ordito._common import (
+    checked_index_bound,
+    index_extrema,
+    read_scalar,
+    read_values,
+    require_same_device,
+)
 from ordito.constants import ALLCLOSE_ATOL, ALLCLOSE_RTOL
 from ordito.kernels import equality as kernel_equality
+
+# How many nearest centroids a face of ``triangles_allclose`` may claim among once its nearest
+# alone did not match: as many faces as list one triangle, with its reversed twins.
+_TIE_CANDIDATES = 8
 
 
 def meshes_allclose(
@@ -93,12 +106,16 @@ def meshes_allclose(
     tolerance to be smaller than half the distance between any two vertices of ``b``: two vertices
     of ``a`` within tolerance of one vertex of ``b`` both match it, and the meshes compare unequal.
     Weld coincident vertices
-    ([`remove_duplicated_vertices`][ordito.repair.remove_duplicated_vertices]) before comparing.
+    ([`remove_duplicated_vertices`][ordito.repair.remove_duplicated_vertices]) before comparing, or
+    compare the triangles alone with
+    [`triangles_allclose`][ordito.equality.triangles_allclose].
 
     Vertices no face uses take part in the match like any other.
 
     See Also
     --------
+    [`triangles_allclose`][ordito.equality.triangles_allclose]
+        The comparison of the triangles alone, whatever vertices they share.
     [`faces_equal`][ordito.equality.faces_equal]
         The same comparison of the faces alone, over one shared vertex buffer.
     [`allclose`][ordito.array.allclose]
@@ -142,6 +159,159 @@ def meshes_allclose(
     # A failed match still leaves every entry of ``match`` a valid ``b`` index, so the faces are
     # compared either way and the one readback below answers both.
     _flag_unequal_faces(faces_a, match, faces_b, n_vertices, unequal)
+    # The answer is a host ``bool``.
+    return int(read_scalar(unequal, 0)) == 0
+
+
+def triangles_allclose(
+    vertices_a: wp.array[wp.vec3],
+    faces_a: wp.array[wp.int32],
+    vertices_b: wp.array[wp.vec3],
+    faces_b: wp.array[wp.int32],
+    *,
+    rtol: float = ALLCLOSE_RTOL,
+    atol: float = ALLCLOSE_ATOL,
+) -> bool:
+    """
+    Test whether two meshes hold the same triangles, up to face order and rotation.
+
+    Each face is the triangle of its three corner positions. Each face of ``a`` is matched to the
+    face of ``b`` whose centroid is nearest its own. The meshes are equal when, for every match,
+    some rotation of the ``a`` face's corners (the winding kept) puts each corner within
+    ``atol + rtol * |b_corner|`` of the same corner of the ``b`` face, and no face of ``b`` is
+    matched twice.
+
+    Unlike [`meshes_allclose`][ordito.equality.meshes_allclose], no vertex is matched: how the
+    faces share their corners does not count. A mesh equals its copy with coincident vertices
+    left unwelded or welded, with unused vertices added or removed, and the two vertex counts may
+    differ.
+
+    Parameters
+    ----------
+    vertices_a
+        ``(n_vertices_a,)`` positions of the first mesh.
+    faces_a
+        ``(3 * n_faces,)`` flat triangle index buffer of the first mesh.
+    vertices_b
+        ``(n_vertices_b,)`` positions of the second mesh.
+    faces_b
+        ``(3 * n_faces,)`` flat triangle index buffer of the second mesh.
+    rtol
+        Relative tolerance on the distance between matched corners, against the ``b`` corner's
+        distance from the origin. Defaults to ``1e-05``.
+    atol
+        Absolute tolerance on the distance between matched corners. Defaults to ``1e-08``.
+
+    Returns
+    -------
+    bool
+        ``True`` when the meshes hold the same triangles. ``False`` when their face counts differ,
+        or when a face names a vertex outside its own vertex buffer.
+
+    Raises
+    ------
+    ValueError
+        If ``faces_a`` or ``faces_b`` does not hold a whole number of triangles.
+    RuntimeError
+        If the four arrays are not all on one device.
+
+    Notes
+    -----
+    The match requires the tolerance to be smaller than half the distance between distinct face
+    centroids of ``b``: two faces of ``a`` within tolerance of one face of ``b`` both match it,
+    and the meshes compare unequal. Faces with one centroid are the exception: a triangle listed
+    several times, or beside its reversed twin, is matched among the nearest centroids, up to
+    eight faces sharing one centroid, and the meshes are equal when they list it as often.
+
+    See Also
+    --------
+    [`meshes_allclose`][ordito.equality.meshes_allclose]
+        The stricter comparison, which also matches the vertices one to one.
+    [`points_allclose`][ordito.equality.points_allclose]
+        The same match for two point sets.
+
+    Examples
+    --------
+    A square against its copy with the shared diagonal left unwelded:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    corners = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]]
+    vertices = wp.array(corners, dtype=wp.vec3)
+    faces = wp.array([0, 1, 2, 0, 2, 3], dtype=wp.int32)
+    unwelded = wp.array([corners[k] for k in (0, 1, 2, 0, 2, 3)], dtype=wp.vec3)
+    soup = wp.array([3, 4, 5, 1, 2, 0], dtype=wp.int32)
+    print(od.equality.triangles_allclose(vertices, faces, unwelded, soup))  # True
+    print(od.equality.meshes_allclose(vertices, faces, unwelded, soup))  # False
+    ```
+    """
+    require_same_device(
+        vertices_a=vertices_a, faces_a=faces_a, vertices_b=vertices_b, faces_b=faces_b
+    )
+    _require_triangles(faces_a=faces_a, faces_b=faces_b)
+    if faces_b.size != faces_a.size:
+        return False
+    if faces_a.size == 0:
+        return True
+    if vertices_a.size == 0 or vertices_b.size == 0:
+        # A face names a vertex the empty buffer does not hold.
+        return False
+    device = vertices_a.device
+    n_faces = faces_a.size // 3
+    # ``[0]``: a definite difference; ``[1]``: a fast-path miss the tie path must look at again.
+    unequal = _launch.zeros(2, dtype=wp.int32, device=device)
+    centroids_a = _launch.empty(n_faces, dtype=wp.vec3, device=device)
+    centroids_b = _launch.empty(n_faces, dtype=wp.vec3, device=device)
+    for vertices, faces, centroids in (
+        (vertices_a, faces_a, centroids_a),
+        (vertices_b, faces_b, centroids_b),
+    ):
+        _launch.launch(
+            kernel_equality.checked_face_centroids,
+            dim=n_faces,
+            inputs=[vertices, faces, centroids, unequal],
+            device=device,
+        )
+    match, _distance = od.neighbors.query_nearest(centroids_b, centroids_a)
+    hits = _launch.zeros(n_faces, dtype=wp.int32, device=device)
+    tolerances = (wp.float32(rtol), wp.float32(atol))
+    _launch.launch(
+        kernel_equality.flag_unmatched_triangles,
+        dim=n_faces,
+        inputs=[vertices_a, faces_a, vertices_b, faces_b, match, *tolerances, hits, unequal],
+        device=device,
+    )
+    # The answer is a host ``bool``; both flags in one read.
+    definite, missed = read_values(unequal, 0, 2)
+    if definite or not missed:
+        return not definite
+    if n_faces == 1:
+        # The one candidate there is was the fast path's.
+        return False
+    # A repeated triangle, or one beside its reversed twin, sends two faces to one centroid: each
+    # face claims among its nearest centroids instead.
+    candidates, _distances = od.neighbors.query_nearest(
+        centroids_b, centroids_a, min(_TIE_CANDIDATES, n_faces)
+    )
+    claimed = _launch.zeros(n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_equality.claim_matching_triangles,
+        dim=n_faces,
+        inputs=[
+            vertices_a,
+            faces_a,
+            vertices_b,
+            faces_b,
+            candidates,
+            *tolerances,
+            claimed,
+            unequal,
+        ],
+        device=device,
+    )
     # The answer is a host ``bool``.
     return int(read_scalar(unequal, 0)) == 0
 

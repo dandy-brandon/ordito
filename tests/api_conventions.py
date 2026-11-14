@@ -621,6 +621,10 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # The match's tickets: each ``b`` vertex counts the ``a`` vertices that took it, scratch read
     # only through ``atomic_add``'s return; the answer is ``out_unequal``.
     ("equality", "flag_unmatched_vertices"): frozenset({"hits"}),
+    # The same tickets for faces: ``hits`` on the nearest-centroid fast path, ``claimed`` the
+    # compare-and-swap claims of the tie path, each read only through its atomic's return.
+    ("equality", "flag_unmatched_triangles"): frozenset({"hits"}),
+    ("equality", "claim_matching_triangles"): frozenset({"claimed"}),
     # ``holes``' two DP tables are in place, and they ride inside ``HoleFillTables`` rather than in
     # the signature because their pointers are invariant across the whole span sweep and a launch
     # argument is not free (see that struct's docstring). So the bundle itself is the written

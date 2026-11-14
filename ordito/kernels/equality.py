@@ -1,6 +1,6 @@
 import warp as wp
 
-from ordito.kernels.array import pack_directed_key, pack_index_triple, rotate_min_first
+from ordito.kernels.array import pack_directed_key, pack_index_triple, rotate_min_first, to_vec3d
 from ordito.kernels.triangles import corner_triple
 
 wp.set_module_options({"enable_backward": False})
@@ -121,6 +121,158 @@ def flag_unequal_canonical_rows(
         out_unequal[0] = wp.int32(1)
 
 
+@wp.func
+def point_unmatched(point: wp.vec3, target: wp.vec3, rtol: wp.float32, atol: wp.float32) -> wp.bool:
+    # The one tolerance test of the module: ``point`` lies farther than
+    # ``atol + rtol * |target|`` from ``target``. Vertices and triangle corners take it alike.
+    return wp.length(point - target) > atol + rtol * wp.length(target)
+
+
+@wp.func
+def checked_face_corners(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], f: wp.int32
+) -> tuple[wp.vec3, wp.vec3, wp.vec3, wp.int32]:
+    # Face ``f``'s corner positions, with ``1`` in the last slot when a corner index is outside
+    # ``[0, n_vertices)``. Such a face reads vertex 0 at every corner, so no load leaves the buffer;
+    # its caller raises a flag, and the positions then decide nothing. ``n_vertices > 0``.
+    n = vertices.shape[0]
+    a, b, c = corner_triple(faces, f)
+    if a < 0 or a >= n or b < 0 or b >= n or c < 0 or c >= n:
+        origin = vertices[0]
+        return origin, origin, origin, wp.int32(1)
+    return vertices[a], vertices[b], vertices[c], wp.int32(0)
+
+
+@wp.func
+def rotation_invariant_centroid(v0: wp.vec3, v1: wp.vec3, v2: wp.vec3) -> wp.vec3:
+    # The barycentre summed in ``float64``, where three ``float32`` corners add exactly (short of an
+    # exponent spread past 29 bits), so every rotation of a face rounds to one ``float32`` centroid
+    # and a face and its rotated twin match each other. A ``float32`` sum moved the centroid by an
+    # ulp under rotation on 30-50 % of the scan meshes' faces.
+    total = to_vec3d(v0) + to_vec3d(v1) + to_vec3d(v2)
+    return wp.vec3(total / wp.float64(3.0))
+
+
+@wp.kernel
+def checked_face_centroids(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    out_centroids: wp.array[wp.vec3],
+    out_unequal: wp.array[wp.int32],
+) -> None:
+    # Every face's barycentre, the point ``triangles_allclose`` matches faces by; a face naming a
+    # vertex outside the buffer raises ``out_unequal[0]`` (a plain store: every writer stores 1).
+    f = wp.int32(wp.tid())
+    v0, v1, v2, bad = checked_face_corners(vertices, faces, f)
+    if bad != 0:
+        out_unequal[0] = wp.int32(1)
+    out_centroids[f] = rotation_invariant_centroid(v0, v1, v2)
+
+
+@wp.func
+def rotation_unmatched(
+    a0: wp.vec3,
+    a1: wp.vec3,
+    a2: wp.vec3,
+    b0: wp.vec3,
+    b1: wp.vec3,
+    b2: wp.vec3,
+    rtol: wp.float32,
+    atol: wp.float32,
+) -> wp.bool:
+    # Some corner of ``(a0, a1, a2)`` is out of tolerance of the same corner of ``(b0, b1, b2)``.
+    return (
+        point_unmatched(a0, b0, rtol, atol)
+        or point_unmatched(a1, b1, rtol, atol)
+        or point_unmatched(a2, b2, rtol, atol)
+    )
+
+
+@wp.func
+def triangle_unmatched(
+    a0: wp.vec3,
+    a1: wp.vec3,
+    a2: wp.vec3,
+    b0: wp.vec3,
+    b1: wp.vec3,
+    b2: wp.vec3,
+    rtol: wp.float32,
+    atol: wp.float32,
+) -> wp.bool:
+    # No rotation of ``(a0, a1, a2)``, the winding kept, puts every corner within tolerance of the
+    # same corner of ``(b0, b1, b2)``. A reflection is not tried: a reversed face is another face.
+    return (
+        rotation_unmatched(a0, a1, a2, b0, b1, b2, rtol, atol)
+        and rotation_unmatched(a1, a2, a0, b0, b1, b2, rtol, atol)
+        and rotation_unmatched(a2, a0, a1, b0, b1, b2, rtol, atol)
+    )
+
+
+@wp.kernel
+def flag_unmatched_triangles(
+    vertices_a: wp.array[wp.vec3],
+    faces_a: wp.array[wp.int32],
+    vertices_b: wp.array[wp.vec3],
+    faces_b: wp.array[wp.int32],
+    match: wp.array[wp.int32],
+    rtol: wp.float32,
+    atol: wp.float32,
+    hits: wp.array[wp.int32],
+    out_unequal: wp.array[wp.int32],
+) -> None:
+    # The fast path of ``triangles_allclose``: face ``f`` of ``a`` is matched when its triangle is
+    # within tolerance of its nearest-centroid ``b`` face's and no other ``a`` face took that face
+    # (the ticket on ``hits``, as in ``flag_unmatched_vertices``, which matches points where this
+    # matches triangles). A miss raises ``out_unequal[1]``, not ``[0]``: a triangle listed twice,
+    # or beside its reversed twin, sends two faces to one nearest centroid, and only
+    # ``claim_matching_triangles`` over several candidates tells that from a real difference.
+    f = wp.int32(wp.tid())
+    m = match[f]
+    if m < 0:
+        out_unequal[1] = wp.int32(1)
+        return
+    a0, a1, a2, bad_a = checked_face_corners(vertices_a, faces_a, f)
+    b0, b1, b2, bad_b = checked_face_corners(vertices_b, faces_b, m)
+    if bad_a != 0 or bad_b != 0:
+        out_unequal[0] = wp.int32(1)
+        return
+    if triangle_unmatched(a0, a1, a2, b0, b1, b2, rtol, atol):
+        out_unequal[1] = wp.int32(1)
+        return
+    if wp.atomic_add(hits, m, wp.int32(1)) != wp.int32(0):
+        out_unequal[1] = wp.int32(1)
+
+
+@wp.kernel
+def claim_matching_triangles(
+    vertices_a: wp.array[wp.vec3],
+    faces_a: wp.array[wp.int32],
+    vertices_b: wp.array[wp.vec3],
+    faces_b: wp.array[wp.int32],
+    candidates: wp.array2d[wp.int32],
+    rtol: wp.float32,
+    atol: wp.float32,
+    claimed: wp.array[wp.int32],
+    out_unequal: wp.array[wp.int32],
+) -> None:
+    # The tie path of ``triangles_allclose``: face ``f`` of ``a`` claims the first of its
+    # nearest-centroid candidates (nearest first, ``-1`` past the cloud) that its triangle is
+    # within tolerance of and no other face claimed; with none left it raises ``out_unequal[0]``.
+    # Faces listing one triangle are interchangeable and a reversed twin matches only its own kind,
+    # so the claims' arrival order cannot change the answer.
+    f = wp.int32(wp.tid())
+    a0, a1, a2, bad_a = checked_face_corners(vertices_a, faces_a, f)
+    if bad_a == 0:
+        for j in range(candidates.shape[1]):
+            m = candidates[f, j]
+            if m >= 0:
+                b0, b1, b2, bad_b = checked_face_corners(vertices_b, faces_b, m)
+                if bad_b == 0 and not triangle_unmatched(a0, a1, a2, b0, b1, b2, rtol, atol):
+                    if wp.atomic_cas(claimed, m, wp.int32(0), wp.int32(1)) == wp.int32(0):
+                        return
+    out_unequal[0] = wp.int32(1)
+
+
 @wp.kernel
 def flag_unmatched_vertices(
     vertices_a: wp.array[wp.vec3],
@@ -139,8 +291,7 @@ def flag_unmatched_vertices(
     if m < 0:
         out_unequal[0] = wp.int32(1)
         return
-    target = vertices_b[m]
-    if wp.length(vertices_a[v] - target) > atol + rtol * wp.length(target):
+    if point_unmatched(vertices_a[v], vertices_b[m], rtol, atol):
         out_unequal[0] = wp.int32(1)
         return
     if wp.atomic_add(hits, m, wp.int32(1)) != wp.int32(0):

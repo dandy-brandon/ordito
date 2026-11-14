@@ -9,7 +9,8 @@ Both sides therefore take the scan's vertices with each repeat moved by a few ul
 which keeps every vertex and face; merging them instead would collapse up to 242 faces.
 ``canonical_faces`` is the radix sort of the face rows underneath both comparisons;
 ``faces_equal`` is two of those and an element-wise pass; ``meshes_allclose`` adds a nearest-vertex
-query and the bijection check before them.
+query and the bijection check before them. ``triangles_allclose`` sorts nothing: a nearest-centroid
+query and a corner check.
 
 Ordito only: no reference library compares meshes up to numbering. The tests' NumPy oracle (a
 per-row rotation and a ``lexsort``) is not a mesh library.
@@ -79,6 +80,38 @@ def test_meshes_allclose(bench_case: BenchCase) -> None:
     faces_ref = bench_case.faces_wp
     equal = bench_case.run(
         lambda: od.equality.meshes_allclose(vertices_ref, faces_ref, vertices_wp, faces_wp)
+    )
+    assert equal
+
+
+_soup_cache: dict[tuple[str, str], _Mesh] = {}
+
+
+@pytest.mark.benchmark(group="triangles_allclose")
+@pytest.mark.benchlibs("ordito")
+def test_triangles_allclose(bench_case: BenchCase) -> None:
+    """
+    The scan mesh against its triangle soup: two centroid passes, a nearest-centroid query, a check.
+
+    The soup gives every face its own three vertices, faces reordered and rotated, built on the
+    host. The scan's own vertices are compared as they are, repeats included: no vertex is matched.
+    """
+    assert bench_case.device is not None
+    key = (bench_case.mesh_name, str(bench_case.device))
+    if key not in _soup_cache:
+        rng = np.random.default_rng(3)
+        faces_np = bench_case.faces_np[rng.permutation(bench_case.n_faces)]
+        roll_np = rng.integers(0, 3, len(faces_np))
+        faces_np = np.take_along_axis(faces_np, (roll_np[:, None] + np.arange(3)) % 3, axis=1)
+        corners_np = bench_case.vertices_np[faces_np].reshape(-1, 3)
+        _soup_cache[key] = (
+            wp.array(corners_np, dtype=wp.vec3, device=bench_case.device),
+            wp.array(np.arange(len(corners_np), dtype=np.int32), device=bench_case.device),
+        )
+    soup_vertices, soup_faces = _soup_cache[key]
+    vertices_ref, faces_ref = bench_case.vertices_wp, bench_case.faces_wp
+    equal = bench_case.run(
+        lambda: od.equality.triangles_allclose(vertices_ref, faces_ref, soup_vertices, soup_faces)
     )
     assert equal
 

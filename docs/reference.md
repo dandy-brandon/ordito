@@ -39,7 +39,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | vertex normals | [`normals.vertex_normals`][ordito.normals.vertex_normals] |
 | volume, centre of mass, inertia, Euler characteristic | [`measures`][ordito.measures]: [`volume`][ordito.measures.volume], [`moments`][ordito.measures.moments], [`euler_characteristic`][ordito.measures.euler_characteristic] |
 | is it watertight / manifold / orientable / self-intersecting? | [`validation`][ordito.validation]: [`is_watertight`][ordito.validation.is_watertight], [`is_edge_manifold`][ordito.validation.is_edge_manifold], [`is_orientable`][ordito.validation.is_orientable], [`is_self_intersecting`][ordito.validation.is_self_intersecting] |
-| are two meshes the same up to vertex and face numbering? | [`comparison.meshes_allclose`][ordito.equality.meshes_allclose], [`faces_equal`][ordito.equality.faces_equal] |
+| are two meshes the same up to vertex and face numbering? | [`comparison.meshes_allclose`][ordito.equality.meshes_allclose], [`triangles_allclose`][ordito.equality.triangles_allclose], [`faces_equal`][ordito.equality.faces_equal] |
 | unique edges and their lengths | [`edges.edges_unique`][ordito.edges.edges_unique], [`edges_unique_length`][ordito.edges.edges_unique_length] |
 | boundary edges and hole rims | [`boundary.boundary_edges`][ordito.boundary.boundary_edges], [`boundary_loops`][ordito.boundary.boundary_loops] |
 | neighbouring faces and connected components | [`adjacency.face_adjacency`][ordito.adjacency.face_adjacency], [`face_connected_component_labels`][ordito.adjacency.face_connected_component_labels], [`combine.split`][ordito.combine.split] |

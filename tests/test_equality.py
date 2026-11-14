@@ -195,6 +195,124 @@ def test_meshes_allclose_edge_cases(device: str) -> None:
         od.equality.meshes_allclose(vertices_wp, partial_wp, vertices_wp, partial_wp)
 
 
+def _soup(
+    vertices_np: np.ndarray, faces_np: np.ndarray, seed: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return the mesh unwelded, each face its own three vertices, faces reordered and rotated."""
+    rng = np.random.default_rng(seed)
+    faces_np = faces_np[rng.permutation(len(faces_np))]
+    roll_np = rng.integers(0, 3, len(faces_np))
+    faces_np = np.take_along_axis(faces_np, (roll_np[:, None] + np.arange(3)) % 3, axis=1)
+    return vertices_np[faces_np].reshape(-1, 3), np.arange(faces_np.size).reshape(-1, 3)
+
+
+@pytest.mark.parametrize("mesh_name", MESHES)
+def test_triangles_allclose(request: pytest.FixtureRequest, mesh_name: str) -> None:
+    """
+    Not a library comparison: no reference compares triangle sets up to order; a constructed answer.
+
+    The mesh unwelded into a soup (every face its own three vertices, three times the vertex count),
+    its faces reordered and rotated, is equal, also moved by a tenth of the tolerance, though
+    ``meshes_allclose`` rejects it; each of one flipped face, one corner moved by ten times the
+    tolerance, one face replaced by a copy of another and a missing face is not. The tolerance is a
+    third of the closest face-centroid pair's distance, the largest the match allows.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    device = mesh_wp.device
+    vertices_np = mesh_wp.points.numpy()
+    faces_np = np.asarray(mesh_tm.faces)
+    soup_vertices_np, soup_faces_np = _soup(vertices_np, faces_np, 4)
+    centroids_np = vertices_np[faces_np].mean(axis=1)
+    distances_np, _ = cKDTree(centroids_np).query(centroids_np, k=2)
+    atol = float(np.asarray(distances_np)[:, 1].min()) / 3.0
+
+    def allclose(vertices_np: np.ndarray, faces_np: np.ndarray) -> bool:
+        vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+        return od.equality.triangles_allclose(
+            mesh_wp.points, mesh_wp.indices, vertices_wp, faces_wp, rtol=0.0, atol=atol
+        )
+
+    assert allclose(soup_vertices_np, soup_faces_np)
+    soup_vertices_wp, soup_faces_wp = numpy_to_warp(soup_vertices_np, soup_faces_np, device)
+    assert not od.equality.meshes_allclose(
+        mesh_wp.points, mesh_wp.indices, soup_vertices_wp, soup_faces_wp, rtol=0.0, atol=atol
+    )
+    nudged_np = soup_vertices_np + np.float32(0.1 * atol / np.sqrt(3.0))
+    assert allclose(nudged_np, soup_faces_np)
+
+    flipped_np = soup_faces_np.copy()
+    flipped_np[3] = flipped_np[3, ::-1]
+    assert not allclose(soup_vertices_np, flipped_np)
+    moved_np = soup_vertices_np.copy()
+    moved_np[5] += np.float32(10.0 * atol)
+    assert not allclose(moved_np, soup_faces_np)
+    repeated_np = soup_faces_np.copy()
+    repeated_np[5] = repeated_np[6]
+    assert not allclose(soup_vertices_np, repeated_np)
+    assert not allclose(soup_vertices_np, soup_faces_np[1:])
+
+
+def test_triangles_allclose_repeated_triangles(device: str) -> None:
+    """
+    Not a parity assert: faces sharing one centroid are matched among their nearest centroids.
+
+    A box with one face listed three times and another beside its reversed twin equals its
+    shuffled soup, on the tie path (two faces reach one nearest centroid); the same counts with the
+    repeats spread differently (the tripled face twice, a third face twice) are not equal, nor is
+    the reversed twin turned back.
+    """
+    mesh_tm = tm.creation.box()
+    vertices_np = np.asarray(mesh_tm.vertices)
+    faces_np = np.asarray(mesh_tm.faces)
+    repeated_np = np.vstack([faces_np, faces_np[[0, 0]], faces_np[[4]][:, ::-1]])
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, repeated_np, device)
+
+    def allclose(faces_np: np.ndarray) -> bool:
+        soup_vertices_wp, soup_faces_wp = numpy_to_warp(*_soup(vertices_np, faces_np, 5), device)
+        return od.equality.triangles_allclose(
+            vertices_wp, faces_wp, soup_vertices_wp, soup_faces_wp
+        )
+
+    assert allclose(repeated_np)
+    assert not allclose(np.vstack([faces_np, faces_np[[0, 7]], faces_np[[4]][:, ::-1]]))
+    assert not allclose(np.vstack([faces_np, faces_np[[0, 0]], faces_np[[4]]]))
+
+
+def test_triangles_allclose_edge_cases(device: str) -> None:
+    """
+    Not a parity assert: empty meshes, different counts, an out-of-range corner, bad sizes.
+
+    Vertex buffers of different lengths compare equal when their faces hold the same triangles.
+    """
+    mesh_tm = tm.creation.box()
+    vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
+    empty_vertices_wp = warp_empty(0, wp.vec3, device)
+    empty_faces_wp = warp_empty(0, wp.int32, device)
+    assert od.equality.triangles_allclose(
+        empty_vertices_wp, empty_faces_wp, empty_vertices_wp, empty_faces_wp
+    )
+    assert od.equality.triangles_allclose(
+        vertices_wp, empty_faces_wp, empty_vertices_wp, empty_faces_wp
+    )
+    assert not od.equality.triangles_allclose(
+        vertices_wp, faces_wp, empty_vertices_wp, empty_faces_wp
+    )
+    assert not od.equality.triangles_allclose(empty_vertices_wp, faces_wp, vertices_wp, faces_wp)
+    # The same faces over a vertex buffer one unused vertex longer.
+    longer_wp, _ = numpy_to_warp(
+        np.vstack([mesh_tm.vertices, [[5.0, 5.0, 5.0]]]), mesh_tm.faces, device
+    )
+    assert od.equality.triangles_allclose(vertices_wp, faces_wp, longer_wp, faces_wp)
+    beyond_np = np.asarray(mesh_tm.faces).copy()
+    beyond_np[0, 0] = len(mesh_tm.vertices)
+    _, beyond_wp = numpy_to_warp(mesh_tm.vertices, beyond_np, device)
+    assert not od.equality.triangles_allclose(vertices_wp, beyond_wp, vertices_wp, faces_wp)
+    assert not od.equality.triangles_allclose(vertices_wp, faces_wp, vertices_wp, beyond_wp)
+    partial_wp = wp.array([0, 1, 2, 3], dtype=wp.int32, device=device)
+    with pytest.raises(ValueError, match="whole number of triangles"):
+        od.equality.triangles_allclose(vertices_wp, partial_wp, vertices_wp, partial_wp)
+
+
 @pytest.mark.parametrize("mesh_name", MESHES)
 def test_points_allclose(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """

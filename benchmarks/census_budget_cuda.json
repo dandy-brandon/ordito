@@ -1796,6 +1796,14 @@
    "sort": 4
   }
  },
+ "benchmarks/test_equality.py::test_triangles_allclose[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 6,
+   "memset": 2,
+   "d2h": 1
+  }
+ },
  "benchmarks/test_geodesic_walk.py::test_descend_field[sphere_med-ordito-cuda-1]": {
   "counts": {
    "launch": 10,
