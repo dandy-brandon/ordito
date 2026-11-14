@@ -184,9 +184,9 @@ No other library computes these, so they have no comparison. ordito (CUDA)'s med
 | `transfer_through_operator` | lucy | 96.42 ms |
 | `transfer_through_index` | lucy | 381.3 µs |
 | `index_operators` | lucy direction=representatives | 768.7 µs |
-| `compose_operators` | happy_buddha | 7.01 ms |
 | `provenance_vertex_values` | lucy | 1.67 ms |
 | `provenance_face_values` | lucy | 687.5 µs |
-| `provenance_then` | happy_buddha | 7.14 ms |
 | `provenance_constructors` | lucy constructor=from_clusters | 1.00 ms |
+| `compose_operators` | lucy | 21.68 ms |
+| `provenance_then` | lucy | 24.34 ms |
 
