@@ -43,6 +43,7 @@ from ordito._common import (
     require_nonempty_mesh,
     require_same_device,
     scan_count,
+    scan_count_checked,
     search_order,
     tiled_ball_walk,
 )
@@ -917,34 +918,56 @@ def compose_operators(
         )
     device = first.offsets.device
     n_out = int(second.nrow)
-    offsets = _launch.zeros(n_out + 1, dtype=wp.int32, device=device)
-    if n_out > 0:
+    n_cols = int(first.ncol)
+    if n_out == 0:
+        offsets = _launch.zeros(1, dtype=wp.int32, device=device)
+        no_columns = _launch.empty(0, dtype=wp.int32, device=device)
+        no_weights = _launch.empty(0, dtype=wp.float32, device=device)
+        return od.array.bsr_from_csr(0, n_cols, offsets, no_columns, no_weights, nnz=0)
+    # Short rows count their distinct columns; long rows (rare: a large cluster's expansion) their
+    # expanded length, scanned with a wrap check (a product of row lengths) to size their
+    # segments. One readback, of the long rows' total.
+    counts = _launch.zeros(n_out + 2, dtype=wp.int32, device=device)
+    long_offsets = _launch.zeros(n_out + 2, dtype=wp.int32, device=device)
+    operands = [
+        first.offsets,
+        first.columns,
+        first.values,
+        second.offsets,
+        second.columns,
+        second.values,
+    ]
+    _launch.launch(
+        kernel_interpolation.count_composed_rows,
+        dim=n_out,
+        inputs=[first.offsets, first.columns, second.offsets, second.columns],
+        outputs=[counts, long_offsets],
+        device=device,
+    )
+    n_long = scan_count_checked(long_offsets, "the composed operator's long rows")
+    long_columns = _launch.empty(n_long, dtype=wp.int32, device=device)
+    long_weights = _launch.empty(n_long, dtype=wp.float32, device=device)
+    if n_long > 0:
         _launch.launch(
-            kernel_interpolation.count_composed_rows,
+            kernel_interpolation.compose_long_rows,
             dim=n_out,
-            inputs=[first.offsets, second.offsets, second.columns, offsets],
+            inputs=[*operands, long_offsets],
+            outputs=[long_columns, long_weights, counts],
             device=device,
         )
-    # The product's triplet count sizes its buffers: one tail readback.
-    n_triplets = scan_count(_launch.view(offsets, 1, n_out + 1))
-    rows, columns, weights = od.array.triplet_buffers(n_triplets, wp.float32, device)
-    if n_out > 0:
-        _launch.launch(
-            kernel_interpolation.write_composed_rows,
-            dim=n_out,
-            inputs=[
-                first.offsets,
-                first.columns,
-                first.values,
-                second.offsets,
-                second.columns,
-                second.values,
-                offsets,
-            ],
-            outputs=[rows, columns, weights],
-            device=device,
-        )
-    return od.array.csr_from_triplets(n_out, int(first.ncol), rows, columns, weights)
+    # The product's entry count sizes it: one tail readback.
+    nnz = scan_count_checked(counts, "the composed operator's entries")
+    offsets = _launch.view(counts, 0, n_out + 1)
+    columns = _launch.empty(nnz, dtype=wp.int32, device=device)
+    weights = _launch.empty(nnz, dtype=wp.float32, device=device)
+    _launch.launch(
+        kernel_interpolation.write_composed_rows,
+        dim=n_out,
+        inputs=[*operands, long_offsets, long_columns, long_weights, offsets],
+        outputs=[columns, weights],
+        device=device,
+    )
+    return od.array.bsr_from_csr(n_out, n_cols, offsets, columns, weights, nnz=nnz)
 
 
 class Provenance(NamedTuple):

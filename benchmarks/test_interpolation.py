@@ -435,9 +435,7 @@ def test_index_operators(bench_case: BenchCase, direction: str) -> None:
 def test_compose_operators(bench_case: BenchCase) -> None:
     """Two subdivisions' operators multiplied: what ``Provenance.then`` does. No reference row."""
     skip_larger_than(bench_case, "sphere_small", "two subdivisions multiply the faces by sixteen")
-    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    once_v, once_f, first = od.remesh.subdivide(vertices, faces, return_provenance=True)
-    _twice_v, _twice_f, second = od.remesh.subdivide(once_v, once_f, return_provenance=True)
+    first, second = _two_subdivisions(bench_case)
     assert first.vertex_operator is not None
     assert second.vertex_operator is not None
     first_operator, second_operator = first.vertex_operator, second.vertex_operator
@@ -445,6 +443,21 @@ def test_compose_operators(bench_case: BenchCase) -> None:
         lambda: od.interpolation.compose_operators(first_operator, second_operator)
     )
     assert int(composed.nrow) == second.vertex_index.size
+
+
+def _two_subdivisions(
+    bench_case: BenchCase,
+) -> tuple[od.interpolation.Provenance, od.interpolation.Provenance]:
+    """
+    Return two subdivisions' provenances, the meshes themselves released.
+
+    Only the provenances are timed, and the twice-subdivided mesh is the largest buffer of the row:
+    on ``lucy`` the two meshes held 10 GB the chained operators need.
+    """
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    once_vertices, once_faces, first = od.remesh.subdivide(vertices, faces, return_provenance=True)
+    second = od.remesh.subdivide(once_vertices, once_faces, return_provenance=True)[2]
+    return first, second
 
 
 @pytest.mark.benchmark(group="provenance_vertex_values")
@@ -488,9 +501,7 @@ def test_provenance_then(bench_case: BenchCase) -> None:
     is several launches over the twice-refined vertex count.
     """
     skip_larger_than(bench_case, "sphere_small", "two subdivisions multiply the faces by sixteen")
-    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    once_v, once_f, first = od.remesh.subdivide(vertices, faces, return_provenance=True)
-    _twice_v, _twice_f, second = od.remesh.subdivide(once_v, once_f, return_provenance=True)
+    first, second = _two_subdivisions(bench_case)
     chained = bench_case.run(lambda: first.then(second))
     assert chained.vertex_index.size == second.vertex_index.size
 

@@ -682,14 +682,17 @@ def test_compose_operators_matches_scipy(device: str) -> None:
     Class A against SciPy: the composed operator is the sparse product ``second @ first``.
 
     Random operators with repeated columns across a row's expansion, so duplicates are summed;
+    a row of ``second`` with 20 entries expands past the insertion sort's 32 into the heapsort;
     mismatched shapes are refused.
     """
     rng = np.random.default_rng(9)
 
     def random_operator(
-        n_rows: int, n_cols: int
+        n_rows: int, n_cols: int, long_row: int = 3
     ) -> tuple[sp.csr_matrix, odt.BsrMatrix[wp.float32]]:
-        rows_np = np.repeat(np.arange(n_rows), 3).astype(np.int32)
+        lengths_np = np.full(n_rows, 3)
+        lengths_np[0] = long_row
+        rows_np = np.repeat(np.arange(n_rows), lengths_np).astype(np.int32)
         cols_np = rng.integers(0, n_cols, rows_np.size).astype(np.int32)
         values_np = rng.random(rows_np.size).astype(np.float32)
         reference = sp.csr_matrix((values_np, (rows_np, cols_np)), shape=(n_rows, n_cols))
@@ -703,7 +706,10 @@ def test_compose_operators_matches_scipy(device: str) -> None:
         return reference, operator
 
     first_sp, first = random_operator(40, 30)
-    second_sp, second = random_operator(25, 40)
+    second_sp, second = random_operator(25, 40, long_row=20)
+    # Row 0's expansion: the lengths of the ``first`` rows its columns name.
+    first_lengths_np = np.diff(first_sp.indptr)
+    assert first_lengths_np[second_sp[0].indices].sum() > 32
     composed = od.interpolation.compose_operators(first, second)
     assert sparse_allclose(bsr_to_csr(composed), second_sp @ first_sp)
     with pytest.raises(ValueError, match="do not chain"):

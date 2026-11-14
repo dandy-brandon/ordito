@@ -331,21 +331,170 @@ def write_gather_rows(
         out_weights[offsets[i]] = wp.float32(1.0)
 
 
-@wp.kernel
-def count_composed_rows(
+# A composed row of at most this many expanded entries is summed straight into its share of the
+# product: its distinct columns counted by an O(L^2) scan of its own expansion, then each entry
+# inserted into the row's exactly sized output in expansion order, so a column's duplicates sum in
+# that order. A longer row is expanded into a segment of its own and sorted there by an in-place
+# heapsort, whose O(L log L) bounds a hub row (a large cluster's expansion), its order fixed run
+# to run. The ordinary rows then need no buffer beyond the product: the expanded entries of a
+# twice-subdivided ``lucy`` (690 M) held 5.5 GB beside it.
+COMPOSED_SHORT_ENTRIES = 32
+
+
+@wp.func
+def expanded_length(
     first_offsets: wp.array[wp.int32],
     second_offsets: wp.array[wp.int32],
     second_columns: wp.array[wp.int32],
-    out_counts: wp.array[wp.int32],
-) -> None:
-    # The product ``second @ first`` of two CSR operators, row ``row`` of ``second`` expanded
-    # through ``first``: one triplet per pair of entries, duplicates summed by the assembly.
-    row = wp.int32(wp.tid())
+    row: wp.int32,
+) -> wp.int32:
+    # Row ``row`` of ``second`` expanded through ``first``: one entry per pair of entries.
     count = wp.int32(0)
     for k in range(second_offsets[row], second_offsets[row + 1]):
         middle = second_columns[k]
         count += first_offsets[middle + 1] - first_offsets[middle]
-    out_counts[row + 1] = count
+    return count
+
+
+@wp.func
+def expanded_column_seen(
+    first_offsets: wp.array[wp.int32],
+    first_columns: wp.array[wp.int32],
+    second_offsets: wp.array[wp.int32],
+    second_columns: wp.array[wp.int32],
+    row: wp.int32,
+    column: wp.int32,
+    position: wp.int32,
+) -> wp.int32:
+    # 1 when ``column`` occurs among the first ``position`` entries of row ``row``'s expansion.
+    seen = wp.int32(0)
+    index = wp.int32(0)
+    for k in range(second_offsets[row], second_offsets[row + 1]):
+        middle = second_columns[k]
+        for j in range(first_offsets[middle], first_offsets[middle + 1]):
+            if index < position and first_columns[j] == column:
+                seen = wp.int32(1)
+            index += 1
+    return seen
+
+
+@wp.kernel
+def count_composed_rows(
+    first_offsets: wp.array[wp.int32],
+    first_columns: wp.array[wp.int32],
+    second_offsets: wp.array[wp.int32],
+    second_columns: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
+    out_long_counts: wp.array[wp.int32],
+) -> None:
+    # Row ``row`` of the product ``second @ first``: a short row's distinct column count into
+    # ``out_counts[row + 1]``; a long row's expanded length into ``out_long_counts[row + 1]``, its
+    # distinct count left for ``compose_long_rows``.
+    row = wp.int32(wp.tid())
+    length = expanded_length(first_offsets, second_offsets, second_columns, row)
+    if length > COMPOSED_SHORT_ENTRIES:
+        out_long_counts[row + 1] = length
+        return
+    distinct = wp.int32(0)
+    index = wp.int32(0)
+    for k in range(second_offsets[row], second_offsets[row + 1]):
+        middle = second_columns[k]
+        for j in range(first_offsets[middle], first_offsets[middle + 1]):
+            column = first_columns[j]
+            seen = expanded_column_seen(
+                first_offsets, first_columns, second_offsets, second_columns, row, column, index
+            )
+            distinct += 1 - seen
+            index += 1
+    out_counts[row + 1] = distinct
+
+
+@wp.func
+def sift_down_segment(
+    columns: wp.array[wp.int32],
+    weights: wp.array[wp.float32],
+    start: wp.int32,
+    root: wp.int32,
+    count: wp.int32,
+) -> None:
+    # Restore the max-heap on ``[start, start + count)`` below heap position ``root``.
+    node = root
+    while 2 * node + 1 < count:
+        child = 2 * node + 1
+        if child + 1 < count and columns[start + child + 1] > columns[start + child]:
+            child += 1
+        if columns[start + node] >= columns[start + child]:
+            return
+        column = columns[start + node]
+        weight = weights[start + node]
+        columns[start + node] = columns[start + child]
+        weights[start + node] = weights[start + child]
+        columns[start + child] = column
+        weights[start + child] = weight
+        node = child
+
+
+@wp.func
+def heap_sort_segment(
+    columns: wp.array[wp.int32], weights: wp.array[wp.float32], start: wp.int32, stop: wp.int32
+) -> None:
+    # In place, O(L log L); not stable, but a fixed sequence of swaps, so reproducible.
+    count = stop - start
+    for k in range(count // 2):
+        sift_down_segment(columns, weights, start, count // 2 - 1 - k, count)
+    for k in range(count - 1):
+        last = count - 1 - k
+        column = columns[start]
+        weight = weights[start]
+        columns[start] = columns[start + last]
+        weights[start] = weights[start + last]
+        columns[start + last] = column
+        weights[start + last] = weight
+        sift_down_segment(columns, weights, start, wp.int32(0), last)
+
+
+@wp.kernel
+def compose_long_rows(
+    first_offsets: wp.array[wp.int32],
+    first_columns: wp.array[wp.int32],
+    first_weights: wp.array[wp.float32],
+    second_offsets: wp.array[wp.int32],
+    second_columns: wp.array[wp.int32],
+    second_weights: wp.array[wp.float32],
+    long_offsets: wp.array[wp.int32],
+    out_columns: wp.array[wp.int32],
+    out_weights: wp.array[wp.float32],
+    out_counts: wp.array[wp.int32],
+) -> None:
+    # A long row assembled in its segment ``long_offsets[row:row + 1]``: expanded, heapsorted by
+    # column, each column's run summed into the segment's head, its length into
+    # ``out_counts[row + 1]``. A short row has an empty segment and returns.
+    row = wp.int32(wp.tid())
+    start = long_offsets[row]
+    stop = long_offsets[row + 1]
+    if stop == start:
+        return
+    slot = start
+    for k in range(second_offsets[row], second_offsets[row + 1]):
+        middle = second_columns[k]
+        for j in range(first_offsets[middle], first_offsets[middle + 1]):
+            out_columns[slot] = first_columns[j]
+            out_weights[slot] = second_weights[k] * first_weights[j]
+            slot += 1
+    heap_sort_segment(out_columns, out_weights, start, stop)
+    written = start
+    i = start
+    while i < stop:
+        column = out_columns[i]
+        total = out_weights[i]
+        i += 1
+        while i < stop and out_columns[i] == column:
+            total += out_weights[i]
+            i += 1
+        out_columns[written] = column
+        out_weights[written] = total
+        written += 1
+    out_counts[row + 1] = written - start
 
 
 @wp.kernel
@@ -356,20 +505,46 @@ def write_composed_rows(
     second_offsets: wp.array[wp.int32],
     second_columns: wp.array[wp.int32],
     second_weights: wp.array[wp.float32],
+    long_offsets: wp.array[wp.int32],
+    long_columns: wp.array[wp.int32],
+    long_weights: wp.array[wp.float32],
     offsets: wp.array[wp.int32],
-    out_rows: wp.array[wp.int32],
     out_columns: wp.array[wp.int32],
     out_weights: wp.array[wp.float32],
 ) -> None:
+    # Row ``row`` of the product into ``offsets[row:row + 1]``: a long row copied from the head of
+    # its segment; a short row's expansion inserted entry by entry into the row's slots, kept
+    # sorted, a repeated column added to its slot (so its duplicates sum in expansion order).
     row = wp.int32(wp.tid())
-    slot = offsets[row]
+    base = offsets[row]
+    if long_offsets[row + 1] > long_offsets[row]:
+        source = long_offsets[row]
+        for k in range(base, offsets[row + 1]):
+            out_columns[k] = long_columns[source]
+            out_weights[k] = long_weights[source]
+            source += 1
+        return
+    end = base
     for k in range(second_offsets[row], second_offsets[row + 1]):
         middle = second_columns[k]
+        weight_k = second_weights[k]
         for j in range(first_offsets[middle], first_offsets[middle + 1]):
-            out_rows[slot] = row
-            out_columns[slot] = first_columns[j]
-            out_weights[slot] = second_weights[k] * first_weights[j]
-            slot += 1
+            column = first_columns[j]
+            weight = weight_k * first_weights[j]
+            slot = base
+            while slot < end and out_columns[slot] < column:
+                slot += 1
+            if slot < end and out_columns[slot] == column:
+                out_weights[slot] = out_weights[slot] + weight
+            else:
+                move = end
+                while move > slot:
+                    out_columns[move] = out_columns[move - 1]
+                    out_weights[move] = out_weights[move - 1]
+                    move -= 1
+                out_columns[slot] = column
+                out_weights[slot] = weight
+                end += 1
 
 
 @wp.kernel

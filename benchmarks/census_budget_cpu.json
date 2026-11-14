@@ -3035,10 +3035,9 @@
  "benchmarks/test_interpolation.py::test_compose_operators[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 4,
-   "alloc": 8,
-   "readback": 1,
-   "scan": 1,
-   "sort": 1
+   "alloc": 4,
+   "readback": 2,
+   "scan": 2
   }
  },
  "benchmarks/test_interpolation.py::test_index_operators[sphere_small-ordito-cpu-from_index]": {
@@ -3111,10 +3110,9 @@
  "benchmarks/test_interpolation.py::test_provenance_then[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 6,
-   "alloc": 10,
-   "readback": 1,
-   "scan": 1,
-   "sort": 1
+   "alloc": 6,
+   "readback": 2,
+   "scan": 2
   }
  },
  "benchmarks/test_interpolation.py::test_provenance_vertex_values[sphere_small-ordito-cpu]": {
