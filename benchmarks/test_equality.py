@@ -3,6 +3,10 @@ Benchmarks for ``ordito.equality``: equality of meshes, point sets, rows and par
 
 Every row compares a scan mesh with a renumbered, reordered and rotated copy of itself, built on
 the host outside the timed callable, so each call does the whole comparison and answers ``True``.
+The vertex comparisons need distinct points (two equal points tie in the nearest-point match and
+fail the bijection), and the scans repeat some: dragon 2 100 positions, happy_buddha 128, lucy 2.
+Both sides therefore take the scan's vertices with each repeat moved by a few ulps in ``x``,
+which keeps every vertex and face; merging them instead would collapse up to 242 faces.
 ``canonical_faces`` is the radix sort of the face rows underneath both comparisons;
 ``faces_equal`` is two of those and an element-wise pass; ``meshes_allclose`` adds a nearest-vertex
 query and the bijection check before them.
@@ -21,25 +25,46 @@ import ordito as od
 import ordito.typing as odt
 from conftest import BenchCase
 
-_shuffled_cache: dict[tuple[str, str], tuple[wp.array[wp.vec3], wp.array[wp.int32]]] = {}
+_Mesh = tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+_shuffled_cache: dict[tuple[str, str], tuple[wp.array[wp.vec3], _Mesh]] = {}
 
 
-def _shuffled(bench_case: BenchCase) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
-    """Return the case's mesh renumbered, its faces reordered and rotated, built on the host."""
+def _shuffled(bench_case: BenchCase) -> tuple[wp.array[wp.vec3], _Mesh]:
+    """
+    Return the case's distinct vertices and a copy of the mesh over them, shuffled on the host.
+
+    The copy is renumbered, its faces reordered and rotated; both share the distinct positions.
+    """
     assert bench_case.device is not None
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _shuffled_cache:
         rng = np.random.default_rng(0)
-        vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
+        vertices_np, faces_np = _distinct_points(bench_case.vertices_np), bench_case.faces_np
         order_np = rng.permutation(len(vertices_np))
         faces_np = np.argsort(order_np)[faces_np][rng.permutation(len(faces_np))]
         roll_np = rng.integers(0, 3, len(faces_np))
         faces_np = np.take_along_axis(faces_np, (roll_np[:, None] + np.arange(3)) % 3, axis=1)
         _shuffled_cache[key] = (
-            wp.array(vertices_np[order_np], dtype=wp.vec3, device=bench_case.device),
-            wp.array(faces_np.ravel().astype(np.int32), dtype=wp.int32, device=bench_case.device),
+            wp.array(vertices_np, dtype=wp.vec3, device=bench_case.device),
+            (
+                wp.array(vertices_np[order_np], dtype=wp.vec3, device=bench_case.device),
+                wp.array(
+                    faces_np.ravel().astype(np.int32), dtype=wp.int32, device=bench_case.device
+                ),
+            ),
         )
     return _shuffled_cache[key]
+
+
+def _distinct_points(points_np: np.ndarray) -> np.ndarray:
+    """Return ``float32`` points, each repeated position moved up an ulp in ``x`` until distinct."""
+    points_np = points_np.astype(np.float32)
+    while True:
+        _unique, first = np.unique(points_np, axis=0, return_index=True)
+        repeats = np.setdiff1d(np.arange(len(points_np)), first)
+        if repeats.size == 0:
+            return points_np
+        points_np[repeats, 0] = np.nextafter(points_np[repeats, 0], np.float32(np.inf))
 
 
 @pytest.mark.benchmark(group="meshes_allclose")
@@ -48,10 +73,10 @@ def test_meshes_allclose(bench_case: BenchCase) -> None:
     """
     The whole comparison: a nearest-vertex query, the bijection check and two face sorts.
 
-    The scan meshes have no coincident vertices, which the nearest-neighbour match needs.
+    Both sides take the distinct vertices, which the nearest-neighbour match needs.
     """
-    vertices_wp, faces_wp = _shuffled(bench_case)
-    vertices_ref, faces_ref = bench_case.vertices_wp, bench_case.faces_wp
+    vertices_ref, (vertices_wp, faces_wp) = _shuffled(bench_case)
+    faces_ref = bench_case.faces_wp
     equal = bench_case.run(
         lambda: od.equality.meshes_allclose(vertices_ref, faces_ref, vertices_wp, faces_wp)
     )
@@ -82,7 +107,7 @@ def test_faces_equal(bench_case: BenchCase) -> None:
 @pytest.mark.benchlibs("ordito")
 def test_canonical_faces(bench_case: BenchCase) -> None:
     """One radix sort of the rotated face rows, with the bound passed in."""
-    _vertices_wp, faces_wp = _shuffled(bench_case)
+    _vertices_ref, (_vertices_wp, faces_wp) = _shuffled(bench_case)
     n_vertices = bench_case.n_vertices
     canonical = bench_case.run(lambda: od.equality.canonical_faces(faces_wp, n_vertices=n_vertices))
     assert canonical.size == faces_wp.size
@@ -92,8 +117,7 @@ def test_canonical_faces(bench_case: BenchCase) -> None:
 @pytest.mark.benchlibs("ordito")
 def test_points_allclose(bench_case: BenchCase) -> None:
     """The vertex half of ``meshes_allclose``: the nearest-point query and the bijection check."""
-    vertices_wp, _faces_wp = _shuffled(bench_case)
-    vertices_ref = bench_case.vertices_wp
+    vertices_ref, (vertices_wp, _faces_wp) = _shuffled(bench_case)
     equal = bench_case.run(lambda: od.equality.points_allclose(vertices_ref, vertices_wp))
     assert equal
 
