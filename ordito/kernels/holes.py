@@ -3738,12 +3738,11 @@ class FillDp:
     apex: wp.array2d[wp.int32]
 
 
-@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
-def serial_fill_dp_diagonal(
-    dp: FillDp, offsets_start: wp.int32, offsets_count: wp.int32, steps: wp.int32
-) -> None:
-    """Fill the DP cells ``(i, i + steps)``: each one's lightest apex, the first of a tie."""
-    i = wp.int32(wp.tid())
+@wp.func
+def serial_fill_dp_cell(
+    dp: FillDp, i: wp.int32, offsets_start: wp.int32, offsets_count: wp.int32, steps: wp.int32
+):
+    """Fill the DP cell ``(i, i + steps)``: its lightest apex, the first of a tie."""
     n = dp.vert.shape[0]
     c = (i + steps) % n
     blocked = wp.bool(False)
@@ -3782,6 +3781,32 @@ def serial_fill_dp_diagonal(
     else:
         dp.weight[i, c] = wp.float64(_SERIAL_DBL_MAX)
         dp.apex[i, c] = -1
+
+
+# The two schedules of the cells differ only in how a diagonal waits for the one before it: a
+# launch each on CUDA, every diagonal in turn in one thread on the CPU (whose launches run their
+# threads in turn anyway). One block whose barrier ends each diagonal bought CUDA nothing
+# (2026-11-15: 0.97-1.0x on saddle_small, 1.04-1.05x on rim_short's 973-position holes at 256 and
+# 512 lanes; 1 024 lanes exceed the register file): a diagonal's cells, at most 20 apexes each, wait
+# on their own latency about as long as a launch is issued.
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def serial_fill_dp_diagonal(
+    dp: FillDp, offsets_start: wp.int32, offsets_count: wp.int32, steps: wp.int32
+) -> None:
+    """Fill the DP cells ``(i, i + steps)``: each one's lightest apex, the first of a tie."""
+    i = wp.int32(wp.tid())
+    serial_fill_dp_cell(dp, i, offsets_start, offsets_count, steps)
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def serial_fill_dp_in_turn(dp: FillDp, step_offsets: wp.array[wp.int32]) -> None:
+    """Fill every DP diagonal in turn in one thread, each one's cells in index order."""
+    n = dp.vert.shape[0]
+    for k in range(step_offsets.shape[0] - 1):
+        start = step_offsets[k]
+        count = step_offsets[k + 1] - start
+        for i in range(n):
+            serial_fill_dp_cell(dp, i, start, count, k + 2)
 
 
 # The band search of ``method="meshlib"``'s stitch, natively: ``ordito._serial_mesh._band_search``

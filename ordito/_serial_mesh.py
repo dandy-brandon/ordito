@@ -1230,7 +1230,7 @@ def _fill_dp_on_device(
     max_subdivisions: int,
     device: wp.DeviceLike,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Fill the DP's weight and apex tables on ``device``, one launch a diagonal."""
+    """Fill the DP's weight and apex tables on ``device``: a launch a diagonal, one on the CPU."""
     from ordito._common import read_array
     from ordito.kernels import holes as kernel_holes
 
@@ -1269,14 +1269,22 @@ def _fill_dp_on_device(
     dp.weight = weight
     dp.apex = apex
     resolved = wp.get_device(device)
-    start_list = starts.tolist()
-    for k, steps in enumerate(range(2, n - 1)):
+    if resolved.is_cpu:
         _launch.launch(
-            kernel_holes.serial_fill_dp_diagonal,
-            dim=n,
-            inputs=[dp, start_list[k], start_list[k + 1] - start_list[k], steps],
+            kernel_holes.serial_fill_dp_in_turn,
+            dim=1,
+            inputs=[dp, wp.array(starts.astype(np.int32), dtype=wp.int32, device=resolved)],
             device=resolved,
         )
+    else:
+        start_list = starts.tolist()
+        for k, steps in enumerate(range(2, n - 1)):
+            _launch.launch(
+                kernel_holes.serial_fill_dp_diagonal,
+                dim=n,
+                inputs=[dp, start_list[k], start_list[k + 1] - start_list[k], steps],
+                device=resolved,
+            )
     # The tables feed the host traceback that turns them into chords.
     return read_array(weight), read_array(apex).astype(np.int64)
 

@@ -2794,9 +2794,9 @@
  },
  "benchmarks/test_holes.py::test_fill_smooth_meshlib[rim_short-ordito-cpu]": {
   "counts": {
-   "launch": 1358,
-   "alloc": 159,
-   "h2h": 31,
+   "launch": 342,
+   "alloc": 161,
+   "h2h": 33,
    "readback": 38,
    "scan": 52,
    "sort": 52
@@ -2804,9 +2804,9 @@
  },
  "benchmarks/test_holes.py::test_fill_smooth_meshlib[saddle_small-ordito-cpu]": {
   "counts": {
-   "launch": 435,
-   "alloc": 81,
-   "h2h": 17,
+   "launch": 171,
+   "alloc": 82,
+   "h2h": 18,
    "readback": 20,
    "scan": 26,
    "sort": 26
@@ -2911,9 +2911,9 @@
  },
  "benchmarks/test_holes.py::test_refill_region_meshlib[saddle_small-ordito-cpu]": {
   "counts": {
-   "launch": 549,
-   "alloc": 153,
-   "h2h": 33,
+   "launch": 271,
+   "alloc": 155,
+   "h2h": 35,
    "readback": 39,
    "scan": 40,
    "sort": 40
@@ -2921,9 +2921,9 @@
  },
  "benchmarks/test_holes.py::test_refill_region_meshlib[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 219,
-   "alloc": 79,
-   "h2h": 19,
+   "launch": 135,
+   "alloc": 80,
+   "h2h": 20,
    "readback": 21,
    "scan": 20,
    "sort": 20

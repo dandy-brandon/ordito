@@ -595,7 +595,6 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("holes", "serial_delete_faces"): frozenset({"mesh"}),
     # Its hole DP's tables, in ``dp``: each diagonal's launch reads the shorter diagonals' cells
     # and writes its own, so they are both input and output across the launches.
-    ("holes", "serial_fill_dp_diagonal"): frozenset({"dp"}),
     # Its band search's state and queue, rewritten as the search runs, bundled in ``q``.
     ("holes", "serial_band_search"): frozenset({"q"}),
     ("cholesky", "factor_panel_tiled"): frozenset({"fronts", "scratch", "status"}),
