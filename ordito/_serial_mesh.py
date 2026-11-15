@@ -1240,36 +1240,33 @@ def _fill_dp_on_device(
     starts = np.zeros(len(per_step) + 1, dtype=np.int64)
     starts[1:] = np.cumsum([len(o) for o in per_step])
     flat = np.array([k for o in per_step for k in o] or [0], dtype=np.int32)
+    from ordito import _launch
+
+    dp = kernel_holes.FillDp()
+    dp.points = wp.array(points, dtype=wp.vec3, device=device)
+    dp.vert = wp.array(vert.astype(np.int32), dtype=wp.int32, device=device)
+    dp.across = wp.array(across.astype(np.int32), dtype=wp.int32, device=device)
+    dp.linked_offsets = wp.array(linked_offsets, dtype=wp.int32, device=device)
+    dp.linked = wp.array(linked_flat, dtype=wp.int32, device=device)
+    dp.offsets = wp.array(flat, dtype=wp.int32, device=device)
+    dp.metric = metric.kernel_id
+    dp.has_triangle = int(metric.has_triangle)
+    dp.has_edge = int(metric.has_edge)
+    dp.smooth_rim = int(smooth_rim)
+    dp.normal = wp.vec3d(*(float(x) for x in metric.normal))
+    dp.inverse_area = float(metric.inverse_area)
     weight = wp.zeros((n, n), dtype=wp.float64, device=device)
     apex = wp.full((n, n), -1, dtype=wp.int32, device=device)
-    normal = wp.vec3d(*(float(x) for x in metric.normal))
-    fixed = [
-        wp.array(points, dtype=wp.vec3, device=device),
-        wp.array(vert.astype(np.int32), dtype=wp.int32, device=device),
-        wp.array(across.astype(np.int32), dtype=wp.int32, device=device),
-        wp.array(linked_offsets, dtype=wp.int32, device=device),
-        wp.array(linked_flat, dtype=wp.int32, device=device),
-        wp.array(flat, dtype=wp.int32, device=device),
-    ]
+    dp.weight = weight
+    dp.apex = apex
+    resolved = wp.get_device(device)
+    start_list = starts.tolist()
     for k, steps in enumerate(range(2, n - 1)):
-        wp.launch(
+        _launch.launch(
             kernel_holes.serial_fill_dp_diagonal,
             dim=n,
-            inputs=[
-                *fixed,
-                int(starts[k]),
-                int(starts[k + 1] - starts[k]),
-                steps,
-                metric.kernel_id,
-                int(metric.has_triangle),
-                int(metric.has_edge),
-                int(smooth_rim),
-                normal,
-                float(metric.inverse_area),
-                weight,
-                apex,
-            ],
-            device=device,
+            inputs=[dp, start_list[k], start_list[k + 1] - start_list[k], steps],
+            device=resolved,
         )
     # The tables feed the host traceback that turns them into chords.
     return read_array(weight), read_array(apex).astype(np.int64)

@@ -3718,64 +3718,70 @@ def serial_apex_vertex(
     return -1
 
 
+@wp.struct
+class FillDp:
+    """The hole DP's fixed inputs and its two tables, one bundle for its launch a diagonal."""
+
+    points: wp.array[wp.vec3]
+    vert: wp.array[wp.int32]
+    across: wp.array[wp.int32]
+    linked_offsets: wp.array[wp.int32]
+    linked: wp.array[wp.int32]
+    offsets: wp.array[wp.int32]
+    metric: wp.int32
+    has_triangle: wp.int32
+    has_edge: wp.int32
+    smooth_rim: wp.int32
+    normal: wp.vec3d
+    inverse_area: wp.float64
+    weight: wp.array2d[wp.float64]
+    apex: wp.array2d[wp.int32]
+
+
 @wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
 def serial_fill_dp_diagonal(
-    points: wp.array[wp.vec3],
-    vert: wp.array[wp.int32],
-    across: wp.array[wp.int32],
-    linked_offsets: wp.array[wp.int32],
-    linked: wp.array[wp.int32],
-    offsets: wp.array[wp.int32],
-    offsets_start: wp.int32,
-    offsets_count: wp.int32,
-    steps: wp.int32,
-    metric: wp.int32,
-    has_triangle: wp.int32,
-    has_edge: wp.int32,
-    smooth_rim: wp.int32,
-    normal: wp.vec3d,
-    inverse_area: wp.float64,
-    weight: wp.array2d[wp.float64],
-    apex: wp.array2d[wp.int32],
+    dp: FillDp, offsets_start: wp.int32, offsets_count: wp.int32, steps: wp.int32
 ) -> None:
     """Fill the DP cells ``(i, i + steps)``: each one's lightest apex, the first of a tie."""
     i = wp.int32(wp.tid())
-    n = vert.shape[0]
+    n = dp.vert.shape[0]
     c = (i + steps) % n
     blocked = wp.bool(False)
-    for k in range(linked_offsets[i], linked_offsets[i + 1]):
-        if linked[k] == c:
+    for k in range(dp.linked_offsets[i], dp.linked_offsets[i + 1]):
+        if dp.linked[k] == c:
             blocked = True
     # A fresh variable: initialized straight from a module constant, the accumulator would be the
     # constant's own variable, and the later comparison with that constant would read itself.
     best = wp.float64(_SERIAL_DBL_MAX) + wp.float64(0.0)
     best_v = wp.int32(-1)
-    va = vert[i]
-    vc = vert[c]
+    va = dp.vert[i]
+    vc = dp.vert[c]
     for k in range(offsets_start, offsets_start + offsets_count):
-        v = (i + 1 + offsets[k]) % n
-        vv = vert[v]
-        w = weight[i, v] + weight[v, c]
-        if has_triangle != 0:
-            w = w + serial_fill_triangle(points, va, vv, vc, metric, normal, inverse_area)
-        if has_edge != 0:
-            left = serial_apex_vertex(apex[i, v], vert, across[i], smooth_rim)
-            right = serial_apex_vertex(apex[v, c], vert, across[v], smooth_rim)
+        v = (i + 1 + dp.offsets[k]) % n
+        vv = dp.vert[v]
+        w = dp.weight[i, v] + dp.weight[v, c]
+        if dp.has_triangle != 0:
+            w = w + serial_fill_triangle(
+                dp.points, va, vv, vc, dp.metric, dp.normal, dp.inverse_area
+            )
+        if dp.has_edge != 0:
+            left = serial_apex_vertex(dp.apex[i, v], dp.vert, dp.across[i], dp.smooth_rim)
+            right = serial_apex_vertex(dp.apex[v, c], dp.vert, dp.across[v], dp.smooth_rim)
             if left >= 0:
-                w = w + serial_fill_edge(points, va, vv, left, vc, metric)
+                w = w + serial_fill_edge(dp.points, va, vv, left, vc, dp.metric)
             if right >= 0:
-                w = w + serial_fill_edge(points, vv, vc, right, va, metric)
+                w = w + serial_fill_edge(dp.points, vv, vc, right, va, dp.metric)
         if va == vc or wp.isnan(w):
             w = wp.float64(wp.inf)
         if w < best:
             best = w
             best_v = v
     if best < wp.float64(_SERIAL_DBL_MAX) and not blocked:
-        weight[i, c] = best
-        apex[i, c] = best_v
+        dp.weight[i, c] = best
+        dp.apex[i, c] = best_v
     else:
-        weight[i, c] = wp.float64(_SERIAL_DBL_MAX)
-        apex[i, c] = -1
+        dp.weight[i, c] = wp.float64(_SERIAL_DBL_MAX)
+        dp.apex[i, c] = -1
 
 
 # The band search of ``method="meshlib"``'s stitch, natively: ``ordito._serial_mesh._band_search``
