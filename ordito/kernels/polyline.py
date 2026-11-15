@@ -3663,17 +3663,30 @@ def compact_ring_faces(
         out_faces[slot, 2] = faces[i, 2]
 
 
+# ``polyline._faces_in_tip_order``: every corner is clipped at most once, so the clipped faces'
+# tips -- their middle index, ``clip_ear``'s corner ``i`` and the fan's ``k + 1`` -- are distinct,
+# and a face's rank among the flagged tips is its row in ascending tip order, fixing the row order
+# the atomic face counter leaves to arrival with one scan of the tip flags.
+
+
 @wp.kernel
-def face_tip_keys(
-    faces: wp.array2d[wp.int32], out_keys: wp.array[wp.int32], out_rows: wp.array[wp.int32]
-) -> None:
-    # dim == n_faces: each clipped face's tip -- its middle index, ``clip_ear``'s corner ``i`` and
-    # the fan's ``k + 1`` -- and its own row, into a radix sort's double-width buffers. Every
-    # corner is clipped at most once, so the tips are distinct and sorting by them fixes the row
-    # order the atomic face counter leaves to arrival.
+def flag_face_tips(faces: wp.array2d[wp.int32], out_flags: wp.array[wp.int32]) -> None:
+    # dim == n_faces, ``out_flags`` zeroed: a ``1`` at each face's tip, for the inclusive scan
+    # that ranks the tips.
     s = wp.int32(wp.tid())
-    out_keys[s] = faces[s, 1]
-    out_rows[s] = s
+    out_flags[faces[s, 1]] = 1
+
+
+@wp.kernel
+def place_faces_by_tip(
+    faces: wp.array2d[wp.int32], ranks: wp.array[wp.int32], out_faces: wp.array2d[wp.int32]
+) -> None:
+    # dim == n_faces: each face to the row its tip's inclusive rank names.
+    s = wp.int32(wp.tid())
+    row = ranks[faces[s, 1]] - 1
+    out_faces[row, 0] = faces[s, 0]
+    out_faces[row, 1] = faces[s, 1]
+    out_faces[row, 2] = faces[s, 2]
 
 
 @wp.kernel

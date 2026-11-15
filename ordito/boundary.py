@@ -302,8 +302,10 @@ def boundary_loops_with_offsets(
 
     - ``"split"`` (default): every loop is simple. The walk of ``"fan"`` is cut into cycles at the
       vertices a loop passes twice, which are the loops a hole filler closes one by one (a
-      triangulation of a loop that repeats a vertex is not a surface). The cut costs one readback
-      of the boundary, and only a pinched boundary pays it.
+      triangulation of a loop that repeats a vertex is not a surface). Each cut cycle starts at
+      its smallest vertex; on a pinched boundary the cycles follow the order of the walked loops,
+      and a loop's cycles the order its cut made them in, rather than ascending by their smallest
+      vertex. The cut costs one readback of the boundary, and only a pinched boundary pays it.
     - ``"fan"``: the walk stays in the fan of faces it arrived along, which is the boundary of the
       surface with the pinch vertex split once per fan; two holes touching at a vertex can come
       back as one loop passing it twice.
@@ -413,28 +415,29 @@ def _split_at_pinches(
     The last step of [`boundary_loops_with_offsets`][ordito.boundary.boundary_loops_with_offsets]
     on a pinched boundary. Each loop is walked in order with a stack: an entry whose vertex is
     already on the path cuts the path back to that vertex, and the run cut off is a cycle. Each
-    cycle starts at its smallest vertex and the cycles ascend by their first two vertices, the
-    order of the unsplit loops; cycles that tie keep the order their cuts made them in.
+    cycle starts at its smallest vertex; the cycles keep the order of their loops, and a loop's
+    cycles the order its cut made them in.
 
-    On the device, one thread a loop (``kernels/boundary.split_pinched_loops``): what a loop's walk
+    On the device, one block a loop (``kernels/boundary.split_pinched_loops``): what a loop's walk
     needs from outside it is each entry's previous occurrence of its vertex in the same loop,
-    which a stable sort of the entries by vertex puts side by side, and a second sort orders the
-    cycles. One readback sizes the result.
+    which a stable sort of the entries by vertex puts side by side. The cycle records sit at
+    per-loop slots, and one scan of their counts compacts them in slot order. One readback sizes
+    the result.
     """
     device = flat_loops.device
     total = flat_loops.size
     n_loops = offsets.size - 1
     if n_loops == 0 or total == 0:
         return _launch.empty_packed(wp.int32, device)
-    keys, positions, previous, totals, records, cycle_keys, cycle_slots = _launch.carve_typed(
+    keys, positions, previous, totals, records, counts, cycle_slots = _launch.carve_typed(
         (
             (wp.int32, 2 * total),
             (wp.int32, 2 * total),
             (wp.int32, total),
             (wp.int32, 2),
             (wp.vec3i, total),
-            (wp.int64, 2 * total),
-            (wp.int32, 2 * total),
+            (wp.vec2i, total),
+            (wp.int32, total),
         ),
         device,
     )
@@ -454,7 +457,6 @@ def _split_at_pinches(
     # The walk's scratch reuses the occurrence sort's buffers, dead once ``previous`` is formed:
     # the path and the depths in their upper halves, the representatives and the cycles' vertices
     # in their lower ones.
-    sentinel = n_vertices << 32
     _launch.launch_tiled(
         kernel_boundary.split_pinched_loops,
         dim=[n_loops],
@@ -463,30 +465,28 @@ def _split_at_pinches(
             flat_loops,
             offsets,
             previous,
-            sentinel,
             _launch.view(keys, total, 2 * total),
             _launch.view(positions, total, 2 * total),
             _launch.view(keys, 0, total),
             _launch.view(positions, 0, total),
             records,
-            cycle_keys,
-            cycle_slots,
+            counts,
             totals,
         ],
         device=device,
     )
+    # The scan ranks the cycles in slot order (loop by loop, each loop's in cut order) and offsets
+    # their entries, exact and the same on every run.
+    _launch.array_scan(counts, out_array=counts, inclusive=True)
     # Readback: the cycle and entry counts size the result.
     n_cycles, n_values = read_values(totals, 0, 2)
-    _launch.radix_sort_pairs(cycle_keys, cycle_slots, total, end_bit=_launch.key_bits(sentinel + 1))
     new_offsets = _launch.empty(n_cycles + 1, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_boundary.pinch_cycle_sizes,
-        dim=n_cycles,
-        inputs=[cycle_slots, records, new_offsets],
+        kernel_boundary.compact_pinch_cycles,
+        dim=total,
+        inputs=[counts, cycle_slots, new_offsets],
         device=device,
     )
-    scanned = _launch.view(new_offsets, 1, n_cycles + 1)
-    _launch.array_scan(scanned, out_array=scanned, inclusive=True)
     new_flat = _launch.empty(n_values, dtype=wp.int32, device=device)
     lanes = _launch.walk_lanes(n_cycles, device)
     _launch.launch(

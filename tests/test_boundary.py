@@ -664,7 +664,7 @@ def test_boundary_loops_cut_a_pinched_loop_into_simple_cycles(
 
 
 def _split_by_stack_walk(flat_np: np.ndarray, offsets_np: np.ndarray) -> list[list[int]]:
-    """Each loop cut at its repeated vertices by a stack walk, rotated and sorted as specified."""
+    """Each loop cut at its repeated vertices by a stack walk, rotated, in loop and cut order."""
     cycles: list[list[int]] = []
     for start, stop in itertools.pairwise(offsets_np.tolist()):
         path: list[int] = []
@@ -680,10 +680,7 @@ def _split_by_stack_walk(flat_np: np.ndarray, offsets_np: np.ndarray) -> list[li
                 position[vertex] = len(path)
                 path.append(vertex)
         cycles.append(path)
-    rotated = [
-        cycle[cycle.index(min(cycle)) :] + cycle[: cycle.index(min(cycle))] for cycle in cycles
-    ]
-    return sorted(rotated, key=lambda cycle: (cycle[0], cycle[1] if len(cycle) > 1 else -1))
+    return [cycle[cycle.index(min(cycle)) :] + cycle[: cycle.index(min(cycle))] for cycle in cycles]
 
 
 def test_boundary_loops_split_at_pinches_follows_the_stack_walk(device: str) -> None:
@@ -692,7 +689,7 @@ def test_boundary_loops_split_at_pinches_follows_the_stack_walk(device: str) -> 
 
     The oracle is the stack walk the split specifies, transcribed: an entry whose vertex is on the
     path cuts the path back to it, the cut-off run is a cycle, each cycle starts at its smallest
-    vertex and the cycles ascend by their first two vertices, ties in cut order. Random loops over
+    vertex, and the cycles keep their loops' order and each loop's its cut order. Random loops over
     a few vertices repeat them densely and interleaved, so a walk that tests the wrong occurrence
     or cuts in the wrong place returns other cycles; the first loop
     ``0 5 1 6 0 7 1 8`` cuts differently from every other start, and ``3 3`` is a cycle of one.

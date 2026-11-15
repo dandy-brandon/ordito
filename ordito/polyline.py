@@ -2235,19 +2235,22 @@ def _faces_in_tip_order(faces: odt.Array2dInt32, n_tips: int) -> odt.Array2dInt3
     """
     Return ``faces`` with its rows sorted by their middle index, distinct per row below ``n_tips``.
 
-    One radix sort of the tips over the bits ``n_tips`` needs, then a gather of the rows.
+    The tips flagged in a zeroed ``(n_tips,)`` table and scanned in place give each face its row,
+    where it is placed: an exact rank, so the same rows on every run.
     """
     device = faces.device
     n_faces = faces.shape[0]
-    keys, rows = _launch.sort_buffers(n_faces, wp.int32, device)
+    ranks = _launch.zeros(n_tips, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_polyline.face_tip_keys,
+        kernel_polyline.flag_face_tips, dim=n_faces, inputs=[faces, ranks], device=device
+    )
+    _launch.array_scan(ranks, out_array=ranks, inclusive=True)
+    ordered = odt.empty_2d((n_faces, 3), wp.int32, device=device)
+    _launch.launch(
+        kernel_polyline.place_faces_by_tip,
         dim=n_faces,
-        inputs=[faces],
-        outputs=[keys, rows],
+        inputs=[faces, ranks],
+        outputs=[ordered],
         device=device,
     )
-    _launch.radix_sort_pairs(keys, rows, count=n_faces, end_bit=_launch.key_bits(n_tips))
-    ordered = odt.empty_2d((n_faces, 3), wp.int32, device=device)
-    _launch.copy(ordered, faces[odt.as_dense(rows[:n_faces])])
     return odt.as_array2d(ordered, wp.int32)

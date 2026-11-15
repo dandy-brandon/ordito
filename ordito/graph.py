@@ -11,6 +11,7 @@ import ordito.typing as odt
 from ordito import _launch
 from ordito._common import read_scalar, read_values, require_same_device, run_device_loop
 from ordito.array import arange
+from ordito.config import is_deterministic
 from ordito.constants import INT32_MAX, TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import graph as kernel_graph
@@ -126,17 +127,19 @@ def edges_to_neighbor_lists(
     sort_rows
         When ``True``, sort each row ascending in one extra launch, which makes the result
         **exactly** [`edges_to_csr`][ordito.graph.edges_to_csr]'s structure and lifts the
-        reproducibility warning below. One thread sorts one row, so the launch waits for the
-        widest one and the cost grows faster than linearly in the largest degree: this is for a
-        bounded-degree graph such as a mesh vertex graph, and a row of a few hundred neighbours
-        already loses to [`edges_to_csr`][ordito.graph.edges_to_csr] outright.
+        reproducibility warning below. One thread sorts each short row; on a CUDA device a
+        block's lanes sort a hub row together, while on the CPU one thread sorts every row, so
+        there the cost grows faster than linearly in the largest degree and a row of a few
+        hundred neighbours already loses to [`edges_to_csr`][ordito.graph.edges_to_csr]
+        outright. While [`is_deterministic`][ordito.config.is_deterministic] holds, a CUDA call
+        sorts the rows whatever this says.
 
     Returns
     -------
     neighbors : wp.array[wp.int32]
         ``(2 * m,)`` node indices grouped by node. Ascending within a row when ``sort_rows``
-        is ``True``; otherwise the order is **not specified and not reproducible** — see the
-        warning below.
+        is ``True``; otherwise the order is **not specified**, and reproducible only while
+        [`is_deterministic`][ordito.config.is_deterministic] holds — see the warning below.
     offsets : wp.array[wp.int32]
         ``(node_count + 1,)`` row offsets on ``edges.device``.
 
@@ -167,7 +170,10 @@ def edges_to_neighbor_lists(
         Each row's slots are handed out with ``wp.atomic_add``, so the order within a row is
         thread-arrival order: it is neither sorted nor stable, and two calls on the same input
         return different permutations. The row *contents* are exact and ``offsets`` is identical
-        every time; only the order inside a row moves.
+        every time; only the order inside a row moves. While
+        [`is_deterministic`][ordito.config.is_deterministic] holds every call returns the same
+        rows: a CUDA call sorts them ascending, as under ``sort_rows=True``, and on the CPU,
+        whose threads claim in turn, each row lists its neighbours in the order of ``edges``.
 
         A consumer is safe when it reduces over the whole row (a minimum, a sum, a relaxation) or
         breaks its ties by node or edge index. It is **not** safe when it emits in traversal
@@ -277,7 +283,9 @@ def edges_to_neighbor_lists_from_counts(
         ``edges.device``. Not modified.
     sort_rows
         As in [`edges_to_neighbor_lists`][ordito.graph.edges_to_neighbor_lists]: sort each row
-        ascending in one extra launch, which makes the row order reproducible.
+        ascending in one extra launch; while
+        [`is_deterministic`][ordito.config.is_deterministic] holds, the rows are reproducible
+        whatever this says, as there.
 
     Returns
     -------
@@ -344,6 +352,12 @@ def _fill_neighbor_lists(
 
     The fill's claims (``kernels/scatter.claim_row_slot``) advance each start to its row's end, and
     the fill writes ``buffer[0]``, so the first ``node_count + 1`` entries end as the offsets.
+
+    On CUDA the claims leave each row in arrival order, so the deterministic setting sorts the
+    rows there (``kernels/graph.sort_neighbor_rows``, which says why a row sort); sorted rows are
+    also the order ``sort_rows`` and every in-repo caller that needs one asks for. The CPU runs the
+    fill's threads in turn, so its rows are already in edge order on every call and it sorts only
+    for ``sort_rows``.
     """
     device = edges.device
     _launch.launch(
@@ -354,10 +368,24 @@ def _fill_neighbor_lists(
         device=device,
     )
     offsets = _launch.view(buffer, 0, node_count + 1)
-    if sort_rows:
-        _launch.launch(
-            kernel_array.sort_segments, dim=node_count, inputs=[offsets, neighbors], device=device
-        )
+    is_cuda = wp.get_device(device).is_cuda
+    if sort_rows or (is_deterministic() and is_cuda):
+        if is_cuda:
+            rows_per_block = kernel_graph.NEIGHBOR_SORT_ROWS_PER_BLOCK
+            _launch.launch_tiled(
+                kernel_graph.sort_neighbor_rows,
+                dim=[(node_count + rows_per_block - 1) // rows_per_block],
+                block_dim=rows_per_block,
+                inputs=[offsets, neighbors],
+                device=device,
+            )
+        else:
+            _launch.launch(
+                kernel_array.sort_segments,
+                dim=node_count,
+                inputs=[offsets, neighbors],
+                device=device,
+            )
     return neighbors, offsets
 
 

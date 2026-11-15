@@ -55,8 +55,8 @@ def test_edges_to_neighbor_lists_matches_igl(
       in visit order, so a permuted adjacency row permutes its result, and
       ``curvature.principal_curvature`` then moves at the near-flat vertices where its quadric fit
       is ill conditioned. Repeating the sorted call returns the identical buffer, the property the
-      default ``sort_rows=False`` does **not** have: its atomic cursor hands the slots out in
-      thread-arrival order and every repeat differs.
+      default ``sort_rows=False`` has only under the deterministic setting (on for every test):
+      its atomic cursor hands the slots out in thread-arrival order, which the setting fixes.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = mesh_wp.points.size
@@ -95,6 +95,46 @@ def test_edges_to_neighbor_lists_matches_igl(
     for _ in range(4):
         repeat_wp, _ = od.graph.edges_to_neighbor_lists(n_vertices, edges_wp, sort_rows=True)
         assert np.array_equal(repeat_wp.numpy(), sorted_np)
+
+
+def test_edges_to_neighbor_lists_rows_repeat_under_the_deterministic_setting(device: str) -> None:
+    """
+    Ordito against ordito: with the setting on, the default rows are the same on every call.
+
+    Four hubs of 3 000 spokes each, listed in a shuffled edge order, plus random chords: a hub's
+    row claims its slots through one atomic cursor, so in arrival order the row would come back
+    permuted from one CUDA call to the next. The setting sorts each row there, so every repeat of
+    both the counted and the uncounted form equals the first, and each hub row is its spokes
+    ascending (repeated spokes included); on the CPU, whose threads claim in turn, it is its spokes
+    in edge order. Non-vacuity: the hub rows really are wide, past the length at which
+    CUDA sorts a row with a whole block.
+    """
+    rng = np.random.default_rng(23)
+    n_nodes, n_hubs, spokes = 20_000, 4, 3_000
+    hubs = np.repeat(np.arange(n_hubs, dtype=np.int32), spokes)
+    rims = rng.integers(n_hubs, n_nodes, n_hubs * spokes, dtype=np.int32)
+    chords = rng.integers(0, n_nodes, (20_000, 2), dtype=np.int32)
+    edges_np = np.concatenate([np.stack([hubs, rims], axis=1), chords])
+    edges_np = edges_np[rng.permutation(edges_np.shape[0])]
+    edges_wp = _edges_wp(edges_np, device)
+    counts_wp = wp.array(
+        np.bincount(edges_np.ravel(), minlength=n_nodes).astype(np.int32), device=device
+    )
+
+    first_wp, offsets_wp = od.graph.edges_to_neighbor_lists(n_nodes, edges_wp)
+    first, offsets = first_wp.numpy(), offsets_wp.numpy()
+    assert int(np.diff(offsets).max()) >= spokes
+    for v in range(n_hubs):
+        # Each edge claims its first endpoint's slot, then its second's: the CPU's thread order.
+        ends_np = np.where(edges_np[:, 0] == v, edges_np[:, 1], edges_np[:, 0])
+        hub_np = ends_np[(edges_np == v).any(axis=1)]
+        expected_np = np.sort(hub_np) if wp.get_device(device).is_cuda else hub_np
+        assert np.array_equal(first[offsets[v] : offsets[v + 1]], expected_np)
+    for _ in range(8):
+        repeat_wp, _ = od.graph.edges_to_neighbor_lists(n_nodes, edges_wp)
+        assert np.array_equal(repeat_wp.numpy(), first)
+        counted_wp, _ = od.graph.edges_to_neighbor_lists_from_counts(edges_wp, counts_wp)
+        assert np.array_equal(counted_wp.numpy(), first)
 
 
 def test_edges_to_neighbor_lists_sorts_a_wide_row(device: str) -> None:

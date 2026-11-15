@@ -462,15 +462,17 @@ def cross_pinch_gaps(
 
 
 # ``boundary._split_at_pinches`` on the device: every loop that passes a vertex twice cut into
-# simple cycles, each rotated to start at its smallest vertex, the cycles in ascending order of
-# their first two vertices (ties in the order the cuts made them). The cut is a stack walk, one
-# thread a loop (``split_pinched_loops``); what it needs from outside its loop is each entry's
-# previous occurrence of the same vertex in the same loop, which a stable sort of the entries by
-# vertex lays side by side (``pinch_occurrence_keys``, ``previous_occurrences``).
+# simple cycles, each rotated to start at its smallest vertex, the cycles in the order of their
+# loops and each loop's in the order its cut made them, compacted out of their per-loop slots by
+# one scan (``compact_pinch_cycles``; a radix sort into ascending order of their first two
+# vertices bought an order nothing reads). The cut is a stack walk, a block a loop
+# (``split_pinched_loops``); what it needs from outside its loop is each entry's previous
+# occurrence of the same vertex in the same loop, which a stable sort of the entries by vertex
+# lays side by side (``pinch_occurrence_keys``, ``previous_occurrences``).
 #
 # Against the host walk it replaced (a readback, a Python stack walk a loop, an upload), new/old:
 # ``holes_pinched`` (10 460 cycles) 0.0057x CUDA and 0.11x CPU, an icosphere(7) with every
-# seventh face removed 0.0032x CUDA. Its five launches and two sorts are a fixed cost the host
+# seventh face removed 0.0032x CUDA. Its launches and sorts (then two) are a fixed cost the host
 # form did not pay: on a five-by-five grid with two touching holes CUDA reads 0.93x but the CPU
 # 1.35x (+0.12 ms), even at about a hundred boundary entries. Kept on both devices: a host path
 # below a size would be a second implementation of one answer.
@@ -522,13 +524,11 @@ def store_pinch_cycle(
     record_slot: wp.int32,
     out_values: wp.array[wp.int32],
     out_records: wp.array[wp.vec3i],
-    out_keys: wp.array[wp.int64],
 ) -> wp.int32:
     # The path entries ``first .. depth - 1`` (positions on ``stack`` from ``base``) as one cycle:
     # their vertices stored in walk order from ``value_slot``, and at ``record_slot`` the record
     # ``(value_slot, size, rotation)`` -- ``rotation`` the offset of the smallest vertex, its first
-    # occurrence as ``np.argmin`` takes it -- and the sort key ``(smallest << 32) | (next + 1)``,
-    # ``next`` the vertex after the smallest or ``-1`` for a cycle of one. Returns the size.
+    # occurrence as ``np.argmin`` takes it. Returns the size.
     size = depth - first
     smallest = wp.int32(INT32_MAX_CONSTANT)
     rotation = wp.int32(0)
@@ -538,11 +538,7 @@ def store_pinch_cycle(
         if vertex < smallest:
             smallest = vertex
             rotation = k
-    following = wp.int32(-1)
-    if size > 1:
-        following = out_values[value_slot + (rotation + 1) % size]
     out_records[record_slot] = wp.vec3i(value_slot, size, rotation)
-    out_keys[record_slot] = (wp.int64(smallest) << wp.int64(32)) | wp.int64(following + 1)
     return size
 
 
@@ -555,14 +551,12 @@ def split_pinched_loops(
     flat_loops: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
     previous: wp.array[wp.int32],
-    sentinel: wp.int64,
     out_stack: wp.array[wp.int32],
     out_path_index: wp.array[wp.int32],
     out_representative: wp.array[wp.int32],
     out_values: wp.array[wp.int32],
     out_records: wp.array[wp.vec3i],
-    out_keys: wp.array[wp.int64],
-    out_slots: wp.array[wp.int32],
+    out_counts: wp.array[wp.vec2i],
     out_totals: wp.array[wp.int32],
 ) -> None:
     # One block per loop. A loop passing no vertex twice is one cycle in walk order: its lanes
@@ -582,8 +576,10 @@ def split_pinched_loops(
     # vertex was on the path.
     #
     # Cycles take value and record slots from the loop's start in cut order (a loop yields at
-    # most one value and one cycle per entry); the loop's other record slots get ``sentinel``,
-    # which sorts after every key. ``out_totals`` counts the cycles and their entries.
+    # most one value and one cycle per entry). Every record slot gets a ``(cycle, size)`` count,
+    # ``(1, size)`` under a cycle and ``(0, 0)`` past the loop's last, whose inclusive scan ranks
+    # the cycles in slot order and offsets their entries (``compact_pinch_cycles``).
+    # ``out_totals`` counts the cycles and their entries.
     ell, lane = wp.tid()
     start = offsets[ell]
     end = offsets[ell + 1]
@@ -604,11 +600,7 @@ def split_pinched_loops(
             cycles = wp.int32(1)
             if lane == 0:
                 rotation = wp.int32(smallest & wp.int64(0xFFFFFFFF))
-                following = wp.int32(-1)
-                if size > 1:
-                    following = flat_loops[start + (rotation + 1) % size]
                 out_records[start] = wp.vec3i(start, size, rotation)
-                out_keys[start] = (smallest - wp.int64(rotation)) | wp.int64(following + 1)
                 wp.atomic_add(out_totals, 0, 1)
                 wp.atomic_add(out_totals, 1, size)
     else:
@@ -633,7 +625,6 @@ def split_pinched_loops(
                         start + cycles,
                         out_values,
                         out_records,
-                        out_keys,
                     )
                     cycles += 1
                     for k in range(on_path + 1, depth):
@@ -656,29 +647,39 @@ def split_pinched_loops(
                     start + cycles,
                     out_values,
                     out_records,
-                    out_keys,
                 )
                 cycles += 1
             wp.atomic_add(out_totals, 0, cycles)
             wp.atomic_add(out_totals, 1, stored)
-        # The first lane's cycle count, to every lane.
+        # The first lane's cycle count, to every lane; the barrier also publishes its records.
         cycles = block_max(cycles)
     for slot in range(start + lane, end, wp.block_dim()):
-        out_slots[slot] = slot
-        if slot >= start + cycles:
-            out_keys[slot] = sentinel
+        count = wp.vec2i(0, 0)
+        if slot < start + cycles:
+            if repeats == 0:
+                count = wp.vec2i(1, size)
+            else:
+                count = wp.vec2i(1, out_records[slot][1])
+        out_counts[slot] = count
 
 
 @wp.kernel
-def pinch_cycle_sizes(
-    slots: wp.array[wp.int32], records: wp.array[wp.vec3i], out_offsets: wp.array[wp.int32]
+def compact_pinch_cycles(
+    scanned: wp.array[wp.vec2i], out_slots: wp.array[wp.int32], out_offsets: wp.array[wp.int32]
 ) -> None:
-    # Cycle ``g`` of the sorted order's size into ``out_offsets[g + 1]``, which the caller scans
-    # in place; thread 0 writes the leading ``0``.
-    g = wp.int32(wp.tid())
-    if g == 0:
+    # Over the record slots, after the inclusive scan of their ``(cycle, size)`` counts: a slot
+    # whose cycle rank steps holds a cycle, and writes its slot at that rank and its scanned entry
+    # total as the rank's closing offset; thread 0 writes the leading ``0``.
+    slot = wp.int32(wp.tid())
+    if slot == 0:
         out_offsets[0] = 0
-    out_offsets[g + 1] = records[slots[g]][1]
+    here = scanned[slot]
+    before = wp.int32(0)
+    if slot > 0:
+        before = scanned[slot - 1][0]
+    if here[0] > before:
+        out_slots[before] = slot
+        out_offsets[here[0]] = here[1]
 
 
 @wp.kernel

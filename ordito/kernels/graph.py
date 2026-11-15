@@ -8,7 +8,7 @@ from ordito.kernels.algorithms.connected_components import (
     parity_root_word,
 )
 from ordito.kernels.array import declare_block_dims
-from ordito.kernels.reduce import block_chunk_1d, block_min
+from ordito.kernels.reduce import block_barrier, block_chunk_1d, block_min, block_sum
 from ordito.kernels.scatter import claim_row_slot
 
 wp.set_module_options({"enable_backward": False})
@@ -91,10 +91,11 @@ def scatter_neighbor_lists(
     #
     # The column order within a row is arrival order and **not sorted** -- nor stable, so two runs
     # return different permutations. That is deliberate and is what this build costs less than
-    # ``bsr_from_triplets`` for. ``graph.edges_to_neighbor_lists(sort_rows=True)`` pins it with one
-    # ``array.sort_segments`` launch, which makes the buffer identical to ``graph.edges_to_csr``'s;
-    # that is what ``neighbors.geodesic_ball`` asks for, because it emits its BFS queue in visit
-    # order.
+    # ``bsr_from_triplets`` for. ``graph.edges_to_neighbor_lists(sort_rows=True)``, and the
+    # deterministic setting, pin it with one sort launch (``sort_neighbor_rows`` on CUDA,
+    # ``array.sort_segments`` on the CPU), which makes the buffer identical to
+    # ``graph.edges_to_csr``'s; that is what ``neighbors.geodesic_ball`` asks for, because it emits
+    # its BFS queue in visit order.
     e = wp.int32(wp.tid())
     if e == 0:
         out_offsets[0] = 0
@@ -102,6 +103,92 @@ def scatter_neighbor_lists(
     b = edges[e, 1]
     out_neighbors[claim_row_slot(out_offsets, a)] = b
     out_neighbors[claim_row_slot(out_offsets, b)] = a
+
+
+# Rows a block of ``sort_neighbor_rows`` holds, a row a lane: a thread-a-row launch's occupancy.
+NEIGHBOR_SORT_ROWS_PER_BLOCK = 256
+# Entries from which ``sort_neighbor_rows`` leaves a row to its whole block: a mesh's valences stay
+# far below, so an ordinary graph never takes the block path.
+NEIGHBOR_SORT_LONG_ROW = wp.int32(64)
+
+
+@wp.func
+def order_row_pair(
+    data: wp.array[wp.int32], start: wp.int32, width: wp.int32, i: wp.int32, j: wp.int32
+) -> None:
+    # One ascending comparator of ``block_sort_row``, ``i < j``: an entry past the row's end
+    # stands for ``+inf``, so a pair reaching it is already in order.
+    if j < width:
+        a = data[start + i]
+        b = data[start + j]
+        if a > b:
+            data[start + i] = b
+            data[start + j] = a
+
+
+@wp.func
+def block_sort_row(
+    data: wp.array[wp.int32], start: wp.int32, width: wp.int32, lane: wp.int32
+) -> None:
+    # In-place ascending sort of ``data[start : start + width]`` by the whole block: a bitonic
+    # network over the next power of two in the form whose every comparator ascends (each merge
+    # opens by pairing ``i`` with its mirror in the run), so the entries past ``width`` read as
+    # ``+inf`` and are never touched. Every lane calls it with the same row, as its barriers need.
+    size = wp.int32(1)
+    while size < width:
+        size = size * 2
+    pairs = size // 2
+    run = wp.int32(2)
+    while run <= size:
+        half = run // 2
+        for p in range(lane, pairs, wp.block_dim()):
+            block = p // half
+            offset = p - block * half
+            order_row_pair(data, start, width, block * run + offset, block * run + run - 1 - offset)
+        block_barrier()
+        step = half // 2
+        while step >= 1:
+            for p in range(lane, pairs, wp.block_dim()):
+                block = p // step
+                i = block * 2 * step + p - block * step
+                order_row_pair(data, start, width, i, i + step)
+            block_barrier()
+            step = step // 2
+        run = run * 2
+
+
+@wp.kernel
+def sort_neighbor_rows(offsets: wp.array[wp.int32], data: wp.array[wp.int32]) -> None:
+    # ``array.sort_segments`` on CUDA with its hub rows taken by the block: each lane shell-sorts
+    # its own row (``array.sort_segment``) unless it holds ``NEIGHBOR_SORT_LONG_ROW`` entries or
+    # more, and a block holding such a row (one reduction says) then sorts it with every lane
+    # (``block_sort_row``). A thread sorting a hub row alone held the whole launch: four hubs of
+    # 3 000 spokes over 20 k nodes took about 130x the unsorted fill, the block form about 9x
+    # (2026-11-15). The same ascending rows as ``sort_segments``, bit for bit; the CPU device,
+    # whose one lane a block would walk every row anyway, keeps that kernel.
+    #
+    # It is also the deterministic setting's order for ``graph._fill_neighbor_lists`` on CUDA: one
+    # launch and no allocation over the fill, where a stable fill in edge order (a radix sort of
+    # the ``2 * m`` entries by node, a key launch and an emit) would take three launches and a
+    # sort's buffers, its sort alone about 3x this row sort on an ``icosphere(8)`` graph. The CPU,
+    # whose fill is already in edge order, does not sort for the setting: that cost it 1.4-1.9x the
+    # call on icospheres.
+    i, lane = wp.tid()
+    n = offsets.shape[0] - 1
+    base = i * wp.block_dim()
+    row = base + lane
+    found = wp.int32(0)
+    if row < n:
+        if offsets[row + 1] - offsets[row] >= NEIGHBOR_SORT_LONG_ROW:
+            found = 1
+        else:
+            kernel_array.sort_segment(offsets, data, row)
+    if block_sum(found) != 0:
+        for k in range(wp.min(wp.block_dim(), n - base)):
+            r = base + k
+            width = offsets[r + 1] - offsets[r]
+            if width >= NEIGHBOR_SORT_LONG_ROW:
+                block_sort_row(data, offsets[r], width, lane)
 
 
 @wp.kernel

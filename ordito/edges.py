@@ -408,6 +408,19 @@ def _unique_edges_from_faces(
     from the sorted keys; the edge count (and, with ``check``, the range flag) comes back in one
     read before it. With ``return_counts`` the emit also sums each run's length into the counts.
     """
+    # Declined for now (2026-11-15): the vertex-homed edge set of ``unique_edge_count``
+    # (``kernels/grouping.edge_key_slot``) numbering rows by first occurrence (an ``atomic_max`` of
+    # ``INT32_MAX - corner`` a slot, a first-corner flag, a scan, one emit writing rows and inverse)
+    # gave the whole contract at, CUDA min new/old, 0.74x on 5 k faces, 0.59-0.63x on 70-330 k
+    # (bunny, sphere_med, scrambled or not), 0.44-0.58x on dragon (scrambled 0.36-0.44x) and
+    # 0.56-0.70x on lucy; but the CPU lost 1.05x on sphere_med, 1.40-1.43x on bunny and a scrambled
+    # sphere_med and 1.23x on a scrambled dragon (dragon 0.89x, 5 k par). The ascending-key order
+    # is what callers rely on: ``Trimesh.edges_unique`` matches trimesh row for row,
+    # ``edges_unique_length`` and ``mean_unique_edge_length`` fold off this same sort's runs,
+    # ``remesh``'s ``_edges_unique`` / ``_FlipTopology.edges_unique`` re-derive these rows from
+    # their own sorts and are used interchangeably with them, and ``energies.edge_length_loss``
+    # promises the same bits with or without the rows. Switching means moving all of them (and
+    # the CPU, which would need the sort plus a first-occurrence renumbering to agree) together.
     device = faces.device
     n = 3 * n_faces
     keys, order, ranks, n_edges = _sorted_edge_run_ranks(faces, n_faces, radix, check)
