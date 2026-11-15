@@ -150,7 +150,7 @@ def face_offset_d(mesh_id: wp.uint64, face: wp.int32, p: wp.vec3d) -> wp.vec3d:
 # The tree's arrays are read through addresses taken once: read through the id at every node, a
 # node's load waits on a load of its array's address (the walk 1.05-1.07x). Slot 0 is
 # ``node_lowers``, 1 ``node_uppers``, 2 ``primitive_indices``, 3 ``item_lowers``, 4
-# ``item_uppers``. The layout is Warp's (``warp/native/bvh.h``): re-probe at every upgrade (§12.7).
+# ``item_uppers``. The layout is Warp's (``warp/native/bvh.h``): re-probe at every upgrade.
 _BVH_BALL_ARRAY = """
 const wp::BVH& bvh = *(const wp::BVH*)bvh_id;
 if (slot == 0) return (uint64_t)bvh.node_lowers;
@@ -487,7 +487,8 @@ EDGE_BVH_WIDE_LEAF_MIN_EDGES = 1 << 15
 # test replaced by a clamped projection onto each edge. Native, so its rounding may differ from
 # ``closest_point_on_segment``'s by a few ulps: ``closest_point_on_edges`` reads it only as the
 # seed of its deepening loop, padded (``edge_seed_radius``), never as the answer. The stack is
-# Warp's ``BVH_QUERY_STACK_SIZE``, as in ``bvh_nearest_index`` (§12.2's depth bound).
+# Warp's ``BVH_QUERY_STACK_SIZE``, as in ``bvh_nearest_index``: no Warp builder
+# puts an internal node below depth 31.
 _BVH_NEAREST_EDGE_DISTANCE = """
 const wp::BVH& bvh = *(const wp::BVH*)bvh_id;
 int stack[BVH_QUERY_STACK_SIZE];
@@ -904,8 +905,7 @@ BLOCK_WALK_STACK = 2048
 # corner (``side`` 0 lower, 1 upper), its two packed indices (a leaf's range ``[first, second)`` in
 # ``primitive_indices``, an internal node's two children), its leaf bit, the primitive at a
 # position of ``primitive_indices``, the root node, a node's parent (-1 at the root) and the count
-# of nodes the builder initialised. The layout is Warp's: re-probe these at every Warp upgrade
-# (§12.7).
+# of nodes the builder initialised. The layout is Warp's: re-probe these at every Warp upgrade.
 #
 # That count is not ``max_nodes``, the ``2n - 1`` capacity every builder allocates. The device LBVH
 # builds all of them and never writes ``num_nodes``: ``wp_bvh_create_device`` copies an

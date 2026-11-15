@@ -958,7 +958,7 @@ def query_bvh_nearest_neighbors(
 # ``kernels/proximity.py``'s node helpers (re-probe at every Warp upgrade), and tests the points
 # themselves rather than the tree's item bounds, so a tree built over padded boxes still answers
 # exactly. The stack is Warp's ``BVH_QUERY_STACK_SIZE``, as in the mesh query: no Warp builder
-# puts an internal node below depth 31 (§12.2), and a pop pushes at most two children.
+# puts an internal node below depth 31, and a pop pushes at most two children.
 _BVH_NEAREST_POINT = """
 const wp::BVH& bvh = *(const wp::BVH*)bvh_id;
 int stack[BVH_QUERY_STACK_SIZE];

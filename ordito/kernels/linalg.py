@@ -697,7 +697,8 @@ def long_row_piece_total(
     return last, total
 
 
-# Launched at its own width (``linalg._LONG_ROW_LANES``), so in a module of its own (§12.4).
+# Launched at its own width (``linalg._LONG_ROW_LANES``), so in a module of its own: a second
+# ``block_dim`` rebuilds the whole module.
 @wp.kernel(module="unique")
 def csr_long_rows_matvec(
     stride: wp.int32,

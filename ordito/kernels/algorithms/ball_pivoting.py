@@ -1259,8 +1259,9 @@ def pivot_candidate(
     #
     # ``0 <= c < n_points`` is load-bearing, not defensive: a lane with no candidate in a step of
     # the cooperative walk gets -1, and Warp's BVH walks are bound-checked wherever they are used
-    # (``.claude/CLAUDE.md`` on ``wp.tile_bvh_query_aabb``). An index outside the range is never a
-    # primitive of this BVH, so the test rejects nothing the walk was entitled to return.
+    # (``wp.tile_bvh_query_aabb`` can overrun its result buffer on leaves of more than four
+    # primitives). An index outside the range is never a primitive of this BVH, so the test rejects
+    # nothing the walk was entitled to return.
     if c < 0 or c >= points.shape[0]:
         return best_angle, best
     if not candidate_prefilter(

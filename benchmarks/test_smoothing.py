@@ -523,7 +523,7 @@ def test_filter_implicit_fairing(bench_case: BenchCase) -> None:
     Factoring from the first pass instead is 2.58x on ``saddle_graded`` and 0.29-0.43x elsewhere.
     Since 2026-11-05 the deciding pass iterates no further than those 60 rounds and is factored
     and solved from its iterate when it reaches them: ``saddle_graded`` 0.75x again, the other
-    patches 1.00x (CUDA, interleaved; ``reference/component-status.md`` has the closed meshes).
+    patches 1.00x (CUDA, interleaved).
     """
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     with warnings.catch_warnings():

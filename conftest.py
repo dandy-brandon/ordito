@@ -8,7 +8,7 @@ anything. Each suite interprets it on its own, but ``auto`` means the same thing
 **one** device, cuda if available -- for two different reasons that happen to agree:
 
 - ``benchmarks/`` -- a ``ordito-cpu`` row timed beside a ``ordito-cuda`` one is a fight the CPU
-  cannot win (CLAUDE.md section 13), so it is off unless asked for.
+  cannot win, so it is off unless asked for.
 - ``tests/`` -- correctness *is* worth checking on both devices, but not inside one process:
   **Warp's CPU work is ~36x slower once CUDA has been initialised** (50.57 s against 1.40 s on one
   ``heat_signed_distance`` call, unchanged by ``launch_array_access_mode``, so it is CUDA presence

@@ -693,7 +693,8 @@ def panel_tile_product(
     return total
 
 
-# A module of its own: launched at ``UPDATE_TILES_BLOCK_DIM`` lanes (§12.4).
+# A module of its own: launched at ``UPDATE_TILES_BLOCK_DIM`` lanes, and a second ``block_dim``
+# rebuilds the whole module.
 @wp.kernel(enable_backward=False, module="unique")
 def update_panel_tiles(
     level: wp.array[wp.int32],

@@ -1033,7 +1033,8 @@ def chebyshev_step(
     )  # fmt: skip
 
 
-# Launched at its own width (``linalg._LONG_ROW_LANES``), so in a module of its own (§12.4).
+# Launched at its own width (``linalg._LONG_ROW_LANES``), so in a module of its own: a second
+# ``block_dim`` rebuilds the whole module.
 @wp.kernel(module="unique")
 def chebyshev_long_rows(
     stride: wp.int32,
@@ -1287,7 +1288,8 @@ CYCLE_ROWS = {n_columns: _cycle_rows(n_columns) for n_columns in ROWS_COLUMNS}
 CYCLE_ROWS_NARROW = {n_columns: _cycle_rows(n_columns, wp.float32) for n_columns in ROWS_COLUMNS}
 
 
-# Launched at its own width (``linalg._LONG_ROW_LANES``), so in a module of its own (§12.4).
+# Launched at its own width (``linalg._LONG_ROW_LANES``), so in a module of its own: a second
+# ``block_dim`` rebuilds the whole module.
 @wp.kernel(module="unique")
 def cycle_long_rows(
     stride: wp.int32,

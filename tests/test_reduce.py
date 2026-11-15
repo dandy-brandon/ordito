@@ -1301,7 +1301,7 @@ def test_float_extrema_skip_nan_and_order_signed_zeros(
     group, so the scatter and segment forms reduce a warp's peers before their atomic: a peer
     reduction that let a NaN win dropped the warp's other values (170 of bunny's voxels under
     ``voxels.pool_by_voxel(pooling="max")``). CUDA only: the CPU device's float atomics order a
-    NaN and a signed zero by arrival (CLAUDE.md section 12.3).
+    NaN and a signed zero by arrival.
     """
     if device == "cpu":
         pytest.skip("the CPU device's float atomics order NaN and signed zeros by arrival")
