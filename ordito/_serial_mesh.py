@@ -1400,6 +1400,75 @@ def _in_region(topology: Topology, e: int, region: set[int]) -> bool:
     return f >= 0 and f in region
 
 
+class _NativeMesh:
+    """A topology's lists copied into capacity-sized arrays a native kernel edits in place."""
+
+    def __init__(
+        self,
+        topology: Topology,
+        points: Points | None,
+        *,
+        extra_half: int = 0,
+        extra_verts: int = 0,
+        extra_faces: int = 0,
+        region_flags: np.ndarray | None = None,
+        heap_cap: int = 1,
+        log_rows: int = 1,
+    ) -> None:
+        from ordito.kernels import holes as kernel_holes
+
+        n_half = topology.edge_count()
+        n_verts = len(topology.edge_per_vertex)
+        n_faces = len(topology.edge_per_face)
+
+        def padded(values: list[int], size: int) -> np.ndarray:
+            out = np.full(size, -1, dtype=np.int32)
+            out[: len(values)] = values
+            return out
+
+        half_cap = n_half + extra_half
+        vert_cap = n_verts + extra_verts
+        face_cap = n_faces + extra_faces
+        self.nxt = padded(topology.nxt, half_cap)
+        self.prv = padded(topology.prv, half_cap)
+        self.org = padded(topology.org, half_cap)
+        self.lft = padded(topology.lft, half_cap)
+        self.epv = padded(topology.edge_per_vertex, vert_cap)
+        self.epf = padded(topology.edge_per_face, face_cap)
+        self.region = (
+            np.zeros(face_cap, dtype=np.int32) if region_flags is None else region_flags.copy()
+        )
+        self.positions = np.zeros((vert_cap if points is not None else 1, 3), dtype=np.float32)
+        if points is not None:
+            self.positions[: points.size] = points.array()
+        self.counts = np.array([n_half, n_verts, n_faces, 0, 0, 0], dtype=np.int32)
+        self.log = np.full((log_rows, 7), -1, dtype=np.int32)
+        mesh = kernel_holes.SerialMesh()
+        mesh.nxt = wp.array(self.nxt, dtype=wp.int32, device="cpu", copy=False)
+        mesh.prv = wp.array(self.prv, dtype=wp.int32, device="cpu", copy=False)
+        mesh.org = wp.array(self.org, dtype=wp.int32, device="cpu", copy=False)
+        mesh.lft = wp.array(self.lft, dtype=wp.int32, device="cpu", copy=False)
+        mesh.edge_per_vertex = wp.array(self.epv, dtype=wp.int32, device="cpu", copy=False)
+        mesh.edge_per_face = wp.array(self.epf, dtype=wp.int32, device="cpu", copy=False)
+        mesh.region = wp.array(self.region, dtype=wp.int32, device="cpu", copy=False)
+        mesh.points = wp.array(self.positions, dtype=wp.vec3, device="cpu", copy=False)
+        mesh.counts = wp.array(self.counts, dtype=wp.int32, device="cpu", copy=False)
+        mesh.heap_len = wp.array(np.empty(heap_cap, dtype=np.float32), device="cpu", copy=False)
+        mesh.heap_edge = wp.array(np.empty(heap_cap, dtype=np.int32), device="cpu", copy=False)
+        mesh.log = wp.array(self.log, dtype=wp.int32, device="cpu", copy=False)
+        self.mesh = mesh
+
+    def store(self, topology: Topology) -> None:
+        """Write the edited arrays back into ``topology``'s lists, cut to their counts."""
+        n_half, n_verts, n_faces = (int(x) for x in self.counts[:3])
+        topology.nxt = self.nxt[:n_half].tolist()
+        topology.prv = self.prv[:n_half].tolist()
+        topology.org = self.org[:n_half].tolist()
+        topology.lft = self.lft[:n_half].tolist()
+        topology.edge_per_vertex = self.epv[:n_verts].tolist()
+        topology.edge_per_face = self.epf[:n_faces].tolist()
+
+
 def subdivide(
     topology: Topology,
     points: Points,
@@ -1421,69 +1490,38 @@ def subdivide(
 
     if max_splits <= 0:
         return 0
-    n_half = topology.edge_count()
-    n_verts = len(topology.edge_per_vertex)
     n_faces = len(topology.edge_per_face)
-    half_cap = n_half + 6 * max_splits
-    vert_cap = n_verts + max_splits
-    face_cap = n_faces + 2 * max_splits
-
-    def padded(values: list[int], size: int) -> np.ndarray:
-        out = np.full(size, -1, dtype=np.int32)
-        out[: len(values)] = values
-        return out
-
-    flags = np.zeros(face_cap, dtype=np.int32)
-    valid = [f for f in region if topology.edge_per_face[f] >= 0]
-    flags[valid] = 1
-    heap_cap = n_half // 2 + 32 * max_splits
+    flags = np.zeros(n_faces + 2 * max_splits, dtype=np.int32)
+    flags[[f for f in region if topology.edge_per_face[f] >= 0]] = 1
+    heap_cap = topology.edge_count() // 2 + 32 * max_splits
     while True:
-        nxt = padded(topology.nxt, half_cap)
-        prv = padded(topology.prv, half_cap)
-        org = padded(topology.org, half_cap)
-        lft = padded(topology.lft, half_cap)
-        epv = padded(topology.edge_per_vertex, vert_cap)
-        epf = padded(topology.edge_per_face, face_cap)
-        region_flags = flags.copy()
-        positions = np.zeros((vert_cap, 3), dtype=np.float32)
-        positions[: points.size] = points.array()
-        counts = np.array([n_half, n_verts, n_faces, 0, 0, 0], dtype=np.int32)
-        log = np.full((max_splits, 7), -1, dtype=np.int32)
-        mesh = kernel_holes.SerialMesh()
-        mesh.nxt = wp.array(nxt, dtype=wp.int32, device="cpu", copy=False)
-        mesh.prv = wp.array(prv, dtype=wp.int32, device="cpu", copy=False)
-        mesh.org = wp.array(org, dtype=wp.int32, device="cpu", copy=False)
-        mesh.lft = wp.array(lft, dtype=wp.int32, device="cpu", copy=False)
-        mesh.edge_per_vertex = wp.array(epv, dtype=wp.int32, device="cpu", copy=False)
-        mesh.edge_per_face = wp.array(epf, dtype=wp.int32, device="cpu", copy=False)
-        mesh.region = wp.array(region_flags, dtype=wp.int32, device="cpu", copy=False)
-        mesh.points = wp.array(positions, dtype=wp.vec3, device="cpu", copy=False)
-        mesh.counts = wp.array(counts, dtype=wp.int32, device="cpu", copy=False)
-        mesh.heap_len = wp.array(np.empty(heap_cap, dtype=np.float32), device="cpu", copy=False)
-        mesh.heap_edge = wp.array(np.empty(heap_cap, dtype=np.int32), device="cpu", copy=False)
-        mesh.log = wp.array(log, dtype=wp.int32, device="cpu", copy=False)
+        native = _NativeMesh(
+            topology,
+            points,
+            extra_half=6 * max_splits,
+            extra_verts=max_splits,
+            extra_faces=2 * max_splits,
+            region_flags=flags,
+            heap_cap=heap_cap,
+            log_rows=max_splits,
+        )
         wp.launch(
             kernel_holes.serial_subdivide,
             dim=1,
-            inputs=[mesh, F32(max_edge) * F32(max_edge), max_splits, F32(max_angle_change)],
+            inputs=[native.mesh, F32(max_edge) * F32(max_edge), max_splits, F32(max_angle_change)],
             device="cpu",
         )
-        if counts[5] == 0:
+        if native.counts[5] == 0:
             break
         heap_cap *= 4  # the queue outgrew its capacity: rerun from the untouched lists
 
-    n_half, n_verts, n_faces, _, splits = (int(x) for x in counts[:5])
-    topology.nxt = nxt[:n_half].tolist()
-    topology.prv = prv[:n_half].tolist()
-    topology.org = org[:n_half].tolist()
-    topology.lft = lft[:n_half].tolist()
-    topology.edge_per_vertex = epv[:n_verts].tolist()
-    topology.edge_per_face = epf[:n_faces].tolist()
-    points.data = positions
+    native.store(topology)
+    n_verts, n_faces, splits = int(native.counts[1]), int(native.counts[2]), int(native.counts[4])
+    points.data = native.positions
     points.size = n_verts
     region.clear()
-    region.update(np.flatnonzero(region_flags[:n_faces]).tolist())
-    log = log[:splits]
+    region.update(np.flatnonzero(native.region[:n_faces]).tolist())
+    log = native.log[:splits]
     new_verts.extend(log[:, 2].tolist())
     if topology.face_source is not None:
         source = topology.face_source
@@ -2592,8 +2630,15 @@ def region_boundary_loops(topology: Topology, region: set[int]) -> list[list[int
     """Return the region's left boundary loops (leftmost turns), cut at repeated vertices."""
     reported: set[int] = set()
     loops: list[list[int]] = []
-    for e in range(topology.edge_count()):
-        if topology.org[e] < 0 or e in reported or not _left_bd(topology, e, region):
+    # The left boundary edges, found in one vectorized pass: a left face in the region, the right
+    # face not. Only these start a loop, in increasing id order as the full scan met them.
+    lft = np.asarray(topology.lft, dtype=np.int64)
+    in_region = np.zeros(len(topology.edge_per_face) + 1, dtype=bool)
+    in_region[np.fromiter(region, dtype=np.int64, count=len(region))] = True
+    left_in = in_region[lft]  # an empty face (-1) reads the trailing False slot
+    starts = np.flatnonzero(left_in & ~left_in[np.arange(lft.size) ^ 1])
+    for e in starts.tolist():
+        if e in reported:
             continue
         loop = []
         x = e
@@ -2635,9 +2680,24 @@ def delete_region_keep_rims(topology: Topology, region: set[int]) -> list[list[i
             continue
         keep_edges.update(x >> 1 for x in loop)
         kept.append(loop)
-    for f in sorted(region):
-        if topology.edge_per_face[f] >= 0:
-            topology.delete_face(f, keep_edges)
+    from ordito.kernels import holes as kernel_holes
+
+    faces = np.array(sorted(region), dtype=np.int32)
+    if faces.size:
+        keep = np.zeros(topology.edge_count() // 2, dtype=np.int32)
+        keep[np.fromiter(keep_edges, dtype=np.int64, count=len(keep_edges))] = 1
+        native = _NativeMesh(topology, None)
+        wp.launch(
+            kernel_holes.serial_delete_faces,
+            dim=1,
+            inputs=[
+                native.mesh,
+                wp.array(faces, dtype=wp.int32, device="cpu"),
+                wp.array(keep, dtype=wp.int32, device="cpu"),
+            ],
+            device="cpu",
+        )
+        native.store(topology)
     return kept
 
 

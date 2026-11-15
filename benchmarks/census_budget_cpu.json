@@ -2911,9 +2911,9 @@
  },
  "benchmarks/test_holes.py::test_refill_region_meshlib[saddle_small-ordito-cpu]": {
   "counts": {
-   "launch": 548,
-   "alloc": 151,
-   "h2h": 31,
+   "launch": 549,
+   "alloc": 153,
+   "h2h": 33,
    "readback": 39,
    "scan": 40,
    "sort": 40
@@ -2921,9 +2921,9 @@
  },
  "benchmarks/test_holes.py::test_refill_region_meshlib[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 218,
-   "alloc": 77,
-   "h2h": 17,
+   "launch": 219,
+   "alloc": 79,
+   "h2h": 19,
    "readback": 21,
    "scan": 20,
    "sort": 20

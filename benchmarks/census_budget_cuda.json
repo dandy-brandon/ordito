@@ -3197,11 +3197,12 @@
  },
  "benchmarks/test_holes.py::test_refill_region_meshlib[saddle_small-ordito-cuda]": {
   "counts": {
-   "launch": 1032,
-   "alloc": 186,
+   "launch": 1033,
+   "alloc": 188,
    "memset": 84,
    "h2d": 31,
    "d2h": 31,
+   "h2h": 2,
    "sync": 8,
    "scan": 40,
    "sort": 40
@@ -3209,11 +3210,12 @@
  },
  "benchmarks/test_holes.py::test_refill_region_meshlib[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 460,
-   "alloc": 96,
+   "launch": 461,
+   "alloc": 98,
    "memset": 42,
    "h2d": 17,
    "d2h": 17,
+   "h2h": 2,
    "sync": 4,
    "scan": 20,
    "sort": 20

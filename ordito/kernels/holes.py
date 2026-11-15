@@ -3401,6 +3401,38 @@ def serial_keeps(m: SerialMesh, edge: wp.int32, max_angle: wp.float32) -> wp.boo
     )
 
 
+@wp.kernel(enable_backward=False, module="unique")
+def serial_delete_faces(
+    mesh: SerialMesh, faces: wp.array[wp.int32], keep_edges: wp.array[wp.int32]
+) -> None:
+    """Delete ``faces`` in order as ``Topology.delete_face`` does, ``keep_edges`` left linked."""
+    for k in range(faces.shape[0]):
+        f = faces[k]
+        e = mesh.edge_per_face[f]
+        if e >= 0:
+            serial_set_left(mesh, e, -1)
+            degree = wp.int32(0)
+            i = e
+            while True:
+                degree += 1
+                i = mesh.prv[i ^ 1]
+                if i == e:
+                    break
+            for _step in range(degree):
+                e1 = e
+                e = mesh.prv[e ^ 1]
+                if mesh.lft[e1 ^ 1] < 0 and keep_edges[e1 >> 1] == 0:
+                    for side in range(2):
+                        x = e1 ^ side
+                        if mesh.prv[x] == x:
+                            serial_set_org(mesh, x, -1)
+                        else:
+                            v = mesh.org[x]
+                            if v >= 0 and mesh.edge_per_vertex[v] == x:
+                                mesh.edge_per_vertex[v] = mesh.nxt[x]
+                            serial_splice(mesh, mesh.prv[x], x)
+
+
 @wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
 def serial_subdivide(
     mesh: SerialMesh, max_sq: wp.float32, max_splits: wp.int32, max_angle: wp.float32
