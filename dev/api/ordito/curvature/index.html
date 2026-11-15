@@ -6274,6 +6274,7 @@ pull in vertices across a fold of the surface and corrupt the fit.</p>
     <span class="n">mean_edge_length</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span>
         <span class="s2">"quadric"</span><span class="p">,</span>
+        <span class="s2">"igl"</span><span class="p">,</span>
         <span class="s2">"pyvista"</span><span class="p">,</span>
         <span class="s2">"meyer"</span><span class="p">,</span>
         <span class="s2">"taubin"</span><span class="p">,</span>
@@ -6440,11 +6441,13 @@ checked.</p>
                 <code>method</code>
             </td>
             <td>
-                  <code><a class="autorefs autorefs-external" title="typing.Literal" href="https://docs.python.org/3/library/typing.html#typing.Literal">Literal</a>[&#39;quadric&#39;, &#39;pyvista&#39;, &#39;meyer&#39;, &#39;taubin&#39;, &#39;normal_cycles&#39;]</code>
+                  <code><a class="autorefs autorefs-external" title="typing.Literal" href="https://docs.python.org/3/library/typing.html#typing.Literal">Literal</a>[&#39;quadric&#39;, &#39;igl&#39;, &#39;pyvista&#39;, &#39;meyer&#39;, &#39;taubin&#39;, &#39;normal_cycles&#39;]</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p><code>"quadric"</code> (the default) is the fit above. <code>"pyvista"</code> is VTK's <code>vtkCurvatures</code>
+                <p><code>"quadric"</code> (the default) is the fit above, and <code>"igl"</code> the same fit under the name
+of the library it ports (<code>igl.principal_curvature</code>, which it matches exactly with
+<code>frame_independent=False</code>). <code>"pyvista"</code> is VTK's <code>vtkCurvatures</code>
 (<code>pyvista.PolyData.curvature("maximum")</code> / <code>("minimum")</code>): no fit, but
 <code>H +- sqrt(H^2 - K)</code> over its 1-ring Gaussian curvature <code>K</code> (three times the angle
 defect over the incident faces' area) and mean curvature <code>H</code> (half the mean, over the
@@ -6462,6 +6465,10 @@ its direction's outer product, over a third of the ring's area. Its eigenvector 
 the vertex normal is dropped and the other two give the principal curvatures, each
 belonging to the direction across its eigenvector. All four 1-ring methods leave
 <code>radius</code>, <code>frame_independent</code> and the face tables unread.</p>
+<p><code>"quadric"</code> is the default because it fits a surface over a neighbourhood ball whose size
+<code>radius</code> sets, which averages out noise smaller than the ball and gives the principal
+directions; the 1-ring methods see one ring of faces, and <code>"pyvista"</code> and <code>"meyer"</code> give
+no directions.</p>
               </div>
             </td>
             <td>
@@ -6514,8 +6521,8 @@ vertex with no interior edge.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If <code>method</code> is not <code>"quadric"</code>, <code>"pyvista"</code>, <code>"meyer"</code>, <code>"taubin"</code> or
-<code>"normal_cycles"</code>.</p>
+                <p>If <code>method</code> is not <code>"quadric"</code>, <code>"igl"</code>, <code>"pyvista"</code>, <code>"meyer"</code>, <code>"taubin"</code>
+or <code>"normal_cycles"</code>.</p>
               </div>
             </td>
           </tr>
@@ -6761,7 +6768,14 @@ orthogonal:</p>
 <span class="normal">238</span>
 <span class="normal">239</span>
 <span class="normal">240</span>
-<span class="normal">241</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">principal_curvature</span><span class="p">(</span>
+<span class="normal">241</span>
+<span class="normal">242</span>
+<span class="normal">243</span>
+<span class="normal">244</span>
+<span class="normal">245</span>
+<span class="normal">246</span>
+<span class="normal">247</span>
+<span class="normal">248</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">principal_curvature</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">radius</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">5</span><span class="p">,</span>
@@ -6770,7 +6784,7 @@ orthogonal:</p>
     <span class="n">face_normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">face_areas</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">mean_edge_length</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"quadric"</span><span class="p">,</span> <span class="s2">"pyvista"</span><span class="p">,</span> <span class="s2">"meyer"</span><span class="p">,</span> <span class="s2">"taubin"</span><span class="p">,</span> <span class="s2">"normal_cycles"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"quadric"</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"quadric"</span><span class="p">,</span> <span class="s2">"igl"</span><span class="p">,</span> <span class="s2">"pyvista"</span><span class="p">,</span> <span class="s2">"meyer"</span><span class="p">,</span> <span class="s2">"taubin"</span><span class="p">,</span> <span class="s2">"normal_cycles"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"quadric"</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Principal curvature directions and magnitudes per vertex via quadric fitting.</span>
@@ -6814,7 +6828,9 @@ orthogonal:</p>
 <span class="sd">        ``radius``; passing it spares the reduction and readback that measure it. Trusted, not</span>
 <span class="sd">        checked.</span>
 <span class="sd">    method</span>
-<span class="sd">        ``"quadric"`` (the default) is the fit above. ``"pyvista"`` is VTK's ``vtkCurvatures``</span>
+<span class="sd">        ``"quadric"`` (the default) is the fit above, and ``"igl"`` the same fit under the name</span>
+<span class="sd">        of the library it ports (``igl.principal_curvature``, which it matches exactly with</span>
+<span class="sd">        ``frame_independent=False``). ``"pyvista"`` is VTK's ``vtkCurvatures``</span>
 <span class="sd">        (``pyvista.PolyData.curvature("maximum")`` / ``("minimum")``): no fit, but</span>
 <span class="sd">        ``H +- sqrt(H^2 - K)`` over its 1-ring Gaussian curvature ``K`` (three times the angle</span>
 <span class="sd">        defect over the incident faces' area) and mean curvature ``H`` (half the mean, over the</span>
@@ -6833,6 +6849,11 @@ orthogonal:</p>
 <span class="sd">        belonging to the direction across its eigenvector. All four 1-ring methods leave</span>
 <span class="sd">        ``radius``, ``frame_independent`` and the face tables unread.</span>
 
+<span class="sd">        ``"quadric"`` is the default because it fits a surface over a neighbourhood ball whose size</span>
+<span class="sd">        ``radius`` sets, which averages out noise smaller than the ball and gives the principal</span>
+<span class="sd">        directions; the 1-ring methods see one ring of faces, and ``"pyvista"`` and ``"meyer"`` give</span>
+<span class="sd">        no directions.</span>
+
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
 <span class="sd">    tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.float32], wp.array[wp.float32]]</span>
@@ -6845,8 +6866,8 @@ orthogonal:</p>
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
 <span class="sd">    ValueError</span>
-<span class="sd">        If ``method`` is not ``"quadric"``, ``"pyvista"``, ``"meyer"``, ``"taubin"`` or</span>
-<span class="sd">        ``"normal_cycles"``.</span>
+<span class="sd">        If ``method`` is not ``"quadric"``, ``"igl"``, ``"pyvista"``, ``"meyer"``, ``"taubin"``</span>
+<span class="sd">        or ``"normal_cycles"``.</span>
 <span class="sd">    RuntimeError</span>
 <span class="sd">        If ``vertices``, ``faces``, ``face_normals`` and ``face_areas`` are not all on one device.</span>
 
@@ -6882,14 +6903,14 @@ orthogonal:</p>
     <span class="n">require_same_device</span><span class="p">(</span>
         <span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">,</span> <span class="n">face_normals</span><span class="o">=</span><span class="n">face_normals</span><span class="p">,</span> <span class="n">face_areas</span><span class="o">=</span><span class="n">face_areas</span>
     <span class="p">)</span>
-    <span class="k">if</span> <span class="n">method</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"quadric"</span><span class="p">,</span> <span class="s2">"pyvista"</span><span class="p">,</span> <span class="s2">"meyer"</span><span class="p">,</span> <span class="s2">"taubin"</span><span class="p">,</span> <span class="s2">"normal_cycles"</span><span class="p">):</span>
+    <span class="k">if</span> <span class="n">method</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"quadric"</span><span class="p">,</span> <span class="s2">"igl"</span><span class="p">,</span> <span class="s2">"pyvista"</span><span class="p">,</span> <span class="s2">"meyer"</span><span class="p">,</span> <span class="s2">"taubin"</span><span class="p">,</span> <span class="s2">"normal_cycles"</span><span class="p">):</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
-            <span class="s2">"method must be 'quadric', 'pyvista', 'meyer', 'taubin' or 'normal_cycles', "</span>
+            <span class="s2">"method must be 'quadric', 'igl', 'pyvista', 'meyer', 'taubin' or 'normal_cycles', "</span>
             <span class="sa">f</span><span class="s2">"got </span><span class="si">{</span><span class="n">method</span><span class="si">!r}</span><span class="s2">"</span>
         <span class="p">)</span>
     <span class="n">device</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">device</span>
     <span class="n">n_vertices</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">size</span>
-    <span class="k">if</span> <span class="n">method</span> <span class="o">!=</span> <span class="s2">"quadric"</span><span class="p">:</span>
+    <span class="k">if</span> <span class="n">method</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"quadric"</span><span class="p">,</span> <span class="s2">"igl"</span><span class="p">):</span>
         <span class="k">return</span> <span class="n">_one_ring_principal_curvatures</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">method</span><span class="p">)</span>
 
     <span class="c1"># Area-weighted vertex normals. The pair is used only when both halves were supplied, which is</span>
@@ -7153,14 +7174,7 @@ with it, or a degenerate system) has zero directions and zero curvature values.<
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/curvature.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">308</span>
-<span class="normal">309</span>
-<span class="normal">310</span>
-<span class="normal">311</span>
-<span class="normal">312</span>
-<span class="normal">313</span>
-<span class="normal">314</span>
-<span class="normal">315</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">315</span>
 <span class="normal">316</span>
 <span class="normal">317</span>
 <span class="normal">318</span>
@@ -7246,7 +7260,14 @@ with it, or a degenerate system) has zero directions and zero curvature values.<
 <span class="normal">398</span>
 <span class="normal">399</span>
 <span class="normal">400</span>
-<span class="normal">401</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">point_principal_curvature</span><span class="p">(</span>
+<span class="normal">401</span>
+<span class="normal">402</span>
+<span class="normal">403</span>
+<span class="normal">404</span>
+<span class="normal">405</span>
+<span class="normal">406</span>
+<span class="normal">407</span>
+<span class="normal">408</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">point_principal_curvature</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">neighbor_idx</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -7511,14 +7532,7 @@ meshes, and a vertex whose ring area is tiny (a needle's tip) amplifies rounding
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/curvature.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">404</span>
-<span class="normal">405</span>
-<span class="normal">406</span>
-<span class="normal">407</span>
-<span class="normal">408</span>
-<span class="normal">409</span>
-<span class="normal">410</span>
-<span class="normal">411</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">411</span>
 <span class="normal">412</span>
 <span class="normal">413</span>
 <span class="normal">414</span>
@@ -7589,7 +7603,14 @@ meshes, and a vertex whose ring area is tiny (a needle's tip) amplifies rounding
 <span class="normal">479</span>
 <span class="normal">480</span>
 <span class="normal">481</span>
-<span class="normal">482</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vertex_curvatures</span><span class="p">(</span>
+<span class="normal">482</span>
+<span class="normal">483</span>
+<span class="normal">484</span>
+<span class="normal">485</span>
+<span class="normal">486</span>
+<span class="normal">487</span>
+<span class="normal">488</span>
+<span class="normal">489</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vertex_curvatures</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -7864,14 +7885,7 @@ referenced by any face have defect <code>2π</code> (empty angle sum).</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/curvature.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">502</span>
-<span class="normal">503</span>
-<span class="normal">504</span>
-<span class="normal">505</span>
-<span class="normal">506</span>
-<span class="normal">507</span>
-<span class="normal">508</span>
-<span class="normal">509</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">509</span>
 <span class="normal">510</span>
 <span class="normal">511</span>
 <span class="normal">512</span>
@@ -7952,7 +7966,14 @@ referenced by any face have defect <code>2π</code> (empty angle sum).</p>
 <span class="normal">587</span>
 <span class="normal">588</span>
 <span class="normal">589</span>
-<span class="normal">590</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vertex_defects</span><span class="p">(</span>
+<span class="normal">590</span>
+<span class="normal">591</span>
+<span class="normal">592</span>
+<span class="normal">593</span>
+<span class="normal">594</span>
+<span class="normal">595</span>
+<span class="normal">596</span>
+<span class="normal">597</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vertex_defects</span><span class="p">(</span>
     <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">face_angles</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat32</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -8265,14 +8286,7 @@ for each point.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/curvature.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">593</span>
-<span class="normal">594</span>
-<span class="normal">595</span>
-<span class="normal">596</span>
-<span class="normal">597</span>
-<span class="normal">598</span>
-<span class="normal">599</span>
-<span class="normal">600</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">600</span>
 <span class="normal">601</span>
 <span class="normal">602</span>
 <span class="normal">603</span>
@@ -8365,7 +8379,14 @@ for each point.</p>
 <span class="normal">690</span>
 <span class="normal">691</span>
 <span class="normal">692</span>
-<span class="normal">693</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">discrete_gaussian_curvature</span><span class="p">(</span>
+<span class="normal">693</span>
+<span class="normal">694</span>
+<span class="normal">695</span>
+<span class="normal">696</span>
+<span class="normal">697</span>
+<span class="normal">698</span>
+<span class="normal">699</span>
+<span class="normal">700</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">discrete_gaussian_curvature</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
@@ -8712,14 +8733,7 @@ edge measures zero:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/curvature.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">723</span>
-<span class="normal">724</span>
-<span class="normal">725</span>
-<span class="normal">726</span>
-<span class="normal">727</span>
-<span class="normal">728</span>
-<span class="normal">729</span>
-<span class="normal">730</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">730</span>
 <span class="normal">731</span>
 <span class="normal">732</span>
 <span class="normal">733</span>
@@ -8877,7 +8891,14 @@ edge measures zero:</p>
 <span class="normal">885</span>
 <span class="normal">886</span>
 <span class="normal">887</span>
-<span class="normal">888</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">discrete_mean_curvature</span><span class="p">(</span>
+<span class="normal">888</span>
+<span class="normal">889</span>
+<span class="normal">890</span>
+<span class="normal">891</span>
+<span class="normal">892</span>
+<span class="normal">893</span>
+<span class="normal">894</span>
+<span class="normal">895</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">discrete_mean_curvature</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
@@ -9267,14 +9288,7 @@ it orders its <code>K1</code> and <code>K2</code> by magnitude.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/curvature.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 891</span>
-<span class="normal"> 892</span>
-<span class="normal"> 893</span>
-<span class="normal"> 894</span>
-<span class="normal"> 895</span>
-<span class="normal"> 896</span>
-<span class="normal"> 897</span>
-<span class="normal"> 898</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 898</span>
 <span class="normal"> 899</span>
 <span class="normal"> 900</span>
 <span class="normal"> 901</span>
@@ -9398,7 +9412,14 @@ it orders its <code>K1</code> and <code>K2</code> by magnitude.</p>
 <span class="normal">1019</span>
 <span class="normal">1020</span>
 <span class="normal">1021</span>
-<span class="normal">1022</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mls_principal_curvature</span><span class="p">(</span>
+<span class="normal">1022</span>
+<span class="normal">1023</span>
+<span class="normal">1024</span>
+<span class="normal">1025</span>
+<span class="normal">1026</span>
+<span class="normal">1027</span>
+<span class="normal">1028</span>
+<span class="normal">1029</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mls_principal_curvature</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"apss"</span><span class="p">,</span> <span class="s2">"rimls"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"apss"</span><span class="p">,</span>

@@ -6183,7 +6183,7 @@ occupancy lattice, <a class="autorefs autorefs-internal" title="ordito.voxels" h
     <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">edge_margin</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
     <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span>
-        <span class="s2">"classic"</span><span class="p">,</span> <span class="s2">"lewiner"</span><span class="p">,</span> <span class="s2">"openvdb"</span>
+        <span class="s2">"classic"</span><span class="p">,</span> <span class="s2">"igl"</span><span class="p">,</span> <span class="s2">"pyvista"</span><span class="p">,</span> <span class="s2">"lewiner"</span><span class="p">,</span> <span class="s2">"openvdb"</span>
     <span class="p">]</span> <span class="o">=</span> <span class="s2">"classic"</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]</span>
 </code></pre></div>
@@ -6298,12 +6298,16 @@ Not taken by <code>method="lewiner"</code>, whose vertices are linear in the fie
                 <code>method</code>
             </td>
             <td>
-                  <code><a class="autorefs autorefs-external" title="typing.Literal" href="https://docs.python.org/3/library/typing.html#typing.Literal">Literal</a>[&#39;classic&#39;, &#39;lewiner&#39;, &#39;openvdb&#39;]</code>
+                  <code><a class="autorefs autorefs-external" title="typing.Literal" href="https://docs.python.org/3/library/typing.html#typing.Literal">Literal</a>[&#39;classic&#39;, &#39;igl&#39;, &#39;pyvista&#39;, &#39;lewiner&#39;, &#39;openvdb&#39;]</code>
             </td>
             <td>
               <div class="doc-md-description">
                 <p>The triangulation. <code>"classic"</code> (the default) is Lorensen and Cline's 256-case table as
-Warp's <code>warp.geometry.IsoSurfaceMarchingCubes</code> has it (see <code>Notes</code>). <code>"lewiner"</code> is
+Warp's <code>warp.geometry.IsoSurfaceMarchingCubes</code> has it (see <code>Notes</code>). <code>"igl"</code> and
+<code>"pyvista"</code> are the same triangulation under the names of two libraries that return
+the same vertices and triangles from it (<code>igl.marching_cubes</code>,
+<code>pyvista.ImageData.contour</code>, whose triangles VTK winds the other way round), once each
+library's lattice convention is matched. <code>"lewiner"</code> is
 Lewiner et al.'s topologically controlled marching cubes (MC33): a face or the interior of
 a cell whose corners alone leave the surface ambiguous is resolved by the bilinear and
 trilinear field there, some cells gain a vertex inside them, and the result is a closed,
@@ -6315,6 +6319,10 @@ dual marching cubes (<code>volumeToMesh</code> at adaptivity 0): a vertex inside
 level crosses and a quad, split in two triangles, across each crossing edge (see
 <code>Notes</code>); <a class="autorefs autorefs-internal" title="offset_mesh" href="./#ordito.levelset.offset_mesh"><code>offset_mesh</code></a>'s <code>method="meshlib"</code> extracts
 with it.</p>
+<p><code>"classic"</code> is the default because it is the table the reference libraries share (Warp,
+libigl, VTK and pytorch3d return its triangles) and the fastest of the three extractions;
+choose <code>"lewiner"</code> when an ambiguous cell must be resolved by the field inside it (see
+<code>Notes</code>).</p>
               </div>
             </td>
             <td>
@@ -6384,10 +6392,10 @@ cross <code>iso</code>.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If <code>method</code> is not <code>"classic"</code>, <code>"lewiner"</code> or <code>"openvdb"</code>, any of <code>field</code>'s
-dimensions is below 2, <code>edge_margin</code> is outside <code>[0, 0.5)</code> (or not <code>0</code> under
-<code>"lewiner"</code> or <code>"openvdb"</code>),
-<code>field</code> has <code>2**31</code> nodes or more, or the level set has <code>2**31</code> vertices or more or
+                <p>If <code>method</code> is not <code>"classic"</code>, <code>"igl"</code>, <code>"pyvista"</code>, <code>"lewiner"</code> or
+<code>"openvdb"</code>, any of <code>field</code>'s dimensions is below 2, <code>edge_margin</code> is outside
+<code>[0, 0.5)</code> (or not <code>0</code> under <code>"lewiner"</code> or <code>"openvdb"</code>), <code>field</code> has
+<code>2**31</code> nodes or more, or the level set has <code>2**31</code> vertices or more or
 <code>3 * n_faces</code> reaches <code>2**31</code>: the extraction indexes in <code>int32</code>.</p>
               </div>
             </td>
@@ -6444,11 +6452,12 @@ linear crossings, formed in <code>float64</code> and rounded to <code>float32</c
 across that face has the same face ambiguous, so the two group their crossings alike. Each
 crossing edge whose four surrounding cells are all crossed gets a quad; one with a cell off
 the lattice gets none, so a level that reaches the lattice's boundary leaves a hole there.
-The vertices are numbered, and the triangles ordered, as OpenVDB's tree visits the cells
-(8**3 blocks in its order, then each block's cells), so on a <code>wp.float32</code> field the result
-equals OpenVDB's on a level-set grid holding the same values, buffer order included. <code>iso</code>
-is rounded to the field's precision. A NaN sample is outside, and the crossings on its edges
-are NaN. Its scratch is a 16-bit flag word per cell and a pair of counters per cell slot.</p>
+On a <code>wp.float32</code> field the result equals OpenVDB's on a level-set grid holding the same
+values, up to the numbering of vertices and the order of triangles: vertices are numbered by
+cell in row-major order of the field's index, then by group, and each cell's quads follow in
+the same order, where OpenVDB numbers cells as its tree visits them. <code>iso</code> is rounded to the
+field's precision. A NaN sample is outside, and the crossings on its edges are NaN. Its
+scratch is a 16-bit flag word and a pair of counters per cell.</p>
 </details>
 
 <p><span class="doc-section-title">Examples:</span></p>
@@ -6767,13 +6776,25 @@ are NaN. Its scratch is a 16-bit flag word per cell and a pair of counters per c
 <span class="normal">434</span>
 <span class="normal">435</span>
 <span class="normal">436</span>
-<span class="normal">437</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">marching_cubes</span><span class="p">(</span>
+<span class="normal">437</span>
+<span class="normal">438</span>
+<span class="normal">439</span>
+<span class="normal">440</span>
+<span class="normal">441</span>
+<span class="normal">442</span>
+<span class="normal">443</span>
+<span class="normal">444</span>
+<span class="normal">445</span>
+<span class="normal">446</span>
+<span class="normal">447</span>
+<span class="normal">448</span>
+<span class="normal">449</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">marching_cubes</span><span class="p">(</span>
     <span class="n">field</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNdFloat</span><span class="p">,</span>
     <span class="n">iso</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">bounds</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3d</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3d</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">edge_margin</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
-    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"classic"</span><span class="p">,</span> <span class="s2">"lewiner"</span><span class="p">,</span> <span class="s2">"openvdb"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"classic"</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"classic"</span><span class="p">,</span> <span class="s2">"igl"</span><span class="p">,</span> <span class="s2">"pyvista"</span><span class="p">,</span> <span class="s2">"lewiner"</span><span class="p">,</span> <span class="s2">"openvdb"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"classic"</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Extract the ``iso`` level set of a dense scalar lattice as a triangle mesh.</span>
@@ -6811,7 +6832,11 @@ are NaN. Its scratch is a 16-bit flag word per cell and a pair of counters per c
 <span class="sd">        Not taken by ``method="lewiner"``, whose vertices are linear in the field.</span>
 <span class="sd">    method</span>
 <span class="sd">        The triangulation. ``"classic"`` (the default) is Lorensen and Cline's 256-case table as</span>
-<span class="sd">        Warp's ``warp.geometry.IsoSurfaceMarchingCubes`` has it (see ``Notes``). ``"lewiner"`` is</span>
+<span class="sd">        Warp's ``warp.geometry.IsoSurfaceMarchingCubes`` has it (see ``Notes``). ``"igl"`` and</span>
+<span class="sd">        ``"pyvista"`` are the same triangulation under the names of two libraries that return</span>
+<span class="sd">        the same vertices and triangles from it (``igl.marching_cubes``,</span>
+<span class="sd">        ``pyvista.ImageData.contour``, whose triangles VTK winds the other way round), once each</span>
+<span class="sd">        library's lattice convention is matched. ``"lewiner"`` is</span>
 <span class="sd">        Lewiner et al.'s topologically controlled marching cubes (MC33): a face or the interior of</span>
 <span class="sd">        a cell whose corners alone leave the surface ambiguous is resolved by the bilinear and</span>
 <span class="sd">        trilinear field there, some cells gain a vertex inside them, and the result is a closed,</span>
@@ -6823,6 +6848,11 @@ are NaN. Its scratch is a 16-bit flag word per cell and a pair of counters per c
 <span class="sd">        level crosses and a quad, split in two triangles, across each crossing edge (see</span>
 <span class="sd">        ``Notes``); [`offset_mesh`][ordito.levelset.offset_mesh]'s ``method="meshlib"`` extracts</span>
 <span class="sd">        with it.</span>
+
+<span class="sd">        ``"classic"`` is the default because it is the table the reference libraries share (Warp,</span>
+<span class="sd">        libigl, VTK and pytorch3d return its triangles) and the fastest of the three extractions;</span>
+<span class="sd">        choose ``"lewiner"`` when an ambiguous cell must be resolved by the field inside it (see</span>
+<span class="sd">        ``Notes``).</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -6837,10 +6867,10 @@ are NaN. Its scratch is a 16-bit flag word per cell and a pair of counters per c
 <span class="sd">    TypeError</span>
 <span class="sd">        If ``field`` is not a rank-3 ``wp.float32`` or ``wp.float64`` array.</span>
 <span class="sd">    ValueError</span>
-<span class="sd">        If ``method`` is not ``"classic"``, ``"lewiner"`` or ``"openvdb"``, any of ``field``'s</span>
-<span class="sd">        dimensions is below 2, ``edge_margin`` is outside ``[0, 0.5)`` (or not ``0`` under</span>
-<span class="sd">        ``"lewiner"`` or ``"openvdb"``),</span>
-<span class="sd">        ``field`` has ``2**31`` nodes or more, or the level set has ``2**31`` vertices or more or</span>
+<span class="sd">        If ``method`` is not ``"classic"``, ``"igl"``, ``"pyvista"``, ``"lewiner"`` or</span>
+<span class="sd">        ``"openvdb"``, any of ``field``'s dimensions is below 2, ``edge_margin`` is outside</span>
+<span class="sd">        ``[0, 0.5)`` (or not ``0`` under ``"lewiner"`` or ``"openvdb"``), ``field`` has</span>
+<span class="sd">        ``2**31`` nodes or more, or the level set has ``2**31`` vertices or more or</span>
 <span class="sd">        ``3 * n_faces`` reaches ``2**31``: the extraction indexes in ``int32``.</span>
 
 <span class="sd">    See Also</span>
@@ -6893,11 +6923,12 @@ are NaN. Its scratch is a 16-bit flag word per cell and a pair of counters per c
 <span class="sd">    across that face has the same face ambiguous, so the two group their crossings alike. Each</span>
 <span class="sd">    crossing edge whose four surrounding cells are all crossed gets a quad; one with a cell off</span>
 <span class="sd">    the lattice gets none, so a level that reaches the lattice's boundary leaves a hole there.</span>
-<span class="sd">    The vertices are numbered, and the triangles ordered, as OpenVDB's tree visits the cells</span>
-<span class="sd">    (8**3 blocks in its order, then each block's cells), so on a ``wp.float32`` field the result</span>
-<span class="sd">    equals OpenVDB's on a level-set grid holding the same values, buffer order included. ``iso``</span>
-<span class="sd">    is rounded to the field's precision. A NaN sample is outside, and the crossings on its edges</span>
-<span class="sd">    are NaN. Its scratch is a 16-bit flag word per cell and a pair of counters per cell slot.</span>
+<span class="sd">    On a ``wp.float32`` field the result equals OpenVDB's on a level-set grid holding the same</span>
+<span class="sd">    values, up to the numbering of vertices and the order of triangles: vertices are numbered by</span>
+<span class="sd">    cell in row-major order of the field's index, then by group, and each cell's quads follow in</span>
+<span class="sd">    the same order, where OpenVDB numbers cells as its tree visits them. ``iso`` is rounded to the</span>
+<span class="sd">    field's precision. A NaN sample is outside, and the crossings on its edges are NaN. Its</span>
+<span class="sd">    scratch is a 16-bit flag word and a pair of counters per cell.</span>
 
 <span class="sd">    Examples</span>
 <span class="sd">    --------</span>
@@ -6918,8 +6949,10 @@ are NaN. Its scratch is a 16-bit flag word per cell and a pair of counters per c
 <span class="sd">    print(f"{od.measures.volume(vertices, faces):.2f}")  # 2.12</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
-    <span class="k">if</span> <span class="n">method</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"classic"</span><span class="p">,</span> <span class="s2">"lewiner"</span><span class="p">,</span> <span class="s2">"openvdb"</span><span class="p">):</span>
-        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"method must be 'classic', 'lewiner' or 'openvdb', got </span><span class="si">{</span><span class="n">method</span><span class="si">!r}</span><span class="s2">"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">method</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"classic"</span><span class="p">,</span> <span class="s2">"igl"</span><span class="p">,</span> <span class="s2">"pyvista"</span><span class="p">,</span> <span class="s2">"lewiner"</span><span class="p">,</span> <span class="s2">"openvdb"</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"method must be 'classic', 'igl', 'pyvista', 'lewiner' or 'openvdb', got </span><span class="si">{</span><span class="n">method</span><span class="si">!r}</span><span class="s2">"</span>
+        <span class="p">)</span>
     <span class="k">if</span> <span class="n">method</span> <span class="o">==</span> <span class="s2">"lewiner"</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">_marching_cubes_lewiner</span><span class="p">(</span><span class="n">field</span><span class="p">,</span> <span class="n">iso</span><span class="p">,</span> <span class="n">bounds</span><span class="p">,</span> <span class="n">edge_margin</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">method</span> <span class="o">==</span> <span class="s2">"openvdb"</span><span class="p">:</span>
@@ -7224,8 +7257,8 @@ padding then extends to cover the offset. Taken by <code>method="padded"</code> 
 <code>"meshlib"</code> is the lattice and extraction of an OpenVDB level-set offset: nodes at whole
 multiples of <code>voxel_size</code>, covering the vertex box grown by
 <code>|distance| / voxel_size + 3</code> voxels, the field sampled on every node, and the level
-extracted by <a class="autorefs autorefs-internal" title="marching_cubes" href="./#ordito.levelset.marching_cubes"><code>marching_cubes</code></a>'s <code>method="openvdb"</code>,
-numbered as OpenVDB numbers it. The field is the exact signed distance, which OpenVDB's
+extracted by <a class="autorefs autorefs-internal" title="marching_cubes" href="./#ordito.levelset.marching_cubes"><code>marching_cubes</code></a>'s <code>method="openvdb"</code>.
+The field is the exact signed distance, which OpenVDB's
 narrow band approximates, so the vertices are that offset's where the two fields agree
 around them.
 <code>"meshlab"</code> is MeshLab's offset, its uniform resampler at an absolute <code>offset</code>:
@@ -7361,7 +7394,19 @@ node by node rather than through the octree its Notes describe.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/levelset.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">630</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">618</span>
+<span class="normal">619</span>
+<span class="normal">620</span>
+<span class="normal">621</span>
+<span class="normal">622</span>
+<span class="normal">623</span>
+<span class="normal">624</span>
+<span class="normal">625</span>
+<span class="normal">626</span>
+<span class="normal">627</span>
+<span class="normal">628</span>
+<span class="normal">629</span>
+<span class="normal">630</span>
 <span class="normal">631</span>
 <span class="normal">632</span>
 <span class="normal">633</span>
@@ -7534,19 +7579,7 @@ node by node rather than through the octree its Notes describe.</p>
 <span class="normal">800</span>
 <span class="normal">801</span>
 <span class="normal">802</span>
-<span class="normal">803</span>
-<span class="normal">804</span>
-<span class="normal">805</span>
-<span class="normal">806</span>
-<span class="normal">807</span>
-<span class="normal">808</span>
-<span class="normal">809</span>
-<span class="normal">810</span>
-<span class="normal">811</span>
-<span class="normal">812</span>
-<span class="normal">813</span>
-<span class="normal">814</span>
-<span class="normal">815</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">offset_mesh</span><span class="p">(</span>
+<span class="normal">803</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">offset_mesh</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">distance</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
@@ -7594,8 +7627,8 @@ node by node rather than through the octree its Notes describe.</p>
 <span class="sd">        ``"meshlib"`` is the lattice and extraction of an OpenVDB level-set offset: nodes at whole</span>
 <span class="sd">        multiples of ``voxel_size``, covering the vertex box grown by</span>
 <span class="sd">        ``|distance| / voxel_size + 3`` voxels, the field sampled on every node, and the level</span>
-<span class="sd">        extracted by [`marching_cubes`][ordito.levelset.marching_cubes]'s ``method="openvdb"``,</span>
-<span class="sd">        numbered as OpenVDB numbers it. The field is the exact signed distance, which OpenVDB's</span>
+<span class="sd">        extracted by [`marching_cubes`][ordito.levelset.marching_cubes]'s ``method="openvdb"``.</span>
+<span class="sd">        The field is the exact signed distance, which OpenVDB's</span>
 <span class="sd">        narrow band approximates, so the vertices are that offset's where the two fields agree</span>
 <span class="sd">        around them.</span>
 <span class="sd">        ``"meshlab"`` is MeshLab's offset, its uniform resampler at an absolute ``offset``:</span>
@@ -8026,7 +8059,19 @@ sphere):</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/levelset.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 859</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 847</span>
+<span class="normal"> 848</span>
+<span class="normal"> 849</span>
+<span class="normal"> 850</span>
+<span class="normal"> 851</span>
+<span class="normal"> 852</span>
+<span class="normal"> 853</span>
+<span class="normal"> 854</span>
+<span class="normal"> 855</span>
+<span class="normal"> 856</span>
+<span class="normal"> 857</span>
+<span class="normal"> 858</span>
+<span class="normal"> 859</span>
 <span class="normal"> 860</span>
 <span class="normal"> 861</span>
 <span class="normal"> 862</span>
@@ -8206,19 +8251,7 @@ sphere):</p>
 <span class="normal">1036</span>
 <span class="normal">1037</span>
 <span class="normal">1038</span>
-<span class="normal">1039</span>
-<span class="normal">1040</span>
-<span class="normal">1041</span>
-<span class="normal">1042</span>
-<span class="normal">1043</span>
-<span class="normal">1044</span>
-<span class="normal">1045</span>
-<span class="normal">1046</span>
-<span class="normal">1047</span>
-<span class="normal">1048</span>
-<span class="normal">1049</span>
-<span class="normal">1050</span>
-<span class="normal">1051</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">signed_distance_level_set</span><span class="p">(</span>
+<span class="normal">1039</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">signed_distance_level_set</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">iso</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
@@ -8658,7 +8691,19 @@ triangles over each of its 16 boundary edges:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/levelset.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1457</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1445</span>
+<span class="normal">1446</span>
+<span class="normal">1447</span>
+<span class="normal">1448</span>
+<span class="normal">1449</span>
+<span class="normal">1450</span>
+<span class="normal">1451</span>
+<span class="normal">1452</span>
+<span class="normal">1453</span>
+<span class="normal">1454</span>
+<span class="normal">1455</span>
+<span class="normal">1456</span>
+<span class="normal">1457</span>
 <span class="normal">1458</span>
 <span class="normal">1459</span>
 <span class="normal">1460</span>
@@ -8781,19 +8826,7 @@ triangles over each of its 16 boundary edges:</p>
 <span class="normal">1577</span>
 <span class="normal">1578</span>
 <span class="normal">1579</span>
-<span class="normal">1580</span>
-<span class="normal">1581</span>
-<span class="normal">1582</span>
-<span class="normal">1583</span>
-<span class="normal">1584</span>
-<span class="normal">1585</span>
-<span class="normal">1586</span>
-<span class="normal">1587</span>
-<span class="normal">1588</span>
-<span class="normal">1589</span>
-<span class="normal">1590</span>
-<span class="normal">1591</span>
-<span class="normal">1592</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">thicken_mesh</span><span class="p">(</span>
+<span class="normal">1580</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">thicken_mesh</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">thickness</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>

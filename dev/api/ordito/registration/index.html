@@ -6752,7 +6752,13 @@ so its <code>R</code> is this matrix's linear block divided by the scale and <em
     <span class="n">reflection</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
     <span class="n">translation</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
     <span class="n">scale</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
-    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"all_points"</span><span class="p">,</span> <span class="s2">"pyvista"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"all_points"</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span>
+        <span class="s2">"all_points"</span><span class="p">,</span>
+        <span class="s2">"trimesh"</span><span class="p">,</span>
+        <span class="s2">"open3d"</span><span class="p">,</span>
+        <span class="s2">"pytorch3d"</span><span class="p">,</span>
+        <span class="s2">"pyvista"</span><span class="p">,</span>
+    <span class="p">]</span> <span class="o">=</span> <span class="s2">"all_points"</span><span class="p">,</span>
     <span class="n">target_index</span><span class="p">:</span> <span class="n">Mesh</span> <span class="o">|</span> <span class="n">Bvh</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">mat44</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="nb">float</span><span class="p">]</span>
 </code></pre></div>
@@ -6969,17 +6975,26 @@ similarity transform.</p>
                 <code>method</code>
             </td>
             <td>
-                  <code><a class="autorefs autorefs-external" title="typing.Literal" href="https://docs.python.org/3/library/typing.html#typing.Literal">Literal</a>[&#39;all_points&#39;, &#39;pyvista&#39;]</code>
+                  <code><a class="autorefs autorefs-external" title="typing.Literal" href="https://docs.python.org/3/library/typing.html#typing.Literal">Literal</a>[&#39;all_points&#39;, &#39;trimesh&#39;, &#39;open3d&#39;, &#39;pytorch3d&#39;, &#39;pyvista&#39;]</code>
             </td>
             <td>
               <div class="doc-md-description">
                 <p><code>"all_points"</code> matches every point of <em>a</em> each iteration, as described above.
+<code>"trimesh"</code>, <code>"open3d"</code> and <code>"pytorch3d"</code> are the same method under the names of
+the libraries whose point-to-point ICP it reproduces (<a class="autorefs autorefs-external" href="https://trimesh.org/trimesh.registration.html#trimesh.registration.icp"><code>trimesh.registration.icp</code></a>,
+Open3D's <code>registration_icp</code> with <code>TransformationEstimationPointToPoint</code>, and
+<code>pytorch3d.ops.iterative_closest_point</code>): the same converged transform, each with its
+own stopping rule.
 <code>"pyvista"</code> is <code>vtkIterativeClosestPointTransform</code> as <code>pyvista</code>'s <code>align</code> runs it:
 every <code>n // 100</code>-th point of <em>a</em> is a landmark (every point when <code>n &lt;= 100</code>), <em>a</em> is
 first translated so its centroid lands on the target's (both centroids over every point,
 after <code>initial</code>), and each iteration fits a rigid map of the landmarks onto their
 matches and composes it onto the transform so far. It is rigid only, in <code>float64</code>.
 <code>align</code>'s defaults are <code>max_iterations=500</code> and <code>threshold=1e-5</code>.</p>
+<p><code>"all_points"</code> is the default because it matches every source point each iteration and
+re-aligns the original cloud every time, so no error accumulates, and it takes the distance
+gate, reflection, translation and scale; <code>"pyvista"</code> matches a subsample of landmarks,
+composes each step onto the last, and is rigid only.</p>
               </div>
             </td>
             <td>
@@ -7071,9 +7086,10 @@ builds itself). Not checked against them: the search answers for the geometry it
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If <code>method</code> is not <code>"all_points"</code> or <code>"pyvista"</code>, or if <code>method="pyvista"</code> is
-combined with <code>max_distance</code>, <code>reflection=True</code>, <code>translation=False</code> or
-<code>scale=True</code>, which VTK's rigid landmark fit does not have.</p>
+                <p>If <code>method</code> is not <code>"all_points"</code>, <code>"trimesh"</code>, <code>"open3d"</code>, <code>"pytorch3d"</code> or
+<code>"pyvista"</code>, or if <code>method="pyvista"</code> is combined with <code>max_distance</code>,
+<code>reflection=True</code>, <code>translation=False</code> or <code>scale=True</code>, which VTK's rigid landmark
+fit does not have.</p>
               </div>
             </td>
           </tr>
@@ -7460,7 +7476,21 @@ correspondences are given:</p>
 <span class="normal">620</span>
 <span class="normal">621</span>
 <span class="normal">622</span>
-<span class="normal">623</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">icp</span><span class="p">(</span>
+<span class="normal">623</span>
+<span class="normal">624</span>
+<span class="normal">625</span>
+<span class="normal">626</span>
+<span class="normal">627</span>
+<span class="normal">628</span>
+<span class="normal">629</span>
+<span class="normal">630</span>
+<span class="normal">631</span>
+<span class="normal">632</span>
+<span class="normal">633</span>
+<span class="normal">634</span>
+<span class="normal">635</span>
+<span class="normal">636</span>
+<span class="normal">637</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">icp</span><span class="p">(</span>
     <span class="n">a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">target_vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">target_faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -7472,7 +7502,7 @@ correspondences are given:</p>
     <span class="n">reflection</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
     <span class="n">translation</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
     <span class="n">scale</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
-    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"all_points"</span><span class="p">,</span> <span class="s2">"pyvista"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"all_points"</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"all_points"</span><span class="p">,</span> <span class="s2">"trimesh"</span><span class="p">,</span> <span class="s2">"open3d"</span><span class="p">,</span> <span class="s2">"pytorch3d"</span><span class="p">,</span> <span class="s2">"pyvista"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"all_points"</span><span class="p">,</span>
     <span class="n">target_index</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">Bvh</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">mat44</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="nb">float</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -7528,12 +7558,22 @@ correspondences are given:</p>
 <span class="sd">        similarity transform.</span>
 <span class="sd">    method</span>
 <span class="sd">        ``"all_points"`` matches every point of *a* each iteration, as described above.</span>
+<span class="sd">        ``"trimesh"``, ``"open3d"`` and ``"pytorch3d"`` are the same method under the names of</span>
+<span class="sd">        the libraries whose point-to-point ICP it reproduces ([`trimesh.registration.icp`][],</span>
+<span class="sd">        Open3D's ``registration_icp`` with ``TransformationEstimationPointToPoint``, and</span>
+<span class="sd">        ``pytorch3d.ops.iterative_closest_point``): the same converged transform, each with its</span>
+<span class="sd">        own stopping rule.</span>
 <span class="sd">        ``"pyvista"`` is ``vtkIterativeClosestPointTransform`` as ``pyvista``'s ``align`` runs it:</span>
 <span class="sd">        every ``n // 100``-th point of *a* is a landmark (every point when ``n &lt;= 100``), *a* is</span>
 <span class="sd">        first translated so its centroid lands on the target's (both centroids over every point,</span>
 <span class="sd">        after ``initial``), and each iteration fits a rigid map of the landmarks onto their</span>
 <span class="sd">        matches and composes it onto the transform so far. It is rigid only, in ``float64``.</span>
 <span class="sd">        ``align``'s defaults are ``max_iterations=500`` and ``threshold=1e-5``.</span>
+
+<span class="sd">        ``"all_points"`` is the default because it matches every source point each iteration and</span>
+<span class="sd">        re-aligns the original cloud every time, so no error accumulates, and it takes the distance</span>
+<span class="sd">        gate, reflection, translation and scale; ``"pyvista"`` matches a subsample of landmarks,</span>
+<span class="sd">        composes each step onto the last, and is rigid only.</span>
 <span class="sd">    target_index</span>
 <span class="sd">        The structure the correspondence search queries, already built, to spare the build each</span>
 <span class="sd">        call otherwise pays (worth it when one target is registered against repeatedly): a</span>
@@ -7556,9 +7596,10 @@ correspondences are given:</p>
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
 <span class="sd">    ValueError</span>
-<span class="sd">        If ``method`` is not ``"all_points"`` or ``"pyvista"``, or if ``method="pyvista"`` is</span>
-<span class="sd">        combined with ``max_distance``, ``reflection=True``, ``translation=False`` or</span>
-<span class="sd">        ``scale=True``, which VTK's rigid landmark fit does not have.</span>
+<span class="sd">        If ``method`` is not ``"all_points"``, ``"trimesh"``, ``"open3d"``, ``"pytorch3d"`` or</span>
+<span class="sd">        ``"pyvista"``, or if ``method="pyvista"`` is combined with ``max_distance``,</span>
+<span class="sd">        ``reflection=True``, ``translation=False`` or ``scale=True``, which VTK's rigid landmark</span>
+<span class="sd">        fit does not have.</span>
 <span class="sd">    TypeError</span>
 <span class="sd">        If ``target_index`` is not a ``wp.Bvh`` for a point-cloud target, or not a ``wp.Mesh`` for</span>
 <span class="sd">        a mesh target.</span>
@@ -7601,8 +7642,11 @@ correspondences are given:</p>
         <span class="n">initial</span><span class="o">=</span><span class="n">initial</span><span class="p">,</span>
         <span class="n">target_index</span><span class="o">=</span><span class="n">target_index</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="k">if</span> <span class="n">method</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"all_points"</span><span class="p">,</span> <span class="s2">"pyvista"</span><span class="p">):</span>
-        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"method must be 'all_points' or 'pyvista', got </span><span class="si">{</span><span class="n">method</span><span class="si">!r}</span><span class="s2">"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">method</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"all_points"</span><span class="p">,</span> <span class="s2">"trimesh"</span><span class="p">,</span> <span class="s2">"open3d"</span><span class="p">,</span> <span class="s2">"pytorch3d"</span><span class="p">,</span> <span class="s2">"pyvista"</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="s2">"method must be 'all_points', 'trimesh', 'open3d', 'pytorch3d' or 'pyvista', "</span>
+            <span class="sa">f</span><span class="s2">"got </span><span class="si">{</span><span class="n">method</span><span class="si">!r}</span><span class="s2">"</span>
+        <span class="p">)</span>
     <span class="k">if</span> <span class="n">method</span> <span class="o">==</span> <span class="s2">"pyvista"</span> <span class="ow">and</span> <span class="p">(</span><span class="n">max_distance</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">or</span> <span class="n">reflection</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">translation</span> <span class="ow">or</span> <span class="n">scale</span><span class="p">):</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
             <span class="s2">"method='pyvista' is a rigid fit with no distance gate: it takes no max_distance, "</span>
@@ -8208,21 +8252,7 @@ a mesh target.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/registration.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 719</span>
-<span class="normal"> 720</span>
-<span class="normal"> 721</span>
-<span class="normal"> 722</span>
-<span class="normal"> 723</span>
-<span class="normal"> 724</span>
-<span class="normal"> 725</span>
-<span class="normal"> 726</span>
-<span class="normal"> 727</span>
-<span class="normal"> 728</span>
-<span class="normal"> 729</span>
-<span class="normal"> 730</span>
-<span class="normal"> 731</span>
-<span class="normal"> 732</span>
-<span class="normal"> 733</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 733</span>
 <span class="normal"> 734</span>
 <span class="normal"> 735</span>
 <span class="normal"> 736</span>
@@ -8586,7 +8616,21 @@ a mesh target.</p>
 <span class="normal">1094</span>
 <span class="normal">1095</span>
 <span class="normal">1096</span>
-<span class="normal">1097</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">icp_point_to_plane</span><span class="p">(</span>
+<span class="normal">1097</span>
+<span class="normal">1098</span>
+<span class="normal">1099</span>
+<span class="normal">1100</span>
+<span class="normal">1101</span>
+<span class="normal">1102</span>
+<span class="normal">1103</span>
+<span class="normal">1104</span>
+<span class="normal">1105</span>
+<span class="normal">1106</span>
+<span class="normal">1107</span>
+<span class="normal">1108</span>
+<span class="normal">1109</span>
+<span class="normal">1110</span>
+<span class="normal">1111</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">icp_point_to_plane</span><span class="p">(</span>
     <span class="n">a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">target_vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">target_faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>

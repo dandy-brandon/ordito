@@ -8158,6 +8158,10 @@ since the field is the distance to the <em>set</em>.</p>
             <td>
               <div class="doc-md-description">
                 <p><code>"heat"</code> or <code>"potpourri3d"</code>, the two ways above.</p>
+<p><code>"heat"</code> is the default because it costs one heat solve however many targets share the
+source, and its paths come out only slightly longer than exact ones. <code>"potpourri3d"</code> gives
+a locally exact geodesic and suits few targets: its flips run path after path, so its cost
+grows with their number.</p>
               </div>
             </td>
             <td>
@@ -8551,7 +8555,12 @@ method's descent:</p>
 <span class="normal">695</span>
 <span class="normal">696</span>
 <span class="normal">697</span>
-<span class="normal">698</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">geodesic_path</span><span class="p">(</span>
+<span class="normal">698</span>
+<span class="normal">699</span>
+<span class="normal">700</span>
+<span class="normal">701</span>
+<span class="normal">702</span>
+<span class="normal">703</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">geodesic_path</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">source</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -8600,6 +8609,11 @@ method's descent:</p>
 <span class="sd">        ``(n_paths,)`` vertices to trace from.</span>
 <span class="sd">    method</span>
 <span class="sd">        ``"heat"`` or ``"potpourri3d"``, the two ways above.</span>
+
+<span class="sd">        ``"heat"`` is the default because it costs one heat solve however many targets share the</span>
+<span class="sd">        source, and its paths come out only slightly longer than exact ones. ``"potpourri3d"`` gives</span>
+<span class="sd">        a locally exact geodesic and suits few targets: its flips run path after path, so its cost</span>
+<span class="sd">        grows with their number.</span>
 <span class="sd">    t</span>
 <span class="sd">        Heat diffusion time, forwarded to</span>
 <span class="sd">        [`heat_geodesic`][ordito.heat.heat_geodesic]. ``None`` uses its default. Read by</span>
@@ -9057,12 +9071,7 @@ vertex whose faces do not form one fan; or if a given <code>twins</code> is not 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/geodesic_walk.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1374</span>
-<span class="normal">1375</span>
-<span class="normal">1376</span>
-<span class="normal">1377</span>
-<span class="normal">1378</span>
-<span class="normal">1379</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1379</span>
 <span class="normal">1380</span>
 <span class="normal">1381</span>
 <span class="normal">1382</span>
@@ -9194,7 +9203,12 @@ vertex whose faces do not form one fan; or if a given <code>twins</code> is not 
 <span class="normal">1508</span>
 <span class="normal">1509</span>
 <span class="normal">1510</span>
-<span class="normal">1511</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">shorten_loop</span><span class="p">(</span>
+<span class="normal">1511</span>
+<span class="normal">1512</span>
+<span class="normal">1513</span>
+<span class="normal">1514</span>
+<span class="normal">1515</span>
+<span class="normal">1516</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">shorten_loop</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">loops</span><span class="p">:</span> <span class="n">Sequence</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]],</span>
@@ -9642,12 +9656,7 @@ all on one device.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/geodesic_walk.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1514</span>
-<span class="normal">1515</span>
-<span class="normal">1516</span>
-<span class="normal">1517</span>
-<span class="normal">1518</span>
-<span class="normal">1519</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1519</span>
 <span class="normal">1520</span>
 <span class="normal">1521</span>
 <span class="normal">1522</span>
@@ -9797,7 +9806,12 @@ all on one device.</p>
 <span class="normal">1666</span>
 <span class="normal">1667</span>
 <span class="normal">1668</span>
-<span class="normal">1669</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">shorten_loop_with_offsets</span><span class="p">(</span>
+<span class="normal">1669</span>
+<span class="normal">1670</span>
+<span class="normal">1671</span>
+<span class="normal">1672</span>
+<span class="normal">1673</span>
+<span class="normal">1674</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">shorten_loop_with_offsets</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">loops</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>

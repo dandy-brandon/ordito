@@ -8603,7 +8603,30 @@ vertex, Lewiner's corrected tiling, where MeshLab's table has seven and no cell 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4426</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4403</span>
+<span class="normal">4404</span>
+<span class="normal">4405</span>
+<span class="normal">4406</span>
+<span class="normal">4407</span>
+<span class="normal">4408</span>
+<span class="normal">4409</span>
+<span class="normal">4410</span>
+<span class="normal">4411</span>
+<span class="normal">4412</span>
+<span class="normal">4413</span>
+<span class="normal">4414</span>
+<span class="normal">4415</span>
+<span class="normal">4416</span>
+<span class="normal">4417</span>
+<span class="normal">4418</span>
+<span class="normal">4419</span>
+<span class="normal">4420</span>
+<span class="normal">4421</span>
+<span class="normal">4422</span>
+<span class="normal">4423</span>
+<span class="normal">4424</span>
+<span class="normal">4425</span>
+<span class="normal">4426</span>
 <span class="normal">4427</span>
 <span class="normal">4428</span>
 <span class="normal">4429</span>
@@ -8777,30 +8800,7 @@ vertex, Lewiner's corrected tiling, where MeshLab's table has seven and no cell 
 <span class="normal">4597</span>
 <span class="normal">4598</span>
 <span class="normal">4599</span>
-<span class="normal">4600</span>
-<span class="normal">4601</span>
-<span class="normal">4602</span>
-<span class="normal">4603</span>
-<span class="normal">4604</span>
-<span class="normal">4605</span>
-<span class="normal">4606</span>
-<span class="normal">4607</span>
-<span class="normal">4608</span>
-<span class="normal">4609</span>
-<span class="normal">4610</span>
-<span class="normal">4611</span>
-<span class="normal">4612</span>
-<span class="normal">4613</span>
-<span class="normal">4614</span>
-<span class="normal">4615</span>
-<span class="normal">4616</span>
-<span class="normal">4617</span>
-<span class="normal">4618</span>
-<span class="normal">4619</span>
-<span class="normal">4620</span>
-<span class="normal">4621</span>
-<span class="normal">4622</span>
-<span class="normal">4623</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">resample_uniform</span><span class="p">(</span>
+<span class="normal">4600</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">resample_uniform</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -9265,9 +9265,11 @@ packed from their own vertices and the wave counter rather than by the order the
 atomic counter -- device state the loop advances deterministically, so the ordering varies
 between waves (which keeps a front edge from being starved by a globally fixed key) without
 varying between runs; the default <code>radius &lt;= 0</code> guesses its radius with a fixed-order sum, so
-it is covered too. One caveat on how far that reaches: the face buffer's <em>row order</em> is not
-pinned -- <code>commit_triangles</code> appends with a <code>wp.atomic_add</code> -- so compare reconstructions as
-a set of wound triangles, not buffer-to-buffer.</p>
+it is covered too. The faces' <em>row order</em> follows the
+<a class="autorefs autorefs-internal" title="deterministic" href="../config/#ordito.config.deterministic"><code>deterministic</code></a> setting: with it on, each face starts at its
+smallest corner and the rows come in lexicographic order, so repeated runs return the same
+buffers; with it off, rows come in the order the waves append them, which can change from one
+call to the next.</p>
 <p>Results are not comparable across devices, where floating-point contraction differs.</p>
 <p>A point closer to a ball's sphere than single precision can resolve is placed in double
 precision, and a ball resting on four or more points at once -- the corners of every cell of a
@@ -9310,7 +9312,30 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4784</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4761</span>
+<span class="normal">4762</span>
+<span class="normal">4763</span>
+<span class="normal">4764</span>
+<span class="normal">4765</span>
+<span class="normal">4766</span>
+<span class="normal">4767</span>
+<span class="normal">4768</span>
+<span class="normal">4769</span>
+<span class="normal">4770</span>
+<span class="normal">4771</span>
+<span class="normal">4772</span>
+<span class="normal">4773</span>
+<span class="normal">4774</span>
+<span class="normal">4775</span>
+<span class="normal">4776</span>
+<span class="normal">4777</span>
+<span class="normal">4778</span>
+<span class="normal">4779</span>
+<span class="normal">4780</span>
+<span class="normal">4781</span>
+<span class="normal">4782</span>
+<span class="normal">4783</span>
+<span class="normal">4784</span>
 <span class="normal">4785</span>
 <span class="normal">4786</span>
 <span class="normal">4787</span>
@@ -9459,23 +9484,7 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
 <span class="normal">4930</span>
 <span class="normal">4931</span>
 <span class="normal">4932</span>
-<span class="normal">4933</span>
-<span class="normal">4934</span>
-<span class="normal">4935</span>
-<span class="normal">4936</span>
-<span class="normal">4937</span>
-<span class="normal">4938</span>
-<span class="normal">4939</span>
-<span class="normal">4940</span>
-<span class="normal">4941</span>
-<span class="normal">4942</span>
-<span class="normal">4943</span>
-<span class="normal">4944</span>
-<span class="normal">4945</span>
-<span class="normal">4946</span>
-<span class="normal">4947</span>
-<span class="normal">4948</span>
-<span class="normal">4949</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">ball_pivoting</span><span class="p">(</span>
+<span class="normal">4933</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">ball_pivoting</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
@@ -9566,9 +9575,11 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
 <span class="sd">    atomic counter -- device state the loop advances deterministically, so the ordering varies</span>
 <span class="sd">    between waves (which keeps a front edge from being starved by a globally fixed key) without</span>
 <span class="sd">    varying between runs; the default ``radius &lt;= 0`` guesses its radius with a fixed-order sum, so</span>
-<span class="sd">    it is covered too. One caveat on how far that reaches: the face buffer's *row order* is not</span>
-<span class="sd">    pinned -- ``commit_triangles`` appends with a ``wp.atomic_add`` -- so compare reconstructions as</span>
-<span class="sd">    a set of wound triangles, not buffer-to-buffer.</span>
+<span class="sd">    it is covered too. The faces' *row order* follows the</span>
+<span class="sd">    [`deterministic`][ordito.config.deterministic] setting: with it on, each face starts at its</span>
+<span class="sd">    smallest corner and the rows come in lexicographic order, so repeated runs return the same</span>
+<span class="sd">    buffers; with it off, rows come in the order the waves append them, which can change from one</span>
+<span class="sd">    call to the next.</span>
 
 <span class="sd">    Results are not comparable across devices, where floating-point contraction differs.</span>
 
@@ -9638,6 +9649,11 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
         <span class="k">if</span> <span class="n">count</span> <span class="o">&gt;</span> <span class="mi">0</span>
         <span class="k">else</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="p">)</span>
+    <span class="k">if</span> <span class="n">is_deterministic</span><span class="p">()</span> <span class="ow">and</span> <span class="n">count</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="c1"># The waves append faces at an atomic cursor, so their rows come in arrival order; under</span>
+        <span class="c1"># the deterministic setting one sort puts them in canonical order (each rotated to start</span>
+        <span class="c1"># at its smallest corner, winding kept), which the cleanup below preserves.</span>
+        <span class="n">faces</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">equality</span><span class="o">.</span><span class="n">canonical_faces</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="n">n</span><span class="p">)</span>
     <span class="c1"># Orientation is not re-derived (``orient=False``): every triangle is already wound from the</span>
     <span class="c1"># normals, and ``make_normals_outward`` would rewind an inward-normal cloud's mesh outward.</span>
     <span class="k">return</span> <span class="n">_clean_reconstruction</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">crit_hole_length</span><span class="p">,</span> <span class="n">orient</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>

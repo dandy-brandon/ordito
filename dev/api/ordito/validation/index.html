@@ -12080,6 +12080,9 @@ the halfedges. Not checked against <code>faces</code>.
 <li><code>"meshlab"</code> — each edge-neighbour's normal in turn, flagging the face when any one
   differs by more than the angle: MeshLab's <code>nfratio</code>.</li>
 </ul>
+<p><code>"consensus"</code> is the default because it flags far fewer correct faces: MeshLab's test
+flags both faces of every edge sharper than the angle, so it marks a reversed face's
+neighbours, and every face of a cube (see Notes).</p>
               </div>
             </td>
             <td>
@@ -12391,7 +12394,11 @@ triangle reversed flags that triangle and one neighbour).</p>
 <span class="normal">1879</span>
 <span class="normal">1880</span>
 <span class="normal">1881</span>
-<span class="normal">1882</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_defective_mask</span><span class="p">(</span>
+<span class="normal">1882</span>
+<span class="normal">1883</span>
+<span class="normal">1884</span>
+<span class="normal">1885</span>
+<span class="normal">1886</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_defective_mask</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -12451,6 +12458,10 @@ triangle reversed flags that triangle and one neighbour).</p>
 <span class="sd">        - ``"consensus"`` (default) — the direction of the sum of its edge-neighbours' normals.</span>
 <span class="sd">        - ``"meshlab"`` — each edge-neighbour's normal in turn, flagging the face when any one</span>
 <span class="sd">          differs by more than the angle: MeshLab's ``nfratio``.</span>
+
+<span class="sd">        ``"consensus"`` is the default because it flags far fewer correct faces: MeshLab's test</span>
+<span class="sd">        flags both faces of every edge sharper than the angle, so it marks a reversed face's</span>
+<span class="sd">        neighbours, and every face of a cube (see Notes).</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
