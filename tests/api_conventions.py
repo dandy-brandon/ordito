@@ -592,6 +592,11 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # ``method="meshlib"``'s serial refinement edits one half-edge structure in place: its records,
     # positions, region flags, split queue and split log, bundled in ``mesh``.
     ("holes", "serial_subdivide"): frozenset({"mesh"}),
+    # Its hole DP's tables: each diagonal's launch reads the shorter diagonals' cells and writes
+    # its own, so ``weight`` and ``apex`` are both input and output across the launches.
+    ("holes", "serial_fill_dp_diagonal"): frozenset({"weight", "apex"}),
+    # Its band search's state and queue, rewritten as the search runs, bundled in ``q``.
+    ("holes", "serial_band_search"): frozenset({"q"}),
     ("cholesky", "factor_panel_tiled"): frozenset({"fronts", "scratch", "status"}),
     ("cholesky", "update_panel_entries"): frozenset({"fronts", "blocks"}),
     ("cholesky", "update_panel_tiles"): frozenset({"fronts", "blocks"}),

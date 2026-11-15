@@ -3645,6 +3645,147 @@ def serial_fill_dp_diagonal(
         apex[i, c] = -1
 
 
+# The band search of ``method="meshlib"``'s stitch, natively: ``ordito._serial_mesh._band_search``
+# over its precomputed terms, a best-first search whose queue is the standard library's binary
+# heap sift for sift, so equal weights pop in the reference's order.
+
+
+@wp.struct
+class BandSearch:
+    """The band's term tables, its state tables and the snapshot queue of its search."""
+
+    # (na + 1, nb + 1) terms by state: [k] advancing on loop k; closing [2 k + j] after a step on j.
+    tri: wp.array3d[wp.float64]
+    closing: wp.array3d[wp.float64]
+    opening: wp.array3d[wp.float64]
+    has_opening: wp.array3d[wp.int32]
+    # The band-closing edge term for a last step on loop k, after a first step on A (j = 0) or not.
+    close_term: wp.array2d[wp.float64]
+    weight: wp.array2d[wp.float64]
+    prev_a: wp.array2d[wp.int32]
+    prev_b: wp.array2d[wp.int32]
+    heap_w: wp.array[wp.float64]
+    heap_s: wp.array2d[wp.int32]
+    # status[0]: queued snapshots; status[1]: 1 once the queue overflowed its capacity.
+    status: wp.array[wp.int32]
+    has_tri: wp.int32
+    has_edge: wp.int32
+
+
+@wp.func
+def band_heap_set(q: BandSearch, i: wp.int32, w: wp.float64, s: wp.vec4i):
+    q.heap_w[i] = w
+    for k in range(4):
+        q.heap_s[i, k] = s[k]
+
+
+@wp.func
+def band_heap_get(q: BandSearch, i: wp.int32) -> wp.vec4i:
+    return wp.vec4i(q.heap_s[i, 0], q.heap_s[i, 1], q.heap_s[i, 2], q.heap_s[i, 3])
+
+
+@wp.func
+def band_sift_up(q: BandSearch, hole: wp.int32, w: wp.float64, s: wp.vec4i):
+    """Move ``(w, s)`` up from slot ``hole`` while its parent is heavier (the library's sift)."""
+    h = hole
+    parent = (h - 1) // 2
+    while h > 0 and q.heap_w[parent] > w:
+        band_heap_set(q, h, q.heap_w[parent], band_heap_get(q, parent))
+        h = parent
+        parent = (h - 1) // 2
+    band_heap_set(q, h, w, s)
+
+
+@wp.func
+def band_push(q: BandSearch, w: wp.float64, s: wp.vec4i):
+    n = q.status[0]
+    if n >= q.heap_w.shape[0]:
+        q.status[1] = 1
+        return
+    q.status[0] = n + 1
+    band_sift_up(q, n, w, s)
+
+
+@wp.func
+def band_pop(q: BandSearch):
+    """Remove the lightest snapshot into slot ``status[0]``, as the library's pop_heap does."""
+    last = q.status[0] - 1
+    value_w = q.heap_w[last]
+    value_s = band_heap_get(q, last)
+    band_heap_set(q, last, q.heap_w[0], band_heap_get(q, 0))
+    length = last
+    hole = wp.int32(0)
+    second = wp.int32(0)
+    while second < (length - 1) // 2:
+        second = 2 * (second + 1)
+        if q.heap_w[second] > q.heap_w[second - 1]:
+            second -= 1
+        band_heap_set(q, hole, q.heap_w[second], band_heap_get(q, second))
+        hole = second
+    if (length & 1) == 0 and second == (length - 2) // 2:
+        second = 2 * (second + 1)
+        band_heap_set(q, hole, q.heap_w[second - 1], band_heap_get(q, second - 1))
+        hole = second - 1
+    band_sift_up(q, hole, value_w, value_s)
+    q.status[0] = last
+
+
+@wp.kernel(enable_backward=False, module="unique")
+def serial_band_search(q: BandSearch, start: wp.float64) -> None:
+    """Search the band best first from ``(0, 0)`` to ``(na, nb)``, as ``_band_search`` does."""
+    na = q.weight.shape[0] - 1
+    nb = q.weight.shape[1] - 1
+    q.weight[0, 0] = start
+    band_push(q, start, wp.vec4i(0, 0, -1, -1))
+    while q.status[0] > 0 and q.status[1] == 0:
+        band_pop(q)
+        top = q.status[0]
+        w = q.heap_w[top]
+        a = q.heap_s[top, 0]
+        b = q.heap_s[top, 1]
+        pa = q.heap_s[top, 2]
+        pb = q.heap_s[top, 3]
+        if a == na and b == nb:
+            break
+        came = wp.int32(-1)
+        if pa != -1 and pb != -1:
+            if pa % na != a % na:
+                came = 0
+            elif pb % nb != b % nb:
+                came = 1
+        for k in range(2):
+            xa = a + 1 - k
+            xb = b + k
+            skip = xa > na or xb > nb or (xa == na and xb == 0) or (xb == nb and xa == 0)
+            if not skip:
+                total = w
+                if q.has_tri != 0:
+                    total = total + q.tri[k, a, b]
+                if q.has_edge != 0:
+                    if came >= 0:
+                        total = total + q.closing[2 * k + came, a, b]
+                    if q.has_opening[k, a, b] != 0:
+                        total = total + q.opening[k, a, b]
+                if total < q.weight[xa, xb]:
+                    q.weight[xa, xb] = total
+                    q.prev_a[xa, xb] = a
+                    q.prev_b[xa, xb] = b
+                    if xa == na and xb == nb and q.has_edge != 0:
+                        # Where the band closes: walk back to the state after its first step.
+                        spin_a = wp.int32(-1)
+                        x = a
+                        y = b
+                        while q.prev_a[x, y] != -1 and q.prev_b[x, y] != -1:
+                            spin_a = x
+                            nx = q.prev_a[x, y]
+                            y = q.prev_b[x, y]
+                            x = nx
+                        j = wp.where(spin_a == 1, 0, 1)
+                        total = total + q.close_term[k, j]
+                        q.weight[xa, xb] = total
+                    band_push(q, total, wp.vec4i(xa, xb, a, b))
+
+
 def _declare_block_dims() -> None:
     """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
     declare_block_dims(

@@ -2978,9 +2978,9 @@
  },
  "benchmarks/test_holes.py::test_stitch_smooth_meshlib[rim_short-ordito-cpu]": {
   "counts": {
-   "launch": 196,
-   "alloc": 81,
-   "h2h": 11,
+   "launch": 197,
+   "alloc": 86,
+   "h2h": 16,
    "readback": 24,
    "scan": 28,
    "sort": 28
