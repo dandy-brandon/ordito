@@ -820,19 +820,13 @@ def write_cap_face(
 def ring_boundary_edge(e: wp.int32, n: wp.int32) -> tuple[wp.int32, wp.int32]:
     # Boundary edge ``e`` of a full ``n - 2`` triangulation of an ``n``-vertex ring, as a directed
     # pair wound like the triangulation. Every triangle an ear clip or a fan emits is ``(left, i,
-    # right)`` in ring order, so the boundary is exactly the ring edges ``(i, i + 1 mod n)``. They
-    # are listed in the order ``boundary.oriented_boundary_edges`` returns them -- ascending by
-    # ``(max, min)`` of the unordered pair -- so a caller that knows its triangulation is full
-    # emits the same wall rows the derived boundary would.
-    a = e
+    # right)`` in ring order, so the boundary is exactly the ring edges ``(i, i + 1 mod n)``, listed
+    # here in ring order: the derived boundary lists the same rows in its own order, so the walls
+    # are the same faces in another order.
     b = e + 1
-    if e == n - 2:
-        a = n - 1
+    if b == n:
         b = wp.int32(0)
-    elif e == n - 1:
-        a = n - 2
-        b = n - 1
-    return a, b
+    return e, b
 
 
 @wp.func

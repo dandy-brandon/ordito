@@ -1184,10 +1184,11 @@ def resolve_duplicated_faces(
     Returns
     -------
     resolved_faces : wp.array[wp.int32]
-        ``(3 * n_kept,)`` flat buffer of kept faces. Under ``"cancel"`` and ``"igl"`` in libigl's
-        order: one per surviving group, the groups ascending lexicographically by their sorted
-        corner indices. Under ``"open3d"`` and ``"meshlab"`` in input order, as both libraries
-        return them.
+        ``(3 * n_kept,)`` flat buffer of kept faces, one per surviving group. Under ``"igl"`` in
+        libigl's order: the groups ascending lexicographically by their sorted corner indices.
+        Under ``"cancel"``, ``"open3d"`` and ``"meshlab"`` in input order (ascending
+        ``kept_indices``), as Open3D and MeshLab return them; ``"cancel"`` keeps the same faces as
+        ``"igl"`` wherever the input has no non-orientable group.
     kept_indices : wp.array[wp.int32]
         ``(n_kept,)`` original face indices into the input ``faces`` buffer, in the same order.
 
@@ -1257,7 +1258,10 @@ def resolve_duplicated_faces(
                 return ringed
         return _first_occurrence_faces(faces, n_vertices, oriented=oriented)
     if rings:
-        ringed = _resolved_faces_in_rings(faces, n_vertices, drop_unorientable=method == "igl")
+        if method == "igl":
+            ringed = _resolved_faces_in_rings(faces, n_vertices)
+        else:
+            ringed = _cancelled_faces_in_rings(faces, n_vertices)
         if ringed is not None:
             return ringed
     # Orientation-free keys ordered as the sorted rows are lexicographically, with the identity
@@ -1278,18 +1282,21 @@ def resolve_duplicated_faces(
     )
     end_bit = _launch.key_bits(n_vertices**3)
     _launch.radix_sort_pairs(keys, order, count=n_faces, end_bit=end_bit)
-    # The keep flags at the sorted positions; the decided face of each run start beside them, in
-    # the payload's upper half, the sort's scratch until now.
+    # Under "igl" the keep flags at the sorted positions, the decided face of each run start beside
+    # them in the payload's upper half (the sort's scratch until now); under "cancel" a flag at
+    # each kept face's own index of the zeroed flags, and no decided faces.
+    igl_order = method == "igl"
     keep = _launch.view(order, n_faces, 2 * n_faces)
     _launch.launch(
         kernel_repair.resolve_duplicate_runs,
         dim=n_faces,
-        inputs=[faces, keys, order, n_faces, int(method == "igl")],
+        inputs=[faces, keys, order, n_faces, int(igl_order), int(not igl_order)],
         outputs=[keep, flags],
         device=device,
     )
-    # Scanned in place, a kept group's flag becomes its output row plus one, in ascending key order
-    # (the reference's emission order); the last entry is the kept total.
+    # Scanned in place, a kept face's flag becomes its output row plus one: in ascending key order
+    # (libigl's emission order) under "igl", in input order under "cancel"; the last entry is the
+    # kept total.
     ranks = odt.as_dense(flags[:n_faces])
     _launch.array_scan(ranks, out_array=ranks, inclusive=True)
     n_kept, error_word = read_values(flags, n_faces - 1, 2)
@@ -1299,13 +1306,22 @@ def resolve_duplicated_faces(
     resolved = _launch.empty(3 * n_kept, dtype=wp.int32, device=device)
     kept_wp = _launch.empty(n_kept, dtype=wp.int32, device=device)
     if n_kept > 0:
-        _launch.launch(
-            kernel_repair.compact_kept_duplicate_runs,
-            dim=n_faces,
-            inputs=[faces, keep, ranks],
-            outputs=[resolved, kept_wp],
-            device=device,
-        )
+        if igl_order:
+            _launch.launch(
+                kernel_repair.compact_kept_duplicate_runs,
+                dim=n_faces,
+                inputs=[faces, keep, ranks],
+                outputs=[resolved, kept_wp],
+                device=device,
+            )
+        else:
+            _launch.launch(
+                kernel_repair.compact_scanned_faces_and_indices,
+                dim=n_faces,
+                inputs=[ranks, faces],
+                outputs=[resolved, kept_wp],
+                device=device,
+            )
     return resolved, kept_wp
 
 
@@ -1347,15 +1363,56 @@ def _first_occurrence_faces_in_rings(
     return resolved, kept
 
 
-def _resolved_faces_in_rings(
-    faces: wp.array[wp.int32], n_vertices: int, *, drop_unorientable: bool
+def _cancelled_faces_in_rings(
+    faces: wp.array[wp.int32], n_vertices: int
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32]] | None:
     """
-    ``resolve_duplicated_faces``' cancelling rule by ring, or ``None`` for the sorted form.
+    ``resolve_duplicated_faces``' ``"cancel"`` rule by ring, in input order, or ``None``.
+
+    Every face decides its group over its ring and flags itself when it is the kept face; the flags
+    scan in input order. ``None`` when a ring is long, or when a group is not orientable: the
+    sorted form then raises, naming the group.
+    """
+    n_faces = faces.size // 3
+    device = faces.device
+    # The flags, then the long-ring and non-orientable counts behind them, read with the total.
+    ring_offsets, flags, ring, _slots = _face_rings(faces, n_vertices, n_faces + 2, n_faces, 1)
+    _launch.launch(
+        kernel_repair.decide_face_ring_groups,
+        dim=n_faces,
+        inputs=[faces, ring_offsets, ring, 0, 1, n_faces + 1],
+        outputs=[flags, flags],
+        device=device,
+    )
+    ranks = _launch.view(flags, 0, n_faces)
+    _launch.array_scan(ranks, ranks, inclusive=True)
+    # Readback: the kept count sizes both outputs; a long ring or a non-orientable group sends the
+    # faces to the sorted form.
+    n_kept, n_long, n_unorientable = (int(x) for x in read_values(flags, n_faces - 1, 3))
+    if n_long > 0 or n_unorientable > 0:
+        return None
+    resolved = _launch.empty(3 * n_kept, dtype=wp.int32, device=device)
+    kept = _launch.empty(n_kept, dtype=wp.int32, device=device)
+    if n_kept > 0:
+        _launch.launch(
+            kernel_repair.compact_scanned_faces_and_indices,
+            dim=n_faces,
+            inputs=[ranks, faces],
+            outputs=[resolved, kept],
+            device=device,
+        )
+    return resolved, kept
+
+
+def _resolved_faces_in_rings(
+    faces: wp.array[wp.int32], n_vertices: int
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]] | None:
+    """
+    ``resolve_duplicated_faces``' ``"igl"`` rule by ring, in libigl's order, or ``None``.
 
     Each group's first face decides it over its ring, and the kept groups number by ring, then by
-    sorted corners within it: the sorted runs' order. ``None`` when a ring is long, or when a group
-    is not orientable and not dropped: the sorted form then raises, naming the group.
+    sorted corners within it: the sorted runs' order. ``None`` when a ring is long, for the sorted
+    form. A non-orientable group is dropped, as libigl drops it.
     """
     n_faces = faces.size // 3
     device = faces.device
@@ -1367,7 +1424,7 @@ def _resolved_faces_in_rings(
     _launch.launch(
         kernel_repair.decide_face_ring_groups,
         dim=n_faces,
-        inputs=[faces, ring_offsets, ring, int(drop_unorientable), n_vertices + 2],
+        inputs=[faces, ring_offsets, ring, 1, 0, n_vertices + 2],
         outputs=[keep, counts],
         device=device,
     )

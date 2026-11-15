@@ -221,11 +221,11 @@ def test_crease_edges_bucketed_match_the_key_sort(
     """
     Ordito against ordito: the bucketed mates give the key sort's creases and boundary, in order.
 
-    The sort path carries the oracles (pymeshlab, MeshLib, pyvista); on the bucket path only the
-    flagged halfedges are sorted, both classes in one sort, so each block -- creases, then the
-    boundary edges -- is pinned to strictly ascending ``(max, min)`` keys and the whole to the sort
-    path's rows. On ``sphere_irregular_cap``, whose bumps carry creases past 10 degrees beside its
-    rim; ``saddle_graded`` has none, which would leave the crease block empty.
+    The sort path carries the oracles (pymeshlab, MeshLib, pyvista); both paths rank the flagged
+    halfedges in halfedge order, so each block -- creases, then the boundary edges -- is pinned to
+    ascending halfedge index and the whole to the sort path's rows. On ``sphere_irregular_cap``,
+    whose bumps carry creases past 10 degrees beside its rim; ``saddle_graded`` has none, which
+    would leave the crease block empty.
     """
     _mesh_tm, mesh_wp = sphere_irregular_cap
     vertices, faces = mesh_wp.points, mesh_wp.indices
@@ -235,8 +235,9 @@ def test_crease_edges_bucketed_match_the_key_sort(
     monkeypatch.setattr(od.halfedge, "_BUCKETED_MATES_FROM_HALFEDGES", 0)
     bucketed_np = od.seams.crease_edges(vertices, faces, 10.0, include_boundary=True).numpy()
     assert 0 < n_creases < len(sorted_np)
-    _assert_edge_key_order(bucketed_np[:n_creases])
-    _assert_edge_key_order(bucketed_np[n_creases:])
+    faces_np = faces.numpy().reshape(-1, 3)
+    _assert_lower_halfedge_order(faces_np, bucketed_np[:n_creases])
+    _assert_lower_halfedge_order(faces_np, bucketed_np[n_creases:])
     assert np.array_equal(sorted_np, bucketed_np)
 
 
@@ -1205,8 +1206,11 @@ def test_empty_mesh(device: str) -> None:
     )
 
 
-def _assert_edge_key_order(rows_np: np.ndarray) -> None:
-    """Assert undirected rows strictly ascend by ``(max, min)``, ``edges_unique``'s key order."""
-    high = rows_np.max(axis=1).astype(np.int64)
-    low = rows_np.min(axis=1).astype(np.int64)
-    assert np.all(np.diff(high * (int(high.max(initial=0)) + 1) + low) > 0)
+def _assert_lower_halfedge_order(faces_np: np.ndarray, rows_np: np.ndarray) -> None:
+    """Assert edge rows strictly ascend by the lowest halfedge on each one's edge."""
+    halfedges_np = np.stack([faces_np, np.roll(faces_np, -1, axis=1)], axis=-1).reshape(-1, 2)
+    lowest: dict[tuple[int, int], int] = {}
+    for h, (a, b) in enumerate(np.sort(halfedges_np, axis=1).tolist()):
+        lowest.setdefault((a, b), h)
+    order_np = np.array([lowest[(a, b)] for a, b in np.sort(rows_np, axis=1).tolist()])
+    assert np.all(np.diff(order_np) > 0)

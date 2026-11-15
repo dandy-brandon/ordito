@@ -2148,13 +2148,6 @@
    "sort": 1
   }
  },
- "benchmarks/test_halfedge.py::test_key_ordered_halfedges[sphere_small-ordito-cpu]": {
-  "counts": {
-   "launch": 1,
-   "alloc": 1,
-   "sort": 1
-  }
- },
  "benchmarks/test_halfedge.py::test_require_matching_twins[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 1,
@@ -3499,8 +3492,7 @@
  "benchmarks/test_levelset.py::test_marching_cubes_openvdb[ordito-cpu-128]": {
   "counts": {
    "launch": 3,
-   "alloc": 5,
-   "h2h": 1,
+   "alloc": 4,
    "readback": 1,
    "scan": 1
   }
@@ -3508,8 +3500,7 @@
  "benchmarks/test_levelset.py::test_marching_cubes_openvdb[ordito-cpu-64]": {
   "counts": {
    "launch": 3,
-   "alloc": 5,
-   "h2h": 1,
+   "alloc": 4,
    "readback": 1,
    "scan": 1
   }
@@ -3560,8 +3551,7 @@
  "benchmarks/test_levelset.py::test_offset_mesh_meshlib[sphere_small-ordito-cpu-128]": {
   "counts": {
    "launch": 7,
-   "alloc": 9,
-   "h2h": 1,
+   "alloc": 8,
    "readback": 3,
    "scan": 1
   }
@@ -3569,8 +3559,7 @@
  "benchmarks/test_levelset.py::test_offset_mesh_meshlib[sphere_small-ordito-cpu-64]": {
   "counts": {
    "launch": 6,
-   "alloc": 8,
-   "h2h": 1,
+   "alloc": 7,
    "readback": 2,
    "scan": 1
   }
@@ -4270,11 +4259,11 @@
  },
  "benchmarks/test_mesh.py::test_oriented_boundary_edges[saddle_small-ordito-cpu-cold]": {
   "counts": {
-   "launch": 5,
-   "alloc": 5,
+   "launch": 4,
+   "alloc": 4,
    "readback": 1,
    "scan": 1,
-   "sort": 2
+   "sort": 1
   }
  },
  "benchmarks/test_mesh.py::test_oriented_boundary_edges[saddle_small-ordito-cpu-warm]": {
@@ -5610,12 +5599,12 @@
  },
  "benchmarks/test_reconstruction.py::test_screened_poisson[sphere_small-ordito-cpu-octree-7]": {
   "counts": {
-   "launch": 129,
-   "alloc": 64,
+   "launch": 127,
+   "alloc": 62,
    "h2h": 10,
    "readback": 16,
    "scan": 11,
-   "sort": 10
+   "sort": 9
   }
  },
  "benchmarks/test_reconstruction.py::test_triangulate_point_cloud[sphere_small-ordito-cpu]": {
@@ -5878,50 +5867,44 @@
  },
  "benchmarks/test_remesh.py::test_cluster_decimate[sphere_small-ordito-cpu-2.0]": {
   "counts": {
-   "launch": 6,
-   "alloc": 9,
-   "readback": 2,
-   "sort": 2
+   "launch": 5,
+   "alloc": 8,
+   "readback": 2
   }
  },
  "benchmarks/test_remesh.py::test_cluster_decimate[sphere_small-ordito-cpu-6.0]": {
   "counts": {
-   "launch": 6,
-   "alloc": 9,
-   "readback": 2,
-   "sort": 2
+   "launch": 5,
+   "alloc": 8,
+   "readback": 2
   }
  },
  "benchmarks/test_remesh.py::test_cluster_decimate_meshlab[sphere_small-ordito-cpu-2.0]": {
   "counts": {
-   "launch": 6,
-   "alloc": 9,
-   "readback": 2,
-   "sort": 2
+   "launch": 5,
+   "alloc": 8,
+   "readback": 2
   }
  },
  "benchmarks/test_remesh.py::test_cluster_decimate_meshlab[sphere_small-ordito-cpu-6.0]": {
   "counts": {
-   "launch": 6,
-   "alloc": 9,
-   "readback": 2,
-   "sort": 2
+   "launch": 5,
+   "alloc": 8,
+   "readback": 2
   }
  },
  "benchmarks/test_remesh.py::test_cluster_decimate_meshlib[sphere_small-ordito-cpu-2.0]": {
   "counts": {
-   "launch": 6,
-   "alloc": 8,
-   "readback": 2,
-   "sort": 2
+   "launch": 5,
+   "alloc": 7,
+   "readback": 2
   }
  },
  "benchmarks/test_remesh.py::test_cluster_decimate_meshlib[sphere_small-ordito-cpu-6.0]": {
   "counts": {
-   "launch": 6,
-   "alloc": 8,
-   "readback": 2,
-   "sort": 2
+   "launch": 5,
+   "alloc": 7,
+   "readback": 2
   }
  },
  "benchmarks/test_remesh.py::test_flip_by_objective[saddle-ordito-cpu]": {

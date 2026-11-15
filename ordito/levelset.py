@@ -281,11 +281,12 @@ def marching_cubes(
     across that face has the same face ambiguous, so the two group their crossings alike. Each
     crossing edge whose four surrounding cells are all crossed gets a quad; one with a cell off
     the lattice gets none, so a level that reaches the lattice's boundary leaves a hole there.
-    The vertices are numbered, and the triangles ordered, as OpenVDB's tree visits the cells
-    (8**3 blocks in its order, then each block's cells), so on a ``wp.float32`` field the result
-    equals OpenVDB's on a level-set grid holding the same values, buffer order included. ``iso``
-    is rounded to the field's precision. A NaN sample is outside, and the crossings on its edges
-    are NaN. Its scratch is a 16-bit flag word per cell and a pair of counters per cell slot.
+    On a ``wp.float32`` field the result equals OpenVDB's on a level-set grid holding the same
+    values, up to the numbering of vertices and the order of triangles: vertices are numbered by
+    cell in row-major order of the field's index, then by group, and each cell's quads follow in
+    the same order, where OpenVDB numbers cells as its tree visits them. ``iso`` is rounded to the
+    field's precision. A NaN sample is outside, and the crossings on its edges are NaN. Its
+    scratch is a 16-bit flag word and a pair of counters per cell.
 
     Examples
     --------
@@ -559,9 +560,9 @@ def _dual_marching_cubes(
     """
     ``marching_cubes(method="openvdb")``: flag, count, scan and emit over the cells.
 
-    ``origin`` is the absolute index of ``field[0, 0, 0]``, which fixes OpenVDB's leaves and so
-    the numbering; a vertex at index-space point ``p`` (absolute) is placed at
-    ``lower + p * scale``, in ``float32``.
+    ``origin`` is the absolute index of ``field[0, 0, 0]``; a vertex at index-space point ``p``
+    (absolute) is placed at ``lower + p * scale``, in ``float32``. Vertices and quads come in
+    row-major cell order.
     """
     device = wp.get_device(field.device)
     cells = (int(field.shape[0]) - 1, int(field.shape[1]) - 1, int(field.shape[2]) - 1)
@@ -575,23 +576,10 @@ def _dual_marching_cubes(
         outputs=[flags],
         device=device,
     )
-    # OpenVDB numbers cells by 8**3 leaf in its tree's order: rank the leaves the lattice touches.
-    origin_np = np.asarray(origin, dtype=np.int64)
-    leaf_lower_np = origin_np >> 3
-    leaf_upper_np = (origin_np + np.asarray(cells, dtype=np.int64) - 1) >> 3
-    ranks_np = kernel_dmc.openvdb_leaf_ranks(leaf_lower_np, leaf_upper_np)
-    if ranks_np.size * kernel_dmc.LEAF_CELLS > _INT32_MAX:
-        raise ValueError("the lattice has more cells than int32 slots address")
-    leaf_ranks = odt.as_array3d(_launch.array(ranks_np, dtype=wp.int32, device=device), wp.int32)
-    leaf_lower = wp.vec3i(*leaf_lower_np.tolist())
-    origin_v = wp.vec3i(*origin)
-    counts = _launch.zeros(ranks_np.size * kernel_dmc.LEAF_CELLS, dtype=wp.vec2i, device=device)
+    # Every cell's counts, in row-major cell order; every slot is written.
+    counts = _launch.empty(cells[0] * cells[1] * cells[2], dtype=wp.vec2i, device=device)
     _launch.launch(
-        kernel_dmc.dmc_counts,
-        dim=cells,
-        inputs=[flags, table, leaf_ranks, leaf_lower, origin_v],
-        outputs=[counts],
-        device=device,
+        kernel_dmc.dmc_counts, dim=cells, inputs=[flags, table], outputs=[counts], device=device
     )
     _launch.array_scan(counts, counts, inclusive=True)
     # One read sizes both outputs: the scanned pair's last entry holds both totals.
@@ -608,18 +596,7 @@ def _dual_marching_cubes(
         _launch.launch(
             kernel_dmc.DMC_EMIT[field.dtype],
             dim=cells,
-            inputs=[
-                field,
-                iso_value,
-                flags,
-                table,
-                leaf_ranks,
-                leaf_lower,
-                origin_v,
-                counts,
-                lower,
-                scale,
-            ],
+            inputs=[field, iso_value, flags, table, wp.vec3i(*origin), counts, lower, scale],
             outputs=[vertices, faces],
             device=device,
         )
@@ -686,8 +663,8 @@ def offset_mesh(
         ``"meshlib"`` is the lattice and extraction of an OpenVDB level-set offset: nodes at whole
         multiples of ``voxel_size``, covering the vertex box grown by
         ``|distance| / voxel_size + 3`` voxels, the field sampled on every node, and the level
-        extracted by [`marching_cubes`][ordito.levelset.marching_cubes]'s ``method="openvdb"``,
-        numbered as OpenVDB numbers it. The field is the exact signed distance, which OpenVDB's
+        extracted by [`marching_cubes`][ordito.levelset.marching_cubes]'s ``method="openvdb"``.
+        The field is the exact signed distance, which OpenVDB's
         narrow band approximates, so the vertices are that offset's where the two fields agree
         around them.
         ``"meshlab"`` is MeshLab's offset, its uniform resampler at an absolute ``offset``:

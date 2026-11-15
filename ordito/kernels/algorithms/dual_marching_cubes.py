@@ -15,11 +15,11 @@ an *ambiguous* face (one whose diagonal corners agree and adjacent ones differ) 
 of its mask when the cell across that face has the same face ambiguous, so the two group their
 crossings alike (``dmc_corrected_mask``).
 
-Vertices are numbered as OpenVDB's tree visits cells: by 8**3 leaf, leaves in the tree's order
-(``openvdb_leaf_ranks`` on the host), then by the cell's offset ``x * 64 + y * 8 + z`` inside its
-leaf, then by group. Cells are addressed by absolute index coordinates (the lattice's ``origin``
-plus the local index), which is what fixes the leaves. Quads follow in the same cell order, the
-cell's ``x``, ``y`` and ``z`` edges in turn.
+Vertices are numbered by cell, cells in row-major order of their local index ``(i, j, k)``, then
+by group; quads follow in the same cell order, the cell's ``x``, ``y`` and ``z`` edges in turn.
+OpenVDB numbers them as its tree visits the cells (by 8**3 leaf), which gives the same mesh up to
+that numbering. Cells are placed by absolute index coordinates (the lattice's ``origin`` plus the
+local index).
 
 The tables are OpenVDB's ``sEdgeGroupTable`` and ``sAmbiguousFace`` (``tools/VolumeToMesh.h``,
 v12.0.1), used under the Apache License 2.0:
@@ -112,9 +112,6 @@ _INSIDE = 0x100
 _X_EDGE = 0x200
 _Y_EDGE = 0x400
 _Z_EDGE = 0x800
-
-# Cells an 8**3 leaf holds.
-LEAF_CELLS = 512
 
 
 @wp.func
@@ -213,14 +210,9 @@ def dmc_cell_flags(
 
 
 @wp.func
-def dmc_slot(
-    leaf_ranks: wp.array3d[wp.int32], leaf_lower: wp.vec3i, origin: wp.vec3i, cell: wp.vec3i
-) -> wp.int32:
-    # The cell's position in OpenVDB's cell order: its leaf's rank, then its offset in the leaf.
-    a = origin + cell
-    leaf = wp.vec3i(a[0] >> 3, a[1] >> 3, a[2] >> 3) - leaf_lower
-    offset = (a[0] & 7) * 64 + (a[1] & 7) * 8 + (a[2] & 7)
-    return leaf_ranks[leaf[0], leaf[1], leaf[2]] * LEAF_CELLS + offset
+def dmc_slot(flags: wp.array3d[wp.uint16], cell: wp.vec3i) -> wp.int32:
+    # The cell's position in row-major cell order, its counts' slot.
+    return (cell[0] * flags.shape[1] + cell[1]) * flags.shape[2] + cell[2]
 
 
 @wp.func
@@ -267,32 +259,22 @@ def dmc_quad_count(flags: wp.array3d[wp.uint16], cell: wp.vec3i, own: wp.int32) 
 
 @wp.kernel
 def dmc_counts(
-    flags: wp.array3d[wp.uint16],
-    table: wp.array[wp.int32],
-    leaf_ranks: wp.array3d[wp.int32],
-    leaf_lower: wp.vec3i,
-    origin: wp.vec3i,
-    out_counts: wp.array[wp.vec2i],
+    flags: wp.array3d[wp.uint16], table: wp.array[wp.int32], out_counts: wp.array[wp.vec2i]
 ) -> None:
-    """Each crossed cell's vertex and quad counts, at its slot in OpenVDB's cell order."""
+    """Each cell's vertex and quad counts in row-major cell order, zero where nothing crosses."""
     i, j, k = wp.tid()
     cell = wp.vec3i(i, j, k)
     own = wp.int32(flags[i, j, k])
-    if own == 0:
-        return
-    vertices = table[(own & 255) * 13]
-    out_counts[dmc_slot(leaf_ranks, leaf_lower, origin, cell)] = wp.vec2i(
-        vertices, dmc_quad_count(flags, cell, own)
-    )
+    counts = wp.vec2i(0, 0)
+    if own != 0:
+        counts = wp.vec2i(table[(own & 255) * 13], dmc_quad_count(flags, cell, own))
+    out_counts[dmc_slot(flags, cell)] = counts
 
 
 @wp.func
 def dmc_vertex(
     flags: wp.array3d[wp.uint16],
     table: wp.array[wp.int32],
-    leaf_ranks: wp.array3d[wp.int32],
-    leaf_lower: wp.vec3i,
-    origin: wp.vec3i,
     counts: wp.array[wp.vec2i],
     cell: wp.vec3i,
     column: wp.int32,
@@ -300,7 +282,7 @@ def dmc_vertex(
     # The vertex of ``cell`` that its edge ``column``'s crossing belongs to.
     mask = dmc_flags_at(flags, cell) & 255
     row = mask * 13
-    first = counts[dmc_slot(leaf_ranks, leaf_lower, origin, cell)][0] - table[row]
+    first = counts[dmc_slot(flags, cell)][0] - table[row]
     if table[row] > 1:
         first += table[row + column] - 1
     return first
@@ -312,8 +294,6 @@ def dmc_emit(
     iso: wp.Float,
     flags: wp.array3d[wp.uint16],
     table: wp.array[wp.int32],
-    leaf_ranks: wp.array3d[wp.int32],
-    leaf_lower: wp.vec3i,
     origin: wp.vec3i,
     counts: wp.array[wp.vec2i],
     lower: wp.vec3,
@@ -337,7 +317,7 @@ def dmc_emit(
     mask = own & 255
     row = mask * 13
     groups = table[row]
-    scanned = counts[dmc_slot(leaf_ranks, leaf_lower, origin, cell)]
+    scanned = counts[dmc_slot(flags, cell)]
     first = scanned[0] - groups
     absolute = wp.vec3d(
         wp.float64(origin[0] + i), wp.float64(origin[1] + j), wp.float64(origin[2] + k)
@@ -389,39 +369,10 @@ def dmc_emit(
                     columns = wp.vec4i(4, 8, 6, 2)
                     reversed_quad = own & _INSIDE == 0
                 q = wp.vec4i(
-                    dmc_vertex(
-                        flags, table, leaf_ranks, leaf_lower, origin, counts, cell, columns[0]
-                    ),
-                    dmc_vertex(
-                        flags,
-                        table,
-                        leaf_ranks,
-                        leaf_lower,
-                        origin,
-                        counts,
-                        dmc_quad_neighbour(cell, axis, 1),
-                        columns[1],
-                    ),
-                    dmc_vertex(
-                        flags,
-                        table,
-                        leaf_ranks,
-                        leaf_lower,
-                        origin,
-                        counts,
-                        dmc_quad_neighbour(cell, axis, 2),
-                        columns[2],
-                    ),
-                    dmc_vertex(
-                        flags,
-                        table,
-                        leaf_ranks,
-                        leaf_lower,
-                        origin,
-                        counts,
-                        dmc_quad_neighbour(cell, axis, 3),
-                        columns[3],
-                    ),
+                    dmc_vertex(flags, table, counts, cell, columns[0]),
+                    dmc_vertex(flags, table, counts, dmc_quad_neighbour(cell, axis, 1), columns[1]),
+                    dmc_vertex(flags, table, counts, dmc_quad_neighbour(cell, axis, 2), columns[2]),
+                    dmc_vertex(flags, table, counts, dmc_quad_neighbour(cell, axis, 3), columns[3]),
                 )
                 if reversed_quad:
                     q = wp.vec4i(q[3], q[2], q[1], q[0])
@@ -434,36 +385,6 @@ def dmc_emit(
                 out_faces[corner + 4] = q[3]
                 out_faces[corner + 5] = q[2]
                 corner += 6
-
-
-def openvdb_leaf_ranks(leaf_lower: np.ndarray, leaf_upper: np.ndarray) -> np.ndarray:
-    """
-    Each 8**3 leaf's rank in an OpenVDB ``FloatGrid`` tree's order, over a box of leaves.
-
-    Leaf ``(bx, by, bz)`` (index coordinates divided by 8, floored) sorts by its root key
-    (``b >> 9`` per axis, signed), then its child in the 4096**3 node (``(b >> 4) & 31``), then its
-    child in the 128**3 node (``b & 15``), each lexicographically ``x``, ``y``, ``z``: the order the
-    tree's iterators visit its leaves in. Returns an ``int32`` array over the inclusive box.
-    """
-    axes = [np.arange(leaf_lower[a], leaf_upper[a] + 1, dtype=np.int64) for a in range(3)]
-    bx, by, bz = (grid.ravel() for grid in np.meshgrid(*axes, indexing="ij"))
-    # ``np.lexsort`` sorts by its last key first.
-    order = np.lexsort(
-        (
-            bz & 15,
-            by & 15,
-            bx & 15,
-            (bz >> 4) & 31,
-            (by >> 4) & 31,
-            (bx >> 4) & 31,
-            bz >> 9,
-            by >> 9,
-            bx >> 9,
-        )
-    )
-    ranks = np.empty(order.size, dtype=np.int32)
-    ranks[order] = np.arange(order.size, dtype=np.int32)
-    return ranks.reshape(tuple(axis.size for axis in axes))
 
 
 # The kernels at each field precision, keyed by the field's dtype.
@@ -487,8 +408,6 @@ def _register_overloads() -> None:
                 d,
                 flags,
                 i32,
-                wp.array3d[wp.int32],
-                wp.vec3i,
                 wp.vec3i,
                 wp.array[wp.vec2i],
                 wp.vec3,

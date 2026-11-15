@@ -1585,8 +1585,7 @@ def _screened_poisson_octree(
     device = points.device
     n = points.size
     kernel_depth = depth - 2
-    # The extraction's dense cell numbering (the vertices are numbered in the dense order of every
-    # depth's edges, ``dense_edge_slot``).
+    # The extraction's dense cell numbering.
     cell_offsets_host = [sum(8**e for e in range(d)) for d in range(depth + 2)]
     cell_offsets = _launch.array(np.asarray(cell_offsets_host, np.int32), wp.int32, device=device)
 
@@ -2468,8 +2467,6 @@ class _OctreeSegments(NamedTuple):
     """One bit an edge of the stored nodes: whether it creates a vertex."""
     created_ranks: wp.array[wp.int32]
     """The inclusive scan of ``created``'s word bit counts."""
-    numbers: wp.array[wp.int32]
-    """``(n_vertices,)`` each created bit's rank's vertex number (``vertex_of``)."""
     partners: wp.array[wp.int32]
     """``(n_vertices,)`` each vertex's pair across a refined edge (-1 for none)."""
     segments: wp.array[wp.vec2i]
@@ -2494,8 +2491,8 @@ def _octree_segments(
     ``kernels/algorithms/poisson_octree``'s extraction note has the rules. Per depth, finest
     first, the corner sources and the edges' vertices over the stored nodes; then the borrowed
     faces sorted into their coarse faces' order and every band leaf's segments, the last pass
-    that reads the solve's tables. The vertices are numbered in the dense edge order
-    (``octree_vertex_keys``). ``_octree_triangulate`` walks the loops and emits the faces.
+    that reads the solve's tables. A vertex's number is its creating edge's bit's rank among the
+    created bits (``vertex_of``). ``_octree_triangulate`` walks the loops and emits the faces.
     """
     device = fields.device
     first = max(full_depth, 1)
@@ -2544,27 +2541,7 @@ def _octree_segments(
     _launch.array_scan(ranks, ranks, inclusive=True)
     # One read sizes the vertices.
     n_vertices = int(read_scalar(ranks))
-    # The vertices' numbers: each created edge's rank in the dense edge order, by its bit's rank.
-    numbers = _launch.empty(max(n_vertices, 1), dtype=wp.int32, device=device)
-    if n_vertices > 0:
-        keys, order = _launch.sort_buffers(n_vertices, wp.uint32, device)
-        _launch.launch(
-            kernel_octree.octree_vertex_keys,
-            dim=3 * (firsts[-1] - firsts[first]),
-            inputs=[firsts[first], depth, node_bricks, nodes.slots, created, ranks],
-            outputs=[keys, order],
-            device=device,
-        )
-        _launch.radix_sort_pairs(keys, order, n_vertices)
-        _launch.launch(
-            kernel_octree.octree_vertex_numbers,
-            dim=n_vertices,
-            inputs=[order],
-            outputs=[numbers],
-            device=device,
-        )
-        del keys, order
-    vertex_tables = [created, ranks, numbers]
+    vertex_tables = [created, ranks]
     positions = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
     # Each vertex's pair across a refined edge, by vertex number (-1 for none).
     partners = _launch.full(max(n_vertices, 1), -1, dtype=wp.int32, device=device)
@@ -2686,7 +2663,7 @@ def _octree_segments(
         outputs=[segments],
         device=device,
     )
-    return _OctreeSegments(positions, created, ranks, numbers, partners, segments, segment_offsets)
+    return _OctreeSegments(positions, created, ranks, partners, segments, segment_offsets)
 
 
 def _octree_triangulate(state: _OctreeSegments) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
@@ -2696,9 +2673,9 @@ def _octree_triangulate(state: _OctreeSegments) -> tuple[wp.array[wp.vec3], wp.a
     Returns the unit-cube vertices and the faces (``kernels/algorithms/poisson_octree``'s
     extraction note).
     """
-    positions, created, ranks, numbers, partners, segments, segment_offsets = state
+    positions, created, ranks, partners, segments, segment_offsets = state
     del state
-    vertex_tables = [created, ranks, numbers]
+    vertex_tables = [created, ranks]
     device = positions.device
     n_band = segment_offsets.size
     n_segments = segments.size
@@ -4872,9 +4849,11 @@ def ball_pivoting(
     atomic counter -- device state the loop advances deterministically, so the ordering varies
     between waves (which keeps a front edge from being starved by a globally fixed key) without
     varying between runs; the default ``radius <= 0`` guesses its radius with a fixed-order sum, so
-    it is covered too. One caveat on how far that reaches: the face buffer's *row order* is not
-    pinned -- ``commit_triangles`` appends with a ``wp.atomic_add`` -- so compare reconstructions as
-    a set of wound triangles, not buffer-to-buffer.
+    it is covered too. The faces' *row order* follows the
+    [`deterministic`][ordito.config.deterministic] setting: with it on, each face starts at its
+    smallest corner and the rows come in lexicographic order, so repeated runs return the same
+    buffers; with it off, rows come in the order the waves append them, which can change from one
+    call to the next.
 
     Results are not comparable across devices, where floating-point contraction differs.
 
@@ -4944,6 +4923,11 @@ def ball_pivoting(
         if count > 0
         else _launch.empty(0, dtype=wp.int32, device=device)
     )
+    if is_deterministic() and count > 0:
+        # The waves append faces at an atomic cursor, so their rows come in arrival order; under
+        # the deterministic setting one sort puts them in canonical order (each rotated to start
+        # at its smallest corner, winding kept), which the cleanup below preserves.
+        faces = od.equality.canonical_faces(faces, n_vertices=n)
     # Orientation is not re-derived (``orient=False``): every triangle is already wound from the
     # normals, and ``make_normals_outward`` would rewind an inward-normal cloud's mesh outward.
     return _clean_reconstruction(points, faces, crit_hole_length, orient=False)

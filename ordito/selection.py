@@ -42,9 +42,8 @@ def region_boundary_edges(
         ``(n_faces,)`` region mask.
     n_vertices
         Optional exclusive bound on the vertex indices, forwarded to
-        [`halfedge_mates`][ordito.halfedge.halfedge_mates], which pairs faster with it, and used
-        as the edge-key radix of the seam's sort. It does not change the answer, and it is
-        trusted, not checked: it must exceed every index.
+        [`halfedge_mates`][ordito.halfedge.halfedge_mates], which pairs faster with it. It does
+        not change the answer, and it is trusted, not checked: it must exceed every index.
     oriented
         Return each row as the **directed** pair belonging to its region face, instead of the
         ascending pair. That puts the region on the left of the contour, which is the orientation
@@ -54,14 +53,14 @@ def region_boundary_edges(
     mates
         ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces`` when the
         caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]), to spare
-        the pairing sort; only the selected halfedges are then put in key order. Trusted, not
-        checked.
+        the pairing sort. Trusted, not checked.
 
     Returns
     -------
     odt.Array2dInt32
         ``(k, 2)`` vertex pairs, ``k`` the seam edge count, on ``faces.device``, sorted ascending
-        per row unless ``oriented``.
+        per row unless ``oriented``. The rows come in ascending index of each seam edge's lower
+        halfedge (face by face).
 
     Raises
     ------
@@ -103,13 +102,11 @@ def region_boundary_edges(
     if n_faces == 0:
         return odt.empty_2d((0, 2), wp.int32, device=device)
     # The halfedge mates flag a seam edge on its lower halfedge (an edge of exactly two halfedges
-    # whose faces straddle the region), a bit a halfedge, read in the key sort's order where the
-    # mates came from it, else only the seam's halfedges sorted: ascending key order either way,
-    # no unique-edge table, and one readback, of the seam size.
+    # whose faces straddle the region), a bit a halfedge ranked in halfedge order: no unique-edge
+    # table, no sort past the pairing's, and one readback, of the seam size.
     n = 3 * n_faces
-    key_order = None
     if mates is None:
-        mates, key_order = od.halfedge.halfedge_mates(faces, n_vertices, return_key_order=True)
+        mates = od.halfedge.halfedge_mates(faces, n_vertices)
     n_words = (n + 31) // 32
     # The bits, then their words' populations, which the flagging launch adds and the scan ranks.
     buffer = _launch.zeros(2 * n_words, dtype=wp.int32, device=device)
@@ -118,38 +115,18 @@ def region_boundary_edges(
     _launch.launch(
         kernel_selection.mark_region_seam,
         dim=n,
-        inputs=[mates, key_order, face_mask, words, word_ranks],
+        inputs=[mates, face_mask, words, word_ranks],
         device=device,
     )
     # Sizes the output: the one host readback.
     n_seam = scan_count(word_ranks)
     out_edges = odt.empty_2d((n_seam, 2), wp.int32, device=device)
-    if n_seam > 0 and key_order is not None:
+    if n_seam > 0:
         dim, by_rank = _launch.set_bit_launch(n, n_seam, device)
         _launch.launch(
-            kernel_selection.emit_key_ordered_region_seam,
-            dim=dim,
-            inputs=[
-                words,
-                word_ranks,
-                by_rank,
-                key_order,
-                mates,
-                faces,
-                face_mask,
-                oriented,
-                out_edges,
-            ],
-            device=device,
-        )
-    elif n_seam > 0:
-        halfedges = od.halfedge.key_ordered_halfedges(
-            faces, words, word_ranks, n_seam, n_vertices=n_vertices
-        )
-        _launch.launch(
             kernel_selection.emit_region_seam,
-            dim=n_seam,
-            inputs=[halfedges, mates, faces, face_mask, oriented, out_edges],
+            dim=dim,
+            inputs=[words, word_ranks, by_rank, mates, faces, face_mask, oriented, out_edges],
             device=device,
         )
     return out_edges

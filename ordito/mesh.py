@@ -110,6 +110,7 @@ _ORIENTATION_DEPENDENT_KEYS: frozenset[str] = frozenset(
         "halfedge_mates",  # likewise
         "vertex_one_rings",  # and the rotation around each vertex runs the other way
         "oriented_boundary_edges",  # directed by construction
+        "boundary_edges",  # rows in halfedge order, which a flip permutes within each face
         "boundary_loops",  # so the loops come back reversed
         "face_angles",  # per-corner table, permuted
         "cotmatrix_entries",  # likewise -- the assembled `cotmatrix` is a sum and survives
@@ -234,7 +235,6 @@ _INVERT_CARRY: frozenset[str] = frozenset(
         "face_connected_component_labels",
         "body_count",
         "vertex_face_adjacency",
-        "boundary_edges",
         "boundary_vertex_indices",
         "euler_characteristic",
         "is_edge_manifold",

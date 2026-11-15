@@ -134,7 +134,7 @@ def flags_to_warp_bitmask(flags_np: np.ndarray, device: wp.DeviceLike) -> wp.arr
     Upload a ``(n_rows, n)`` 0/1 flag table as a ``uint32`` bitmask, each row padded to whole words.
 
     Bit ``i & 31`` of word ``i >> 5`` of a row holds flag ``i``, the layout
-    ``od.halfedge.key_ordered_halfedges`` and ``od.array.bit_ranks`` read; a 1-D table is one row.
+    ``od.array.bit_ranks`` reads; a 1-D table is one row.
     """
     rows_np = np.atleast_2d(np.asarray(flags_np) != 0)
     row_words = (rows_np.shape[1] + 31) // 32

@@ -2455,9 +2455,8 @@ JOIN_NO_KEY = wp.int64(INT64_MAX)
 
 @wp.func
 def rim_edge_key(u: wp.int32, v: wp.int32, radix: wp.int64) -> wp.int64:
-    # The undirected key ``boundary.oriented_boundary_edges`` orders its rows by: ``(min, max)``
-    # with the larger index as the high digit: ``array.pack_edge_key``'s value for these
-    # non-negative indices.
+    # The undirected key ``holes._JoinRim`` orders its rim rows by: ``(min, max)`` with the larger
+    # index as the high digit: ``array.pack_edge_key``'s value for these non-negative indices.
     return wp.int64(kernel_array.pack_edge_key(u, v, wp.uint64(radix)))
 
 
@@ -2722,7 +2721,7 @@ def join_round(
     # and bridge it, the whole round in one launch with nothing read back.
     #
     # The rim table lives on the device as ``rows[half, r] = (tail, head, component)``, sorted by
-    # ``rim_edge_key`` -- the order ``boundary.oriented_boundary_edges`` emits, whose row index is
+    # ``rim_edge_key`` -- the order ``holes._JoinRim`` sorts the rim into, whose row index is
     # the pairing's tie-break -- with ``state[JOIN_PARITY]`` naming the current half and
     # ``state[JOIN_COUNT]`` its rows. ``component`` maps each original rim label to its current
     # component and ``vertex_label`` each rim vertex to its original label (``-1`` off the rim, read

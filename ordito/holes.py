@@ -5054,9 +5054,11 @@ class _JoinRim:
     two bridged rim edges become interior, the patch's diagonal is interior, and its two chords are
     new boundary edges wound as the patch winds them. Every boundary vertex stays one (the chords'
     tails are the bridged edges' tails), and the two components the patch touches merge. The table
-    is kept in the order ``boundary.oriented_boundary_edges`` emits it -- ascending undirected key,
-    which packs ``(min, max)`` with the larger index as the high digit -- so the pairing sees
-    exactly the rows, the row order (its tie-break) and the label equalities a regroup would give.
+    is kept in ascending undirected key, which packs ``(min, max)`` with the larger index as the
+    high digit, ties in halfedge order: the rows ``boundary.oriented_boundary_edges`` emits, in
+    halfedge order, sorted once on the host where they are read anyway. The edits find rows by that
+    key, and the pairing breaks ties by row, so it sees exactly the rows, the row order and the
+    label equalities a regroup would give.
 
     That holds while the boundary is edge-manifold around the joins: a chord between two components
     cannot already be an edge, and a bridged edge occurred once, so the patch's edges are all that
@@ -5105,13 +5107,10 @@ class _JoinRim:
         the last join returns at once on the device.
         """
         device = faces.device
-        # One pairing for both the rim and the components, its key order (when it sorted) handed
-        # on so the rim rows are read in it; a bucketed pairing has none, and the rim then sorts
-        # only the boundary halfedges, where a pairing of its own would sort every halfedge again.
-        mates, key_order = od.halfedge.halfedge_mates(faces, vertices.size, return_key_order=True)
-        boundary = od.boundary.oriented_boundary_edges(
-            vertices, faces, mates=mates, key_order=key_order
-        )
+        # One pairing for both the rim and the components; the rim rows come in halfedge order
+        # and are put in key order with the host read below.
+        mates = od.halfedge.halfedge_mates(faces, vertices.size)
+        boundary = od.boundary.oriented_boundary_edges(vertices, faces, mates=mates)
         n_rows = int(boundary.shape[0])
         if n_rows == 0:
             return None
@@ -5136,6 +5135,11 @@ class _JoinRim:
         # are ranked over the rim alone; ranking keeps their order, and only equality and the
         # merge's minimum read them.
         table_np = read_array(table)
+        # The rows in ascending undirected key (``kernels/holes.rim_edge_key``), ties kept in
+        # halfedge order, the order the round kernels' searches and tie-break read.
+        low = np.minimum(table_np[:, 0], table_np[:, 1]).astype(np.int64)
+        high = np.maximum(table_np[:, 0], table_np[:, 1]).astype(np.int64)
+        table_np = table_np[np.argsort(high * max(int(vertices.size), 1) + low, kind="stable")]
         names, row_labels = np.unique(table_np[:, 2], return_inverse=True)
         n_labels = int(names.size)
         rounds = n_labels - 1 if max_joins is None else min(n_labels - 1, max_joins)

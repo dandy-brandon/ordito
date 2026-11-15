@@ -1534,10 +1534,11 @@ def test_extrude_polygon_ring_walls_match_the_derived_boundary(
     from the ring's orientation and forms a convex ring's fan where it writes the caps;
     ``extrude_triangulation`` derives the boundary and the winding (from the signed area) from the
     same triangulation. The derived path carries the oracle (``test_extrude_polygon`` compares it
-    with trimesh), so the two must build the same buffers row for row: the ring walls are emitted
-    in the derived boundary's order, and with the deterministic setting the ear clip's rows repeat
-    on CUDA too. The squares take the fan and the stars the ear clip, each in both orientations;
-    both height signs re-wind the caps, and a mirroring transform reverses every triangle.
+    with trimesh), so the two must build the same vertices row for row and the same faces up to
+    their order: the ring walls follow the ring, the derived ones the boundary table's order, and
+    with the deterministic setting the ear clip's rows repeat on CUDA too. The squares take the
+    fan and the stars the ear clip, each in both orientations; both height signs re-wind the caps,
+    and a mirroring transform reverses every triangle.
     """
     rings = {"square": _SQUARE_RING, "square_cw": _SQUARE_RING[::-1].copy()}
     ring_np = rings.get(ring_name, _star_ring(12, ring_name == "star_cw"))
@@ -1553,7 +1554,8 @@ def test_extrude_polygon_ring_walls_match_the_derived_boundary(
         )
     _assert_closed(ring_v, ring_f)
     assert np.array_equal(ring_v.numpy(), derived_v.numpy())
-    assert np.array_equal(ring_f.numpy(), derived_f.numpy())
+    assert ring_f.size == derived_f.size
+    assert od.equality.faces_equal(ring_f, derived_f, n_vertices=ring_v.size)
 
 
 def test_extrude_triangulation_recovers_subdivided_boundary(device: str) -> None:

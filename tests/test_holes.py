@@ -3633,10 +3633,14 @@ def test_bridge_edges_rim_check_agrees_with_the_rim_table(
     with pytest.raises(ValueError, match=r"edge_a=.*is not a boundary edge"):
         od.holes.bridge_edges(vertices_wp, faces_wp, (edge_a[1], edge_a[0]), edge_far)
     faces_np = faces_wp.numpy().reshape(-1, 3)
+    # An interior edge sharing no vertex with ``edge_far``, so the unvalidated bridge below is a
+    # full two-triangle patch.
     interior = next(
         (int(a), int(b))
         for a, b in faces_np[:, :2]
-        if (int(a), int(b)) not in rim and (int(b), int(a)) not in rim
+        if (int(a), int(b)) not in rim
+        and (int(b), int(a)) not in rim
+        and not {int(a), int(b)} & set(edge_far)
     )
     with pytest.raises(ValueError, match=r"edge_b=.*is not a boundary edge"):
         od.holes.bridge_edges(vertices_wp, faces_wp, edge_a, interior)
@@ -3964,7 +3968,8 @@ def test_join_closest_components_rim_tracks_the_regrouped_boundary(
     pymeshfix comparison above carries the oracle for the joins themselves. This pins the edit:
     after every join, the table
     (rows and their order, which is the pairing's tie-break) equals
-    ``oriented_boundary_edges`` of the faces so far, and the labels partition the rows as
+    ``oriented_boundary_edges`` of the faces so far put in ascending undirected key, ties in its
+    halfedge order (the order the table is built in), and the labels partition the rows as
     ``face_connected_component_labels`` does. The shells are a regular row, so the distances
     carry exact ties and the row order is live.
     """
@@ -3979,6 +3984,8 @@ def test_join_closest_components_rim_tracks_the_regrouped_boundary(
         faces_np = np.concatenate([faces_wp.numpy(), rim.patch.numpy()[: rim.patch_size()]])
         current_wp = wp.array(faces_np, dtype=wp.int32, device=device)
         rows_np = od.boundary.oriented_boundary_edges(vertices_wp, current_wp).numpy()
+        keys_np = rows_np.max(axis=1).astype(np.int64) * len(mesh_tm.vertices) + rows_np.min(axis=1)
+        rows_np = rows_np[np.argsort(keys_np, kind="stable")]
         assert np.array_equal(rim.rows(), rows_np)
         face_labels_np = od.adjacency.face_connected_component_labels(current_wp).numpy()
         tail_faces_np = np.array(

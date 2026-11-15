@@ -15,7 +15,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito.kernels import halfedge as kernel_halfedge
 from tests.conftest import MESHES, OPEN_MESHES
-from tests.conversions import flags_to_warp_bitmask, warp_empty
+from tests.conversions import warp_empty
 
 # ---------------------------------------------------------------------------
 # halfedge_twins
@@ -949,91 +949,3 @@ def test_halfedge_mates_key_order_is_the_edge_key_sort(
     )
     assert key_order is None
     assert np.array_equal(mates.numpy(), _expected_mates(faces_np))
-
-
-@pytest.mark.parametrize(
-    ("n_classes", "given_order", "bounded"),
-    [
-        pytest.param(1, True, True, id="1-key-order"),
-        pytest.param(1, False, True, id="1-sorted"),
-        pytest.param(2, True, True, id="2-key-order"),
-        pytest.param(2, False, True, id="2-sorted"),
-        pytest.param(1, False, False, id="1-sorted-pair-radix"),
-    ],
-)
-@pytest.mark.usefixtures("set_bit_launch")
-def test_key_ordered_halfedges_match_numpy(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], n_classes: int, given_order: bool, bounded: bool
-) -> None:
-    """
-    Not a library comparison: the order is ordito's edge-key convention, recomputed by NumPy.
-
-    Random flags over every halfedge, so both halfedges of an edge are often flagged together and
-    the key ties have to break by halfedge index. Each class comes out in stable ascending key
-    order, class 0 first -- from the sort's permutation when it is given (nothing sorted), and by
-    sorting only the flagged halfedges when not. A single class needs no ``n_vertices``: the sort
-    then packs at the pair radix, which must give the same order as the vertex-count radix.
-    """
-    mesh_tm, mesh_wp = sphere_irregular
-    device = mesh_wp.indices.device
-    faces_np = np.asarray(mesh_tm.faces)
-    n_vertices = len(mesh_tm.vertices)
-    n = faces_np.size
-    edges_np = np.sort(tm.geometry.faces_to_edges(faces_np), axis=1)
-    keys_np = edges_np[:, 0] + edges_np[:, 1] * n_vertices
-    flags_np = (np.random.default_rng(7).random((n_classes, n)) < 0.4).astype(np.int32)
-    order_np = np.argsort(keys_np, kind="stable")
-    expected = np.concatenate([order_np[flags_np[c][order_np] == 1] for c in range(n_classes)])
-    _, key_order = od.halfedge.halfedge_mates(mesh_wp.indices, n_vertices, return_key_order=True)
-    assert key_order is not None
-    table_np = flags_np[:, key_order.numpy()] if given_order else flags_np
-    words = flags_to_warp_bitmask(table_np, device)
-    halfedges = od.halfedge.key_ordered_halfedges(
-        mesh_wp.indices,
-        words,
-        od.array.bit_ranks(words),
-        int(flags_np.sum()),
-        key_order=key_order if given_order else None,
-        n_vertices=n_vertices if bounded else None,
-    ).numpy()
-    assert np.any(np.diff(keys_np[expected]) == 0)
-    assert np.array_equal(halfedges, expected)
-
-
-def test_key_ordered_halfedges_validates(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """
-    Not a library comparison: the bitset guards, and an empty selection.
-
-    An empty selection returns an empty order with no sort, with or without a key order.
-    """
-    _mesh_tm, mesh_wp = sphere_irregular
-    device = mesh_wp.indices.device
-    row_words = (mesh_wp.indices.size + 31) // 32
-    ragged = wp.zeros(row_words + 1, dtype=wp.uint32, device=device)
-    with pytest.raises(ValueError, match="whole number"):
-        od.halfedge.key_ordered_halfedges(
-            mesh_wp.indices, ragged, wp.zeros(row_words + 1, dtype=wp.int32, device=device), 0
-        )
-    two_rows = wp.zeros(2 * row_words, dtype=wp.uint32, device=device)
-    with pytest.raises(ValueError, match="one rank per word"):
-        od.halfedge.key_ordered_halfedges(
-            mesh_wp.indices, two_rows, wp.zeros(row_words, dtype=wp.int32, device=device), 0
-        )
-    with pytest.raises(ValueError, match="n_vertices is required"):
-        od.halfedge.key_ordered_halfedges(
-            mesh_wp.indices, two_rows, od.array.bit_ranks(two_rows), 0
-        )
-
-    none_flagged = wp.zeros(row_words, dtype=wp.uint32, device=device)
-    no_ranks = od.array.bit_ranks(none_flagged)
-    assert od.halfedge.key_ordered_halfedges(mesh_wp.indices, none_flagged, no_ranks, 0).shape == (
-        0,
-    )
-    _, key_order = od.halfedge.halfedge_mates(
-        mesh_wp.indices, mesh_wp.points.size, return_key_order=True
-    )
-    assert key_order is not None
-    from_order = od.halfedge.key_ordered_halfedges(
-        mesh_wp.indices, none_flagged, no_ranks, 0, key_order=key_order
-    )
-    assert from_order.shape == (0,)

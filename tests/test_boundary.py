@@ -45,15 +45,15 @@ def test_boundary_edges_match_trimesh_pyvista_and_igl(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Class A against trimesh and igl (``od.equality.rows_equal``), Class B against pyvista.
+    Class A against trimesh, pyvista and igl (``od.equality.rows_equal``).
 
     - **trimesh**: its multiplicity-1 rows, read from ``edges_sorted`` for the undirected form and
-      from ``edges`` for the directed one, are compared with ordito's rows *as returned*. Both sides
-      order rows by the ``(max, min)`` key of the edge (trimesh's ``hashable_rows`` packs column 0
-      into the low bits), so no transform is needed: the comparison pins the row order, each row's
+      from ``edges`` for the directed one, are compared with ordito's rows up to row order
+      (trimesh emits them by the ``(max, min)`` edge key, ordito by halfedge index): each row's
       direction, and -- through
-      [`oriented_boundary_edges`][ordito.boundary.oriented_boundary_edges] -- the face winding.
-      A lexsort of both sides, as this test did, passed for any permutation of ordito's rows.
+      [`oriented_boundary_edges`][ordito.boundary.oriented_boundary_edges] -- the face winding,
+      must agree. trimesh's rows are its halfedge rows, so taken at its boundary indices in
+      ascending order they are ordito's rows *as returned*, which pins ordito's row order too.
     - **pyvista**: ``extract_feature_edges(boundary_edges=True)`` with the other three classes off,
       after the index remap of VTK's renumbered output (as in ``tests/test_seams.py``). The flags
       matter more here than anywhere else in the suite, because VTK's default turns on the
@@ -71,8 +71,7 @@ def test_boundary_edges_match_trimesh_pyvista_and_igl(
       undirected form is that table with each row sorted, so it adds nothing to compare.
 
     pyvista orders rows by its own construction and its lines carry no direction, so its rows are
-    sorted within each row and moved into ordito's ``(max, min)`` key order
-    (``_in_edge_key_order``), and ordito's side is compared as returned.
+    sorted within each row and compared with the undirected form up to row order.
 
     Both fixtures are open, so the references are non-empty by construction -- asserted anyway,
     since running this on a closed mesh would compare two empty sets and pass.
@@ -91,20 +90,24 @@ def test_boundary_edges_match_trimesh_pyvista_and_igl(
     edges_igl, _face_igl, _corner_igl = igl.boundary_facets(mesh_tm.faces.astype(np.int64))
     assert len(edges_pv) > 0
 
-    boundary_edges_wp = od.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices).numpy()
     oriented_edges_wp = od.boundary.oriented_boundary_edges(mesh_wp.points, mesh_wp.indices)
     oriented_wp = oriented_edges_wp.numpy()
-
-    assert np.array_equal(boundary_edges_wp, boundary_edges_tm)
-    assert np.array_equal(oriented_wp, oriented_edges_tm)
-    assert np.array_equal(boundary_edges_wp, _in_edge_key_order(np.sort(edges_pv, axis=1)))
 
     def rows_wp(rows_np: np.ndarray) -> odt.Array2dInt32:
         return odt.as_array2d(
             wp.array(np.ascontiguousarray(rows_np, dtype=np.int32), device=mesh_wp.device), wp.int32
         )
 
+    boundary_edges_wp = od.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices)
+    assert od.equality.rows_equal(boundary_edges_wp, rows_wp(boundary_edges_tm))
+    assert od.equality.rows_equal(oriented_edges_wp, rows_wp(oriented_edges_tm))
+    assert od.equality.rows_equal(boundary_edges_wp, rows_wp(np.sort(edges_pv, axis=1)))
     assert od.equality.rows_equal(oriented_edges_wp, rows_wp(np.asarray(edges_igl)))
+    # ordito's documented order: ascending halfedge index, trimesh's rows at sorted indices.
+    halfedge_order_tm = np.sort(boundary_indices_tm)
+    assert not np.array_equal(halfedge_order_tm, boundary_indices_tm)  # the orders differ here
+    assert np.array_equal(boundary_edges_wp.numpy(), mesh_tm.edges_sorted[halfedge_order_tm])
+    assert np.array_equal(oriented_wp, mesh_tm.edges[halfedge_order_tm])
 
 
 @pytest.mark.parametrize("mesh_name", [*BOUNDARY_MESHES, "mobius"])
@@ -115,9 +118,9 @@ def test_boundary_queries_bucketed_match_the_key_sort(
     Ordito against ordito: the bucketed mates give the key sort's boundary, row for row.
 
     The sort path carries the oracles (``test_boundary_edges_match_trimesh_pyvista_and_igl``,
-    ``test_boundary_loops`` and the
-    rest); on the bucket path only the boundary halfedges are sorted, so the edge rows are pinned
-    to strictly ascending ``(max, min)`` keys and every query to the sort path's answer.
+    ``test_boundary_loops`` and the rest); on the bucket path the flags are stored by a ballot
+    rather than by the sorted pass's atomics, so the edge rows are pinned to ascending halfedge
+    order and every query to the sort path's answer.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices, faces = mesh_wp.points, mesh_wp.indices
@@ -137,8 +140,7 @@ def test_boundary_queries_bucketed_match_the_key_sort(
     monkeypatch.setattr(od.halfedge, "_BUCKETED_MATES_FROM_HALFEDGES", 0)
     bucketed = queries()
     assert len(mesh_tm.outline().entities) > 0
-    _assert_edge_key_order(bucketed[0])
-    _assert_edge_key_order(bucketed[1])
+    _assert_halfedge_order(faces.numpy().reshape(-1, 3), bucketed[1])
     for sorted_np, bucketed_np in zip(sorted_, bucketed, strict=True):
         assert np.array_equal(sorted_np, bucketed_np)
 
@@ -1207,17 +1209,12 @@ def _boundary_indices_tm(mesh_tm: tm.Trimesh) -> np.ndarray:
     return np.asarray(tm_grouping.group_rows(mesh_tm.edges_sorted, require_count=1))
 
 
-def _in_edge_key_order(rows_np: np.ndarray) -> np.ndarray:
-    """Reorder edge rows by their ``(max, min)`` key, keeping each row's direction."""
-    rows_np = np.asarray(rows_np).astype(np.int32)
-    return rows_np[np.lexsort((rows_np.min(axis=1), rows_np.max(axis=1)))]
-
-
-def _assert_edge_key_order(rows_np: np.ndarray) -> None:
-    """Assert undirected rows strictly ascend by ``(max, min)``, ``edges_unique``'s key order."""
-    high = rows_np.max(axis=1).astype(np.int64)
-    low = rows_np.min(axis=1).astype(np.int64)
-    assert np.all(np.diff(high * (int(high.max(initial=0)) + 1) + low) > 0)
+def _assert_halfedge_order(faces_np: np.ndarray, directed_np: np.ndarray) -> None:
+    """Assert directed boundary rows strictly ascend by the halfedge each one is."""
+    halfedges_np = np.stack([faces_np, np.roll(faces_np, -1, axis=1)], axis=-1).reshape(-1, 2)
+    index = {(int(a), int(b)): h for h, (a, b) in enumerate(halfedges_np.tolist())}
+    order_np = np.array([index[(int(a), int(b))] for a, b in directed_np.tolist()])
+    assert np.all(np.diff(order_np) > 0)
 
 
 def _pinched_icosphere() -> tuple[np.ndarray, np.ndarray]:
@@ -1251,9 +1248,8 @@ def test_boundary_functions_take_precomputed_mates(
     Ordito against ordito: given ``mates`` reproduce what each function derives itself.
 
     The derived results are pinned to the reference libraries above; this pins the ``mates``
-    keyword to them. Given mates carry no key order, so the boundary rows are re-sorted from the
-    boundary halfedges alone -- the path the bucketed pairing takes on a large CUDA mesh -- unless
-    the pairing's ``key_order`` is passed with them, which ``oriented_boundary_edges`` takes.
+    keyword to them. Given mates are flagged by a ballot a halfedge, where the derived sort path's
+    pass flags its halfedges by atomics; the rows come out in halfedge order either way.
     """
     _, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
@@ -1269,17 +1265,6 @@ def test_boundary_functions_take_precomputed_mates(
         derived_np = function(vertices_wp, faces_wp).numpy()
         supplied_np = function(vertices_wp, faces_wp, mates=mates_wp).numpy()
         assert np.array_equal(supplied_np, derived_np), function.__name__
-    # With the pairing's key order too, the oriented rows are read in it rather than re-sorted.
-    keyed_mates_wp, key_order_wp = od.halfedge.halfedge_mates(
-        faces_wp, vertices_wp.size, return_key_order=True
-    )
-    assert key_order_wp is not None  # the sorted pairing, so the keyword is exercised
-    keyed_np = od.boundary.oriented_boundary_edges(
-        vertices_wp, faces_wp, mates=keyed_mates_wp, key_order=key_order_wp
-    ).numpy()
-    assert np.array_equal(
-        keyed_np, od.boundary.oriented_boundary_edges(vertices_wp, faces_wp).numpy()
-    )
     for derived_wp, supplied_wp in zip(
         od.boundary.boundary_loops_with_offsets(vertices_wp, faces_wp),
         od.boundary.boundary_loops_with_offsets(vertices_wp, faces_wp, mates=mates_wp),

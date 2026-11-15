@@ -68,8 +68,8 @@ def boundary_edges(
     Returns
     -------
     odt.Array2dInt32
-        ``(n_boundary, 2)`` sorted boundary edges on ``faces.device``. Empty ``(0, 2)`` when the
-        mesh has no boundary.
+        ``(n_boundary, 2)`` sorted boundary edges on ``faces.device``, one per boundary halfedge,
+        in ascending halfedge index (face by face). Empty ``(0, 2)`` when the mesh has no boundary.
 
     Raises
     ------
@@ -100,7 +100,6 @@ def oriented_boundary_edges(
     faces: wp.array[wp.int32],
     *,
     mates: wp.array[wp.int32] | None = None,
-    key_order: wp.array[wp.int32] | None = None,
 ) -> odt.Array2dInt32:
     """
     Directed boundary edges, preserving the orientation from the face winding.
@@ -120,22 +119,18 @@ def oriented_boundary_edges(
         [`halfedge_mates`][ordito.halfedge.halfedge_mates], to spare the sort that otherwise pairs
         the halfedges. Not checked against ``faces``.
         [`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates] is the cached one to pass.
-    key_order
-        ``(3 * n_faces,)`` key order the pairing of ``mates`` sorted the halfedges into, from
-        [`halfedge_mates`][ordito.halfedge.halfedge_mates] with ``return_key_order``, to spare the
-        sort that otherwise orders the boundary rows; read only with ``mates``. ``None`` (what a
-        bucketed pairing returns) sorts them.
 
     Returns
     -------
     odt.Array2dInt32
-        ``(n_boundary, 2)`` directed boundary edges on ``faces.device``. Empty
-        ``(0, 2)`` when the mesh has no boundary.
+        ``(n_boundary, 2)`` directed boundary edges on ``faces.device``, one per boundary
+        halfedge, in ascending halfedge index (face by face, each face's edges in winding order).
+        Empty ``(0, 2)`` when the mesh has no boundary.
 
     Raises
     ------
     RuntimeError
-        If ``vertices``, ``faces``, ``mates`` and ``key_order`` are not all on one device.
+        If ``vertices``, ``faces`` and ``mates`` are not all on one device.
 
     Examples
     --------
@@ -152,28 +147,22 @@ def oriented_boundary_edges(
     print(sorted(edges.numpy().tolist()))  # [[0, 1], [1, 2], [2, 0]]
     ```
     """
-    require_same_device(vertices=vertices, faces=faces, mates=mates, key_order=key_order)
-    return _boundary_edges_impl(faces, vertices.size, mates, oriented=True, key_order=key_order)
+    require_same_device(vertices=vertices, faces=faces, mates=mates)
+    return _boundary_edges_impl(faces, vertices.size, mates, oriented=True)
 
 
 def _boundary_edges_impl(
-    faces: wp.array[wp.int32],
-    n_vertices: int,
-    mates: wp.array[wp.int32] | None,
-    *,
-    oriented: bool,
-    key_order: wp.array[wp.int32] | None = None,
+    faces: wp.array[wp.int32], n_vertices: int, mates: wp.array[wp.int32] | None, *, oriented: bool
 ) -> odt.Array2dInt32:
     """
     Shared body of [`boundary_edges`][ordito.boundary.boundary_edges] and its oriented form.
 
-    The vertex count bounds every index, so the pairing may bucket and the boundary rows' sort
-    orders only the bits a key can occupy. ``key_order`` is the given ``mates``' own.
+    The vertex count bounds every index, so the pairing may bucket.
     """
     n_faces = faces.size // 3
     if n_faces == 0:
         return odt.empty_2d((0, 2), wp.int32, device=faces.device)
-    boundary = _BoundaryHalfedges(faces, n_vertices or None, mates, key_order=key_order)
+    boundary = _BoundaryHalfedges(faces, n_vertices or None, mates)
     return boundary.edges(sort_pair=not oriented)
 
 
@@ -1329,12 +1318,11 @@ class _BoundaryHalfedges:
 
     A boundary halfedge is row ``h`` of [`faces_to_edges`][ordito.edges.faces_to_edges], so every
     view the module needs (the undirected rows, the directed rows, the halfedge indices, the
-    vertices) is read off ``faces`` and the mates without an edge table. Only the edge rows have an
-    order to keep -- ascending undirected key, ``edges_unique``'s: where the mates came from the
-    key sort the flags are read in its order, and where they were bucketed only the boundary
-    halfedges are sorted. Where the caller already relies on every index being below
-    ``n_vertices``, the mates are built from that count (by buckets on a large CUDA mesh) and the
-    boundary sort orders only the bits a key can occupy.
+    vertices) is read off ``faces`` and the mates without an edge table. The flags are a bit a
+    halfedge in halfedge order, however the mates were formed, so every view ranks the boundary
+    halfedges in ascending index and nothing sorts them. Where the caller already relies on every
+    index being below ``n_vertices``, the mates are built from that count (by buckets on a large
+    CUDA mesh).
     """
 
     def __init__(
@@ -1342,16 +1330,13 @@ class _BoundaryHalfedges:
         faces: wp.array[wp.int32],
         n_vertices: int | None = None,
         mates: wp.array[wp.int32] | None = None,
-        *,
-        key_order: wp.array[wp.int32] | None = None,
     ) -> None:
         self.faces = faces
         self.n = faces.size // 3 * 3
         self.n_vertices = n_vertices
-        # Given mates come without a key order unless the caller passes theirs, as the bucketed
-        # pairing's do: the flags are then read in halfedge order and ``key_ordered_halfedges``
-        # sorts only the boundary halfedges.
-        self.key_order: wp.array[wp.int32] | None = None
+        # The edge-key sort's permutation, where the pairing sorts here: the sorted marking pass
+        # forms each mate from its run.
+        self._order: wp.array[wp.int32] | None = None
         # Where the pairing sorts, the mates are formed from the sorted keys by the first kernel
         # that reads them (the flags, or the vertex flags without any table), not by a launch of
         # their own; ``mates`` stores them on a later read.
@@ -1365,18 +1350,15 @@ class _BoundaryHalfedges:
         self._spare_keys: wp.array[wp.int32] | None = None
         if mates is not None:
             self._mates = mates
-            self.key_order = key_order
         else:
             sorted_pairing = _sorted_pairing(faces, n_vertices)
             if sorted_pairing is None:
-                self._mates, self.key_order = od.halfedge.halfedge_mates(
-                    faces, n_vertices, return_key_order=True
-                )
+                self._mates = od.halfedge.halfedge_mates(faces, n_vertices)
             else:
                 keys, order = sorted_pairing
                 n = self.n
                 self._sorted_keys = _launch.view(keys, 0, n)
-                self.key_order = _launch.view(order, 0, n)
+                self._order = _launch.view(order, 0, n)
                 self._spare_order = _launch.view(order, n, 2 * n)
                 self._spare_keys = _launch.view_as(_launch.view(keys, n, 2 * n), wp.int32)
         # One bit a flag position, and the words' ranks (``array.bit_ranks``' table).
@@ -1428,7 +1410,7 @@ class _BoundaryHalfedges:
                     dim=n,
                     inputs=[
                         self._sorted_keys,
-                        self.key_order,
+                        self._order,
                         self.faces,
                         degrees,
                         defects,
@@ -1442,15 +1424,7 @@ class _BoundaryHalfedges:
                 _launch.launch(
                     kernel_boundary.mark_boundary_halfedges,
                     dim=n,
-                    inputs=[
-                        self._mates,
-                        self.key_order,
-                        self.faces,
-                        degrees,
-                        defects,
-                        words,
-                        ranks,
-                    ],
+                    inputs=[self._mates, self.faces, degrees, defects, words, ranks],
                     device=device,
                 )
             _launch.array_scan(ranks, out_array=ranks, inclusive=True)
@@ -1467,37 +1441,16 @@ class _BoundaryHalfedges:
         return self._count
 
     def edges(self, *, sort_pair: bool) -> odt.Array2dInt32:
-        """Emit the boundary edge rows in ascending key order (ascending pairs if ``sort_pair``)."""
+        """Emit the boundary edge rows in halfedge order (ascending pairs if ``sort_pair``)."""
         device = self.faces.device
         k = self.count()
         out_edges = odt.empty_2d((k, 2), wp.int32, device=device)
-        if k > 0 and self.key_order is not None:
-            # The bits were ranked in key order: the rows are stored at their ranks directly.
+        if k > 0:
             dim, by_rank = _launch.set_bit_launch(self.n, k, device)
             _launch.launch(
-                kernel_boundary.emit_key_ordered_boundary_edges,
-                dim=dim,
-                inputs=[
-                    self._words,
-                    self._ranks,
-                    by_rank,
-                    self.key_order,
-                    self.faces,
-                    sort_pair,
-                    out_edges,
-                ],
-                device=device,
-            )
-        elif k > 0:
-            assert self._words is not None
-            assert self._ranks is not None
-            halfedges = od.halfedge.key_ordered_halfedges(
-                self.faces, self._words, self._ranks, k, n_vertices=self.n_vertices
-            )
-            _launch.launch(
                 kernel_boundary.emit_boundary_edges,
-                dim=k,
-                inputs=[halfedges, self.faces, sort_pair, out_edges],
+                dim=dim,
+                inputs=[self._words, self._ranks, by_rank, self.faces, sort_pair, out_edges],
                 device=device,
             )
         return out_edges
@@ -1539,7 +1492,6 @@ class _BoundaryHalfedges:
                 self._words,
                 self._ranks,
                 by_rank,
-                self.key_order,
                 self.faces,
                 self.mates if halfedge_nodes else None,
                 tails,
@@ -1564,7 +1516,7 @@ class _BoundaryHalfedges:
             _launch.launch(
                 kernel_boundary.mark_sorted_boundary_vertices,
                 dim=self.n,
-                inputs=[self._sorted_keys, self.key_order, self.faces, flags],
+                inputs=[self._sorted_keys, self._order, self.faces, flags],
                 device=self.faces.device,
             )
         elif n_vertices > 0:
@@ -1581,13 +1533,13 @@ class _BoundaryHalfedges:
         """``(3 * n_faces,)`` mate codes, stored from the sorted keys on the first read."""
         if self._mates is None:
             assert self._sorted_keys is not None
-            assert self.key_order is not None
+            assert self._order is not None
             assert self._spare_order is not None
             self._mates = self._spare_order
             _launch.launch(
                 kernel_halfedge.sorted_halfedge_mates,
                 dim=self.n,
-                inputs=[self._sorted_keys, self.key_order, self._mates],
+                inputs=[self._sorted_keys, self._order, self._mates],
                 device=self.faces.device,
             )
         return self._mates

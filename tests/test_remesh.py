@@ -1328,9 +1328,6 @@ def _assert_same_clustered_mesh(
     faces in hash order.
     """
     vertices_ref, faces_ref = _referenced_mesh(vertices_ref, faces_ref)
-    faces_np = faces_wp.numpy().reshape(-1, 3)
-    # ordito writes each face from its smallest vertex, as Open3D does.
-    assert np.array_equal(canonical_winding(faces_np), faces_np)
     vertices_ref_wp, faces_ref_wp = numpy_to_warp(vertices_ref, faces_ref, faces_wp.device)
     assert od.equality.meshes_allclose(
         vertices_wp, faces_wp, vertices_ref_wp, faces_ref_wp, rtol=0.0, atol=1e-5
@@ -1509,17 +1506,18 @@ def test_cluster_decimate_matches_a_numpy_transcription(
     device: str, voxel_size: float, contraction: Literal["average", "closest"]
 ) -> None:
     """
-    Class A against a NumPy transcription of the definition, pinning the output *numbering*.
+    Class A against a NumPy transcription of the definition, up to numbering.
 
-    Open3D fixes the vertex set and the face set but not their order, and the order is a contract:
-    output vertices are the kept cells in packed-cell-key order (``unique_1d``'s), faces are the
-    distinct welded faces, each written from its smallest output vertex, in the order of those rows
-    packed as one key. The kernel dedups with hash tables whose slots number the cells arbitrarily,
-    so the order is recovered by sorts that this checks against ``np.unique``. The two sizes
-    cover: nothing merging (more distinct faces than vertices, the branch where the face sort
-    cannot reuse the cell sort's buffers), and welding that leaves both kinds of repeat, asserted
-    below: same-winding duplicates, merged, and reversed twins, kept. ``"closest"`` is checked
-    against the vertex nearest its cell's centre, the lowest index on a tie.
+    The transcription bins the vertices, keeps the welded faces with three distinct cells, merges
+    same-winding repeats and places each kept cell's vertex; ``od.equality.meshes_allclose``
+    compares the meshes up to vertex numbering, face order and face rotation (exactly for
+    ``"closest"``, the vertex nearest its cell's centre, the lowest index on a tie). The two sizes
+    cover nothing merging (more distinct faces than vertices) and welding that leaves both kinds
+    of repeat, asserted below: same-winding duplicates, merged, and reversed twins, kept.
+
+    The deterministic setting's numbering is pinned beside it: kept cells in the order of their
+    smallest input vertex, faces in the order of their representative (the smallest input face
+    of each merged class), each in that face's own winding.
     """
     # Three concentric sheets a hair apart, the innermost reversed -- a thin shell. They weld into
     # the same cells, so their faces map onto the same cluster triples, two sheets in one winding
@@ -1553,31 +1551,33 @@ def test_cluster_decimate_matches_a_numpy_transcription(
         & (remapped_np[:, 0] != remapped_np[:, 2])
     )
     surviving_np = remapped_np[distinct]
+    # Kept cells numbered by their smallest vertex: the deterministic setting's order.
+    smallest_np = np.full(labels_np.max() + 1, len(vertices_np))
+    np.minimum.at(smallest_np, labels_np, np.arange(len(vertices_np)))
     kept_np = np.unique(surviving_np)
-    ranked_np = np.searchsorted(kept_np, surviving_np)
-    n_kept = kept_np.size
+    kept_np = kept_np[np.argsort(smallest_np[kept_np])]
+    rank_np = np.full(labels_np.max() + 1, -1)
+    rank_np[kept_np] = np.arange(kept_np.size)
+    ranked_np = rank_np[surviving_np]
+    # Same-winding repeats share their rows rotated to start at the smallest; ``np.unique``'s
+    # first index is each class's smallest face, and faces follow those in order.
     rotated_np = canonical_winding(ranked_np)
-    face_keys_np = rotated_np[:, 0] + n_kept * (rotated_np[:, 1] + n_kept * rotated_np[:, 2])
-    _face_keys, first_np = np.unique(face_keys_np, return_index=True)
-    expected_faces_np = rotated_np[first_np]
+    _rows, first_np = np.unique(rotated_np, axis=0, return_index=True)
+    expected_faces_np = ranked_np[np.sort(first_np)]
     if voxel_size > 0.01:
         # Non-vacuity: welding made same-winding duplicates and reversed twins.
         assert first_np.size < surviving_np.shape[0]
         assert np.unique(np.sort(ranked_np, axis=1), axis=0).shape[0] < first_np.size
     else:
-        assert first_np.size > len(vertices_np)  # non-vacuity: the wide face sort
-    assert np.array_equal(out_faces_wp.numpy().reshape(-1, 3), expected_faces_np)
+        assert first_np.size > len(vertices_np)  # non-vacuity: more faces than vertices
 
-    rank_np = np.full(labels_np.max() + 1, -1)
-    rank_np[kept_np] = np.arange(n_kept)
     vertex_rank_np = rank_np[labels_np]
     if contraction == "average":
-        sums_np = np.zeros((n_kept, 3))
+        sums_np = np.zeros((kept_np.size, 3))
         np.add.at(sums_np, vertex_rank_np[vertex_rank_np >= 0], vertices_np[vertex_rank_np >= 0])
-        counts_np = np.bincount(vertex_rank_np[vertex_rank_np >= 0], minlength=n_kept)
-        assert np.allclose(
-            out_vertices_wp.numpy(), sums_np / counts_np[:, None], rtol=1e-5, atol=1e-5
-        )
+        counts_np = np.bincount(vertex_rank_np[vertex_rank_np >= 0], minlength=kept_np.size)
+        expected_vertices_np = sums_np / counts_np[:, None]
+        atol = 1e-5
     else:
         # The vertex nearest its cell's centre, ties to the lowest index.
         centres_np = np.array(origin, dtype=np.float32) + (cells_np + 0.5).astype(
@@ -1586,8 +1586,18 @@ def test_cluster_decimate_matches_a_numpy_transcription(
         distance_np = np.sum((vertices_np - centres_np) ** 2, axis=1)
         order_np = np.lexsort((np.arange(len(vertices_np)), distance_np, vertex_rank_np))
         ranks_sorted_np = vertex_rank_np[order_np]
-        first_in_rank_np = order_np[np.searchsorted(ranks_sorted_np, np.arange(n_kept))]
-        assert np.array_equal(out_vertices_wp.numpy(), vertices_np[first_in_rank_np])
+        first_in_rank_np = order_np[np.searchsorted(ranks_sorted_np, np.arange(kept_np.size))]
+        expected_vertices_np = vertices_np[first_in_rank_np]
+        atol = 0.0
+    expected_vertices_wp, expected_faces_wp = numpy_to_warp(
+        expected_vertices_np, expected_faces_np, device
+    )
+    assert od.equality.meshes_allclose(
+        out_vertices_wp, out_faces_wp, expected_vertices_wp, expected_faces_wp, rtol=0.0, atol=atol
+    )
+    # The deterministic numbering (the suite runs with the setting on).
+    assert np.array_equal(out_faces_wp.numpy().reshape(-1, 3), expected_faces_np)
+    assert np.allclose(out_vertices_wp.numpy(), expected_vertices_np, rtol=0.0, atol=atol)
     assert 3 * n_sheet == len(vertices_np)
 
 
@@ -1602,21 +1612,21 @@ def test_cluster_decimate_average_is_reproducible_when_deterministic(
     """
     Not a parity assert: under the deterministic setting repeated calls agree bit for bit.
 
-    Each cell's mean is added in one fixed order; the off mode's arrival-order atomics agree to
-    ``float32`` round-off and, on the CPU device, bit for bit, since the fixed order there is the
-    ascending vertex order its atomics commit in. Without it every CUDA call returned different
+    Each cell's mean is added in one fixed order and the output numbered from the input's; the off
+    mode numbers in arrival order, so its mesh is compared up to numbering
+    (``od.equality.meshes_allclose``): its arrival-order atomics agree to ``float32`` round-off
+    and, on the CPU device, bit for bit, since the fixed order there is the ascending vertex order
+    its atomics commit in. Without it every CUDA call returned different
     positions. The fine cells hold up to 23 vertices, each added by one thread; the coarsest cell
     holds 139, past ``kernels/scatter.SORTED_RUN_SERIAL_MAX``, so a block's strided lanes and fold
     add it. MeshLab's mean adds a cell's face corners, three a face, in the same two forms.
     """
     mesh_tm, mesh_wp = sphere_irregular
     voxel_size = voxel_fraction * float(np.linalg.norm(mesh_tm.extents))
-    vertices_np, faces_np = (
-        array_wp.numpy()
-        for array_wp in od.remesh.cluster_decimate(
-            mesh_wp.points, mesh_wp.indices, voxel_size=voxel_size, method=method
-        )
+    vertices_wp, faces_wp = od.remesh.cluster_decimate(
+        mesh_wp.points, mesh_wp.indices, voxel_size=voxel_size, method=method
     )
+    vertices_np, faces_np = vertices_wp.numpy(), faces_wp.numpy()
     assert 0 < len(vertices_np) < len(mesh_tm.vertices) // 2
     for _ in range(4):
         again_vertices_wp, again_faces_wp = od.remesh.cluster_decimate(
@@ -1628,12 +1638,16 @@ def test_cluster_decimate_average_is_reproducible_when_deterministic(
         arrival_vertices_wp, arrival_faces_wp = od.remesh.cluster_decimate(
             mesh_wp.points, mesh_wp.indices, voxel_size=voxel_size, method=method
         )
-    assert np.array_equal(arrival_faces_wp.numpy(), faces_np)
-    if device == "cpu" and not wp.config.enable_cpu_blocks:
-        # One lane per block, so the fixed order is the atomics' ascending one.
-        assert np.array_equal(arrival_vertices_wp.numpy(), vertices_np)
-    else:
-        assert np.allclose(arrival_vertices_wp.numpy(), vertices_np, rtol=1e-5, atol=1e-5)
+    # One lane per block on the CPU, so the fixed order is the atomics' ascending one.
+    exact = device == "cpu" and not wp.config.enable_cpu_blocks
+    assert od.equality.meshes_allclose(
+        arrival_vertices_wp,
+        arrival_faces_wp,
+        vertices_wp,
+        faces_wp,
+        rtol=0.0 if exact else 1e-5,
+        atol=0.0 if exact else 1e-5,
+    )
 
 
 def test_cluster_decimate_default_voxel_size(device: str) -> None:
@@ -2688,7 +2702,8 @@ def test_decimation_provenance_carries_fields(
     each vertex once for ``method="open3d"``, over its face corners for ``"meshlab"`` and
     ``"meshlib"`` (**mutation probe:** their rows at equal weights, as ``from_clusters`` builds
     them, fail the position check of both arms); ``"closest"`` copies one input vertex. Each output
-    face's source face, renumbered through the clusters, is the output face. The quadric
+    face's source face, renumbered through the clusters, is the output face, under either
+    deterministic setting. The quadric
     collapse's representative is a member of the cluster its operator averages.
     """
     _, mesh_wp = sphere_irregular
@@ -2700,12 +2715,19 @@ def test_decimation_provenance_carries_fields(
     assert_provenance_describes(
         provenance, vertices_wp, faces_wp, new_v, new_f, faces_inside_sources=False
     )
+    with od.config.deterministic(False):
+        # Arrival order numbers the output, and the provenance with it.
+        arrival = od.remesh.cluster_decimate(
+            vertices_wp, faces_wp, return_provenance=True, **kwargs
+        )
+    assert_provenance_describes(
+        arrival[2], vertices_wp, faces_wp, arrival[0], arrival[1], faces_inside_sources=False
+    )
     if contraction == "average":
         cluster_np = _cluster_of_each_input(provenance)
         mapped_np = cluster_np[faces_wp.numpy().reshape(-1, 3)[provenance.face_index.numpy()]]
-        assert np.array_equal(
-            np.sort(mapped_np, axis=1), np.sort(new_f.numpy().reshape(-1, 3), axis=1)
-        )
+        # Each output face is its source face renumbered, in the source's winding.
+        assert np.array_equal(mapped_np, new_f.numpy().reshape(-1, 3))
         rep_np = provenance.vertex_index.numpy()
         assert np.array_equal(cluster_np[rep_np], np.arange(new_v.size))
 

@@ -2413,12 +2413,14 @@ def cluster_decimate(
     can lose every face, and so every cell.
 
     Under ``method="open3d"`` the binning is
-    [`ordito.voxels.cell_indices`][ordito.voxels.cell_indices]' cell assignment. Output vertices
-    are numbered in the order of their packed cell keys -- the order
-    [`ordito.grouping.unique_1d`][ordito.grouping.unique_1d] would sort them in -- and each face
-    is written rotated to start at its smallest vertex, as Open3D writes it; the faces come out
-    in the order of those rows packed as one key. Both libraries return vertices and faces in hash
-    order, which no parallel build reproduces.
+    [`ordito.voxels.cell_indices`][ordito.voxels.cell_indices]' cell assignment. Each output face
+    keeps the winding and starting corner of its representative, the lowest-numbered input face
+    welding onto it. The output order follows the
+    [`deterministic`][ordito.config.deterministic] setting: with it on, vertices are numbered in
+    the order of each cell's lowest-numbered input vertex and faces in the order of their
+    representatives, the same on every call and device; with it off, both come in the order the
+    parallel pass reaches them, which can change from one call to the next. Both libraries return
+    vertices and faces in hash order, so the meshes agree up to numbering.
 
     The cell means of ``contraction="average"`` follow the
     [`deterministic`][ordito.config.deterministic] setting: with it on they are added in one fixed
@@ -2472,14 +2474,10 @@ def cluster_decimate(
     cell_table = odt.as_dense(tables[:n_cells])
     cell_rank = odt.as_dense(tables[n_cells : 2 * n_cells])
     face_table = odt.as_dense(tables[2 * n_cells :])
-    # Every vertex's cluster, then the kept clusters (sized for the sort that orders them, at most
-    # one per vertex), then the distinct surviving faces' table slots.
-    scratch = _launch.empty(3 * n_vertices + n_faces, dtype=wp.int32, device=device)
+    # Every vertex's cluster, then the distinct surviving faces' table slots.
+    scratch = _launch.empty(n_vertices + n_faces, dtype=wp.int32, device=device)
     vertex_cell = odt.as_dense(scratch[:n_vertices])
-    kept_cells = odt.as_dense(scratch[n_vertices : 3 * n_vertices])
-    face_slots = odt.as_dense(scratch[3 * n_vertices :])
-    # The kept clusters' cell keys, at the sort's double width.
-    sort_keys = _launch.empty(2 * n_vertices, dtype=wp.uint64, device=device)
+    face_slots = odt.as_dense(scratch[n_vertices:])
     average = contraction == "average"
     # What a cell's representative is taken over: its vertices (Open3D), or the face corners in it
     # (MeshLab's mean weighs a vertex by its faces, and its closest vertex is one on a face; the
@@ -2489,12 +2487,32 @@ def cluster_decimate(
     # Under the deterministic setting the mean is not scattered: each item is staged with its
     # output vertex for a stable sort, and every cell's run is added in one fixed order
     # (``_cluster_sorted_means``, whose count of long runs rides behind the two counts).
-    ordered = average and is_deterministic()
-    counters = _launch.zeros(3 if ordered else 2, dtype=wp.int32, device=device)
+    # Under the deterministic setting the output is numbered from the input's own numbering
+    # rather than arrival order: a kept cell by its smallest vertex, a face by its smallest
+    # representative, through one scan each of per-vertex and per-face flags (zeroed ahead of the
+    # counters, in one allocation; empty views with it off, when the arrival cursors number both).
+    deterministic = is_deterministic()
+    ordered = average and deterministic
+    n_counters = 3 if ordered else 2
+    n_vertex_flags = n_vertices if deterministic else 0
+    n_flags = n_vertex_flags + (n_faces if deterministic else 0)
+    zeroed = _launch.zeros(n_flags + n_counters, dtype=wp.int32, device=device)
+    vertex_flags = _launch.view(zeroed, 0, n_vertex_flags)
+    face_flags = _launch.view(zeroed, n_vertex_flags, n_flags)
+    counters = _launch.view(zeroed, n_flags, n_flags + n_counters)
     _launch.launch(
         kernel_remesh.cluster_insert_vertices,
         dim=n_vertices,
-        inputs=[vertices, origin, inverse_size, cell_max, bound, wp.int32(cell_mask), cell_table],
+        inputs=[
+            vertices,
+            origin,
+            inverse_size,
+            cell_max,
+            bound,
+            wp.int32(cell_mask),
+            wp.int32(deterministic),
+            cell_table,
+        ],
         outputs=[vertex_cell],
         device=device,
     )
@@ -2508,18 +2526,14 @@ def cluster_decimate(
         inputs=[
             faces,
             vertex_cell,
-            vertices,
-            origin,
-            inverse_size,
-            cell_max,
-            bound,
             cell_table,
             wp.int32(face_mask),
+            wp.int32(deterministic),
             cell_rank,
             face_table,
             counters,
         ],
-        outputs=[sort_keys, kept_cells, face_slots],
+        outputs=[vertex_flags, face_slots],
         device=device,
     )
     # The two counts size both outputs, so they come back together, in one copy; nothing after
@@ -2540,18 +2554,18 @@ def cluster_decimate(
                 ),
             )
         return empty_vertices, empty_faces
-    # The output vertices are the kept clusters in cell-key order, which is the order the sorted
-    # unique cell keys of a whole-mesh dedup would give them. The keys are distinct, so the
-    # permutation does not depend on the order the claims arrived in.
-    _launch.radix_sort_pairs(
-        sort_keys, kept_cells, count=n_kept, end_bit=_launch.key_bits(radix**3)
-    )
-    _launch.launch(
-        kernel_remesh.cluster_rank_cells, dim=n_kept, inputs=[kept_cells, cell_rank], device=device
-    )
-    # From here two launches and a sort: the representatives' gather and the faces' keys over the
-    # same ranks in one, the sort, and the output vertices and faces in the other. The ordered mean
-    # stages its own sort in ``counts`` and writes the output vertices before the second.
+    if deterministic:
+        _launch.array_scan(vertex_flags, vertex_flags, inclusive=True)
+        _launch.launch(
+            kernel_remesh.cluster_rank_cells,
+            dim=n_vertices,
+            inputs=[vertex_cell, cell_table, vertex_flags],
+            outputs=[cell_rank],
+            device=device,
+        )
+    # From here two launches: the representatives' gather (and the faces' flags) over the ranks,
+    # and the output vertices and faces. The ordered mean stages its own sort in ``counts`` and
+    # writes the output vertices before the second.
     scattered = average and not ordered
     sums = _launch.zeros(n_kept if scattered else 0, dtype=wp.vec3, device=device)
     counts = (
@@ -2569,14 +2583,8 @@ def cluster_decimate(
         if method == "meshlib"
         else kernel_remesh.CLUSTER_CLOSEST
     )
-    # The distinct surviving faces come out in the order of their output-vertex triple rotated to
-    # start at its smallest, packed in radix ``n_kept``. The kept-cluster sort's buffers are free
-    # by now and serve the face sort whenever they are wide enough, which they are unless almost
-    # nothing merged.
-    if 2 * n_unique > sort_keys.size:
-        sort_keys, kept_cells = _launch.sort_buffers(n_unique, wp.uint64, device)
     _launch.launch(
-        kernel_remesh.cluster_gather_and_face_keys,
+        kernel_remesh.cluster_gather_and_face_flags,
         dim=max(n_items, n_unique),
         inputs=[
             faces,
@@ -2592,17 +2600,21 @@ def cluster_decimate(
             face_table,
             face_slots,
             wp.int32(n_unique),
-            wp.uint64(n_kept),
+            wp.int32(n_kept),
         ],
-        outputs=[sums, counts, closest, sort_keys, kept_cells],
+        outputs=[sums, counts, closest, face_flags],
         device=device,
     )
-    # Three indices below ``n_kept`` pack below ``n_kept ** 3``.
-    _launch.radix_sort_pairs(
-        sort_keys, kept_cells, count=n_unique, end_bit=_launch.key_bits(n_kept**3)
-    )
+    if deterministic:
+        _launch.array_scan(face_flags, face_flags, inclusive=True)
     kept_vertices = _launch.empty(n_kept, dtype=wp.vec3, device=device)
     out_faces = _launch.empty(3 * n_unique, dtype=wp.int32, device=device)
+    # Each output face's representative input face, in the emitted order.
+    face_index = (
+        _launch.empty(n_unique, dtype=wp.int32, device=device)
+        if return_provenance
+        else _launch.view(zeroed, 0, 0)
+    )
     if ordered:
         _cluster_sorted_means(vertices, counts, counters, n_kept, kept_vertices)
     _launch.launch(
@@ -2612,20 +2624,21 @@ def cluster_decimate(
             faces,
             vertex_cell,
             cell_rank,
-            odt.as_dense(kept_cells[:n_unique]),
+            face_table,
+            face_slots,
+            face_flags,
+            wp.int32(n_unique),
             vertices,
             mode,
             sums,
             counts,
             closest,
         ],
-        outputs=[kept_vertices, out_faces],
+        outputs=[kept_vertices, out_faces, face_index],
         device=device,
     )
     if not return_provenance:
         return kept_vertices, out_faces
-    # Each output face's representative input face, in the emitted order.
-    face_index = _launch.clone(odt.as_dense(kept_cells[:n_unique]))
     if not average:
         sources = _launch.empty(n_kept, dtype=wp.int32, device=device)
         _launch.launch(

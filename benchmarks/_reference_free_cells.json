@@ -4372,21 +4372,6 @@
    "rest": []
   },
   {
-   "group": "key_ordered_halfedges",
-   "mesh_name": "sphere_large",
-   "rest": []
-  },
-  {
-   "group": "key_ordered_halfedges",
-   "mesh_name": "sphere_med",
-   "rest": []
-  },
-  {
-   "group": "key_ordered_halfedges",
-   "mesh_name": "sphere_small",
-   "rest": []
-  },
-  {
    "group": "knn_initial_radius",
    "mesh_name": "sphere_large",
    "rest": []

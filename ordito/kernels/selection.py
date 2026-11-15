@@ -20,7 +20,7 @@ from ordito.kernels.array import (
     sorted_run_start,
     store_counted_ballot_bit,
 )
-from ordito.kernels.halfedge import halfedge_endpoints, key_ordered_halfedge, mate_halfedge
+from ordito.kernels.halfedge import halfedge_endpoints, mate_halfedge
 from ordito.kernels.reduce import GroupSumPass, block_max, read_group_sum
 from ordito.kernels.scatter import ARRIVAL_POOL_PEERS, mark_corners, scatter_add
 from ordito.kernels.triangles import corner_triple, face_normals_and_area, write_corner_triple
@@ -492,7 +492,6 @@ def mark_incident_vertices(
 @wp.kernel
 def mark_region_seam(
     mates: wp.array[wp.int32],
-    key_order: wp.array[wp.int32],
     face_mask: wp.array[wp.bool],
     out_words: wp.array[wp.uint32],
     out_word_counts: wp.array[wp.int32],
@@ -501,31 +500,34 @@ def mark_region_seam(
     # (``halfedge.halfedge_mates``) -- an interior edge -- whose two faces sit on opposite sides of
     # the region. That is the seam rule, read off the mates with no unique-edge table and no
     # per-edge counts. The bits go into the zeroed words and their populations into the zeroed
-    # counts, which the caller scans in place into the words' ranks, bit ``i`` standing for
-    # halfedge ``key_ordered_halfedge(key_order, i)``.
-    i = wp.int32(wp.tid())
-    h = key_ordered_halfedge(key_order, i)
+    # counts, which the caller scans in place into the words' ranks, bit ``h`` standing for
+    # halfedge ``h``, so the seam ranks in ascending halfedge index.
+    h = wp.int32(wp.tid())
     mate = mates[h]
     seam = wp.bool(False)
     if mate > h:
         seam = face_mask[h // 3] != face_mask[mate // 3]
-    store_counted_ballot_bit(out_words, out_word_counts, i, seam)
+    store_counted_ballot_bit(out_words, out_word_counts, h, seam)
 
 
-@wp.func
-def write_region_seam_row(
-    h: wp.int32,
-    row: wp.int32,
+@wp.kernel
+def emit_region_seam(
+    words: wp.array[wp.uint32],
+    word_ranks: wp.array[wp.int32],
+    by_rank: wp.bool,
     mates: wp.array[wp.int32],
     faces: wp.array[wp.int32],
     face_mask: wp.array[wp.bool],
     oriented: wp.bool,
     out_edges: wp.array2d[wp.int32],
 ) -> None:
-    # Row ``row`` of the seam from its flagged halfedge ``h``: the region face's halfedge --
-    # directed when ``oriented``, which puts the region on its left, else ascending. Shared by
-    # ``emit_region_seam`` and ``emit_key_ordered_region_seam``, which differ only in where the
-    # flagged halfedges come from.
+    # Row ``row`` of the seam from each of ``mark_region_seam``'s ranked bits, launched over the set
+    # bits (``launched_set_bit``), stored at its rank, so the rows come in ascending halfedge index
+    # of the flagged (lower) halfedge: the region face's halfedge -- directed when ``oriented``,
+    # which puts the region on its left, else ascending.
+    h, row, flagged = launched_set_bit(words, word_ranks, wp.int32(wp.tid()), by_rank)
+    if not flagged:
+        return
     if not face_mask[h // 3]:
         h = mates[h]
     if oriented:
@@ -534,42 +536,6 @@ def write_region_seam_row(
         out_edges[row, 1] = b
     else:
         write_edge_row(faces, h, row, out_edges)
-
-
-@wp.kernel
-def emit_region_seam(
-    halfedges: wp.array[wp.int32],
-    mates: wp.array[wp.int32],
-    faces: wp.array[wp.int32],
-    face_mask: wp.array[wp.bool],
-    oriented: wp.bool,
-    out_edges: wp.array2d[wp.int32],
-) -> None:
-    # One thread per seam edge, its flagged halfedge already in ascending key order
-    # (``halfedge.key_ordered_halfedges``, which sorted them when the mates came from buckets).
-    g = wp.int32(wp.tid())
-    write_region_seam_row(halfedges[g], g, mates, faces, face_mask, oriented, out_edges)
-
-
-@wp.kernel
-def emit_key_ordered_region_seam(
-    words: wp.array[wp.uint32],
-    word_ranks: wp.array[wp.int32],
-    by_rank: wp.bool,
-    key_order: wp.array[wp.int32],
-    mates: wp.array[wp.int32],
-    faces: wp.array[wp.int32],
-    face_mask: wp.array[wp.bool],
-    oriented: wp.bool,
-    out_edges: wp.array2d[wp.int32],
-) -> None:
-    # ``halfedge.flagged_key_ordered_halfedges`` and ``emit_region_seam`` in one pass, when the
-    # mates came from the edge-key sort: the ranked bits are already in key order, so a set bit
-    # writes its row at its rank and no halfedge list is compacted in between. Launched over the
-    # set bits (``launched_set_bit``).
-    i, row, flagged = launched_set_bit(words, word_ranks, wp.int32(wp.tid()), by_rank)
-    if flagged:
-        write_region_seam_row(key_order[i], row, mates, faces, face_mask, oriented, out_edges)
 
 
 @wp.kernel

@@ -1497,9 +1497,9 @@ def test_poisson_octree_matches_open3d_at_depth_10(device: str) -> None:
     """
     Class B: [`test_poisson_octree_matches_open3d`][]'s asserts at depth 10, the deepest allowed.
 
-    Depth 10 is where the octree's indices pass ``int32``: the dense edge order the vertices are
-    numbered in runs to ``3.7e9`` (``uint32``), a band leaf's packed cell index times six to
-    ``7.4e9``, and the borrowed faces' sort key needs its rank relative to the coarse cell. The
+    Depth 10 is where the octree's indices pass ``int32``: a band leaf's packed cell index times
+    six runs to ``7.4e9``, and the borrowed faces' sort key needs its rank relative to the coarse
+    cell. The
     cloud (two small, unevenly sampled spheres far apart) reaches depth 10 along its dense caps
     with depth-9 leaves beside them, in about a second of open3d.
 
@@ -2480,10 +2480,11 @@ def test_ball_pivoting_is_reproducible(device: str):
     so the row order is deliberately still arrival-ordered:
 
     * the wave loop's own output, which is the property the key buys;
-    * the public function, byte for byte: its cleanup tail emits the faces in ascending
-      unoriented-key order (``repair.resolve_duplicated_faces``), so the returned buffers do not
-      inherit the wave loop's row order, and it keeps the winding the wave loop wrote from the
-      normals rather than re-deriving it -- at an explicit radius and at its own guess, which is a
+    * the public function, byte for byte: under the deterministic setting it sorts the wave
+      loop's faces into canonical order (``od.equality.canonical_faces``) before the cleanup, so
+      the returned buffers do not inherit the wave loop's row order, and it keeps the winding the
+      wave loop wrote from the normals rather than re-deriving it -- at an explicit radius and at
+      its own guess, which is a
       fixed-order sum with the deterministic setting on (an atomic one moved the guess a few ULP
       between calls, enough to tip a borderline pivot).
 
@@ -3076,11 +3077,21 @@ def test_reconstruction_arrival_order_agrees_with_the_default(device: str, funct
     The mode reaches only the reductions that set a scale or an orientation (the centroid that
     orients estimated normals, the automatic ball radius, the Poisson iso-value and the signed
     volume that orients the result), whose last bits move no lattice crossing or pivot of these
-    inputs: the triangulations must be equal, and the vertices equal to float32 rounding.
+    inputs: the triangulations must be equal, and the vertices equal to float32 rounding. Compared
+    up to numbering (``od.equality.meshes_allclose``): with the setting off ``ball_pivoting``
+    returns its faces in the order its waves append them.
     """
     fixed_vertices, fixed_faces = _reconstruct(device, function)
     with od.config.deterministic(False):
         arrival_vertices, arrival_faces = _reconstruct(device, function)
     assert fixed_faces.size > 0
-    assert np.array_equal(fixed_faces, arrival_faces)
-    assert np.allclose(fixed_vertices, arrival_vertices, rtol=1e-5, atol=1e-5)
+    fixed_vertices_wp, fixed_faces_wp = numpy_to_warp(fixed_vertices, fixed_faces, device)
+    arrival_vertices_wp, arrival_faces_wp = numpy_to_warp(arrival_vertices, arrival_faces, device)
+    assert od.equality.meshes_allclose(
+        arrival_vertices_wp,
+        arrival_faces_wp,
+        fixed_vertices_wp,
+        fixed_faces_wp,
+        rtol=1e-5,
+        atol=1e-5,
+    )

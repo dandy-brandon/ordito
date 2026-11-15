@@ -86,16 +86,15 @@ def crease_edges(
     mates
         ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces`` when the
         caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]), to spare
-        the pairing sort; only the selected halfedges are then put in key order. Trusted, not
-        checked.
+        the pairing sort. Trusted, not checked.
 
     Returns
     -------
     odt.Array2dInt32
         ``(k, 2)`` vertex-index pairs on ``faces.device``, one row per selected edge, smaller index
-        first. The creases come first, in [`face_adjacency`][ordito.adjacency.face_adjacency]'s
-        row order, and the boundary edges, when asked for, after them in
-        [`boundary_edges`][ordito.boundary.boundary_edges]' order; neither block is sorted.
+        first. The creases come first, in ascending index of each crease's lower halfedge (face by
+        face), and the boundary edges, when asked for, after them in
+        [`boundary_edges`][ordito.boundary.boundary_edges]' order, ascending halfedge index.
 
     Raises
     ------
@@ -134,14 +133,11 @@ def crease_edges(
     # The halfedge mates classify every edge: an interior edge is a pair -- ``face_adjacency``'s
     # row -- and a boundary edge a halfedge with no mate, so both classes are flagged off the one
     # pairing, a bit a halfedge, numbered by one ranking of the bitmask, creases first, each class
-    # in ascending key order: read in the key sort's order where the mates came from it, else only
-    # the flagged halfedges sorted. A key is below ``n_vertices ** 2``, so only those bits are
-    # sorted.
+    # in ascending halfedge index: nothing is sorted past the pairing.
     n_vertices = vertices.size
     n = 3 * n_faces
-    key_order = None
     if mates is None:
-        mates, key_order = od.halfedge.halfedge_mates(faces, n_vertices, return_key_order=True)
+        mates = od.halfedge.halfedge_mates(faces, n_vertices)
     row_words = (n + 31) // 32
     n_words = (2 if include_boundary else 1) * row_words
     # The bits, then their words' populations, which the flagging launch adds and the scan ranks.
@@ -155,7 +151,6 @@ def crease_edges(
             vertices,
             faces,
             mates,
-            key_order,
             wp.float32(math.radians(angle)),
             32 * row_words,
             words,
@@ -167,13 +162,11 @@ def crease_edges(
     n_edges = scan_count(word_ranks)
     edges = odt.empty_2d((n_edges, 2), wp.int32, device=device)
     if n_edges > 0:
-        halfedges = od.halfedge.key_ordered_halfedges(
-            faces, words, word_ranks, n_edges, key_order=key_order, n_vertices=n_vertices
-        )
+        dim, by_rank = _launch.set_bit_launch(32 * n_words, n_edges, device)
         _launch.launch(
             kernel_seams.emit_crease_edges,
-            dim=n_edges,
-            inputs=[halfedges, faces, edges],
+            dim=dim,
+            inputs=[words, word_ranks, by_rank, 32 * row_words, faces, edges],
             device=device,
         )
     return edges

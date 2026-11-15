@@ -472,6 +472,7 @@ def resolve_duplicate_runs(
     order: wp.array[wp.int32],
     n_faces: wp.int32,
     drop_unorientable: wp.int32,
+    input_order: wp.int32,
     out_keep: wp.array[wp.int32],
     out_flags: wp.array[wp.int32],
 ) -> None:
@@ -481,16 +482,20 @@ def resolve_duplicate_runs(
     # representative, the first occurrence ``grouping.unique_faces`` keeps. A member's sign is
     # whether it is a cyclic rotation of the representative, and the first member of each sign is
     # the first one the walk meets, so no per-group table is scattered by atomics and read back by
-    # a second pass. ``out_flags`` (the first ``n_faces`` entries of a zeroed buffer whose next
-    # entry is the error word) is ``1`` at a kept group's run start and ``0`` everywhere else, the
-    # flag the caller scans in place, so kept groups number in ascending key order. A
-    # non-orientable group reports its run start reflected, ``n_faces - i``, by ``atomic_max`` into
-    # the error word, so the smallest such group wins and zero means none; with
-    # ``drop_unorientable`` set it is dropped instead, as libigl's release build does. Launched over
-    # the sorted positions; ``out_keep`` is written at run starts only.
+    # a second pass. ``out_flags`` holds the first ``n_faces`` entries of a zeroed buffer whose next
+    # entry is the error word. The two orders differ by where the flag lands (a warp-uniform
+    # selector): with ``input_order`` it is ``1`` at the kept face's own index, the run start's one
+    # store into the zeroed flags, so its scan numbers kept faces in input order and ``out_keep``
+    # is not written; without, it is ``1`` at a kept group's run start, ``0`` at every other sorted
+    # position, and ``out_keep`` holds the kept face at the run start, so kept groups number in
+    # ascending key order (libigl's). A non-orientable group reports its run start reflected,
+    # ``n_faces - i``, by ``atomic_max`` into the error word, so the smallest such group wins and
+    # zero means none; with ``drop_unorientable`` set it is dropped instead, as libigl's release
+    # build does. Launched over the sorted positions.
     i = wp.int32(wp.tid())
     if not sorted_run_start(sorted_keys, i):
-        out_flags[i] = 0
+        if input_order == 0:
+            out_flags[i] = 0
         return
     representative = order[i]
     r0, r1, r2 = corner_triple(faces, representative)
@@ -518,6 +523,10 @@ def resolve_duplicate_runs(
             keep = wp.int32(-1)
         else:
             wp.atomic_max(out_flags, n_faces, n_faces - i)
+    if input_order != 0:
+        if keep >= 0:
+            out_flags[keep] = 1
+        return
     out_keep[i] = keep
     out_flags[i] = wp.where(keep >= 0, wp.int32(1), wp.int32(0))
 
@@ -681,52 +690,86 @@ def flag_first_face_occurrences(
     out_flags[f] = first
 
 
+@wp.func
+def face_ring_group(
+    faces: wp.array[wp.int32],
+    ring_offsets: wp.array[wp.int32],
+    ring: wp.array[wp.int32],
+    f: wp.int32,
+) -> wp.vec4i:
+    # Face ``f``'s duplicate group walked over its ring: ``(member_count, signed_count,
+    # first_same, first_opposite)``, the signs counted against ``f``'s own winding and each
+    # ``first`` the lowest member wound as ``f`` (``f`` included) or reversed (``-1`` for none).
+    # None of it depends on the walk's order. A long ring's empty span gives ``member_count`` 0.
+    span = ring_span(ring_offsets, face_ring(faces, f))
+    key = face_ring_key(faces, f, 0)
+    r0, r1, r2 = corner_triple(faces, f)
+    member_count = wp.int32(0)
+    signed_count = wp.int32(0)
+    first_same = f
+    first_opposite = wp.int32(-1)
+    for j in range(span[0], span[1]):
+        g = ring[j]
+        if face_ring_key(faces, g, 0) == key:
+            a, b, c = corner_triple(faces, g)
+            member_count += 1
+            if cyclic_match(a, b, c, r0, r1, r2):
+                signed_count += 1
+                first_same = wp.min(first_same, g)
+            else:
+                signed_count -= 1
+                if first_opposite < 0 or g < first_opposite:
+                    first_opposite = g
+    return wp.vec4i(member_count, signed_count, first_same, first_opposite)
+
+
 @wp.kernel
 def decide_face_ring_groups(
     faces: wp.array[wp.int32],
     ring_offsets: wp.array[wp.int32],
     ring: wp.array[wp.int32],
     drop_unorientable: wp.int32,
+    input_order: wp.int32,
     error_index: wp.int32,
     out_keep: wp.array[wp.int32],
     out_error: wp.array[wp.int32],
 ) -> None:
-    # ``resolve_duplicate_runs``' decision, taken by each group's first face over its ring: the
-    # members' counts and the lowest member of each sign do not depend on the walk's order, and the
-    # first face is itself the first positive one. ``out_keep`` is the kept face at a kept group's
-    # first face and -1 at every other face; a non-orientable group, unless dropped, counts into
-    # ``out_error[error_index]``, and the host then re-runs the sorted form, which names the group.
+    # ``resolve_duplicate_runs``' decision over each face's ring (``face_ring_group``). The group's
+    # representative is its lowest member; the counts are taken against ``f``'s winding, so they
+    # flip sign when the representative is wound the other way. The two orders differ by what
+    # ``out_keep`` holds (a warp-uniform selector): with ``input_order`` every face writes ``1``
+    # when it is itself its group's kept face and ``0`` otherwise, the flags whose scan numbers
+    # kept faces in input order; without, the kept face at a kept group's representative and -1 at
+    # every other face, for ``rank_kept_face_groups``' sorted-corner order. A non-orientable group,
+    # unless dropped, counts once (at its representative) into ``out_error[error_index]``, and the
+    # host then re-runs the sorted form, which names the group. A face of a long ring writes
+    # nothing: the host takes the sorted form.
     f = wp.int32(wp.tid())
-    span = ring_span(ring_offsets, face_ring(faces, f))
-    if span[0] == span[1]:
+    group = face_ring_group(faces, ring_offsets, ring, f)
+    if group[0] == 0:
         return
-    key = face_ring_key(faces, f, 0)
-    r0, r1, r2 = corner_triple(faces, f)
-    member_count = wp.int32(0)
-    signed_count = wp.int32(0)
-    first_negative = wp.int32(-1)
-    representative = wp.bool(True)
-    for j in range(span[0], span[1]):
-        g = ring[j]
-        if face_ring_key(faces, g, 0) == key:
-            if g < f:
-                representative = False
-            a, b, c = corner_triple(faces, g)
-            member_count += 1
-            if cyclic_match(a, b, c, r0, r1, r2):
-                signed_count += 1
-            else:
-                signed_count -= 1
-                if first_negative < 0 or g < first_negative:
-                    first_negative = g
-    keep = wp.int32(-1)
-    if representative:
-        keep = duplicate_group_keep(member_count, signed_count, f, f, first_negative)
-        if keep == -2:
-            if drop_unorientable == 0:
-                wp.atomic_add(out_error, error_index, 1)
-            keep = wp.int32(-1)
-    out_keep[f] = keep
+    first_same = group[2]
+    first_opposite = group[3]
+    representative = first_same
+    signed_count = group[1]
+    first_positive = first_same
+    first_negative = first_opposite
+    if first_opposite >= 0 and first_opposite < first_same:
+        representative = first_opposite
+        signed_count = -signed_count
+        first_positive = first_opposite
+        first_negative = first_same
+    keep = duplicate_group_keep(
+        group[0], signed_count, representative, first_positive, first_negative
+    )
+    if keep == -2:
+        if drop_unorientable == 0 and representative == f:
+            wp.atomic_add(out_error, error_index, 1)
+        keep = wp.int32(-1)
+    if input_order != 0:
+        out_keep[f] = wp.where(keep == f, wp.int32(1), wp.int32(0))
+    else:
+        out_keep[f] = wp.where(representative == f, keep, wp.int32(-1))
 
 
 @wp.kernel

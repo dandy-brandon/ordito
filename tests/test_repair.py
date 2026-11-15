@@ -932,12 +932,14 @@ def test_resolve_duplicated_faces_matches_igl(
     request: pytest.FixtureRequest, device: str, source: str
 ) -> None:
     """
-    Class A: both returns against ``igl.resolve_duplicated_faces``, buffer for buffer.
+    Class A: both returns against ``igl.resolve_duplicated_faces``, up to face order.
 
-    ordito emits the surviving groups as libigl does, ascending lexicographically by their sorted
-    corners, and keeps the first member of the majority winding, so the kept faces *and* the kept
-    indices compare in order, with no transform. The NumPy transcription of the rule is asserted
-    equal too, since it is what the small-group test below rests on.
+    Both keep the first member of the majority winding; libigl emits the surviving groups ascending
+    lexicographically by their sorted corners, the default in input order. So the kept indices
+    compare as sets (ordito's ascending), the kept faces through
+    [`faces_equal`][ordito.equality.faces_equal] and as the input rows the indices name, and
+    ``method="igl"`` compares buffer for buffer, in libigl's order. The NumPy transcription of the
+    rule is asserted equal too, since it is what the small-group test below rests on.
 
     The input exercises all four outcomes -- singles, cancelling pairs, positive and negative
     majorities -- shuffled, on a grid of index triples and on ``sphere_irregular``'s faces. igl
@@ -957,13 +959,22 @@ def test_resolve_duplicated_faces_matches_igl(
     faces_wp = wp.array(faces_np.reshape(-1), dtype=wp.int32, device=device)
 
     f2_wp, j_wp = od.repair.resolve_duplicated_faces(faces_wp)
+    f2_igl_order_wp, j_igl_order_wp = od.repair.resolve_duplicated_faces(faces_wp, method="igl")
     f2_igl, j_igl = igl.resolve_duplicated_faces(faces_np.astype(np.int64))
     f2_np, j_np = _resolve_duplicated_faces_ref(faces_np)
 
-    # Non-vacuity: groups cancelled (fewer kept than distinct triangles) and some were not.
+    # Non-vacuity: groups cancelled (fewer kept than distinct triangles) and some were not, and the
+    # two orders differ.
     assert 0 < np.asarray(j_igl).size < base_np.shape[0]
-    assert np.array_equal(j_wp.numpy(), j_igl)
-    assert np.array_equal(f2_wp.numpy().reshape(-1, 3), f2_igl)
+    assert not np.array_equal(np.sort(j_igl), j_igl)
+    assert np.array_equal(j_wp.numpy(), np.sort(j_igl))
+    assert np.array_equal(f2_wp.numpy().reshape(-1, 3), faces_np[j_wp.numpy()])
+    f2_igl_wp = wp.array(
+        np.asarray(f2_igl, dtype=np.int32).reshape(-1), dtype=wp.int32, device=device
+    )
+    assert od.equality.faces_equal(f2_wp, f2_igl_wp)
+    assert np.array_equal(j_igl_order_wp.numpy(), j_igl)
+    assert np.array_equal(f2_igl_order_wp.numpy().reshape(-1, 3), f2_igl)
     assert np.array_equal(j_np, j_igl)
     assert np.array_equal(f2_np, f2_igl)
 
@@ -1116,6 +1127,40 @@ def test_resolve_duplicated_faces_rings_match_the_sort(
     assert 0 < kept_cpu.size < faces_np.shape[0]  # something resolved, something kept
     assert np.array_equal(faces_wp.numpy(), faces_cpu.numpy())
     assert np.array_equal(kept_wp.numpy(), kept_cpu.numpy())
+
+
+@pytest.mark.parametrize("hub", [False, True], ids=["rings", "hub"])
+def test_resolve_duplicated_faces_cancel_keeps_input_order(device: str, hub: bool) -> None:
+    """
+    Not a library comparison: the default's output order is ordito's own contract.
+
+    ``"cancel"`` returns the kept faces in input order, ``kept_indices`` strictly ascending and each
+    row the input face it names, both on rings (CUDA) and on a hub whose ring passes
+    ``VALUE_RING_LONG``, where CUDA falls back to the sort; ``"igl"`` on the same input returns the
+    same set in libigl's lexicographic order, which differs here (the input is shuffled).
+    """
+    rng = np.random.default_rng(31)
+    pool = np.stack(np.meshgrid(np.arange(10), np.arange(10, 20), np.arange(20, 30)), -1)
+    base_np = rng.permutation(pool.reshape(-1, 3), axis=0)[:200].astype(np.int32)
+    parts = [base_np, base_np[:40, ::-1], base_np[40:60, ::-1], base_np[40:60, ::-1]]
+    if hub:
+        n = 100
+        rim = 30 + np.arange(n, dtype=np.int32)
+        fan = np.stack([np.full(n, 0, dtype=np.int32), rim, np.roll(rim, -1)], axis=1)
+        parts += [fan, fan[:10, ::-1]]
+    faces_np = np.concatenate(parts).astype(np.int32)
+    faces_np = np.ascontiguousarray(faces_np[rng.permutation(faces_np.shape[0])])
+    faces_wp = wp.array(faces_np.reshape(-1), dtype=wp.int32, device=device)
+
+    f2_wp, j_wp = od.repair.resolve_duplicated_faces(faces_wp)
+    f2_igl_order_wp, j_igl_order_wp = od.repair.resolve_duplicated_faces(faces_wp, method="igl")
+
+    assert 0 < j_wp.size < faces_np.shape[0]
+    assert np.all(np.diff(j_wp.numpy()) > 0)
+    assert np.array_equal(f2_wp.numpy().reshape(-1, 3), faces_np[j_wp.numpy()])
+    assert not np.array_equal(j_igl_order_wp.numpy(), j_wp.numpy())
+    assert np.array_equal(np.sort(j_igl_order_wp.numpy()), j_wp.numpy())
+    assert od.equality.faces_equal(f2_wp, f2_igl_order_wp)
 
 
 def _faces_2d(faces_wp: wp.array[wp.int32]) -> np.ndarray:

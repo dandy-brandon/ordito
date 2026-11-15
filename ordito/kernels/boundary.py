@@ -12,11 +12,11 @@ from ordito.kernels.array import (
     pack_ranked_key,
     scanned_count,
     store_counted_ballot_bit,
+    store_counted_bit,
 )
 from ordito.kernels.halfedge import (
     HALFEDGE_MATE_BOUNDARY,
     halfedge_endpoints,
-    key_ordered_halfedge,
     next_boundary_halfedge_from_mates,
     sorted_run_mate,
 )
@@ -58,18 +58,20 @@ def is_boundary_mate(mate: wp.int32) -> wp.bool:
 def flag_boundary_halfedge(
     boundary: wp.bool,
     h: wp.int32,
-    i: wp.int32,
+    lane_ordered: wp.bool,
     faces: wp.array[wp.int32],
     out_degrees: wp.array2d[wp.int32],
     out_defects: wp.array[wp.int32],
     out_words: wp.array[wp.uint32],
     out_word_counts: wp.array[wp.int32],
 ):
-    # Bit ``i`` of the zeroed ``out_words`` set where a halfedge spans its edge alone -- a boundary
-    # edge -- bit ``i`` standing for halfedge ``key_ordered_halfedge(key_order, i)``, and each
-    # word's population added into the zeroed ``out_word_counts``, which the caller scans in place
-    # into the words' ranks. Every thread of the launch reaches the ballot
-    # (``store_counted_ballot_bit``), thread ``i`` holding bit ``i``. With ``out_degrees`` (else
+    # Bit ``h`` of the zeroed ``out_words`` set where halfedge ``h`` spans its edge alone -- a
+    # boundary edge -- and each word's population added into the zeroed ``out_word_counts``, which
+    # the caller scans in place into the words' ranks, so the boundary halfedges rank in ascending
+    # index. Every thread of the launch reaches the bit store: a ballot where thread ``h`` holds
+    # halfedge ``h`` (``lane_ordered``, ``store_counted_ballot_bit``), else the converged lanes'
+    # atomics (``store_counted_bit``, a launch over sorted positions); the selector is uniform
+    # over the launch. With ``out_degrees`` (else
     # ``None``), ``boundary_loops_with_offsets``' degree census of the directed rows
     # (``halfedge_endpoints``) rides in the same launch, its two defect bits stamped into the
     # zeroed ``out_defects[0]`` and ``out_defects[1]``, which the caller lays right after the
@@ -86,7 +88,10 @@ def flag_boundary_halfedge(
     # ``wp.atomic_add`` returns the value the slot held *before* the increment, so the thread that
     # pushes a vertex past the threshold is the one that knows it. Boundary vertices are the only
     # ones whose degrees are ever non-zero, so no pass over the vertices is needed.
-    store_counted_ballot_bit(out_words, out_word_counts, i, boundary)
+    if lane_ordered:
+        store_counted_ballot_bit(out_words, out_word_counts, h, boundary)
+    else:
+        store_counted_bit(out_words, out_word_counts, h, boundary)
     if boundary and out_degrees.shape[0] > 0:
         tail, head = halfedge_endpoints(faces, h)
         if wp.atomic_add(out_degrees, tail, 0, 1) >= 1:
@@ -100,20 +105,18 @@ def flag_boundary_halfedge(
 @wp.kernel
 def mark_boundary_halfedges(
     mates: wp.array[wp.int32],
-    key_order: wp.array[wp.int32],
     faces: wp.array[wp.int32],
     out_degrees: wp.array2d[wp.int32],
     out_defects: wp.array[wp.int32],
     out_words: wp.array[wp.uint32],
     out_word_counts: wp.array[wp.int32],
 ) -> None:
-    # ``flag_boundary_halfedge`` over a mate table the caller holds.
-    i = wp.int32(wp.tid())
-    h = key_ordered_halfedge(key_order, i)
+    # ``flag_boundary_halfedge`` over a mate table the caller holds, a thread a halfedge.
+    h = wp.int32(wp.tid())
     flag_boundary_halfedge(
         is_boundary_mate(mates[h]),
         h,
-        i,
+        True,
         faces,
         out_degrees,
         out_defects,
@@ -136,13 +139,22 @@ def mark_sorted_boundary_halfedges(
     # ``mark_boundary_halfedges`` straight from the edge-key sort, one thread per sorted position:
     # the mate ``halfedge.sorted_halfedge_mates`` would store is formed here (``sorted_run_mate``),
     # stored for the module's later reads, and flagged in the same thread, so the pairing and the
-    # flagging are one launch. The two kernels differ only in where the mate code comes from.
+    # flagging are one launch. The two kernels differ only in where the mate code comes from, and
+    # so in how the bit is stored: a thread here holds sorted position ``i``, so its halfedge's bit
+    # is stored by atomics, the bits ranking in halfedge order all the same.
     i = wp.int32(wp.tid())
     h = order[i]
     mate = sorted_run_mate(sorted_keys, order, i)
     out_mates[h] = mate
     flag_boundary_halfedge(
-        is_boundary_mate(mate), h, i, faces, out_degrees, out_defects, out_words, out_word_counts
+        is_boundary_mate(mate),
+        h,
+        False,
+        faces,
+        out_degrees,
+        out_defects,
+        out_words,
+        out_word_counts,
     )
 
 
@@ -162,36 +174,19 @@ def store_boundary_row(
 
 @wp.kernel
 def emit_boundary_edges(
-    halfedges: wp.array[wp.int32],
-    faces: wp.array[wp.int32],
-    sort_pair: wp.bool,
-    out_edges: wp.array2d[wp.int32],
-) -> None:
-    # One thread per boundary halfedge, already in ascending key order
-    # (``halfedge.key_ordered_halfedges``) -- the order ``grouping.group`` emitted the rows in --
-    # each row read from ``faces`` (see ``boundary_halfedge_pair``).
-    g = wp.int32(wp.tid())
-    store_boundary_row(faces, sort_pair, halfedges[g], g, out_edges)
-
-
-@wp.kernel
-def emit_key_ordered_boundary_edges(
     words: wp.array[wp.uint32],
     word_ranks: wp.array[wp.int32],
     by_rank: wp.bool,
-    key_order: wp.array[wp.int32],
     faces: wp.array[wp.int32],
     sort_pair: wp.bool,
     out_edges: wp.array2d[wp.int32],
 ) -> None:
-    # ``emit_boundary_edges`` over ``halfedge.key_ordered_halfedges``' rank compaction in one
-    # launch, for bits ranked in the key sort's order (``mark_boundary_halfedges`` given its
-    # ``key_order``): over the set bits (``launched_set_bit``), each halfedge's row stored at its
-    # rank, its row of the ascending-key table. The two kernels differ only in where a row's
-    # halfedge and slot come from.
-    j, slot, flagged = launched_set_bit(words, word_ranks, wp.int32(wp.tid()), by_rank)
+    # The boundary rows straight off ``mark_boundary_halfedges``' ranked bits, launched over the set
+    # bits (``launched_set_bit``): each boundary halfedge's row (``boundary_halfedge_pair``) stored
+    # at its rank, so the rows come in ascending halfedge index, with no sort.
+    h, slot, flagged = launched_set_bit(words, word_ranks, wp.int32(wp.tid()), by_rank)
     if flagged:
-        store_boundary_row(faces, sort_pair, key_ordered_halfedge(key_order, j), slot, out_edges)
+        store_boundary_row(faces, sort_pair, h, slot, out_edges)
 
 
 @wp.func
@@ -390,7 +385,6 @@ def emit_boundary_successors(
     words: wp.array[wp.uint32],
     word_ranks: wp.array[wp.int32],
     by_rank: wp.bool,
-    key_order: wp.array[wp.int32],
     faces: wp.array[wp.int32],
     mates: wp.array[wp.int32],
     out_tails: wp.array[wp.int32],
@@ -410,10 +404,9 @@ def emit_boundary_successors(
     # threads, 252 us, to 20 us and ``dragon``'s 7.1 -> 4.9 us. Declined: a thread a word walking
     # its set bits, 1.4-2.5x the set-bit launch except on ``lucy`` and 9x on ``holes_pinched``,
     # whose rotations it runs one after another.
-    i, g, flagged = launched_set_bit(words, word_ranks, wp.int32(wp.tid()), by_rank)
+    h, g, flagged = launched_set_bit(words, word_ranks, wp.int32(wp.tid()), by_rank)
     if not flagged:
         return
-    h = key_ordered_halfedge(key_order, i)
     if mates.shape[0] > 0:
         following = next_boundary_halfedge_from_mates(faces, mates, h)
         out_tails[g] = h

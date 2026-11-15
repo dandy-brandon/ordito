@@ -689,11 +689,12 @@ def _noise_field(seed: int, shape: tuple[int, int, int]) -> np.ndarray:
 )
 def test_marching_cubes_openvdb_matches_meshlib(device: str, field_name: str, iso: float) -> None:
     """
-    Class A: ``method="openvdb"`` is OpenVDB's ``volumeToMesh``, bit for bit and in its order.
+    Class A: ``method="openvdb"`` is OpenVDB's ``volumeToMesh``, bit for bit up to numbering.
 
     MeshLib's ``gridToMesh`` runs OpenVDB 12's dual marching cubes at adaptivity 0 on the same
-    dense field; the vertices and the faces come out as equal arrays, numbering and starting
-    corner included, on both devices. The torus is a smooth closed level; white
+    dense field; ``od.equality.meshes_allclose`` at zero tolerance finds the same vertex positions
+    exactly and the same faces, winding included, on both devices (ordito numbers cells
+    row-major, OpenVDB in its tree's order). The torus is a smooth closed level; white
     noise makes cells of every sign pattern, several vertices in a cell (asserted: more vertices
     than crossed cells) and the ambiguous faces whose sign correction couples neighbouring cells.
     MeshLib keeps every face (its builder drops one it cannot add; none here).
@@ -711,8 +712,10 @@ def test_marching_cubes_openvdb_matches_meshlib(device: str, field_name: str, is
 
     field_wp = wp.array(field_np, dtype=wp.float32, device=device)
     vertices_wp, faces_wp = od.levelset.marching_cubes(field_wp, iso, method="openvdb")
-    assert np.array_equal(vertices_wp.numpy(), vertices_ml)
-    assert np.array_equal(faces_wp.numpy().reshape(-1, 3), faces_ml)
+    vertices_ml_wp, faces_ml_wp = numpy_to_warp(vertices_ml, faces_ml, device)
+    assert od.equality.meshes_allclose(
+        vertices_wp, faces_wp, vertices_ml_wp, faces_ml_wp, rtol=0.0, atol=0.0
+    )
     if field_name == "noise":
         crossed = (field_np[:-1, :-1, :-1] < iso).astype(np.int32)
         for di, dj, dk in [(1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 0), (1, 0, 1), (0, 1, 1)]:
@@ -1030,7 +1033,7 @@ def test_offset_mesh_meshlib_method_matches_meshlib(
     bound 0.5 / 0.3), the vertex counts within 0.5 % (0.16 % / 0.11 %), and the mean under
     ``0.03 * _VOXEL`` (4.8e-4 / 9.6e-4).
 
-    **Bug class excluded:** a lattice anchored, scaled or numbered differently, an extraction
+    **Bug class excluded:** a lattice anchored or scaled differently, an extraction
     other than OpenVDB's, and an offset at the wrong distance. **Mutation probes, measured:** the
     default method on the same call shares no vertex within 1e-5 (fraction 0.000, mean 2.0e-2);
     MeshLib at 5 % off the distance either way also 0.000, mean 1.3e-2 to 1.4e-2.

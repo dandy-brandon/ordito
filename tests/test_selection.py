@@ -262,9 +262,8 @@ def test_region_boundary_edges_other_pairings_match_the_key_sort(
     Ordito against ordito: the bucketed mates and given ``mates=`` give the key sort's seam.
 
     The sort path carries the oracles (``test_region_boundary_edges`` and the pyvista
-    comparison). On the bucket path, and given the faces' mates (which only spare the pairing
-    sort), only the seam's halfedges are put in key order, so the rows are pinned to strictly
-    ascending ``(max, min)`` keys and to the sort path's rows.
+    comparison). Every path ranks the seam's lower halfedges in halfedge order, so the rows are
+    pinned to ascending halfedge index and to the sort path's rows.
     """
     mesh_tm, mesh_wp = sphere_irregular
     mask_np = mesh_tm.triangles_center[:, 0] < 0.2
@@ -282,7 +281,7 @@ def test_region_boundary_edges_other_pairings_match_the_key_sort(
         mesh_wp.indices, face_mask, n_vertices, oriented=oriented, mates=mates_wp
     ).numpy()
     assert len(sorted_np) > 0
-    _assert_edge_key_order(other_np)
+    _assert_lower_halfedge_order(mesh_tm.faces, other_np)
     assert np.array_equal(sorted_np, other_np)
 
 
@@ -1904,8 +1903,11 @@ def test_selection_menus_and_zero_hops(device: str) -> None:
         assert np.array_equal(unchanged_wp.numpy(), mask_np)
 
 
-def _assert_edge_key_order(rows_np: np.ndarray) -> None:
-    """Assert undirected rows strictly ascend by ``(max, min)``, ``edges_unique``'s key order."""
-    high = rows_np.max(axis=1).astype(np.int64)
-    low = rows_np.min(axis=1).astype(np.int64)
-    assert np.all(np.diff(high * (int(high.max(initial=0)) + 1) + low) > 0)
+def _assert_lower_halfedge_order(faces_np: np.ndarray, rows_np: np.ndarray) -> None:
+    """Assert edge rows strictly ascend by the lowest halfedge on each one's edge."""
+    halfedges_np = np.stack([faces_np, np.roll(faces_np, -1, axis=1)], axis=-1).reshape(-1, 2)
+    lowest: dict[tuple[int, int], int] = {}
+    for h, (a, b) in enumerate(np.sort(halfedges_np, axis=1).tolist()):
+        lowest.setdefault((a, b), h)
+    order_np = np.array([lowest[(a, b)] for a, b in np.sort(rows_np, axis=1).tolist()])
+    assert np.all(np.diff(order_np) > 0)
