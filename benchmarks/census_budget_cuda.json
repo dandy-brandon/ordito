@@ -7945,9 +7945,11 @@
  },
  "benchmarks/test_smoothing.py::test_smooth_region_boundary_meshlib[sphere_small-ordito-cuda]": {
   "counts": {
-   "alloc": 5,
+   "launch": 5,
+   "alloc": 7,
    "h2d": 2,
-   "d2h": 3
+   "d2h": 3,
+   "h2h": 2
   }
  },
  "benchmarks/test_smoothing.py::test_smooth_region_fixed_rim[sphere_small-ordito-cuda]": {

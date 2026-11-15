@@ -1064,6 +1064,19 @@ def _apex_offsets(steps: int, max_subdivisions: int) -> list[int]:
     return out
 
 
+def hole_representatives(topology: Topology) -> list[int]:
+    """Return the lowest half-edge of every hole (no left face), in increasing order."""
+    seen = [False] * topology.edge_count()
+    out: list[int] = []
+    for e in range(topology.edge_count()):
+        if seen[e] or topology.lft[e] >= 0 or topology.org[e] < 0:
+            continue
+        for i in topology.left_ring(e):
+            seen[i] = True
+        out.append(e)
+    return out
+
+
 def hole_loop(topology: Topology, a0: int) -> list[int]:
     """Return the rim half-edges of the hole left of ``a0``, from ``a0`` in hole order."""
     loop = [a0]
@@ -1544,60 +1557,6 @@ def subdivide(
                     row[v] = row.get(v, 0.0) + 0.5 * w
             rows[vert] = row
     return splits
-
-
-_Vec2 = tuple[Any, Any]  # two float32 scalars
-
-
-def _unfold_on_plane(b: np.ndarray, c: np.ndarray, d: _Vec2) -> _Vec2:
-    dot_bc = _dot(b, c)
-    crs_bc = np.sqrt(_lsq(_cross(b, c)))
-    dd = d[0] * d[0] + d[1] * d[1]
-    if dd <= 0:
-        return (F32(0), F32(0))
-    o = (-d[1], d[0])
-    inv = F32(1) / dd
-    return ((dot_bc * d[0] + crs_bc * o[0]) * inv, (dot_bc * d[1] + crs_bc * o[1]) * inv)
-
-
-def _cross2(a: _Vec2, b: _Vec2) -> np.float32:
-    return a[0] * b[1] - a[1] * b[0]
-
-
-def _unfold_convex(a: np.ndarray, b: np.ndarray, c: np.ndarray, d: np.ndarray) -> bool:
-    vb = b - a
-    vc = c - a
-    vd = d - a
-    ub = (np.sqrt(_lsq(vb)), F32(0))
-    uc = _unfold_on_plane(vb, vc, ub)
-    ud = _unfold_on_plane(vc, vd, uc)
-    # where the line through ub and ud crosses the line 0-uc
-    c1 = _cross2(ud, ub)
-    c2 = _cross2((ub[0] - uc[0], ub[1] - uc[1]), (ud[0] - uc[0], ud[1] - uc[1]))
-    if c1 == 0 and c2 == 0:
-        bb = uc[0] * uc[0] + uc[1] * uc[1]
-        if bb == 0:
-            x = F32(0)
-        else:
-            x = (ub[0] * uc[0] + ub[1] * uc[1] + (ud[0] * uc[0] + ud[1] * uc[1])) / (F32(2) * bb)
-    else:
-        cc = c1 + c2
-        x = F32(0) if cc == 0 else c1 / cc
-    x = min(max(x, F32(0)), F32(1))
-    return bool(F32(0) < x < F32(1))
-
-
-def hole_representatives(topology: Topology) -> list[int]:
-    """Return the lowest half-edge of every hole (no left face), in increasing order."""
-    seen = [False] * topology.edge_count()
-    out: list[int] = []
-    for e in range(topology.edge_count()):
-        if seen[e] or topology.lft[e] >= 0 or topology.org[e] < 0:
-            continue
-        for i in topology.left_ring(e):
-            seen[i] = True
-        out.append(e)
-    return out
 
 
 # ---------------------------------------------------------------------------------------------
@@ -2490,18 +2449,6 @@ def smooth_bridge(topology: Topology, points: Points, a: int, b: int, step: floa
 # ---------------------------------------------------------------------------------------------
 
 
-def _closest_on_segment(pt: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    ab = b - a
-    dt = _dot(pt - a, ab)
-    ab_sq = _lsq(ab)
-    if dt <= 0:
-        return a
-    if dt >= ab_sq:
-        return b
-    ratio = dt / ab_sq
-    return a * (F32(1) - ratio) + b * ratio
-
-
 def smooth_region_rim(
     topology: Topology,
     points: Points,
@@ -2513,95 +2460,66 @@ def smooth_region_rim(
     n_verts = len(topology.edge_per_vertex)
     if not any(region) or iterations <= 0:
         return
-    data = points.data
-    field = np.ones(n_verts, dtype=np.float32)
-    region_verts: set[int] = set()
-    outside_verts: set[int] = set()
-    for f, e in enumerate(topology.edge_per_face):
-        if e < 0:
-            continue
-        target = region_verts if region[f] else outside_verts
-        target.update(topology.tri_verts(e))
-    for v in region_verts:
-        field[v] = F32(-1)
-    free = region_verts & outside_verts
-    # A component whose every vertex is free would leave the system singular: fix it.
+    from ordito.kernels import holes as kernel_holes
+
+    tris = topology.triangles()
+    region_np = np.asarray(region, dtype=bool)
+    valid = (tris >= 0).all(axis=1)
+    inside = np.zeros(n_verts, dtype=bool)
+    outside = np.zeros(n_verts, dtype=bool)
+    inside[tris[valid & region_np].reshape(-1)] = True
+    outside[tris[valid & ~region_np].reshape(-1)] = True
+    field = np.where(inside, F32(-1), F32(1)).astype(np.float32)
+    free_mask = inside & outside
+    # A component whose every vertex is free would leave the system singular: fix it. A component
+    # holding a fixed vertex is one where some free vertex has a fixed neighbour, so the search
+    # stays inside the free set.
     seen: set[int] = set()
-    for v in range(n_verts):
-        if v in seen or topology.edge_per_vertex[v] < 0:
+    for v in np.flatnonzero(free_mask).tolist():
+        if v in seen:
             continue
-        component = {v}
-        stack = [v]
-        while stack:
-            x = stack.pop()
-            for d in _neighbours(topology, x):
-                if d not in component:
-                    component.add(d)
-                    stack.append(d)
-        seen |= component
-        free_here = component & free
-        if free_here and len(free_here) == len(component):
-            free -= component
-
-    def flip_wanted(e: int) -> bool:
-        in_l = region[topology.lft[e]]
-        in_r = region[topology.lft[e ^ 1]]
-        if in_l != in_r:
-            return False
-        c = topology.org[e ^ 1]
-        if c not in free:
-            return False
-        b = topology.org[topology.prv[e] ^ 1]
-        d = topology.org[topology.nxt[e] ^ 1]
-        if b in free and c in free:
-            return False
-        if topology.find_edge(d, b) >= 0:
-            return False
-        v = topology.org[e]
-        return _unfold_convex(data[v], data[b], data[c], data[d])
-
-    for v in sorted(free):
-        e0 = topology.edge_per_vertex[v]
-        e = e0
-        while True:
-            if topology.lft[e] >= 0 and topology.lft[e ^ 1] >= 0 and flip_wanted(e):
-                e0 = topology.nxt[e]
-                topology.flip_edge(e)
-                e = e0
-            else:
-                e = topology.nxt[e]
-                if e == e0:
-                    break
-
-    free_list = sorted(free)
+        group = [v]
+        seen.add(v)
+        touches_fixed = False
+        k = 0
+        while k < len(group):
+            for d in _neighbours(topology, group[k]):
+                if not free_mask[d]:
+                    touches_fixed = True
+                elif d not in seen:
+                    seen.add(d)
+                    group.append(d)
+            k += 1
+        if not touches_fixed:
+            free_mask[group] = False
+    free_list = np.flatnonzero(free_mask).astype(np.int32)
+    native = _NativeMesh(topology, points, region_flags=region_np.astype(np.int32))
+    free_wp = wp.array(free_mask.astype(np.int32), dtype=wp.int32, device="cpu")
+    free_list_wp = wp.array(free_list, dtype=wp.int32, device="cpu")
+    wp.launch(
+        kernel_holes.serial_rim_flips,
+        dim=1,
+        inputs=[native.mesh, free_wp, free_list_wp],
+        device="cpu",
+    )
+    native.store(topology)
+    points.data = native.positions
+    data = points.data
+    field_wp = wp.array(field, dtype=wp.float32, device="cpu", copy=False)
+    moved = np.empty((free_list.size, 3), dtype=np.float32)
+    moved_wp = wp.array(moved, dtype=wp.vec3, device="cpu", copy=False)
+    free_python = free_list.tolist()
     for _ in range(iterations):
-        _harmonic_field(topology, data, free_list, field, device)
-        moved: list[np.ndarray] = []
-        for v in free_list:
-            pt = data[v]
-            best = pt
-            best_d = _FLT_MAX
-            for e in topology.org_ring(topology.edge_per_vertex[v]):
-                if topology.lft[e] < 0:
-                    continue
-                vs = [v, topology.org[e ^ 1], topology.org[topology.nxt[e] ^ 1]]
-                for _i in range(3):
-                    val, val1, val2 = field[vs[0]], field[vs[1]], field[vs[2]]
-                    if val * val1 >= 0:
-                        continue
-                    c1 = val / (val - val1)
-                    sa = (F32(1) - c1) * data[vs[0]] + c1 * data[vs[1]]
-                    c2 = val / (val - val2)
-                    sb = (F32(1) - c2) * data[vs[0]] + c2 * data[vs[2]]
-                    proj = _closest_on_segment(pt, sa, sb)
-                    dist = _lsq(pt - proj)
-                    if dist < best_d:
-                        best = proj
-                        best_d = dist
-                    vs = vs[1:] + vs[:1]
-            moved.append(np.array(best, dtype=np.float32))
-        for v, p in zip(free_list, moved, strict=True):
-            data[v] = data[v] + F32(0.75) * (p - data[v])
+        _harmonic_field(topology, data, free_python, field, device)
+        if free_list.size:
+            wp.launch(
+                kernel_holes.rim_slide,
+                dim=free_list.size,
+                inputs=[native.mesh, field_wp, free_list_wp],
+                outputs=[moved_wp],
+                device="cpu",
+            )
+        data[free_list] = data[free_list] + F32(0.75) * (moved - data[free_list])
 
 
 def _harmonic_field(

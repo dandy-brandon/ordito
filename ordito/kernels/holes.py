@@ -3401,6 +3401,107 @@ def serial_keeps(m: SerialMesh, edge: wp.int32, max_angle: wp.float32) -> wp.boo
     )
 
 
+# The rim smoothing of ``smooth_region_boundary(method="meshlib")``: its band flips in one thread
+# (``_serial_mesh.smooth_region_rim``'s order), and each pass's slide onto the field's zero set, a
+# thread a band vertex (a slide reads only the positions before the pass).
+
+
+@wp.func
+def rim_flip_wanted(mesh: SerialMesh, free: wp.array[wp.int32], e: wp.int32) -> wp.bool:
+    """Report whether the band flips ``e``: same side both faces, between band vertices, convex."""
+    if mesh.region[mesh.lft[e]] != mesh.region[mesh.lft[e ^ 1]]:
+        return False
+    c = mesh.org[e ^ 1]
+    if free[c] == 0:
+        return False
+    b = mesh.org[mesh.prv[e] ^ 1]
+    d = mesh.org[mesh.nxt[e] ^ 1]
+    if free[b] != 0 and free[c] != 0:
+        return False
+    if serial_find_edge(mesh, d, b) >= 0:
+        return False
+    v = mesh.org[e]
+    return serial_unfold_convex(mesh.points[v], mesh.points[b], mesh.points[c], mesh.points[d])
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def serial_rim_flips(
+    mesh: SerialMesh, free: wp.array[wp.int32], free_list: wp.array[wp.int32]
+) -> None:
+    """Flip each band vertex's outgoing edges in turn, as the rim smoothing does."""
+    for k in range(free_list.shape[0]):
+        v = free_list[k]
+        e0 = mesh.edge_per_vertex[v]
+        e = e0
+        while True:
+            if mesh.lft[e] >= 0 and mesh.lft[e ^ 1] >= 0 and rim_flip_wanted(mesh, free, e):
+                e0 = mesh.nxt[e]
+                serial_flip_edge(mesh, e)
+                e = e0
+            else:
+                e = mesh.nxt[e]
+                if e == e0:
+                    break
+
+
+@wp.func
+def rim_closest_on_segment(pt: wp.vec3, a: wp.vec3, b: wp.vec3) -> wp.vec3:
+    ab = b - a
+    dt = serial_dot_f(pt - a, ab)
+    ab_sq = serial_dot_f(ab, ab)
+    if dt <= wp.float32(0.0):
+        return a
+    if dt >= ab_sq:
+        return b
+    ratio = dt / ab_sq
+    return a * (wp.float32(1.0) - ratio) + b * ratio
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def rim_slide(
+    mesh: SerialMesh,
+    field: wp.array[wp.float32],
+    free_list: wp.array[wp.int32],
+    out_moved: wp.array[wp.vec3],
+) -> None:
+    """Find the point of the field's zero set in a band vertex's triangles nearest the vertex."""
+    t = wp.int32(wp.tid())
+    v = free_list[t]
+    pt = mesh.points[v]
+    best = pt
+    best_d = wp.float32(3.4028234663852886e38) + wp.float32(0.0)
+    e0 = mesh.edge_per_vertex[v]
+    e = e0
+    while True:
+        if mesh.lft[e] >= 0:
+            v0 = v
+            v1 = mesh.org[e ^ 1]
+            v2 = mesh.org[mesh.nxt[e] ^ 1]
+            for _i in range(3):
+                val = field[v0]
+                val1 = field[v1]
+                val2 = field[v2]
+                if val * val1 < wp.float32(0.0):
+                    c1 = val / (val - val1)
+                    sa = (wp.float32(1.0) - c1) * mesh.points[v0] + c1 * mesh.points[v1]
+                    c2 = val / (val - val2)
+                    sb = (wp.float32(1.0) - c2) * mesh.points[v0] + c2 * mesh.points[v2]
+                    proj = rim_closest_on_segment(pt, sa, sb)
+                    r = pt - proj
+                    dist = serial_dot_f(r, r)
+                    if dist < best_d:
+                        best = proj
+                        best_d = dist
+                    rotated = v0
+                    v0 = v1
+                    v1 = v2
+                    v2 = rotated
+        e = mesh.nxt[e]
+        if e == e0:
+            break
+    out_moved[t] = best
+
+
 @wp.kernel(enable_backward=False, module="unique")
 def serial_delete_faces(
     mesh: SerialMesh, faces: wp.array[wp.int32], keep_edges: wp.array[wp.int32]
