@@ -1370,3 +1370,10 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `offset_mesh(method="meshlib")` against MeshLib's `offsetMesh`, whose extraction is ported
   (`marching_cubes(method="openvdb")`, Class A) and whose OpenVDB `meshToLevelSet` band field is
   not. Scoped, with source availability and licensing, in `reference/component-status.md` (16.0b).
+- **The heat method past the factorization budget** (`heat_geodesic` and every settled
+  diffusion on meshes of tens of millions of vertices, `lucy`): the heat system cannot be factored
+  within `CHOLESKY_MEMORY_BUDGET` (108 GB on `lucy`) and conjugate gradient's iterate fails the
+  componentwise check (its far field is round-off), so the distance sits at ~4 % of the graph
+  distance and varies by up to 50 between runs; the longer default time alone lifts it only to
+  0.3-0.5. It now warns. Open: a method that resolves the far field without a factorization.
+  Status in `reference/component-status.md` (16.10).
