@@ -3496,6 +3496,24 @@
    "scan": 1
   }
  },
+ "benchmarks/test_levelset.py::test_marching_cubes_openvdb[ordito-cpu-128]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 5,
+   "h2h": 1,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_levelset.py::test_marching_cubes_openvdb[ordito-cpu-64]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 5,
+   "h2h": 1,
+   "readback": 1,
+   "scan": 1
+  }
+ },
  "benchmarks/test_levelset.py::test_offset_mesh[sphere_small-ordito-cpu-128]": {
   "counts": {
    "launch": 12,
@@ -3521,6 +3539,40 @@
    "readback": 4,
    "scan": 2,
    "sort": 1
+  }
+ },
+ "benchmarks/test_levelset.py::test_offset_mesh_meshlab[sphere_small-ordito-cpu-128]": {
+  "counts": {
+   "launch": 8,
+   "alloc": 9,
+   "readback": 2,
+   "scan": 2
+  }
+ },
+ "benchmarks/test_levelset.py::test_offset_mesh_meshlab[sphere_small-ordito-cpu-64]": {
+  "counts": {
+   "launch": 8,
+   "alloc": 9,
+   "readback": 2,
+   "scan": 2
+  }
+ },
+ "benchmarks/test_levelset.py::test_offset_mesh_meshlib[sphere_small-ordito-cpu-128]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 9,
+   "h2h": 1,
+   "readback": 3,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_levelset.py::test_offset_mesh_meshlib[sphere_small-ordito-cpu-64]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 8,
+   "h2h": 1,
+   "readback": 2,
+   "scan": 1
   }
  },
  "benchmarks/test_levelset.py::test_signed_distance_grid[sphere_small-ordito-cpu-128]": {

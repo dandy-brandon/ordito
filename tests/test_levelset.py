@@ -618,6 +618,128 @@ def test_marching_cubes_float64_field_interpolates_in_float64(device: str) -> No
     assert np.array_equal(faces_wp.numpy(), narrow_faces_wp.numpy())
 
 
+def _openvdb_mesh_ml(field_np: np.ndarray, iso: float) -> tuple[np.ndarray, np.ndarray, int]:
+    """
+    MeshLib's ``gridToMesh`` (OpenVDB's ``volumeToMesh``) of a dense field, in index space.
+
+    The field is loaded as a dense grid whose voxel ``(i, j, k)`` is ``field_np[i, j, k]`` and
+    tagged a level set, which is what gives OpenVDB's quads the outward winding of a field negative
+    inside (an untagged grid inverts them). Returns the vertices, the ``(n, 3)`` faces and the
+    count of faces MeshLib's mesh builder kept.
+    """
+    # The stub names the parameter ``3DvoxelsArray``, not an identifier, so no call matches it.
+    volume_ml = mn.simpleVolumeFrom3Darray(np.ascontiguousarray(field_np, dtype=np.float32))  # pyright: ignore[reportCallIssue]
+    grid_ml = mm.simpleVolumeToDenseGrid(volume_ml, background=float(field_np.max()))
+    mm.setLevelSetType(grid_ml)
+    settings_ml = mm.GridToMeshSettings()
+    settings_ml.voxelSize = mm.Vector3f(1.0, 1.0, 1.0)
+    settings_ml.isoValue = iso
+    mesh_ml = mm.gridToMesh(grid_ml, settings_ml)
+    return (
+        np.asarray(mn.getNumpyVerts(mesh_ml), dtype=np.float32),
+        np.asarray(mn.getNumpyFaces(mesh_ml.topology), dtype=np.int32),
+        mesh_ml.topology.numValidFaces(),
+    )
+
+
+def _torus_field(resolution: int) -> np.ndarray:
+    """Sample a torus's signed distance (radii 0.6 and 0.25) on a ``[-1, 1]`` lattice."""
+    axis_np = np.linspace(-1.0, 1.0, resolution)
+    x_np, y_np, z_np = np.meshgrid(axis_np, axis_np, axis_np, indexing="ij")
+    radial_np = np.sqrt(x_np**2 + y_np**2) - 0.6
+    return (np.sqrt(radial_np**2 + z_np**2) - 0.25).astype(np.float32)
+
+
+def _noise_field(seed: int, shape: tuple[int, int, int]) -> np.ndarray:
+    """Draw a ``float32`` white-noise lattice with its outer layer at 5, keeping levels inside."""
+    field_np = np.random.default_rng(seed).normal(size=shape).astype(np.float32)
+    field_np[[0, -1]] = 5.0
+    field_np[:, [0, -1]] = 5.0
+    field_np[:, :, [0, -1]] = 5.0
+    return field_np
+
+
+@pytest.mark.parity("marching_cubes_openvdb", "meshlib")
+@pytest.mark.parametrize(
+    ("field_name", "iso"), [("torus", 0.0), ("torus", 0.07), ("noise", 0.0), ("noise", 0.3)]
+)
+def test_marching_cubes_openvdb_matches_meshlib(device: str, field_name: str, iso: float) -> None:
+    """
+    Class A: ``method="openvdb"`` is OpenVDB's ``volumeToMesh``, bit for bit and in its order.
+
+    MeshLib's ``gridToMesh`` runs OpenVDB 12's dual marching cubes at adaptivity 0 on the same
+    dense field; the vertices and the faces come out as equal arrays, numbering and starting
+    corner included, on both devices. The torus is a smooth closed level; white
+    noise makes cells of every sign pattern, several vertices in a cell (asserted: more vertices
+    than crossed cells) and the ambiguous faces whose sign correction couples neighbouring cells.
+    MeshLib keeps every face (its builder drops one it cannot add; none here).
+
+    **Mutation probe, measured:** without the ambiguous-face correction the noise field at
+    ``iso = 0.3`` loses 92 of 12 126 vertices; the quads wound the other way change every face.
+    """
+    if field_name == "torus":
+        field_np = _torus_field(48)
+    else:
+        field_np = _noise_field(3, (20, 22, 24))
+    vertices_ml, faces_ml, kept_ml = _openvdb_mesh_ml(field_np, iso)
+    assert faces_ml.shape[0] > 1000  # non-vacuity
+    assert kept_ml == faces_ml.shape[0]
+
+    field_wp = wp.array(field_np, dtype=wp.float32, device=device)
+    vertices_wp, faces_wp = od.levelset.marching_cubes(field_wp, iso, method="openvdb")
+    assert np.array_equal(vertices_wp.numpy(), vertices_ml)
+    assert np.array_equal(faces_wp.numpy().reshape(-1, 3), faces_ml)
+    if field_name == "noise":
+        crossed = (field_np[:-1, :-1, :-1] < iso).astype(np.int32)
+        for di, dj, dk in [(1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 0), (1, 0, 1), (0, 1, 1)]:
+            crossed += field_np[di : di - 1 or None, dj : dj - 1 or None, dk : dk - 1 or None] < iso
+        crossed += field_np[1:, 1:, 1:] < iso
+        n_crossed = int(((crossed > 0) & (crossed < 8)).sum())
+        assert vertices_ml.shape[0] > n_crossed
+
+
+def test_marching_cubes_openvdb_places_vertices_in_bounds_and_takes_float64(device: str) -> None:
+    """
+    Ordito against ordito: ``bounds`` maps the index-space surface; a ``float64`` field equals it.
+
+    MeshLib only takes ``float32`` grids, so this pins the two parts the comparison above cannot:
+    with ``bounds`` every vertex is ``lower + p * spacing`` of the index-space vertex ``p`` (the
+    faces unchanged), and a ``float64`` field holding the same values extracts the same surface
+    bit for bit at a level both precisions hold exactly (the crossings are ``float64`` either way;
+    ``iso`` is rounded to the field's precision first, so a level like 0.1 moves vertices by an
+    ulp, measured 1.9e-6 at index scale).
+    """
+    field_np = _torus_field(40)
+    field_wp = wp.array(field_np, dtype=wp.float32, device=device)
+    index_vertices_wp, index_faces_wp = od.levelset.marching_cubes(
+        field_wp, 0.125, method="openvdb"
+    )
+    assert index_faces_wp.size > 1000
+
+    lower_np = np.array([-1.5, 0.25, 2.0], dtype=np.float32)
+    spacing_np = np.array([0.5, 0.25, 0.125], dtype=np.float32)
+    upper_np = lower_np + spacing_np * np.float32(39.0)
+    bounds = (wp.vec3(*lower_np.tolist()), wp.vec3(*upper_np.tolist()))
+    placed_vertices_wp, placed_faces_wp = od.levelset.marching_cubes(
+        field_wp, 0.125, bounds=bounds, method="openvdb"
+    )
+    assert np.array_equal(placed_faces_wp.numpy(), index_faces_wp.numpy())
+    assert np.allclose(
+        placed_vertices_wp.numpy(),
+        lower_np + index_vertices_wp.numpy() * spacing_np,
+        rtol=ALLCLOSE_RTOL,
+        atol=ALLCLOSE_ATOL,
+    )
+
+    wide_vertices_wp, wide_faces_wp = od.levelset.marching_cubes(
+        wp.array(field_np.astype(np.float64), dtype=wp.float64, device=device),
+        0.125,
+        method="openvdb",
+    )
+    assert np.array_equal(wide_vertices_wp.numpy(), index_vertices_wp.numpy())
+    assert np.array_equal(wide_faces_wp.numpy(), index_faces_wp.numpy())
+
+
 @pytest.mark.parametrize(
     ("shape", "dtype", "options", "error", "match"),
     [
@@ -626,7 +748,7 @@ def test_marching_cubes_float64_field_interpolates_in_float64(device: str) -> No
             np.float32,
             {"method": "flying_edges"},
             ValueError,
-            "'classic' or 'lewiner'",
+            "'lewiner' or 'openvdb'",
             id="unknown-method",
         ),
         pytest.param(
@@ -636,6 +758,14 @@ def test_marching_cubes_float64_field_interpolates_in_float64(device: str) -> No
             ValueError,
             "no edge_margin",
             id="lewiner-edge-margin",
+        ),
+        pytest.param(
+            (9, 9, 9),
+            np.float32,
+            {"edge_margin": 0.1, "method": "openvdb"},
+            ValueError,
+            "no edge_margin",
+            id="openvdb-edge-margin",
         ),
         pytest.param(
             (9, 9, 9), np.float32, {"edge_margin": -0.1}, ValueError, "edge_margin", id="margin-neg"
@@ -651,6 +781,17 @@ def test_marching_cubes_float64_field_interpolates_in_float64(device: str) -> No
             TypeError,
             "float32 or float64",
             id="lewiner-int32",
+        ),
+        pytest.param(
+            (9, 9, 9),
+            np.int32,
+            {"method": "openvdb"},
+            TypeError,
+            "float32 or float64",
+            id="openvdb-int32",
+        ),
+        pytest.param(
+            (1, 9, 9), np.float32, {"method": "openvdb"}, ValueError, "at least 2", id="openvdb-1w"
         ),
         pytest.param((1, 9, 9), np.float32, {}, ValueError, "at least 2 wide", id="one-wide"),
     ],
@@ -809,6 +950,87 @@ def test_offset_mesh_matches_pymeshlab(sphere_irregular: tuple[tm.Trimesh, wp.Me
     assert worst < _VOXEL
 
 
+@pytest.mark.parity("offset_mesh_meshlab", "pymeshlab")
+@pytest.mark.parametrize("distance", [0.2, -0.2])
+def test_offset_mesh_meshlab_method_matches_pymeshlab(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], distance: float
+) -> None:
+    """
+    Class A: ``method="meshlab"`` is MeshLab's offset, mesh for mesh, in both directions.
+
+    MeshLab offsets through its uniform resampler, ``generate_resampled_uniform_mesh`` with an
+    absolute ``offset`` (a ``PureValue``: a percentage runs from full erosion at 0 % to full
+    dilation, its 50 % default the zero offset), at its default ``mergeclosevert=False``. That is
+    [`resample_uniform`][ordito.reconstruction.resample_uniform]'s ``method="meshlab"``, which this
+    method is; compared with ``meshes_allclose``. ``mergeclosevert=True`` merges about 1.2 % of
+    the vertices afterwards (35 540 -> 35 112 here) and is not reproduced.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    meshset_pml = trimesh_to_pymeshlab(mesh_tm)
+    meshset_pml.generate_resampled_uniform_mesh(
+        cellsize=ml.PureValue(_VOXEL), offset=ml.PureValue(distance)
+    )
+    mesh_pml = meshset_pml.current_mesh()
+    assert mesh_pml.face_number() > 1000  # non-vacuity
+
+    offset_vertices_wp, offset_faces_wp = od.levelset.offset_mesh(
+        mesh_wp.points, mesh_wp.indices, distance, _VOXEL, method="meshlab"
+    )
+    reference_vertices_wp, reference_faces_wp = numpy_to_warp(
+        mesh_pml.vertex_matrix(), mesh_pml.face_matrix(), mesh_wp.device
+    )
+    assert offset_vertices_wp.size == mesh_pml.vertex_number()
+    assert offset_faces_wp.size == 3 * mesh_pml.face_number()
+    assert od.equality.meshes_allclose(
+        offset_vertices_wp, offset_faces_wp, reference_vertices_wp, reference_faces_wp
+    )
+
+
+@pytest.mark.parity("offset_mesh_meshlib", "meshlib")
+@pytest.mark.parametrize(("distance", "bound"), [(0.2, 0.5), (-0.2, 0.3)])
+def test_offset_mesh_meshlib_method_matches_meshlib(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], distance: float, bound: float
+) -> None:
+    """
+    Class C (a vertex-set agreement): ``method="meshlib"`` extracts as MeshLib, a nearer field.
+
+    MeshLib's ``offsetMesh`` samples OpenVDB's narrow-band level set on the index lattice of
+    ``voxelSize`` and extracts it with OpenVDB's dual marching cubes. ``method="meshlib"``
+    extracts the same level on the same lattice with the same extraction, bit for bit on a shared
+    field (``test_marching_cubes_openvdb_matches_meshlib``), but of the exact signed distance:
+    OpenVDB's band distances are not exact (a voxel takes the nearest of the triangles its
+    neighbours recorded, about a fifth of the band off by up to 0.4 voxel), and no port of that
+    approximation exists, so a vertex whose cell's corners all match lands on MeshLib's to
+    rounding and one near a differing corner does not. Asserted on both sides' nearest-vertex
+    distances: the fraction under 1e-5 (measured 0.72 / 0.47 at ``+-0.2``, both devices; the
+    bound 0.5 / 0.3), the vertex counts within 0.5 % (0.16 % / 0.11 %), and the mean under
+    ``0.03 * _VOXEL`` (4.8e-4 / 9.6e-4).
+
+    **Bug class excluded:** a lattice anchored, scaled or numbered differently, an extraction
+    other than OpenVDB's, and an offset at the wrong distance. **Mutation probes, measured:** the
+    default method on the same call shares no vertex within 1e-5 (fraction 0.000, mean 2.0e-2);
+    MeshLib at 5 % off the distance either way also 0.000, mean 1.3e-2 to 1.4e-2.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    parameters_ml = mm.OffsetParameters()
+    parameters_ml.voxelSize = _VOXEL
+    offset_ml = mm.offsetMesh(mm.MeshPart(trimesh_to_meshlib(mesh_tm)), distance, parameters_ml)
+    vertices_ml = np.asarray(mn.getNumpyVerts(offset_ml), dtype=np.float64)
+    assert offset_ml.topology.numValidFaces() > 1000  # non-vacuity
+
+    offset_vertices_wp, offset_faces_wp = od.levelset.offset_mesh(
+        mesh_wp.points, mesh_wp.indices, distance, _VOXEL, method="meshlib"
+    )
+    vertices_np = np.asarray(offset_vertices_wp.numpy(), dtype=np.float64)
+    assert od.validation.is_watertight(offset_vertices_wp, offset_faces_wp)
+    assert abs(vertices_np.shape[0] - vertices_ml.shape[0]) < 0.005 * vertices_ml.shape[0]
+    gaps = np.concatenate(
+        [cKDTree(vertices_ml).query(vertices_np)[0], cKDTree(vertices_np).query(vertices_ml)[0]]
+    )
+    assert (gaps < 1e-5).mean() > bound
+    assert gaps.mean() < 0.03 * _VOXEL
+
+
 def test_offset_mesh_resolves_what_survives_a_large_inward_offset(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
@@ -899,7 +1121,7 @@ def test_offset_mesh_keeps_its_vertices_off_the_lattice_nodes(device: str) -> No
 
 
 def test_offset_mesh_guards(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """Not a library comparison: the three documented value guards."""
+    """Not a library comparison: the documented value guards, the method menu, its bounds."""
     _mesh_tm, mesh_wp = sphere_irregular
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     with pytest.raises(ValueError, match="non-zero"):
@@ -908,6 +1130,12 @@ def test_offset_mesh_guards(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> Non
         od.levelset.offset_mesh(vertices_wp, faces_wp, 0.1, -1.0)
     with pytest.raises(ValueError, match="at least one face"):
         od.levelset.offset_mesh(vertices_wp, warp_empty(0, wp.int32, mesh_wp.device), 0.1)
+    with pytest.raises(ValueError, match="'padded', 'meshlib' or 'meshlab'"):
+        od.levelset.offset_mesh(vertices_wp, faces_wp, 0.1, method="openvdb")  # pyright: ignore[reportArgumentType]
+    box = od.bounds.aabb(vertices_wp)
+    for method in ("meshlib", "meshlab"):
+        with pytest.raises(ValueError, match="takes no bounds"):
+            od.levelset.offset_mesh(vertices_wp, faces_wp, 0.1, bounds=box, method=method)
 
 
 @pytest.mark.parametrize("iso", [0.0, 0.05, -0.05])

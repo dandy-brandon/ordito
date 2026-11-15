@@ -59,6 +59,7 @@ from ordito.kernels import levelset as kernel_levelset
 from ordito.kernels import normals as kernel_normals
 from ordito.kernels import proximity as kernel_proximity
 from ordito.kernels import scatter as kernel_scatter
+from ordito.kernels.algorithms import dual_marching_cubes as kernel_dmc
 from ordito.kernels.algorithms import marching_cubes_33 as kernel_mc33
 
 # Bounds on the automatic ``voxel_size``, both expressed as a sample count across a span, and both
@@ -151,7 +152,7 @@ def marching_cubes(
     *,
     bounds: tuple[wp.vec3, wp.vec3] | tuple[wp.vec3d, wp.vec3d] | None = None,
     edge_margin: float = 0.0,
-    method: Literal["classic", "lewiner"] = "classic",
+    method: Literal["classic", "lewiner", "openvdb"] = "classic",
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Extract the ``iso`` level set of a dense scalar lattice as a triangle mesh.
@@ -196,7 +197,11 @@ def marching_cubes(
         edge-manifold surface wherever the field is closed. Its tests and crossings are formed in
         ``float64``. MeshLab extracts with it, and
         [`reconstruction.resample_uniform`][ordito.reconstruction.resample_uniform]'s
-        ``method="meshlab"`` is this extraction of MeshLab's field.
+        ``method="meshlab"`` is this extraction of MeshLab's field. ``"openvdb"`` is OpenVDB's
+        dual marching cubes (``volumeToMesh`` at adaptivity 0): a vertex inside each cell the
+        level crosses and a quad, split in two triangles, across each crossing edge (see
+        ``Notes``); [`offset_mesh`][ordito.levelset.offset_mesh]'s ``method="meshlib"`` extracts
+        with it.
 
     Returns
     -------
@@ -211,8 +216,9 @@ def marching_cubes(
     TypeError
         If ``field`` is not a rank-3 ``wp.float32`` or ``wp.float64`` array.
     ValueError
-        If ``method`` is not ``"classic"`` or ``"lewiner"``, any of ``field``'s dimensions is
-        below 2, ``edge_margin`` is outside ``[0, 0.5)`` (or not ``0`` under ``"lewiner"``),
+        If ``method`` is not ``"classic"``, ``"lewiner"`` or ``"openvdb"``, any of ``field``'s
+        dimensions is below 2, ``edge_margin`` is outside ``[0, 0.5)`` (or not ``0`` under
+        ``"lewiner"`` or ``"openvdb"``),
         ``field`` has ``2**31`` nodes or more, or the level set has ``2**31`` vertices or more or
         ``3 * n_faces`` reaches ``2**31``: the extraction indexes in ``int32``.
 
@@ -258,6 +264,20 @@ def marching_cubes(
     ``x``, then ``z`` share, MeshLab's placement. Its scratch is three counters and a byte per
     node.
 
+    Under ``method="openvdb"`` a sample strictly below ``iso`` is inside. A cell whose corners
+    are not all on one side gets one vertex per group of its crossing edges (OpenVDB's edge-group
+    table: one group, or up to four where the corners split), each at the mean of its edges'
+    linear crossings, formed in ``float64`` and rounded to ``float32`` in index space before
+    ``bounds`` maps it. A cell with an ambiguous face complements its sign pattern when the cell
+    across that face has the same face ambiguous, so the two group their crossings alike. Each
+    crossing edge whose four surrounding cells are all crossed gets a quad; one with a cell off
+    the lattice gets none, so a level that reaches the lattice's boundary leaves a hole there.
+    The vertices are numbered, and the triangles ordered, as OpenVDB's tree visits the cells
+    (8**3 blocks in its order, then each block's cells), so on a ``wp.float32`` field the result
+    equals OpenVDB's on a level-set grid holding the same values, buffer order included. ``iso``
+    is rounded to the field's precision. A NaN sample is outside, and the crossings on its edges
+    are NaN. Its scratch is a 16-bit flag word per cell and a pair of counters per cell slot.
+
     Examples
     --------
     The zero level set of a sphere's signed distance, radius 0.8, encloses close to
@@ -277,10 +297,23 @@ def marching_cubes(
     print(f"{od.measures.volume(vertices, faces):.2f}")  # 2.12
     ```
     """
-    if method not in ("classic", "lewiner"):
-        raise ValueError(f"method must be 'classic' or 'lewiner', got {method!r}")
+    if method not in ("classic", "lewiner", "openvdb"):
+        raise ValueError(f"method must be 'classic', 'lewiner' or 'openvdb', got {method!r}")
     if method == "lewiner":
         return _marching_cubes_lewiner(field, iso, bounds, edge_margin)
+    if method == "openvdb":
+        if edge_margin != 0.0:
+            raise ValueError(f"method='openvdb' takes no edge_margin, got {edge_margin}")
+        lattice = _float_lattice(field, "openvdb")
+        if bounds is None:
+            lower, scale = wp.vec3(0.0, 0.0, 0.0), wp.vec3(1.0, 1.0, 1.0)
+        else:
+            cells = np.array([int(dim) - 1 for dim in lattice.shape], dtype=np.float32)
+            lower_np = np.asarray(bounds[0], dtype=np.float32)
+            upper_np = np.asarray(bounds[1], dtype=np.float32)
+            lower = wp.vec3(*lower_np.tolist())
+            scale = wp.vec3(*((upper_np - lower_np) / np.maximum(cells, 1.0)).tolist())
+        return _dual_marching_cubes(lattice, iso, (0, 0, 0), lower, scale)
     if field.dtype not in (wp.float32, wp.float64):
         raise TypeError(f"marching_cubes takes a float32 or float64 field, got {field.dtype}")
     field = (
@@ -487,6 +520,107 @@ def _marching_cubes_33_table(device: str) -> wp.array[wp.int32]:
     return _launch.array(kernel_mc33.MC33_TABLE, dtype=wp.int32, device=device)
 
 
+def _float_lattice(field: odt.ArrayNdFloat, method: str) -> odt.Array3dFloat32 | odt.Array3dFloat64:
+    """``field`` as a rank-3 ``float32`` or ``float64`` lattice at least 2 wide, or raise."""
+    if field.dtype not in (wp.float32, wp.float64):
+        raise TypeError(f"method={method!r} takes a float32 or float64 field, got {field.dtype}")
+    lattice = (
+        odt.as_array3d(cast(odt.ArrayNdFloat64, field), wp.float64)
+        if field.dtype == wp.float64
+        else odt.as_array3d(cast(odt.ArrayNdFloat32, field), wp.float32)
+    )
+    shape = (int(lattice.shape[0]), int(lattice.shape[1]), int(lattice.shape[2]))
+    if min(shape) < 2:
+        raise ValueError(f"field must be at least 2 wide along every axis, got {shape}")
+    n_nodes = shape[0] * shape[1] * shape[2]
+    if n_nodes > _INT32_MAX:
+        raise ValueError(f"field has {n_nodes} nodes, past the int32 limit of {_INT32_MAX}")
+    return lattice
+
+
+def _dual_marching_cubes(
+    field: odt.Array3dFloat32 | odt.Array3dFloat64,
+    iso: float,
+    origin: tuple[int, int, int],
+    lower: wp.vec3,
+    scale: wp.vec3,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    ``marching_cubes(method="openvdb")``: flag, count, scan and emit over the cells.
+
+    ``origin`` is the absolute index of ``field[0, 0, 0]``, which fixes OpenVDB's leaves and so
+    the numbering; a vertex at index-space point ``p`` (absolute) is placed at
+    ``lower + p * scale``, in ``float32``.
+    """
+    device = wp.get_device(field.device)
+    cells = (int(field.shape[0]) - 1, int(field.shape[1]) - 1, int(field.shape[2]) - 1)
+    table = _dual_marching_cubes_table(device.alias)
+    iso_value = field.dtype(iso)
+    flags = odt.empty_3d(cells, wp.uint16, device=device)
+    _launch.launch(
+        kernel_dmc.DMC_CELL_FLAGS[field.dtype],
+        dim=cells,
+        inputs=[field, iso_value, table],
+        outputs=[flags],
+        device=device,
+    )
+    # OpenVDB numbers cells by 8**3 leaf in its tree's order: rank the leaves the lattice touches.
+    origin_np = np.asarray(origin, dtype=np.int64)
+    leaf_lower_np = origin_np >> 3
+    leaf_upper_np = (origin_np + np.asarray(cells, dtype=np.int64) - 1) >> 3
+    ranks_np = kernel_dmc.openvdb_leaf_ranks(leaf_lower_np, leaf_upper_np)
+    if ranks_np.size * kernel_dmc.LEAF_CELLS > _INT32_MAX:
+        raise ValueError("the lattice has more cells than int32 slots address")
+    leaf_ranks = odt.as_array3d(_launch.array(ranks_np, dtype=wp.int32, device=device), wp.int32)
+    leaf_lower = wp.vec3i(*leaf_lower_np.tolist())
+    origin_v = wp.vec3i(*origin)
+    counts = _launch.zeros(ranks_np.size * kernel_dmc.LEAF_CELLS, dtype=wp.vec2i, device=device)
+    _launch.launch(
+        kernel_dmc.dmc_counts,
+        dim=cells,
+        inputs=[flags, table, leaf_ranks, leaf_lower, origin_v],
+        outputs=[counts],
+        device=device,
+    )
+    _launch.array_scan(counts, counts, inclusive=True)
+    # One read sizes both outputs: the scanned pair's last entry holds both totals.
+    totals = read_scalar(counts)
+    n_vertices, n_quads = int(totals[0]), int(totals[1])
+    if n_vertices < 0 or n_quads < 0 or 6 * n_quads > _INT32_MAX:
+        raise ValueError(
+            "the level set has more vertices or triangles than int32 indices address; "
+            "extract it from a coarser field or in pieces"
+        )
+    vertices = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
+    faces = _launch.empty(6 * n_quads, dtype=wp.int32, device=device)
+    if n_vertices > 0:
+        _launch.launch(
+            kernel_dmc.DMC_EMIT[field.dtype],
+            dim=cells,
+            inputs=[
+                field,
+                iso_value,
+                flags,
+                table,
+                leaf_ranks,
+                leaf_lower,
+                origin_v,
+                counts,
+                lower,
+                scale,
+            ],
+            outputs=[vertices, faces],
+            device=device,
+        )
+    return vertices, faces
+
+
+@functools.cache
+def _dual_marching_cubes_table(device: str) -> wp.array[wp.int32]:
+    """``kernels/algorithms/dual_marching_cubes.DMC_TABLE`` on the device ``device`` names, once."""
+    return _launch.array(kernel_dmc.DMC_TABLE, dtype=wp.int32, device=device)
+
+
 @functools.cache
 def _marching_cubes_table(device: str) -> wp.array[wp.int32]:
     """``kernels/levelset.MARCHING_CUBES_TABLE`` on the device ``device`` names, uploaded once."""
@@ -501,6 +635,7 @@ def offset_mesh(
     *,
     sign_mode: Literal["parity", "winding"] = "winding",
     bounds: tuple[wp.vec3, wp.vec3] | None = None,
+    method: Literal["padded", "meshlib", "meshlab"] = "padded",
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Offset a surface by a signed distance, through the level set of its distance field.
@@ -534,7 +669,19 @@ def offset_mesh(
         common ask, and parity is the mode that goes wrong on one.
     bounds
         ``(lower, upper)`` box to sample before padding. ``None`` uses the mesh's own box, which the
-        padding then extends to cover the offset.
+        padding then extends to cover the offset. Taken by ``method="padded"`` only.
+    method
+        The lattice and the extraction. ``"padded"`` (the default) is described in ``Notes``.
+        ``"meshlib"`` is the lattice and extraction of an OpenVDB level-set offset: nodes at whole
+        multiples of ``voxel_size``, covering the vertex box grown by
+        ``|distance| / voxel_size + 3`` voxels, the field sampled on every node, and the level
+        extracted by [`marching_cubes`][ordito.levelset.marching_cubes]'s ``method="openvdb"``,
+        numbered as OpenVDB numbers it. The field is the exact signed distance, which OpenVDB's
+        narrow band approximates, so the vertices are that offset's where the two fields agree
+        around them.
+        ``"meshlab"`` is MeshLab's offset, its uniform resampler at an absolute ``offset``:
+        [`ordito.reconstruction.resample_uniform`][ordito.reconstruction.resample_uniform]'s
+        ``method="meshlab"``, which signs as MeshLab does and ignores ``sign_mode``.
 
     Returns
     -------
@@ -547,13 +694,17 @@ def offset_mesh(
     Raises
     ------
     ValueError
-        If ``distance`` is zero, ``voxel_size`` is not positive, ``faces`` is empty, or
-        ``voxel_size`` is left to be derived on a mesh whose bounding box has zero extent.
+        If ``distance`` is zero, ``voxel_size`` is not positive, ``faces`` is empty, ``method`` is
+        not ``"padded"``, ``"meshlib"`` or ``"meshlab"``, ``bounds`` is passed with a method other
+        than ``"padded"``, ``voxel_size`` is left to be derived on a mesh whose bounding box has
+        zero extent, or a method's lattice has more nodes than ``int32`` indices address.
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
 
     Notes
     -----
+    The rest of these notes describe ``method="padded"``.
+
     **The defaults are the whole value of this function over composing the two calls it makes.** The
     field has to extend past the level set being extracted or that level set is clipped by the
     lattice boundary, so the padding is ``ceil(distance / voxel_size) + 2`` cells for an outward
@@ -608,6 +759,12 @@ def offset_mesh(
         raise ValueError("voxel_size must be positive")
     if faces.size == 0:
         raise ValueError("offset_mesh needs at least one face")
+    if method not in ("padded", "meshlib", "meshlab"):
+        raise ValueError(f"method must be 'padded', 'meshlib' or 'meshlab', got {method!r}")
+    if method != "padded" and bounds is not None:
+        raise ValueError(
+            f"method={method!r} samples the reference's own lattice; it takes no bounds"
+        )
 
     spacing = voxel_size
     if spacing is None:
@@ -632,6 +789,12 @@ def offset_mesh(
                 "cannot derive a voxel_size for a mesh whose bounding box has zero extent; "
                 "pass voxel_size explicitly"
             )
+    if method == "meshlab":
+        return od.reconstruction.resample_uniform(
+            vertices, faces, voxel_size=spacing, offset=distance, method="meshlab"
+        )
+    if method == "meshlib":
+        return _openvdb_offset(vertices, faces, distance, spacing, sign_mode, bounds)
     # Only an outward offset leaves the input's box; an inward one needs just the two cells the
     # field itself wants so that the surface is enclosed.
     pad = 2 + (math.ceil(distance / spacing) if distance > 0.0 else 0)
@@ -650,6 +813,47 @@ def offset_mesh(
         sign_mode=sign_mode,
         edge_margin=kernel_levelset.lattice_edge_margin(spacing),
     )
+
+
+def _openvdb_offset(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    distance: float,
+    spacing: float,
+    sign_mode: Literal["parity", "winding"],
+    box: tuple[wp.vec3, wp.vec3] | None,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    ``offset_mesh(method="meshlib")``: the signed distance on OpenVDB's index lattice, dual-marched.
+
+    Node ``n`` (an integer triple) sits at ``n * spacing``; the lattice covers the vertex box
+    grown by the band OpenVDB keeps, ``|distance| / spacing + 2`` voxels, plus one. The field is
+    sampled on every node of it, and ``_dual_marching_cubes`` extracts ``distance`` at absolute
+    index ``n``, so the vertices and their numbering are OpenVDB's for that field.
+    """
+    voxel = np.float32(spacing)
+    if box is None:
+        box = od.bounds.aabb(vertices)
+    lower_np = np.asarray(box[0], dtype=np.float32) / voxel
+    upper_np = np.asarray(box[1], dtype=np.float32) / voxel
+    band = math.ceil(abs(distance) / float(voxel)) + 3
+    first = np.floor(lower_np).astype(np.int64) - band
+    last = np.ceil(upper_np).astype(np.int64) + band
+    shape = (int(last[0] - first[0] + 1), int(last[1] - first[1] + 1), int(last[2] - first[2] + 1))
+    if shape[0] * shape[1] * shape[2] > _INT32_MAX:
+        raise ValueError(
+            "the lattice has more nodes than int32 indices address; pass a larger voxel_size"
+        )
+    corners = (
+        wp.vec3(*(first.astype(np.float32) * voxel).tolist()),
+        wp.vec3(*(last.astype(np.float32) * voxel).tolist()),
+    )
+    nodes = od.voxels.grid_points(shape, bounds=corners, device=vertices.device)
+    field = od.proximity.signed_distance_on_mesh(vertices, faces, nodes, sign_mode=sign_mode)
+    lattice = odt.as_array3d(field.reshape(shape), wp.float32)
+    scale = wp.vec3(float(voxel), float(voxel), float(voxel))
+    origin = (int(first[0]), int(first[1]), int(first[2]))
+    return _dual_marching_cubes(lattice, distance, origin, wp.vec3(0.0, 0.0, 0.0), scale)
 
 
 def signed_distance_level_set(

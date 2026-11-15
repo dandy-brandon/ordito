@@ -22,6 +22,9 @@ axis here and the mesh sweep is along for the ride: doubling the resolution is 8
 whatever the mesh, and a row whose slope is not ~8x is telling you the BVH, not the lattice, is the
 cost.
 
+``marching_cubes_openvdb``, ``offset_mesh_meshlib`` and ``offset_mesh_meshlab`` time the methods
+that reproduce a reference's lattice or extraction against that reference alone.
+
 ``signed_distance_level_set`` is that extraction on a lattice handed in, timed at the same divisors
 so its group reads side by side with ``offset_mesh``'s.
 
@@ -139,6 +142,68 @@ def test_offset_mesh(bench_case: BenchCase, divisor: int) -> None:
     )
     assert int(offset_faces.shape[0]) > 0
     assert int(offset_vertices.shape[0]) > 0
+
+
+@pytest.mark.benchmark(group="offset_mesh_meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
+@pytest.mark.parametrize("divisor", _CELL_DIVISORS)
+def test_offset_mesh_meshlib(bench_case: BenchCase, divisor: int) -> None:
+    """
+    ``offset_mesh(method="meshlib")`` against MeshLib's ``offsetMesh``: the same lattice, OpenVDB.
+
+    The offset group's cell and distance. ordito samples the exact signed distance on every node
+    of MeshLib's index lattice and extracts it with OpenVDB's dual marching cubes; MeshLib builds
+    OpenVDB's narrow band and extracts the same way. Pinned in ``tests/test_levelset.py`` (Class C:
+    the extraction is OpenVDB's bit for bit, the field nearer the exact distance than OpenVDB's
+    band). The ordito row samples every node where the default method searches only near the
+    level, so read it against the ``offset_mesh`` group's ordito row for that price.
+    """
+    cell, distance = _cell_and_offset(bench_case, divisor)
+    if bench_case.kind == "meshlib":
+        skip_larger_than(bench_case, "bunny", "OpenVDB's level set is a single-threaded band build")
+        mesh_ml = bench_case.new_mesh_ml()  # held in a name: MeshPart does not own it
+        part_ml = mm.MeshPart(mesh_ml)
+        parameters_ml = mm.OffsetParameters()
+        parameters_ml.voxelSize = cell
+        offset_ml = bench_case.run(lambda: mm.offsetMesh(part_ml, distance, parameters_ml))
+        assert offset_ml.topology.numValidFaces() > 0
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    _offset_vertices, offset_faces = bench_case.run(
+        lambda: od.levelset.offset_mesh(vertices, faces, distance, cell, method="meshlib")
+    )
+    assert int(offset_faces.shape[0]) > 0
+
+
+@pytest.mark.benchmark(group="offset_mesh_meshlab")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
+@pytest.mark.parametrize("divisor", _CELL_DIVISORS)
+def test_offset_mesh_meshlab(bench_case: BenchCase, divisor: int) -> None:
+    """
+    ``offset_mesh(method="meshlab")`` against MeshLab's resampler: the same mesh out (Class A).
+
+    The offset group's cell and distance, MeshLab at its default ``mergeclosevert=False`` (the
+    ``offset_mesh`` group's row merges close vertices afterwards, which this method does not).
+    The ordito row is ``resample_uniform(method="meshlab")`` at an offset.
+    """
+    cell, distance = _cell_and_offset(bench_case, divisor)
+    if bench_case.kind == "pymeshlab":
+        skip_larger_than(bench_case, "bunny", "MeshLab's resampler is a serial dense pass")
+        cell_pml = ml.PureValue(cell)
+        offset_pml = ml.PureValue(distance)
+
+        def resample_pml() -> int:
+            meshset_pml = bench_case.new_meshset_pml()
+            meshset_pml.generate_resampled_uniform_mesh(cellsize=cell_pml, offset=offset_pml)
+            return meshset_pml.current_mesh().face_number()
+
+        assert bench_case.run(resample_pml) > 0
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    _offset_vertices, offset_faces = bench_case.run(
+        lambda: od.levelset.offset_mesh(vertices, faces, distance, cell, method="meshlab")
+    )
+    assert int(offset_faces.shape[0]) > 0
 
 
 @pytest.mark.benchmark(group="signed_distance_level_set")
@@ -466,5 +531,42 @@ def test_marching_cubes_lewiner(bench_lib: BenchLibrary, resolution: int) -> Non
     bounds = (wp.vec3(-half, -half, -half), wp.vec3(half, half, half))
     _vertices_wp, faces_wp = bench_lib.run(
         lambda: od.levelset.marching_cubes(field_wp, 0.0, bounds=bounds, method="lewiner")
+    )
+    assert faces_wp.size > 0
+
+
+_openvdb_grid_ml_cache: dict[int, mm.FloatGrid] = {}
+
+
+def _openvdb_grid_ml(resolution: int) -> mm.FloatGrid:
+    """``marching_cubes``' torus as a dense OpenVDB level-set grid, cached per resolution."""
+    if resolution not in _openvdb_grid_ml_cache:
+        grid_ml = mm.simpleVolumeToDenseGrid(_marching_volume_ml(resolution), background=1.0)
+        mm.setLevelSetType(grid_ml)
+        _openvdb_grid_ml_cache[resolution] = grid_ml
+    return _openvdb_grid_ml_cache[resolution]
+
+
+@pytest.mark.benchmark(group="marching_cubes_openvdb")
+@pytest.mark.benchlibs("ordito", "meshlib")
+@pytest.mark.parametrize("resolution", _MARCHING_RESOLUTIONS)
+def test_marching_cubes_openvdb(bench_lib: BenchLibrary, resolution: int) -> None:
+    """
+    ``marching_cubes(method="openvdb")`` against MeshLib's ``gridToMesh`` on the same torus.
+
+    MeshLib runs OpenVDB's ``volumeToMesh`` on a dense level-set grid holding the field, built
+    outside the timed region; ordito extracts the same mesh, bit for bit and in OpenVDB's order
+    (``tests/test_levelset.py``). Both rows extract in index space (unit voxels).
+    """
+    if bench_lib.kind == "meshlib":
+        grid_ml = _openvdb_grid_ml(resolution)
+        settings_ml = mm.GridToMeshSettings()
+        settings_ml.voxelSize = mm.Vector3f(1.0, 1.0, 1.0)
+        mesh_ml = bench_lib.run(lambda: mm.gridToMesh(grid_ml, settings_ml))
+        assert mesh_ml.topology.numValidFaces() > 0
+        return
+    field_wp = _marching_field_wp(bench_lib, resolution)
+    _vertices_wp, faces_wp = bench_lib.run(
+        lambda: od.levelset.marching_cubes(field_wp, 0.0, method="openvdb")
     )
     assert faces_wp.size > 0
