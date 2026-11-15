@@ -494,19 +494,30 @@ def prev_corner_of(c: np.ndarray) -> np.ndarray:
 def _single_cycles(
     vc: np.ndarray, starts: np.ndarray, step: np.ndarray, interior: np.ndarray
 ) -> bool:
-    """Report whether every ``interior`` vertex's corners form one cycle under ``step``."""
-    for v in np.flatnonzero(interior):
-        ring = vc[starts[v] : starts[v + 1]]
-        i = int(ring[0])
-        count = 0
-        while True:
-            count += 1
-            i = int(step[i])
-            if i < 0 or i == ring[0] or count > ring.size:
-                break
-        if i != ring[0] or count != ring.size:
-            return False
-    return True
+    """
+    Report whether every ``interior`` vertex's corners form one cycle under ``step``.
+
+    Pointer jumping: each corner carries the least corner reached so far, doubling its reach a
+    round; a vertex is one cycle exactly when every corner of it ends at the vertex's least corner.
+    """
+    corner_vertex = np.repeat(np.arange(starts.size - 1), np.diff(starts))
+    inner = interior[corner_vertex]
+    corners = vc[inner]
+    if corners.size == 0:
+        return True
+    if np.any(step[corners] < 0):
+        return False
+    reach = step.copy()
+    least = np.arange(step.size, dtype=np.int64)
+    longest = int(np.diff(starts)[interior].max())
+    hops = 1
+    while hops < longest:
+        least[corners] = np.minimum(least[corners], least[reach[corners]])
+        reach[corners] = reach[reach[corners]]
+        hops *= 2
+    least[corners] = np.minimum(least[corners], least[reach[corners]])
+    first = vc[starts[:-1][interior]]
+    return bool(np.all(least[corners] == np.repeat(first, np.diff(starts)[interior])))
 
 
 def _build_face_by_face(tris_np: np.ndarray, n_vertices: int) -> Topology:
