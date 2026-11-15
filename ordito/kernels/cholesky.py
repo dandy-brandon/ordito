@@ -62,13 +62,14 @@ panel_vector = wp.types.vector(length=PANEL, dtype=wp.float64)
 # Declined (2026-11-15): a dense factorization for small CUDA operators (up to 1 536 rows) behind
 # ``sparse_cholesky`` -- 16-wide ``float64`` tiles, a launch a panel, both substitutions in one
 # launch a block a row panel waiting on device flags, the sparse refinement, pins and null-space
-# projection kept (the kernels ``ordito/kernels/holes.serial_dense_*`` run for the meshlib
-# smoothing). Its factorization beats the sparse analysis only when no coordinates are given
-# (0.44-0.65x from 162 to 954 rows); with the geometric ordering every in-repo caller passes it is
-# at par or slower from 642 rows, and its solve is 3-8x this one's (a three-column solve 0.5-0.75
-# against 0.08-0.12 ms: a substitution pass is ~60 dependent panel steps, and refinement runs two)
-# and its refactor 1.5x. Callers that factor once and solve many times (the heat solvers,
-# fixed-vertex parametrization) lost 1.25-1.6x end to end; no benchmark row reaches the size.
+# projection kept (the kernels ``ordito/kernels/holes.serial_dense_*`` run for the serial
+# hole-patching smoothing). Its factorization beats the sparse analysis only when no coordinates
+# are given (0.44-0.65x from 162 to 954 rows); with the geometric ordering every in-repo caller
+# passes it is at par or slower from 642 rows, and its solve is 3-8x this one's (a three-column
+# solve 0.5-0.75 against 0.08-0.12 ms: a substitution pass is ~60 dependent panel steps, and
+# refinement runs two) and its refactor 1.5x. Callers that factor once and solve many times (the
+# heat solvers, fixed-vertex parametrization) lost 1.25-1.6x end to end; no benchmark row reaches
+# the size.
 
 # ``refine_state`` slots: loop condition, "some entry has not converged", round counter.
 REFINE_CONDITION = wp.int32(0)
