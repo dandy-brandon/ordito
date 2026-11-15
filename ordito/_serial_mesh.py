@@ -1674,9 +1674,36 @@ def _solve_spd(
     return read_array(solution).T
 
 
+class _Lists:
+    """
+    Reads of a topology's half-edge lists for one solve, by whichever way costs less.
+
+    A solve touching a large share of the half-edges converts each list it reads once; a solve
+    confined to a small region reads only the entries it touches.
+    """
+
+    # Converting a list costs about a quarter of what reading its entries one by one does.
+    _WHOLE_FROM_SHARE = 0.25
+
+    def __init__(self, topology: Topology, n_touched: int) -> None:
+        self.topology = topology
+        self.whole = n_touched >= self._WHOLE_FROM_SHARE * len(topology.nxt)
+        self.arrays: dict[str, np.ndarray] = {}
+
+    def take(self, name: str, index: np.ndarray) -> np.ndarray:
+        """``getattr(topology, name)[index]``."""
+        values: list[int] = getattr(self.topology, name)
+        if not self.whole:
+            return np.array(list(map(values.__getitem__, index.tolist())), dtype=np.int64)
+        array = self.arrays.get(name)
+        if array is None:
+            array = self.arrays[name] = np.asarray(values, dtype=np.int64)
+        return array[index]
+
+
 class _Rings:
     """
-    The half-edge arrays one smoothing solve reads, and every listed vertex's ring walked in step.
+    Every listed vertex's ring of half-edges, walked in step.
 
     ``rows`` / ``edges`` list each ring's half-edges from the vertex's stored edge onward, rows in
     the order given and each row in ring order; ``step`` is an entry's position in its ring, so a
@@ -1684,12 +1711,9 @@ class _Rings:
     """
 
     def __init__(self, topology: Topology, verts: np.ndarray) -> None:
-        self.nxt = np.asarray(topology.nxt, dtype=np.int64)
-        self.prv = np.asarray(topology.prv, dtype=np.int64)
-        self.org = np.asarray(topology.org, dtype=np.int64)
-        self.lft = np.asarray(topology.lft, dtype=np.int64)
-        epv = np.asarray(topology.edge_per_vertex, dtype=np.int64)
-        start = epv[verts]
+        # About seven half-edges leave a vertex, and a cotangent reads four lists of each.
+        self.lists = lists = _Lists(topology, 7 * 4 * verts.size)
+        start = lists.take("edge_per_vertex", verts)
         rows_by_step: list[np.ndarray] = []
         edges_by_step: list[np.ndarray] = []
         row = np.arange(verts.size)
@@ -1697,7 +1721,7 @@ class _Rings:
         while row.size:
             rows_by_step.append(row)
             edges_by_step.append(cur)
-            cur = self.nxt[cur]
+            cur = lists.take("nxt", cur)
             more = cur != start[row]
             row, cur = row[more], cur[more]
         step = np.concatenate([np.full(r.size, k) for k, r in enumerate(rows_by_step)])
@@ -1705,7 +1729,7 @@ class _Rings:
         edges = np.concatenate(edges_by_step)
         order = np.lexsort((step, rows))
         self.rows, self.edges, self.step = rows[order], edges[order], step[order]
-        self.dest = self.org[self.edges ^ 1]
+        self.dest = lists.take("org", self.edges ^ 1)
         self.counts = np.bincount(self.rows, minlength=verts.size)
 
     def sum_in_ring_order(self, terms: np.ndarray, n_rows: int) -> np.ndarray:
@@ -1739,11 +1763,12 @@ def umbrella_fixed_rim(
     data[verts_np] = x.astype(np.float32)
 
 
-def _left_cotans(rings: _Rings, data: np.ndarray, edges: np.ndarray) -> np.ndarray:
+def _left_cotans(lists: _Lists, data: np.ndarray, edges: np.ndarray) -> np.ndarray:
     """Each half-edge's cotangent of the angle opposite it in its left triangle, 0 with none."""
-    has = rings.lft[edges] >= 0
-    corner = rings.org[rings.prv[edges ^ 1] ^ 1]
-    a, b, c = rings.org[edges], rings.org[edges ^ 1], corner
+    has = lists.take("lft", edges) >= 0
+    a = lists.take("org", edges)
+    b = lists.take("org", edges ^ 1)
+    c = lists.take("org", lists.take("prv", edges ^ 1) ^ 1)
     u = data[a] - data[c]
     w = data[b] - data[c]
     nom = _dot(u, w)
@@ -1780,7 +1805,7 @@ def _laplacian_least_squares(
     rings = _Rings(topology, order)
     edges = rings.edges
     if cotan:
-        both = _left_cotans(rings, data, edges) + _left_cotans(rings, data, edges ^ 1)
+        both = _left_cotans(rings.lists, data, edges) + _left_cotans(rings.lists, data, edges ^ 1)
         weights = np.clip(both, F32(-1), F32(10)).astype(np.float64)
     else:
         weights = np.ones(edges.size)
