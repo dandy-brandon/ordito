@@ -348,9 +348,12 @@ class Topology:
     def triangles(self) -> np.ndarray:
         """``(n_faces, 3)`` vertex triples of every face id, ``-1`` rows for invalid ones."""
         out = np.full((len(self.edge_per_face), 3), -1, dtype=np.int32)
-        for f, e in enumerate(self.edge_per_face):
-            if e >= 0:
-                out[f] = self.tri_verts(e)
+        edges = np.asarray(self.edge_per_face, dtype=np.int64)
+        valid = edges >= 0
+        e = edges[valid]
+        org = np.asarray(self.org, dtype=np.int32)
+        prv = np.asarray(self.prv, dtype=np.int64)
+        out[valid] = np.stack((org[e], org[e ^ 1], org[prv[e ^ 1] ^ 1]), axis=1)
         return out
 
 
@@ -2726,19 +2729,16 @@ def _result(
     A vertex the edit deleted is dropped; an input vertex no face ever used is kept.
     """
     n_total = len(topology.edge_per_vertex)
-    keep = np.array(
-        [
-            topology.edge_per_vertex[v] >= 0 or (v < n_input and not was_valid[v])
-            for v in range(n_total)
-        ],
-        dtype=bool,
-    )
+    keep = np.asarray(topology.edge_per_vertex, dtype=np.int64) >= 0
+    keep[:n_input] |= ~np.asarray(was_valid, dtype=bool)
     remap = np.cumsum(keep) - 1
     tris = topology.triangles()
     valid_face = (tris >= 0).all(axis=1)
     faces = remap[tris[valid_face]].astype(np.int32)
     vertices = points.array()[:n_total][keep].copy()
-    patch_mask = np.array([f in patch for f in np.flatnonzero(valid_face)], dtype=bool)
+    in_patch = np.zeros(valid_face.size, dtype=bool)
+    in_patch[np.fromiter(patch, dtype=np.int64, count=len(patch))] = True
+    patch_mask = in_patch[valid_face]
     sources = weights = face_source = None
     if topology.vertex_rows is not None and topology.face_source is not None:
         rows = [topology.vertex_rows[v] for v in np.flatnonzero(keep)]
