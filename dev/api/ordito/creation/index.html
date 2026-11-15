@@ -13808,14 +13808,13 @@ should not depend on the scale of its input.</p>
                 <p>Which surface to build:</p>
 <ul>
 <li>non-orientable and closed — <code>"boy"</code> and <code>"cross_cap"</code> (the two immersions of the real
-  projective plane, both with Euler characteristic 1), <code>"figure8_klein"</code> (the Klein
-  bottle) and <code>"roman"</code> (Steiner's surface, with three double lines).</li>
+  projective plane, both with Euler characteristic 1), <code>"figure8_klein"</code> and
+  <code>"klein"</code> (two immersions of the Klein bottle, Euler characteristic 0) and <code>"roman"</code>
+  (Steiner's surface, with three double lines).</li>
 <li>non-orientable with a boundary — <code>"mobius"</code> and <code>"henneberg"</code>.</li>
 <li>closed of genus 1 — <code>"bohemian_dome"</code>, and see
   <a class="autorefs autorefs-internal" title="super_toroid" href="./#ordito.creation.super_toroid"><code>super_toroid</code></a>.</li>
-<li>open, with two boundary loops — <code>"klein"</code> (which is <em>not</em> a Klein bottle as VTK
-  parameterizes it: it is orientable and has a boundary), <code>"plucker_conoid"</code> and
-  <code>"pseudosphere"</code>.</li>
+<li>open, with two boundary loops — <code>"plucker_conoid"</code> and <code>"pseudosphere"</code>.</li>
 <li>open, with one boundary loop — <code>"bour"</code>, <code>"catalan_minimal"</code>, <code>"conic_spiral"</code>,
   <code>"dini"</code>, <code>"enneper"</code> and <code>"kuen"</code>. <code>"dini"</code> and <code>"enneper"</code> are the strongly
   graded ones.</li>
@@ -14062,8 +14061,7 @@ parameterization does not identify, and drops the 2 triangles that thereby becam
 <span class="normal">2536</span>
 <span class="normal">2537</span>
 <span class="normal">2538</span>
-<span class="normal">2539</span>
-<span class="normal">2540</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">parametric_surface</span><span class="p">(</span>
+<span class="normal">2539</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">parametric_surface</span><span class="p">(</span>
     <span class="n">kind</span><span class="p">:</span> <span class="n">ParametricSurfaceKind</span><span class="p">,</span>
     <span class="n">u_resolution</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">40</span><span class="p">,</span>
     <span class="n">v_resolution</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">40</span><span class="p">,</span>
@@ -14087,14 +14085,13 @@ parameterization does not identify, and drops the 2 triangles that thereby becam
 <span class="sd">        Which surface to build:</span>
 
 <span class="sd">        - non-orientable and closed — ``"boy"`` and ``"cross_cap"`` (the two immersions of the real</span>
-<span class="sd">          projective plane, both with Euler characteristic 1), ``"figure8_klein"`` (the Klein</span>
-<span class="sd">          bottle) and ``"roman"`` (Steiner's surface, with three double lines).</span>
+<span class="sd">          projective plane, both with Euler characteristic 1), ``"figure8_klein"`` and</span>
+<span class="sd">          ``"klein"`` (two immersions of the Klein bottle, Euler characteristic 0) and ``"roman"``</span>
+<span class="sd">          (Steiner's surface, with three double lines).</span>
 <span class="sd">        - non-orientable with a boundary — ``"mobius"`` and ``"henneberg"``.</span>
 <span class="sd">        - closed of genus 1 — ``"bohemian_dome"``, and see</span>
 <span class="sd">          [`super_toroid`][ordito.creation.super_toroid].</span>
-<span class="sd">        - open, with two boundary loops — ``"klein"`` (which is *not* a Klein bottle as VTK</span>
-<span class="sd">          parameterizes it: it is orientable and has a boundary), ``"plucker_conoid"`` and</span>
-<span class="sd">          ``"pseudosphere"``.</span>
+<span class="sd">        - open, with two boundary loops — ``"plucker_conoid"`` and ``"pseudosphere"``.</span>
 <span class="sd">        - open, with one boundary loop — ``"bour"``, ``"catalan_minimal"``, ``"conic_spiral"``,</span>
 <span class="sd">          ``"dini"``, ``"enneper"`` and ``"kuen"``. ``"dini"`` and ``"enneper"`` are the strongly</span>
 <span class="sd">          graded ones.</span>
@@ -14387,7 +14384,8 @@ surface stays symmetric about every coordinate plane.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/creation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2543</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2542</span>
+<span class="normal">2543</span>
 <span class="normal">2544</span>
 <span class="normal">2545</span>
 <span class="normal">2546</span>
@@ -14465,8 +14463,7 @@ surface stays symmetric about every coordinate plane.</p>
 <span class="normal">2618</span>
 <span class="normal">2619</span>
 <span class="normal">2620</span>
-<span class="normal">2621</span>
-<span class="normal">2622</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">super_ellipsoid</span><span class="p">(</span>
+<span class="normal">2621</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">super_ellipsoid</span><span class="p">(</span>
     <span class="n">n1</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.0</span><span class="p">,</span>
     <span class="n">n2</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.0</span><span class="p">,</span>
     <span class="n">radii</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">float</span><span class="p">,</span> <span class="nb">float</span><span class="p">,</span> <span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">),</span>
@@ -14756,7 +14753,8 @@ axis, and this one exists for the exponents.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/creation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2625</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2624</span>
+<span class="normal">2625</span>
 <span class="normal">2626</span>
 <span class="normal">2627</span>
 <span class="normal">2628</span>
@@ -14815,8 +14813,7 @@ axis, and this one exists for the exponents.</p>
 <span class="normal">2681</span>
 <span class="normal">2682</span>
 <span class="normal">2683</span>
-<span class="normal">2684</span>
-<span class="normal">2685</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">super_toroid</span><span class="p">(</span>
+<span class="normal">2684</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">super_toroid</span><span class="p">(</span>
     <span class="n">n1</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.0</span><span class="p">,</span>
     <span class="n">n2</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.0</span><span class="p">,</span>
     <span class="n">u_resolution</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">40</span><span class="p">,</span>
@@ -15140,7 +15137,8 @@ through <a class="autorefs autorefs-internal" title="resolve_seed" href="../samp
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/creation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2688</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2687</span>
+<span class="normal">2688</span>
 <span class="normal">2689</span>
 <span class="normal">2690</span>
 <span class="normal">2691</span>
@@ -15226,8 +15224,7 @@ through <a class="autorefs autorefs-internal" title="resolve_seed" href="../samp
 <span class="normal">2771</span>
 <span class="normal">2772</span>
 <span class="normal">2773</span>
-<span class="normal">2774</span>
-<span class="normal">2775</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">random_hills</span><span class="p">(</span>
+<span class="normal">2774</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">random_hills</span><span class="p">(</span>
     <span class="n">n_hills</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">30</span><span class="p">,</span>
     <span class="n">amplitude</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">2.0</span><span class="p">,</span>
     <span class="n">x_variance</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">2.5</span><span class="p">,</span>
@@ -15460,7 +15457,8 @@ agree in distribution, not value for value.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/creation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2778</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2777</span>
+<span class="normal">2778</span>
 <span class="normal">2779</span>
 <span class="normal">2780</span>
 <span class="normal">2781</span>
@@ -15514,8 +15512,7 @@ agree in distribution, not value for value.</p>
 <span class="normal">2829</span>
 <span class="normal">2830</span>
 <span class="normal">2831</span>
-<span class="normal">2832</span>
-<span class="normal">2833</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">random_soup</span><span class="p">(</span>
+<span class="normal">2832</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">random_soup</span><span class="p">(</span>
     <span class="n">face_count</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">100</span><span class="p">,</span> <span class="n">seed</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>

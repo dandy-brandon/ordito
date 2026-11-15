@@ -6037,10 +6037,10 @@
 
 <h1 id="linalg">linalg</h1>
 <p>Benchmarks of <a href="../../api/ordito/linalg/"><code>ordito.linalg</code></a> against every library that computes the same thing. Each chart shows the time of every library relative to ordito on CUDA (1x, in green): a longer bar took longer. The table under each chart lists every input the function was measured on. See <a href="../">Benchmarks</a> for how to read and reproduce these numbers.</p>
-<p><em>Measured on GPU: NVIDIA GeForce RTX 5090 · CPU: Intel Xeon w7-2495X</em></p>
+<p><em>Measured on GPU: not recorded · CPU: Intel Xeon w7-2495X</em></p>
 <h2 id="summary">Summary</h2>
 <figure class="bench-figure">
-<svg class="bench-chart" width="640" height="82" viewBox="0 0 640 82" role="img" aria-label="linalg: time relative to ordito"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="64"/><text class="bench-tick" x="196.0" y="77" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="352.0" y1="0" x2="352.0" y2="64"/><text class="bench-tick" x="352.0" y="77" text-anchor="middle">1x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="64"/><text class="bench-tick" x="508.0" y="77" text-anchor="middle">10x</text><g><title>ordito (CUDA): the reference, 1x</title><rect class="bench-subject" x="196" y="9.0" width="156.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="357.0" y="18.0">1x</text></g><g><title>libigl: 3.1x ordito&#x27;s time, geometric mean over 1 functions; slower than ordito in 1</title><rect class="bench-reference" x="196" y="29.0" width="233.0" height="10"/><text class="bench-label" x="166" y="38.0" text-anchor="end">libigl</text><text class="bench-value" x="434.0" y="38.0">3.1x  (1)</text></g><g><title>MeshLab: 3.8x ordito&#x27;s time, geometric mean over 1 functions; slower than ordito in 1</title><rect class="bench-reference" x="196" y="49.0" width="245.7" height="10"/><image class="bench-logo bench-logo-meshlab" href="../../assets/logos/meshlab.png" x="172.0" y="45.0" width="18.0" height="18.0"/><text class="bench-label" x="166" y="58.0" text-anchor="end">MeshLab</text><text class="bench-value" x="446.7" y="58.0">3.8x  (1)</text></g></svg>
+<svg class="bench-chart" width="640" height="82" viewBox="0 0 640 82" role="img" aria-label="linalg: time relative to ordito"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="64"/><text class="bench-tick" x="196.0" y="77" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="352.0" y1="0" x2="352.0" y2="64"/><text class="bench-tick" x="352.0" y="77" text-anchor="middle">1x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="64"/><text class="bench-tick" x="508.0" y="77" text-anchor="middle">10x</text><g><title>ordito (CUDA): the reference, 1x</title><rect class="bench-subject" x="196" y="9.0" width="156.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="357.0" y="18.0">1x</text></g><g><title>libigl: 3.2x ordito&#x27;s time, geometric mean over 1 functions; slower than ordito in 1</title><rect class="bench-reference" x="196" y="29.0" width="235.8" height="10"/><text class="bench-label" x="166" y="38.0" text-anchor="end">libigl</text><text class="bench-value" x="436.8" y="38.0">3.2x  (1)</text></g><g><title>MeshLab: 3.4x ordito&#x27;s time, geometric mean over 1 functions; slower than ordito in 1</title><rect class="bench-reference" x="196" y="49.0" width="239.4" height="10"/><image class="bench-logo bench-logo-meshlab" href="../../assets/logos/meshlab.png" x="172.0" y="45.0" width="18.0" height="18.0"/><text class="bench-label" x="166" y="58.0" text-anchor="end">MeshLab</text><text class="bench-value" x="440.4" y="58.0">3.4x  (1)</text></g></svg>
 <figcaption>Time relative to ordito (CUDA), geometric mean over the linalg functions both implement; in parentheses, the number of functions. Log scale. Runs stopped at the time limit are left out.</figcaption>
 </figure>
 
@@ -6058,13 +6058,13 @@
 <tbody>
 <tr>
 <td>libigl</td>
-<td>3.1x</td>
+<td>3.2x</td>
 <td>1</td>
 <td>1</td>
 </tr>
 <tr>
 <td>MeshLab</td>
-<td>3.8x</td>
+<td>3.4x</td>
 <td>1</td>
 <td>1</td>
 </tr>
@@ -6073,7 +6073,7 @@
 </details>
 <h2 id="min_quad_with_fixed"><code>min_quad_with_fixed</code></h2>
 <figure class="bench-figure">
-<svg class="bench-chart" width="640" height="82" viewBox="0 0 640 82" role="img" aria-label="min_quad_with_fixed on saddle (34 848 faces) · fixed_fraction=0.01"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="64"/><text class="bench-tick" x="196.0" y="77" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="352.0" y1="0" x2="352.0" y2="64"/><text class="bench-tick" x="352.0" y="77" text-anchor="middle">1x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="64"/><text class="bench-tick" x="508.0" y="77" text-anchor="middle">10x</text><g><title>ordito (CUDA): 5.15 ms, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="156.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="357.0" y="18.0">1x · 5.15 ms</text></g><g><title>libigl: 25.15 ms, 4.9x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="263.5" height="10"/><text class="bench-label" x="166" y="38.0" text-anchor="end">libigl</text><text class="bench-value" x="464.5" y="38.0">4.9x · 25.15 ms</text></g><g><title>MeshLab: 39.41 ms, 7.7x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="49.0" width="293.9" height="10"/><image class="bench-logo bench-logo-meshlab" href="../../assets/logos/meshlab.png" x="172.0" y="45.0" width="18.0" height="18.0"/><text class="bench-label" x="166" y="58.0" text-anchor="end">MeshLab</text><text class="bench-value" x="494.9" y="58.0">7.7x · 39.41 ms</text></g></svg>
+<svg class="bench-chart" width="640" height="82" viewBox="0 0 640 82" role="img" aria-label="min_quad_with_fixed on saddle (34 848 faces) · fixed_fraction=0.01"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="64"/><text class="bench-tick" x="196.0" y="77" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="352.0" y1="0" x2="352.0" y2="64"/><text class="bench-tick" x="352.0" y="77" text-anchor="middle">1x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="64"/><text class="bench-tick" x="508.0" y="77" text-anchor="middle">10x</text><g><title>ordito (CUDA): 5.12 ms, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="156.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="357.0" y="18.0">1x · 5.12 ms</text></g><g><title>libigl: 25.40 ms, 5x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="264.5" height="10"/><text class="bench-label" x="166" y="38.0" text-anchor="end">libigl</text><text class="bench-value" x="465.5" y="38.0">5x · 25.40 ms</text></g><g><title>MeshLab: 34.91 ms, 6.8x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="49.0" width="286.1" height="10"/><image class="bench-logo bench-logo-meshlab" href="../../assets/logos/meshlab.png" x="172.0" y="45.0" width="18.0" height="18.0"/><text class="bench-label" x="166" y="58.0" text-anchor="end">MeshLab</text><text class="bench-value" x="487.1" y="58.0">6.8x · 34.91 ms</text></g></svg>
 <figcaption>saddle (34 848 faces) · fixed_fraction=0.01 · time relative to ordito, log scale</figcaption>
 </figure>
 
@@ -6090,18 +6090,18 @@
 <tbody>
 <tr>
 <td>ordito (CUDA)</td>
-<td>5.15 ms</td>
+<td>5.12 ms</td>
 <td>1x</td>
 </tr>
 <tr>
 <td>libigl</td>
-<td>25.15 ms</td>
-<td>4.9x</td>
+<td>25.40 ms</td>
+<td>5x</td>
 </tr>
 <tr>
 <td>MeshLab</td>
-<td>39.41 ms</td>
-<td>7.7x</td>
+<td>34.91 ms</td>
+<td>6.8x</td>
 </tr>
 </tbody>
 </table>
@@ -6120,26 +6120,26 @@
 <tbody>
 <tr>
 <td>saddle fixed_fraction=0.01</td>
-<td>5.15 ms</td>
-<td>25.15 ms</td>
-<td>39.41 ms</td>
+<td>5.12 ms</td>
+<td>25.40 ms</td>
+<td>34.91 ms</td>
 </tr>
 <tr>
 <td>saddle fixed_fraction=0.5</td>
-<td>1.33 ms</td>
-<td>7.51 ms</td>
+<td>1.31 ms</td>
+<td>7.52 ms</td>
 <td></td>
 </tr>
 <tr>
 <td>saddle_graded fixed_fraction=0.01</td>
-<td>21.05 ms</td>
-<td>24.54 ms</td>
-<td>38.80 ms</td>
+<td>20.15 ms</td>
+<td>24.99 ms</td>
+<td>34.60 ms</td>
 </tr>
 <tr>
 <td>saddle_graded fixed_fraction=0.5</td>
-<td>2.43 ms</td>
-<td>7.13 ms</td>
+<td>2.32 ms</td>
+<td>7.31 ms</td>
 <td></td>
 </tr>
 </tbody>
@@ -6159,92 +6159,92 @@
 <tr>
 <td><code>min_quad_with_fixed_precompute</code></td>
 <td>saddle_graded fixed_fraction=0.5</td>
-<td>3.82 ms</td>
+<td>3.59 ms</td>
 </tr>
 <tr>
 <td><code>free_partition</code></td>
 <td>saddle_graded fixed_fraction=0.5</td>
-<td>51.6 µs</td>
+<td>115.2 µs</td>
 </tr>
 <tr>
 <td><code>free_coordinates</code></td>
 <td>saddle_graded fixed_fraction=0.5</td>
-<td>27.2 µs</td>
+<td>23.2 µs</td>
 </tr>
 <tr>
 <td><code>assemble_interior_system</code></td>
 <td>saddle_graded fixed_fraction=0.5</td>
-<td>135.8 µs</td>
+<td>141.6 µs</td>
 </tr>
 <tr>
 <td><code>partitioned_interior_system</code></td>
 <td>saddle_graded fixed_fraction=0.5</td>
-<td>172.0 µs</td>
+<td>141.7 µs</td>
 </tr>
 <tr>
 <td><code>solve_spd</code></td>
 <td>saddle_graded</td>
-<td>6.05 ms</td>
+<td>5.93 ms</td>
 </tr>
 <tr>
 <td><code>jacobi_preconditioner</code></td>
 <td>saddle_graded</td>
-<td>6.4 µs</td>
+<td>5.5 µs</td>
 </tr>
 <tr>
 <td><code>solve_spd_columns</code></td>
 <td>saddle_graded check_every=0</td>
-<td>53.32 ms</td>
+<td>51.95 ms</td>
 </tr>
 <tr>
 <td><code>multigrid_preconditioner</code></td>
 <td>saddle_graded</td>
-<td>6.36 ms</td>
+<td>6.82 ms</td>
 </tr>
 <tr>
 <td><code>spd_column_solver_amortized</code></td>
 <td>saddle_graded repeats=50</td>
-<td>2.90 ms</td>
+<td>2.76 ms</td>
 </tr>
 <tr>
 <td><code>chebyshev_preconditioner</code></td>
 <td>saddle_graded</td>
-<td>6.2 µs</td>
+<td>7.4 µs</td>
 </tr>
 <tr>
 <td><code>operator_factorization_factor</code></td>
 <td>saddle_graded</td>
-<td>3.78 ms</td>
+<td>3.56 ms</td>
 </tr>
 <tr>
 <td><code>solve_spd_settled</code></td>
 <td>saddle_graded</td>
-<td>11.27 ms</td>
+<td>11.15 ms</td>
 </tr>
 <tr>
 <td><code>replicated_operator</code></td>
 <td>sphere_med</td>
-<td>19.7 µs</td>
+<td>20.5 µs</td>
 </tr>
 <tr>
 <td><code>squared_laplacian_preconditioner</code></td>
 <td>saddle_graded</td>
-<td>159.4 µs</td>
+<td>177.0 µs</td>
 </tr>
 <tr>
 <td><code>squared_laplacian_from_factors</code></td>
 <td>saddle_graded</td>
-<td>53.2 µs</td>
+<td>46.8 µs</td>
 </tr>
 <tr>
 <td><code>squared_laplacian_bind</code></td>
 <td>saddle_graded</td>
-<td>16.8 µs</td>
+<td>22.2 µs</td>
 </tr>
 <tr>
 <td><code>squared_laplacian_narrowed</code></td>
 <td>saddle_graded</td>
-<td>35.3 µs</td>
+<td>28.6 µs</td>
 </tr>
 </tbody>
 </table>

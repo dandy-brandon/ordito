@@ -6111,8 +6111,8 @@ the two colours meet along a seam that no consistent winding can remove.</p>
 <span class="nb">print</span><span class="p">(</span><span class="s2">"closed:"</span><span class="p">,</span> <span class="s2">", "</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">closed</span><span class="p">))</span>
 <span class="nb">print</span><span class="p">(</span><span class="s2">"non-orientable:"</span><span class="p">,</span> <span class="s2">", "</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">k</span> <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">m</span> <span class="ow">in</span> <span class="n">surfaces</span><span class="o">.</span><span class="n">items</span><span class="p">()</span> <span class="k">if</span> <span class="ow">not</span> <span class="n">m</span><span class="o">.</span><span class="n">is_orientable</span><span class="p">))</span>
 </code></pre></div>
-<div class="highlight"><span class="filename">Output</span><pre><span></span><code>closed: bohemian_dome, boy, cross_cap, figure8_klein, roman
-non-orientable: boy, cross_cap, figure8_klein, henneberg, mobius, roman
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code>closed: bohemian_dome, boy, cross_cap, figure8_klein, klein, roman
+non-orientable: boy, cross_cap, figure8_klein, henneberg, klein, mobius, roman
 </code></pre></div>
 <p><a class="glightbox" data-type="image" href="../../assets/examples/c2.webp"><img alt="Parametric surfaces" src="../../assets/examples/c2.webp" /></a></p>
 <p class="ordito-credits">Modelled on: <a href="https://docs.pyvista.org/examples/00-load/create_parametric_geometric_objects">PyVista: parametric objects</a></p>

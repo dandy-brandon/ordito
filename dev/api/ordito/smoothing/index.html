@@ -17346,9 +17346,9 @@ when either is <code>None</code>. <a class="autorefs autorefs-internal" title="f
   (2015), eqs. 19-20, with the closed-form edge indicator. Each solve restarts from the
   original normals <code>n0</code> and solves the linear system <code>n_f + sum_e w_e (n_f - n_r) =
   n0_f</code> over the faces <code>r</code> across face <code>f</code>'s edges, with
-  <code>w_e = gamma |e| v_e^2 / P</code>, <code>|e|</code> the edge's length and <code>P</code> the perimeter of
-  <code>f</code> (rim edges included) for the diagonal and of the higher-numbered face of the pair
-  for the coupling, which makes the system symmetric. The answer is normalized and sets
+  <code>w_e = gamma |e| v_e^2 * 2 / (P_f + P_r)</code>, <code>|e|</code> the edge's length and <code>P</code> a
+  face's perimeter (rim edges included): the pair's mean perimeter, which makes the
+  system symmetric. The answer is normalized and sets
   each edge's indicator for the next solve, <code>v_e = rho / (rho + 2 gamma |n_f - n_r|^2)</code>
   with <code>rho = beta / 0.002</code>: near <code>1</code> on a smooth edge and near <code>0</code> across a crease,
   which stops the crease from diffusing. The first solve takes <code>v = 1</code>.</li>
@@ -17744,9 +17744,9 @@ then finds them and keeps them:</p>
 <span class="sd">          (2015), eqs. 19-20, with the closed-form edge indicator. Each solve restarts from the</span>
 <span class="sd">          original normals ``n0`` and solves the linear system ``n_f + sum_e w_e (n_f - n_r) =</span>
 <span class="sd">          n0_f`` over the faces ``r`` across face ``f``'s edges, with</span>
-<span class="sd">          ``w_e = gamma |e| v_e^2 / P``, ``|e|`` the edge's length and ``P`` the perimeter of</span>
-<span class="sd">          ``f`` (rim edges included) for the diagonal and of the higher-numbered face of the pair</span>
-<span class="sd">          for the coupling, which makes the system symmetric. The answer is normalized and sets</span>
+<span class="sd">          ``w_e = gamma |e| v_e^2 * 2 / (P_f + P_r)``, ``|e|`` the edge's length and ``P`` a</span>
+<span class="sd">          face's perimeter (rim edges included): the pair's mean perimeter, which makes the</span>
+<span class="sd">          system symmetric. The answer is normalized and sets</span>
 <span class="sd">          each edge's indicator for the next solve, ``v_e = rho / (rho + 2 gamma |n_f - n_r|^2)``</span>
 <span class="sd">          with ``rho = beta / 0.002``: near ``1`` on a smooth edge and near ``0`` across a crease,</span>
 <span class="sd">          which stops the crease from diffusing. The first solve takes ``v = 1``.</span>
@@ -18067,11 +18067,11 @@ Trusted, not checked. Unread under <code>method="meshlab"</code>.</p>
   (2015), both steps: the normals are
   <a class="autorefs autorefs-internal" title="filter_normals" href="./#ordito.smoothing.filter_normals"><code>filter_normals</code></a>'s <code>method="meshlib"</code> at
   <code>gamma</code>, <code>beta</code> and <code>normal_iterations</code>, and the vertices then solve the linear
-  least-squares problem <code>min |x - g|^2 + sum_f |G x_f - d_f|^2</code> <code>fit_iterations</code>
-  times, <code>g</code> the pass's input positions. <code>G x_f</code> is face <code>f</code>'s two corner offsets
-  <code>2 x_0 - x_1 - x_2</code> and <code>2 x_1 - x_0 - x_2</code>, and <code>d_f</code> the same offsets of the
-  current triangle projected onto the plane through its centroid with the filtered normal
-  (collapsed onto a line when the projection turns it over).</li>
+  least-squares problem <code>min w^2 |x - g|^2 + sum_f |G x_f - d_f|^2</code> <code>fit_iterations</code>
+  times, <code>g</code> the pass's input positions and <code>w = 1 / sqrt(3)</code>. <code>G x_f</code> is face
+  <code>f</code>'s two edges from its first corner, <code>x_0 - x_1</code> and <code>x_0 - x_2</code>, and <code>d_f</code>
+  the same edges of the current triangle projected onto the plane through its centroid
+  with the filtered normal (collapsed onto a line when the projection turns it over).</li>
 </ul>
               </div>
             </td>
@@ -18544,11 +18544,11 @@ close to 1:</p>
 <span class="sd">          (2015), both steps: the normals are</span>
 <span class="sd">          [`filter_normals`][ordito.smoothing.filter_normals]'s ``method="meshlib"`` at</span>
 <span class="sd">          ``gamma``, ``beta`` and ``normal_iterations``, and the vertices then solve the linear</span>
-<span class="sd">          least-squares problem ``min |x - g|^2 + sum_f |G x_f - d_f|^2`` ``fit_iterations``</span>
-<span class="sd">          times, ``g`` the pass's input positions. ``G x_f`` is face ``f``'s two corner offsets</span>
-<span class="sd">          ``2 x_0 - x_1 - x_2`` and ``2 x_1 - x_0 - x_2``, and ``d_f`` the same offsets of the</span>
-<span class="sd">          current triangle projected onto the plane through its centroid with the filtered normal</span>
-<span class="sd">          (collapsed onto a line when the projection turns it over).</span>
+<span class="sd">          least-squares problem ``min w^2 |x - g|^2 + sum_f |G x_f - d_f|^2`` ``fit_iterations``</span>
+<span class="sd">          times, ``g`` the pass's input positions and ``w = 1 / sqrt(3)``. ``G x_f`` is face</span>
+<span class="sd">          ``f``'s two edges from its first corner, ``x_0 - x_1`` and ``x_0 - x_2``, and ``d_f``</span>
+<span class="sd">          the same edges of the current triangle projected onto the plane through its centroid</span>
+<span class="sd">          with the filtered normal (collapsed onto a line when the projection turns it over).</span>
 <span class="sd">    gamma</span>
 <span class="sd">        The smoothing weight of ``method="meshlib"``; see</span>
 <span class="sd">        [`filter_normals`][ordito.smoothing.filter_normals]. Default ``5``.</span>
@@ -18993,14 +18993,7 @@ sphere grows:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/smoothing.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5436</span>
-<span class="normal">5437</span>
-<span class="normal">5438</span>
-<span class="normal">5439</span>
-<span class="normal">5440</span>
-<span class="normal">5441</span>
-<span class="normal">5442</span>
-<span class="normal">5443</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5443</span>
 <span class="normal">5444</span>
 <span class="normal">5445</span>
 <span class="normal">5446</span>
@@ -19162,7 +19155,14 @@ sphere grows:</p>
 <span class="normal">5602</span>
 <span class="normal">5603</span>
 <span class="normal">5604</span>
-<span class="normal">5605</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">filter_sharpen</span><span class="p">(</span>
+<span class="normal">5605</span>
+<span class="normal">5606</span>
+<span class="normal">5607</span>
+<span class="normal">5608</span>
+<span class="normal">5609</span>
+<span class="normal">5610</span>
+<span class="normal">5611</span>
+<span class="normal">5612</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">filter_sharpen</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
