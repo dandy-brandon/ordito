@@ -19,7 +19,6 @@ numbering and each DP diagonal are batched (NumPy), and the device receives the 
 from __future__ import annotations
 
 import heapq
-import math
 from collections.abc import Callable, Iterator, Sequence
 from typing import Any, NamedTuple
 
@@ -788,11 +787,22 @@ class Metric:
     """A triangle term, an edge term over ``(a, b, left, right)`` and how terms combine."""
 
     def __init__(
-        self, triangle: Term | None = None, edge: Term | None = None, use_max: bool = False
+        self,
+        triangle: Term | None = None,
+        edge: Term | None = None,
+        use_max: bool = False,
+        kernel_id: int = -1,
+        normal: np.ndarray | None = None,
+        inverse_area: float = 0.0,
     ) -> None:
         self.triangle_term = triangle
         self.edge_term = edge
         self.use_max = use_max
+        # The id of the same metric in ``kernels/holes.serial_fill_dp_diagonal``, -1 when it has
+        # none (a metric with transcendental terms, which the devices round differently).
+        self.kernel_id = kernel_id
+        self.normal = np.zeros(3) if normal is None else normal
+        self.inverse_area = inverse_area
 
     @property
     def has_triangle(self) -> bool:
@@ -969,7 +979,7 @@ def _vertical_stitch(p: np.ndarray, up: tuple[float, float, float]) -> Term:
 def fill_metric(name: str, topology: Topology, points: np.ndarray, rim_edge: int) -> Metric:
     """Return the fill metric ``name`` for the hole left of ``rim_edge``."""
     if name == "circumscribed":
-        return Metric(triangle=_circumscribed(points))
+        return Metric(triangle=_circumscribed(points), kernel_id=0)
     if name in ("plane", "plane_normalized"):
         n = np.zeros(3)
         for e in topology.left_ring(rim_edge):
@@ -978,13 +988,17 @@ def fill_metric(name: str, topology: Topology, points: np.ndarray, rim_edge: int
             n = n + _cross(o, d)
         length = float(np.sqrt(_lsq(n)))
         n = n * (1.0 / length) if length > 0 else np.zeros(3)
-        return Metric(triangle=_plane(points, n, name == "plane_normalized"))
+        return Metric(
+            triangle=_plane(points, n, name == "plane_normalized"),
+            kernel_id=2 if name == "plane_normalized" else 1,
+            normal=n,
+        )
     if name == "min_area":
-        return Metric(triangle=_min_area(points))
+        return Metric(triangle=_min_area(points), kernel_id=3)
     if name == "min_tri_angle":
         return Metric(triangle=_min_tri_angle(points))
     if name == "edge_length":
-        return Metric(edge=_edge_length(points))
+        return Metric(edge=_edge_length(points), kernel_id=4)
     if name == "universal":
         return Metric(triangle=_circumscribed(points), edge=_universal_edge(points))
     if name == "max_dihedral":
@@ -996,7 +1010,7 @@ def fill_metric(name: str, topology: Topology, points: np.ndarray, rim_edge: int
             longest = max(longest, F32(_lsq(v)))
         inverse = F32(1) / longest if longest > 0 else F32(1)
         triangle, edge = _complex_fill(points, float(inverse))
-        return Metric(triangle=triangle, edge=edge)
+        return Metric(triangle=triangle, edge=edge, kernel_id=5, inverse_area=float(inverse))
     raise ValueError(name)
 
 
@@ -1054,13 +1068,17 @@ def plan_fill(
     smooth_rim: bool,
     avoid_existing: bool,
     max_subdivisions: int = 20,
+    points: np.ndarray | None = None,
+    device: wp.DeviceLike = None,
 ) -> tuple[list[tuple[int, int]], int]:
     """
     Plan the minimum-weight triangulation of the hole left of ``a0``.
 
     Returns the chords to create, each as two edge codes (a half-edge id, or ``-(2 i + 1)`` for
     the chord made by item ``i``) whose origins it joins, and the number of triangles; a plan with
-    no chords and more than one triangle asks for a cone.
+    no chords and more than one triangle asks for a cone. With ``points`` and a ``device``, a metric
+    the kernel has fills its DP there (``kernels/holes.serial_fill_dp_diagonal``), a launch a
+    diagonal; otherwise each diagonal is one NumPy batch.
     """
     loop = hole_loop(topology, a0)
     n = len(loop)
@@ -1078,7 +1096,13 @@ def plan_fill(
     if avoid_existing:
         for e in loop:
             linked.append({org[i ^ 1] for i in topology.org_ring(e)})
-    for steps in range(2, n - 1):
+    native = metric.kernel_id >= 0 and points is not None and device is not None
+    if native:
+        assert points is not None
+        weight, apex = _fill_dp_on_device(
+            points, vert, across, linked, metric, smooth_rim, max_subdivisions, device
+        )
+    for steps in range(2, 2 if native else n - 1):
         offsets = np.asarray(_apex_offsets(steps, max_subdivisions), dtype=np.int64)
         rows = np.arange(n, dtype=np.int64)
         ends = (rows + steps) % n
@@ -1145,6 +1169,8 @@ def plan_fill(
     while head < len(queue):
         a, b, prev_a, code = queue[head]
         head += 1
+        if prev_a < 0 or len(queue) > 2 * n:
+            raise RuntimeError("the hole triangulation's apex table is inconsistent")
         dist_a = (a - prev_a + n) % n
         dist_b = (b - prev_a + n) % n
         if 2 <= dist_a <= n - 2:
@@ -1157,6 +1183,70 @@ def plan_fill(
             queue.append((prev_a, b, int(apex[prev_a, b]), new_code))
         n_tris += 1
     return items, n_tris
+
+
+def _fill_dp_on_device(
+    points: np.ndarray,
+    vert: np.ndarray,
+    across: np.ndarray,
+    linked: list[set[int]],
+    metric: Metric,
+    smooth_rim: bool,
+    max_subdivisions: int,
+    device: wp.DeviceLike,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Fill the DP's weight and apex tables on ``device``, one launch a diagonal."""
+    from ordito._common import read_array
+    from ordito.kernels import holes as kernel_holes
+
+    n = vert.size
+    positions: dict[int, list[int]] = {}
+    for i, v in enumerate(vert.tolist()):
+        positions.setdefault(v, []).append(i)
+    rows = [
+        sorted(j for d in linked[i] for j in positions.get(d, ())) if linked else []
+        for i in range(n)
+    ]
+    linked_offsets = np.zeros(n + 1, dtype=np.int32)
+    linked_offsets[1:] = np.cumsum([len(r) for r in rows])
+    linked_flat = np.array([j for r in rows for j in r] or [0], dtype=np.int32)
+    per_step = [_apex_offsets(steps, max_subdivisions) for steps in range(2, n - 1)]
+    starts = np.zeros(len(per_step) + 1, dtype=np.int64)
+    starts[1:] = np.cumsum([len(o) for o in per_step])
+    flat = np.array([k for o in per_step for k in o] or [0], dtype=np.int32)
+    weight = wp.zeros((n, n), dtype=wp.float64, device=device)
+    apex = wp.full((n, n), -1, dtype=wp.int32, device=device)
+    normal = wp.vec3d(*(float(x) for x in metric.normal))
+    fixed = [
+        wp.array(points, dtype=wp.vec3, device=device),
+        wp.array(vert.astype(np.int32), dtype=wp.int32, device=device),
+        wp.array(across.astype(np.int32), dtype=wp.int32, device=device),
+        wp.array(linked_offsets, dtype=wp.int32, device=device),
+        wp.array(linked_flat, dtype=wp.int32, device=device),
+        wp.array(flat, dtype=wp.int32, device=device),
+    ]
+    for k, steps in enumerate(range(2, n - 1)):
+        wp.launch(
+            kernel_holes.serial_fill_dp_diagonal,
+            dim=n,
+            inputs=[
+                *fixed,
+                int(starts[k]),
+                int(starts[k + 1] - starts[k]),
+                steps,
+                metric.kernel_id,
+                int(metric.has_triangle),
+                int(metric.has_edge),
+                int(smooth_rim),
+                normal,
+                float(metric.inverse_area),
+                weight,
+                apex,
+            ],
+            device=device,
+        )
+    # The tables feed the host traceback that turns them into chords.
+    return read_array(weight), read_array(apex).astype(np.int64)
 
 
 def _apex_vertex(
@@ -1252,7 +1342,13 @@ def cone_fill(topology: Topology, points: Points, a: int, new_faces: list[int]) 
 
 
 def fill_hole(
-    topology: Topology, points: Points, a0: int, metric: str, smooth_rim: bool, avoid_existing: bool
+    topology: Topology,
+    points: Points,
+    a0: int,
+    metric: str,
+    smooth_rim: bool,
+    avoid_existing: bool,
+    device: wp.DeviceLike = None,
 ) -> list[int]:
     """Triangulate the hole left of ``a0`` over its rim; return the new faces."""
     new_faces: list[int] = []
@@ -1269,7 +1365,13 @@ def fill_hole(
         return new_faces
     arr = points.array()
     plan = plan_fill(
-        topology, a0, fill_metric(metric, topology, arr, a0), smooth_rim, avoid_existing
+        topology,
+        a0,
+        fill_metric(metric, topology, arr, a0),
+        smooth_rim,
+        avoid_existing,
+        points=arr,
+        device=device,
     )
     execute_fill(topology, points, a0, plan, new_faces)
     return new_faces
@@ -1281,18 +1383,11 @@ def fill_hole(
 # ---------------------------------------------------------------------------------------------
 
 _PI_F = F32(np.pi)
-_NO_ANGLE_LIMIT = F32(2) * _PI_F
 
 
 def _in_region(topology: Topology, e: int, region: set[int]) -> bool:
     f = topology.lft[e]
     return f >= 0 and f in region
-
-
-def _edge_len_sq(topology: Topology, data: np.ndarray, ue: int) -> np.float32:
-    e = 2 * ue
-    d = data[topology.org[e]] - data[topology.org[e ^ 1]]
-    return d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
 
 
 def subdivide(
@@ -1309,213 +1404,95 @@ def subdivide(
 
     Edges inner to or bounding the region are split longest first until all are shorter than
     ``max_edge`` or ``max_splits`` splits are done. New faces join ``region``; every new vertex
-    is appended to ``new_verts``.
+    is appended to ``new_verts``. The queue runs natively, in one thread on the CPU device
+    (``kernels/holes.serial_subdivide``), over copies of the lists it then writes back.
     """
-    max_sq = F32(max_edge) * F32(max_edge)
-    angle = F32(max_angle_change)
-    region.intersection_update(f for f in region if topology.edge_per_face[f] >= 0)
+    from ordito.kernels import holes as kernel_holes
 
-    def element(ue: int) -> tuple[float, int] | None:
-        e = 2 * ue
-        if not (_in_region(topology, e, region) or _in_region(topology, e ^ 1, region)):
-            return None
-        length_sq = _edge_len_sq(topology, points.data, ue)
-        if length_sq < max_sq:
-            return None
-        return (-float(length_sq), -ue)
+    if max_splits <= 0:
+        return 0
+    n_half = topology.edge_count()
+    n_verts = len(topology.edge_per_vertex)
+    n_faces = len(topology.edge_per_face)
+    half_cap = n_half + 6 * max_splits
+    vert_cap = n_verts + max_splits
+    face_cap = n_faces + 2 * max_splits
 
-    heap: list[tuple[float, int]] = []
-    for ue in range(topology.edge_count() // 2):
-        if topology.is_lone(2 * ue):
-            continue
-        x = element(ue)
-        if x is not None:
-            heap.append(x)
-    heapq.heapify(heap)
-    splits = 0
-    while splits < max_splits and heap:
-        neg_len, neg_ue = heapq.heappop(heap)
-        ue = -neg_ue
-        if -neg_len != float(_edge_len_sq(topology, points.data, ue)):
-            continue
-        e = 2 * ue
-        o = points.data[topology.org[e]]
-        d = points.data[topology.org[e ^ 1]]
-        center = F32(0.5) * d + F32(0.5) * o
-        topology.split_edge(e, region)
-        new_vert = topology.org[e]
-        points.set(new_vert, center)
-        new_verts.append(new_vert)
-        splits += 1
-        _delaunay_origin_ring(topology, points.data, e, region, angle)
-        for ei in list(topology.org_ring(e)):
-            x = element(ei >> 1)
-            if x is not None:
-                heapq.heappush(heap, x)
-    return splits
+    def padded(values: list[int], size: int) -> np.ndarray:
+        out = np.full(size, -1, dtype=np.int32)
+        out[: len(values)] = values
+        return out
 
-
-def _delaunay_origin_ring(
-    topology: Topology, data: np.ndarray, e0: int, region: set[int], max_angle: np.float32
-) -> None:
-    e = e0
+    flags = np.zeros(face_cap, dtype=np.int32)
+    valid = [f for f in region if topology.edge_per_face[f] >= 0]
+    flags[valid] = 1
+    heap_cap = n_half // 2 + 32 * max_splits
     while True:
-        test = topology.prv[e ^ 1]
-        if (
-            topology.lft[test] >= 0
-            and topology.lft[test ^ 1] >= 0
-            and not _keeps_delaunay(topology, data, test, region, max_angle)
-        ):
-            topology.flip_edge(test)
-        else:
-            e = topology.nxt[e]
-            if e == e0:
-                return
-
-
-_CANNOT, _CAN, _MUST = 0, 1, 2
-
-
-def _can_flip(topology: Topology, edge: int, region: set[int]) -> int:
-    if not (_in_region(topology, edge, region) and _in_region(topology, edge ^ 1, region)):
-        return _CANNOT
-    _, c, d = topology.tri_verts(edge)
-    b = topology.org[topology.prv[edge] ^ 1]
-    if b == d:
-        return _CANNOT
-    multiple = False
-    i = topology.nxt[edge]
-    while i != edge:
-        if topology.org[i ^ 1] == c:
-            multiple = True
+        nxt = padded(topology.nxt, half_cap)
+        prv = padded(topology.prv, half_cap)
+        org = padded(topology.org, half_cap)
+        lft = padded(topology.lft, half_cap)
+        epv = padded(topology.edge_per_vertex, vert_cap)
+        epf = padded(topology.edge_per_face, face_cap)
+        region_flags = flags.copy()
+        positions = np.zeros((vert_cap, 3), dtype=np.float32)
+        positions[: points.size] = points.array()
+        counts = np.array([n_half, n_verts, n_faces, 0, 0, 0], dtype=np.int32)
+        log = np.full((max_splits, 7), -1, dtype=np.int32)
+        mesh = kernel_holes.SerialMesh()
+        mesh.nxt = wp.array(nxt, dtype=wp.int32, device="cpu", copy=False)
+        mesh.prv = wp.array(prv, dtype=wp.int32, device="cpu", copy=False)
+        mesh.org = wp.array(org, dtype=wp.int32, device="cpu", copy=False)
+        mesh.lft = wp.array(lft, dtype=wp.int32, device="cpu", copy=False)
+        mesh.edge_per_vertex = wp.array(epv, dtype=wp.int32, device="cpu", copy=False)
+        mesh.edge_per_face = wp.array(epf, dtype=wp.int32, device="cpu", copy=False)
+        mesh.region = wp.array(region_flags, dtype=wp.int32, device="cpu", copy=False)
+        mesh.points = wp.array(positions, dtype=wp.vec3, device="cpu", copy=False)
+        mesh.counts = wp.array(counts, dtype=wp.int32, device="cpu", copy=False)
+        mesh.heap_len = wp.array(np.empty(heap_cap, dtype=np.float32), device="cpu", copy=False)
+        mesh.heap_edge = wp.array(np.empty(heap_cap, dtype=np.int32), device="cpu", copy=False)
+        mesh.log = wp.array(log, dtype=wp.int32, device="cpu", copy=False)
+        wp.launch(
+            kernel_holes.serial_subdivide,
+            dim=1,
+            inputs=[mesh, F32(max_edge) * F32(max_edge), max_splits, F32(max_angle_change)],
+            device="cpu",
+        )
+        if counts[5] == 0:
             break
-        i = topology.nxt[i]
-    will_be_multiple = topology.find_edge(b, d) >= 0
-    if multiple and not will_be_multiple:
-        return _MUST
-    if not multiple and will_be_multiple:
-        return _CANNOT
-    return _CAN
+        heap_cap *= 4  # the queue outgrew its capacity: rerun from the untouched lists
 
-
-def _keeps_delaunay(
-    topology: Topology, data: np.ndarray, edge: int, region: set[int], max_angle: np.float32
-) -> bool:
-    """Report whether ``edge`` should stay rather than flip (the reference's flip test)."""
-    can = _can_flip(topology, edge, region)
-    if can == _CANNOT:
-        return True
-    if can == _MUST:
-        return False
-    a, c, d = topology.tri_verts(edge)
-    b = topology.org[topology.prv[edge] ^ 1]
-    ap, bp, cp, dp = data[a], data[b], data[c], data[d]
-    if _segments_dist_sq(ap, cp, bp, dp) > F32(1):
-        return True
-    if not _unfold_convex(ap, bp, cp, dp):
-        return True
-    angle = max_angle
-    if angle < _NO_ANGLE_LIMIT:
-        ratio = max(_aspect_ratio(ap, cp, dp), _aspect_ratio(cp, ap, bp))
-        if ratio > F32(1000):
-            angle = _NO_ANGLE_LIMIT
-    return _delaunay_quad(_as_d3(ap), _as_d3(bp), _as_d3(cp), _as_d3(dp), float(angle))
-
-
-def _as_d3(p: np.ndarray) -> _D3:
-    return (float(p[0]), float(p[1]), float(p[2]))
-
-
-# Double-precision geometry of the flip test, on plain float triples: the same IEEE operations
-# in the same order as the vector forms above, without an array per call.
-_D3 = tuple[float, float, float]
-
-
-def _sub3(a: _D3, b: _D3) -> _D3:
-    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
-
-
-def _cross3(a: _D3, b: _D3) -> _D3:
-    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
-
-
-def _dot3(a: _D3, b: _D3) -> float:
-    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-
-
-def _normal3(p: _D3, q: _D3, r: _D3) -> _D3:
-    v = _cross3(_sub3(q, p), _sub3(r, p))
-    length = math.sqrt(_dot3(v, v))
-    if length <= 0:
-        return (0.0, 0.0, 0.0)
-    inv = 1.0 / length
-    return (inv * v[0], inv * v[1], inv * v[2])
-
-
-def _dihedral3(left: _D3, right: _D3, edge: _D3) -> float:
-    length = math.sqrt(_dot3(edge, edge))
-    inv = 1.0 / length if length > 0 else 0.0
-    direction = (inv * edge[0], inv * edge[1], inv * edge[2]) if length > 0 else (0.0, 0.0, 0.0)
-    return math.atan2(_dot3(direction, _cross3(left, right)), _dot3(left, right))
-
-
-def _circum_sq3(a: _D3, b: _D3, c: _D3) -> float:
-    ba, ac, cb = _sub3(b, a), _sub3(a, c), _sub3(c, b)
-    ab_sq, ca_sq, bc_sq = _dot3(ba, ba), _dot3(ac, ac), _dot3(cb, cb)
-    if ab_sq <= 0:
-        return ca_sq
-    if ca_sq <= 0:
-        return bc_sq
-    if bc_sq <= 0:
-        return ab_sq
-    f = _cross3(ba, _sub3(c, a))
-    f_sq = _dot3(f, f)
-    if f_sq <= 0:
-        return math.inf
-    return ab_sq * ca_sq * bc_sq / f_sq
-
-
-def _min_circle_sq3(a: _D3, b: _D3, c: _D3) -> float:
-    ba, ac, cb = _sub3(b, a), _sub3(a, c), _sub3(c, b)
-    ab_sq, ca_sq, bc_sq = _dot3(ba, ba), _dot3(ac, ac), _dot3(cb, cb)
-    if ca_sq >= bc_sq + ab_sq:
-        return ca_sq
-    if bc_sq >= ab_sq + ca_sq:
-        return bc_sq
-    if ab_sq >= ca_sq + bc_sq:
-        return ab_sq
-    f = _cross3(ba, _sub3(c, a))
-    return ab_sq * ca_sq * bc_sq / _dot3(f, f)
-
-
-def _delaunay_quad(a: _D3, b: _D3, c: _D3, d: _D3, max_angle: float) -> bool:
-    """Report whether diagonal ``a c`` of quadrangle ``a b c d`` should stay (no flip)."""
-    n_abc = _normal3(a, b, c)
-    n_acd = _normal3(a, c, d)
-    old_pocket = _dot3(n_abc, n_acd) < -0.9
-    n_abd = _normal3(a, b, d)
-    n_dbc = _normal3(d, b, c)
-    new_pocket = _dot3(n_abd, n_dbc) < -0.9
-    if old_pocket != new_pocket:
-        return new_pocket
-    eps = 1e-7
-    if old_pocket:
-        m_ac = max(_min_circle_sq3(a, c, d), _min_circle_sq3(c, a, b))
-        m_bd = max(_min_circle_sq3(b, d, a), _min_circle_sq3(d, b, c))
-        return m_ac <= m_bd + eps * (m_ac + m_bd)
-    if max_angle < float(_NO_ANGLE_LIMIT):
-        old_angle = _dihedral3(n_abd, n_dbc, _sub3(d, b))
-        new_angle = _dihedral3(n_abc, n_acd, _sub3(a, c))
-        if abs(old_angle - new_angle) > max_angle:
-            return True
-    m_ac = max(_circum_sq3(a, c, d), _circum_sq3(c, a, b))
-    m_bd = max(_circum_sq3(b, d, a), _circum_sq3(d, b, c))
-    if not math.isfinite(m_ac):
-        if not math.isfinite(m_bd):
-            ac, bd = _sub3(a, c), _sub3(b, d)
-            return _dot3(ac, ac) <= _dot3(bd, bd)
-        return m_ac <= m_bd
-    return m_ac <= m_bd + eps * (m_ac + m_bd)
+    n_half, n_verts, n_faces, _, splits = (int(x) for x in counts[:5])
+    topology.nxt = nxt[:n_half].tolist()
+    topology.prv = prv[:n_half].tolist()
+    topology.org = org[:n_half].tolist()
+    topology.lft = lft[:n_half].tolist()
+    topology.edge_per_vertex = epv[:n_verts].tolist()
+    topology.edge_per_face = epf[:n_faces].tolist()
+    points.data = positions
+    points.size = n_verts
+    region.clear()
+    region.update(np.flatnonzero(region_flags[:n_faces]).tolist())
+    log = log[:splits]
+    new_verts.extend(log[:, 2].tolist())
+    if topology.face_source is not None:
+        source = topology.face_source
+        source.extend([-1] * (n_faces - len(source)))
+        for _, _, _, face_l, parent_l, face_r, parent_r in log.tolist():
+            if face_l >= 0:
+                source[face_l] = source[parent_l]
+            if face_r >= 0:
+                source[face_r] = source[parent_r]
+    if topology.vertex_rows is not None:
+        rows = topology.vertex_rows
+        rows.extend({} for _ in range(n_verts - len(rows)))
+        for o, d, vert, *_ in log.tolist():
+            row: dict[int, float] = {}
+            for end in (o, d):
+                for v, w in rows[end].items():
+                    row[v] = row.get(v, 0.0) + 0.5 * w
+            rows[vert] = row
+    return splits
 
 
 _Vec2 = tuple[Any, Any]  # two float32 scalars
@@ -1557,53 +1534,6 @@ def _unfold_convex(a: np.ndarray, b: np.ndarray, c: np.ndarray, d: np.ndarray) -
         x = F32(0) if cc == 0 else c1 / cc
     x = min(max(x, F32(0)), F32(1))
     return bool(F32(0) < x < F32(1))
-
-
-def _segments_dist_sq(a0: np.ndarray, a1: np.ndarray, b0: np.ndarray, b1: np.ndarray) -> np.float32:
-    """Squared distance between the closest points of segments ``a0 a1`` and ``b0 b1``."""
-    adir = a1 - a0
-    bdir = b1 - b0
-    aa = _dot(adir, adir)
-    bb = _dot(bdir, bdir)
-    ab = _dot(adir, bdir)
-    denom = aa * bb - ab * ab
-    d = b0 - a0
-    ad = _dot(adir, d)
-    bd = _dot(bdir, d)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        t = (ad * bb - bd * ab) / denom
-        if t < 0 or np.isnan(t):
-            t = F32(0)
-        elif t > 1:
-            t = F32(1)
-        u = (t * ab - bd) / bb
-        if u <= 0 or np.isnan(u):
-            pb = b0
-            t = ad / aa
-            if t <= 0 or np.isnan(t):
-                pa = a0
-            elif t >= 1:
-                pa = a0 + adir
-            else:
-                pa = a0 + adir * t
-        elif u >= 1:
-            pb = b0 + bdir
-            t = (ab + ad) / aa
-            if t <= 0 or np.isnan(t):
-                pa = a0
-            elif t >= 1:
-                pa = a0 + adir
-            else:
-                pa = a0 + adir * t
-        else:
-            pb = b0 + bdir * u
-            if t <= 0 or np.isnan(t):
-                pa = a0
-            elif t >= 1:
-                pa = a0 + adir
-            else:
-                pa = a0 + adir * t
-    return F32(_lsq(pa - pb))
 
 
 def hole_representatives(topology: Topology) -> list[int]:
@@ -2795,7 +2725,7 @@ def fill_holes(
         target = _loop_length(topology, points.data, edges) / len(edges) if edges else 0.0
     patch: set[int] = set()
     for a0 in holes:
-        new_faces = fill_hole(topology, points, a0, metric, smooth_rim, avoid_existing)
+        new_faces = fill_hole(topology, points, a0, metric, smooth_rim, avoid_existing, device)
         if triangulate_only or not new_faces:
             patch.update(new_faces)
             continue
@@ -2837,7 +2767,7 @@ def refill(
             target = float(F32(_loop_length(topology, points.data, loop) / len(loop)) * F32(1.5))
         if topology.lft[loop[0]] >= 0:
             continue
-        new_faces = fill_hole(topology, points, loop[0], metric, True, True)
+        new_faces = fill_hole(topology, points, loop[0], metric, True, True, device)
         if triangulate_only or not new_faces:
             patch.update(new_faces)
             continue

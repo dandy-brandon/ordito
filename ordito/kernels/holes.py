@@ -2813,6 +2813,838 @@ def join_rounds(
         block_barrier()
 
 
+# ---------------------------------------------------------------------------------------------
+# The serial longest-edge refinement of ``method="meshlib"``, natively, in one thread
+# ---------------------------------------------------------------------------------------------
+# ``ordito._serial_mesh.subdivide`` operation for operation: a half-edge structure whose undirected
+# edge ``k`` is the half-edges ``2 k`` and ``2 k + 1``, records allocated and relinked in the same
+# order, a max-heap of ``(length^2, edge)`` keys (a total order, so any heap pops alike), and
+# every rounding step in ``float32`` (``float64`` for the flip quadrangle) in the same operation
+# order. Its kernel builds unfused, so no multiply-add contracts what the host form rounds twice.
+
+
+@wp.struct
+class SerialMesh:
+    """The half-edge arrays, positions, region flags, split queue and split log of a refinement."""
+
+    nxt: wp.array[wp.int32]
+    prv: wp.array[wp.int32]
+    org: wp.array[wp.int32]
+    lft: wp.array[wp.int32]
+    edge_per_vertex: wp.array[wp.int32]
+    edge_per_face: wp.array[wp.int32]
+    region: wp.array[wp.int32]
+    points: wp.array[wp.vec3]
+    # counts[0..3]: half-edges, vertices, faces, queued keys; counts[4]: splits done;
+    # counts[5]: 1 once the queue overflowed its capacity.
+    counts: wp.array[wp.int32]
+    heap_len: wp.array[wp.float32]
+    heap_edge: wp.array[wp.int32]
+    # Per split: the split edge's two ends, the new vertex, the new faces (or -1) and their parents.
+    log: wp.array2d[wp.int32]
+
+
+@wp.func
+def serial_set_org_ring(m: SerialMesh, a: wp.int32, v: wp.int32):
+    i = a
+    while True:
+        m.org[i] = v
+        i = m.nxt[i]
+        if i == a:
+            break
+
+
+@wp.func
+def serial_set_left_ring(m: SerialMesh, a: wp.int32, f: wp.int32):
+    i = a
+    while True:
+        m.lft[i] = f
+        i = m.prv[i ^ 1]
+        if i == a:
+            break
+
+
+@wp.func
+def serial_same_org_ring(m: SerialMesh, a: wp.int32, b: wp.int32) -> wp.bool:
+    i = a
+    while True:
+        if i == b:
+            return True
+        i = m.nxt[i]
+        if i == a:
+            return False
+    return False
+
+
+@wp.func
+def serial_same_left_ring(m: SerialMesh, a: wp.int32, b: wp.int32) -> wp.bool:
+    i = a
+    while True:
+        if i == b:
+            return True
+        i = m.prv[i ^ 1]
+        if i == a:
+            return False
+    return False
+
+
+@wp.func
+def serial_set_org(m: SerialMesh, a: wp.int32, v: wp.int32):
+    old = m.org[a]
+    if v != old:
+        serial_set_org_ring(m, a, v)
+        if old >= 0:
+            m.edge_per_vertex[old] = -1
+        if v >= 0:
+            m.edge_per_vertex[v] = a
+
+
+@wp.func
+def serial_set_left(m: SerialMesh, a: wp.int32, f: wp.int32):
+    old = m.lft[a]
+    if f != old:
+        serial_set_left_ring(m, a, f)
+        if old >= 0:
+            m.edge_per_face[old] = -1
+        if f >= 0:
+            m.edge_per_face[f] = a
+
+
+@wp.func
+def serial_splice(m: SerialMesh, a: wp.int32, b: wp.int32):
+    if a != b:
+        a_next = m.nxt[a]
+        b_next = m.nxt[b]
+        same_org = m.org[a] == m.org[b]
+        same_left = m.lft[a] == m.lft[b]
+        if not same_org:
+            if m.org[a] >= 0:
+                serial_set_org_ring(m, b, m.org[a])
+            elif m.org[b] >= 0:
+                serial_set_org_ring(m, a, m.org[b])
+        if not same_left:
+            if m.lft[a] >= 0:
+                serial_set_left_ring(m, b, m.lft[a])
+            elif m.lft[b] >= 0:
+                serial_set_left_ring(m, a, m.lft[b])
+        m.nxt[a] = b_next
+        m.nxt[b] = a_next
+        pa = m.prv[b_next]
+        m.prv[b_next] = m.prv[a_next]
+        m.prv[a_next] = pa
+        if same_org and m.org[b] >= 0:
+            serial_set_org_ring(m, b, -1)
+            v = m.org[a]
+            if not serial_same_org_ring(m, m.edge_per_vertex[v], a):
+                m.edge_per_vertex[v] = a
+        if same_left and m.lft[b] >= 0:
+            serial_set_left_ring(m, b, -1)
+            f = m.lft[a]
+            if not serial_same_left_ring(m, m.edge_per_face[f], a):
+                m.edge_per_face[f] = a
+
+
+@wp.func
+def serial_make_edge(m: SerialMesh) -> wp.int32:
+    e = m.counts[0]
+    m.nxt[e] = e
+    m.nxt[e + 1] = e + 1
+    m.prv[e] = e
+    m.prv[e + 1] = e + 1
+    m.org[e] = -1
+    m.org[e + 1] = -1
+    m.lft[e] = -1
+    m.lft[e + 1] = -1
+    m.counts[0] = e + 2
+    return e
+
+
+@wp.func
+def serial_add_face(m: SerialMesh) -> wp.int32:
+    f = m.counts[2]
+    m.edge_per_face[f] = -1
+    m.region[f] = 0
+    m.counts[2] = f + 1
+    return f
+
+
+@wp.func
+def serial_flip_edge(m: SerialMesh, e: wp.int32):
+    lf = m.lft[e]
+    rf = m.lft[e ^ 1]
+    serial_set_left_ring(m, e, -1)
+    serial_set_left_ring(m, e ^ 1, -1)
+    a = m.nxt[e ^ 1] ^ 1
+    b = m.nxt[e] ^ 1
+    serial_splice(m, m.prv[e], e)
+    serial_splice(m, m.prv[e ^ 1], e ^ 1)
+    serial_splice(m, a, e)
+    serial_splice(m, b, e ^ 1)
+    serial_set_left_ring(m, e, lf)
+    serial_set_left_ring(m, e ^ 1, rf)
+    if lf >= 0:
+        m.edge_per_face[lf] = e
+    if rf >= 0:
+        m.edge_per_face[rf] = e ^ 1
+
+
+@wp.func
+def serial_split_edge(m: SerialMesh, e: wp.int32, split: wp.int32):
+    """Split ``e`` as ``Topology.split_edge`` does, logging the split as row ``split``."""
+    lf = m.lft[e]
+    if lf >= 0:
+        serial_set_left_ring(m, e, -1)
+    rf = m.lft[e ^ 1]
+    if rf >= 0:
+        serial_set_left_ring(m, e ^ 1, -1)
+    m.log[split, 0] = m.org[e]
+    m.log[split, 1] = m.org[e ^ 1]
+    m.log[split, 3] = -1
+    m.log[split, 4] = lf
+    m.log[split, 5] = -1
+    m.log[split, 6] = rf
+    e_prev = m.prv[e]
+    e_next = m.nxt[e]
+    v0 = wp.int32(-1)
+    if e_prev != e:
+        serial_splice(m, e_prev, e)
+    else:
+        v0 = m.org[e]
+        serial_set_org(m, e, -1)
+    e0 = serial_make_edge(m)
+    serial_splice(m, e, e0 ^ 1)
+    if e_prev != e:
+        serial_splice(m, e_prev, e0)
+    else:
+        serial_set_org(m, e0, v0)
+    if lf >= 0 and e_next != e:
+        el = serial_make_edge(m)
+        serial_splice(m, e, el)
+        serial_splice(m, e_next ^ 1, el ^ 1)
+        face = serial_add_face(m)
+        serial_set_left(m, el, face)
+        m.region[face] = m.region[lf]
+        m.log[split, 3] = face
+    if rf >= 0 and e_prev != e:
+        er = serial_make_edge(m)
+        serial_splice(m, e0 ^ 1, er)
+        serial_splice(m, m.prv[e_prev ^ 1], er ^ 1)
+        face = serial_add_face(m)
+        serial_set_left(m, er ^ 1, face)
+        m.region[face] = m.region[rf]
+        m.log[split, 5] = face
+    serial_set_left_ring(m, e, lf)
+    serial_set_left_ring(m, e ^ 1, rf)
+    if lf >= 0:
+        m.edge_per_face[lf] = e
+    if rf >= 0:
+        m.edge_per_face[rf] = e ^ 1
+    vert = m.counts[1]
+    m.edge_per_vertex[vert] = -1
+    m.counts[1] = vert + 1
+    serial_set_org(m, e, vert)
+    m.log[split, 2] = vert
+
+
+@wp.func
+def serial_find_edge(m: SerialMesh, o: wp.int32, d: wp.int32) -> wp.int32:
+    e0 = m.edge_per_vertex[o]
+    if e0 < 0:
+        return -1
+    e = e0
+    while True:
+        if m.org[e ^ 1] == d:
+            return e
+        e = m.nxt[e]
+        if e == e0:
+            return -1
+    return -1
+
+
+@wp.func
+def serial_in_region(m: SerialMesh, e: wp.int32) -> wp.bool:
+    f = m.lft[e]
+    return f >= 0 and m.region[f] != 0
+
+
+@wp.func
+def serial_len_sq(m: SerialMesh, ue: wp.int32) -> wp.float32:
+    d = m.points[m.org[2 * ue]] - m.points[m.org[2 * ue + 1]]
+    return d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
+
+
+@wp.func
+def serial_heap_less(m: SerialMesh, i: wp.int32, j: wp.int32) -> wp.bool:
+    """Report whether queue slot ``i`` ranks below slot ``j``: shorter, then the lower edge."""
+    if m.heap_len[i] != m.heap_len[j]:
+        return m.heap_len[i] < m.heap_len[j]
+    return m.heap_edge[i] < m.heap_edge[j]
+
+
+@wp.func
+def serial_heap_swap(m: SerialMesh, i: wp.int32, j: wp.int32):
+    t = m.heap_len[i]
+    m.heap_len[i] = m.heap_len[j]
+    m.heap_len[j] = t
+    u = m.heap_edge[i]
+    m.heap_edge[i] = m.heap_edge[j]
+    m.heap_edge[j] = u
+
+
+@wp.func
+def serial_heap_push(m: SerialMesh, length: wp.float32, ue: wp.int32):
+    n = m.counts[3]
+    if n >= m.heap_len.shape[0]:
+        m.counts[5] = 1
+        return
+    m.heap_len[n] = length
+    m.heap_edge[n] = ue
+    m.counts[3] = n + 1
+    i = n
+    while i > 0:
+        parent = (i - 1) // 2
+        if serial_heap_less(m, parent, i):
+            serial_heap_swap(m, parent, i)
+            i = parent
+        else:
+            break
+
+
+@wp.func
+def serial_heap_pop(m: SerialMesh):
+    n = m.counts[3] - 1
+    serial_heap_swap(m, 0, n)
+    m.counts[3] = n
+    i = wp.int32(0)
+    while True:
+        left = 2 * i + 1
+        if left >= n:
+            break
+        child = left
+        if left + 1 < n and serial_heap_less(m, left, left + 1):
+            child = left + 1
+        if serial_heap_less(m, i, child):
+            serial_heap_swap(m, i, child)
+            i = child
+        else:
+            break
+
+
+@wp.func
+def serial_queue_edge(m: SerialMesh, ue: wp.int32, max_sq: wp.float32):
+    """Queue undirected edge ``ue`` if it is inner to or bounds the region and not too short."""
+    e = 2 * ue
+    if serial_in_region(m, e) or serial_in_region(m, e ^ 1):
+        length = serial_len_sq(m, ue)
+        if not (length < max_sq):
+            serial_heap_push(m, length, ue)
+
+
+@wp.func
+def serial_aspect_ratio(a: wp.vec3, b: wp.vec3, c: wp.vec3) -> wp.float32:
+    """Circumradius over twice the inradius in ``float32``, the host form's order."""
+    u = c - b
+    v = a - c
+    w = b - a
+    bc = wp.sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2])
+    ca = wp.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+    ab = wp.sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2])
+    half = (bc + ca + ab) / wp.float32(2.0)
+    den = wp.float32(8.0) * (half - bc) * (half - ca) * (half - ab)
+    if den <= wp.float32(0.0):
+        return wp.float32(3.4028234663852886e38)
+    return bc * ca * ab / den
+
+
+@wp.func
+def serial_cross_f(a: wp.vec3, b: wp.vec3) -> wp.vec3:
+    return wp.vec3(a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+
+
+@wp.func
+def serial_dot_f(a: wp.vec3, b: wp.vec3) -> wp.float32:
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+@wp.func
+def serial_unfold(b: wp.vec3, c: wp.vec3, d: wp.vec2) -> wp.vec2:
+    dot_bc = serial_dot_f(b, c)
+    x = serial_cross_f(b, c)
+    crs_bc = wp.sqrt(serial_dot_f(x, x))
+    dd = d[0] * d[0] + d[1] * d[1]
+    if dd <= wp.float32(0.0):
+        return wp.vec2(wp.float32(0.0), wp.float32(0.0))
+    inv = wp.float32(1.0) / dd
+    return wp.vec2((dot_bc * d[0] + crs_bc * (-d[1])) * inv, (dot_bc * d[1] + crs_bc * d[0]) * inv)
+
+
+@wp.func
+def serial_unfold_convex(a: wp.vec3, b: wp.vec3, c: wp.vec3, d: wp.vec3) -> wp.bool:
+    vb = b - a
+    vc = c - a
+    vd = d - a
+    ub = wp.vec2(wp.sqrt(serial_dot_f(vb, vb)), wp.float32(0.0))
+    uc = serial_unfold(vb, vc, ub)
+    ud = serial_unfold(vc, vd, uc)
+    c1 = ud[0] * ub[1] - ud[1] * ub[0]
+    p = wp.vec2(ub[0] - uc[0], ub[1] - uc[1])
+    q = wp.vec2(ud[0] - uc[0], ud[1] - uc[1])
+    c2 = p[0] * q[1] - p[1] * q[0]
+    x = wp.float32(0.0)
+    if c1 == wp.float32(0.0) and c2 == wp.float32(0.0):
+        bb = uc[0] * uc[0] + uc[1] * uc[1]
+        if bb != wp.float32(0.0):
+            x = (ub[0] * uc[0] + ub[1] * uc[1] + (ud[0] * uc[0] + ud[1] * uc[1])) / (
+                wp.float32(2.0) * bb
+            )
+    else:
+        cc = c1 + c2
+        if cc != wp.float32(0.0):
+            x = c1 / cc
+    x = wp.min(wp.max(x, wp.float32(0.0)), wp.float32(1.0))
+    return x > wp.float32(0.0) and x < wp.float32(1.0)
+
+
+@wp.func
+def serial_segments_dist_sq(a0: wp.vec3, a1: wp.vec3, b0: wp.vec3, b1: wp.vec3) -> wp.float32:
+    """Squared distance between the closest points of segments ``a0 a1`` and ``b0 b1``."""
+    adir = a1 - a0
+    bdir = b1 - b0
+    aa = serial_dot_f(adir, adir)
+    bb = serial_dot_f(bdir, bdir)
+    ab = serial_dot_f(adir, bdir)
+    denom = aa * bb - ab * ab
+    d = b0 - a0
+    ad = serial_dot_f(adir, d)
+    bd = serial_dot_f(bdir, d)
+    t = (ad * bb - bd * ab) / denom
+    if t < wp.float32(0.0) or wp.isnan(t):
+        t = wp.float32(0.0)
+    elif t > wp.float32(1.0):
+        t = wp.float32(1.0)
+    u = (t * ab - bd) / bb
+    pa = a0
+    pb = b0
+    if u <= wp.float32(0.0) or wp.isnan(u):
+        pb = b0
+        t = ad / aa
+        if t <= wp.float32(0.0) or wp.isnan(t):
+            pa = a0
+        elif t >= wp.float32(1.0):
+            pa = a0 + adir
+        else:
+            pa = a0 + adir * t
+    elif u >= wp.float32(1.0):
+        pb = b0 + bdir
+        t = (ab + ad) / aa
+        if t <= wp.float32(0.0) or wp.isnan(t):
+            pa = a0
+        elif t >= wp.float32(1.0):
+            pa = a0 + adir
+        else:
+            pa = a0 + adir * t
+    else:
+        pb = b0 + bdir * u
+        if t <= wp.float32(0.0) or wp.isnan(t):
+            pa = a0
+        elif t >= wp.float32(1.0):
+            pa = a0 + adir
+        else:
+            pa = a0 + adir * t
+    r = pa - pb
+    return serial_dot_f(r, r)
+
+
+@wp.func
+def serial_dot_d(a: wp.vec3d, b: wp.vec3d) -> wp.float64:
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+@wp.func
+def serial_cross_d(a: wp.vec3d, b: wp.vec3d) -> wp.vec3d:
+    return wp.vec3d(a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+
+
+@wp.func
+def serial_normal_d(p: wp.vec3d, q: wp.vec3d, r: wp.vec3d) -> wp.vec3d:
+    v = serial_cross_d(q - p, r - p)
+    length = wp.sqrt(serial_dot_d(v, v))
+    if length <= wp.float64(0.0):
+        return wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
+    inv = wp.float64(1.0) / length
+    return wp.vec3d(inv * v[0], inv * v[1], inv * v[2])
+
+
+@wp.func
+def serial_dihedral_d(left: wp.vec3d, right: wp.vec3d, edge: wp.vec3d) -> wp.float64:
+    length = wp.sqrt(serial_dot_d(edge, edge))
+    direction = wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
+    if length > wp.float64(0.0):
+        inv = wp.float64(1.0) / length
+        direction = wp.vec3d(inv * edge[0], inv * edge[1], inv * edge[2])
+    return wp.atan2(serial_dot_d(direction, serial_cross_d(left, right)), serial_dot_d(left, right))
+
+
+@wp.func
+def serial_circum_sq_d(a: wp.vec3d, b: wp.vec3d, c: wp.vec3d) -> wp.float64:
+    ba = b - a
+    ac = a - c
+    cb = c - b
+    ab_sq = serial_dot_d(ba, ba)
+    ca_sq = serial_dot_d(ac, ac)
+    bc_sq = serial_dot_d(cb, cb)
+    if ab_sq <= wp.float64(0.0):
+        return ca_sq
+    if ca_sq <= wp.float64(0.0):
+        return bc_sq
+    if bc_sq <= wp.float64(0.0):
+        return ab_sq
+    f = serial_cross_d(ba, c - a)
+    f_sq = serial_dot_d(f, f)
+    if f_sq <= wp.float64(0.0):
+        return wp.float64(wp.inf)
+    return ab_sq * ca_sq * bc_sq / f_sq
+
+
+@wp.func
+def serial_min_circle_sq_d(a: wp.vec3d, b: wp.vec3d, c: wp.vec3d) -> wp.float64:
+    ba = b - a
+    ac = a - c
+    cb = c - b
+    ab_sq = serial_dot_d(ba, ba)
+    ca_sq = serial_dot_d(ac, ac)
+    bc_sq = serial_dot_d(cb, cb)
+    if ca_sq >= bc_sq + ab_sq:
+        return ca_sq
+    if bc_sq >= ab_sq + ca_sq:
+        return bc_sq
+    if ab_sq >= ca_sq + bc_sq:
+        return ab_sq
+    f = serial_cross_d(ba, c - a)
+    return ab_sq * ca_sq * bc_sq / serial_dot_d(f, f)
+
+
+@wp.func
+def serial_delaunay_quad(
+    a: wp.vec3d, b: wp.vec3d, c: wp.vec3d, d: wp.vec3d, max_angle: wp.float64
+) -> wp.bool:
+    """Report whether diagonal ``a c`` of quadrangle ``a b c d`` should stay (no flip)."""
+    n_abc = serial_normal_d(a, b, c)
+    n_acd = serial_normal_d(a, c, d)
+    old_pocket = serial_dot_d(n_abc, n_acd) < wp.float64(-0.9)
+    n_abd = serial_normal_d(a, b, d)
+    n_dbc = serial_normal_d(d, b, c)
+    new_pocket = serial_dot_d(n_abd, n_dbc) < wp.float64(-0.9)
+    if old_pocket != new_pocket:
+        return new_pocket
+    eps = wp.float64(1e-7)
+    if old_pocket:
+        m_ac = wp.max(serial_min_circle_sq_d(a, c, d), serial_min_circle_sq_d(c, a, b))
+        m_bd = wp.max(serial_min_circle_sq_d(b, d, a), serial_min_circle_sq_d(d, b, c))
+        return m_ac <= m_bd + eps * (m_ac + m_bd)
+    no_limit = wp.float64(wp.float32(2.0) * wp.float32(3.1415927410125732))
+    if max_angle < no_limit:
+        old_angle = serial_dihedral_d(n_abd, n_dbc, d - b)
+        new_angle = serial_dihedral_d(n_abc, n_acd, a - c)
+        if wp.abs(old_angle - new_angle) > max_angle:
+            return True
+    m_ac = wp.max(serial_circum_sq_d(a, c, d), serial_circum_sq_d(c, a, b))
+    m_bd = wp.max(serial_circum_sq_d(b, d, a), serial_circum_sq_d(d, b, c))
+    if not wp.isfinite(m_ac):
+        if not wp.isfinite(m_bd):
+            ac = a - c
+            bd = b - d
+            return serial_dot_d(ac, ac) <= serial_dot_d(bd, bd)
+        return m_ac <= m_bd
+    return m_ac <= m_bd + eps * (m_ac + m_bd)
+
+
+@wp.func
+def serial_keeps(m: SerialMesh, edge: wp.int32, max_angle: wp.float32) -> wp.bool:
+    """Report whether ``edge`` should stay rather than flip (``_serial_mesh._keeps_delaunay``)."""
+    if not (serial_in_region(m, edge) and serial_in_region(m, edge ^ 1)):
+        return True
+    a = m.org[edge]
+    c = m.org[edge ^ 1]
+    d = m.org[m.prv[edge ^ 1] ^ 1]
+    b = m.org[m.prv[edge] ^ 1]
+    if b == d:
+        return True
+    multiple = wp.bool(False)
+    i = m.nxt[edge]
+    while i != edge:
+        if m.org[i ^ 1] == c:
+            multiple = True
+            break
+        i = m.nxt[i]
+    will_be_multiple = serial_find_edge(m, b, d) >= 0
+    if multiple and not will_be_multiple:
+        return False
+    if (not multiple) and will_be_multiple:
+        return True
+    ap = m.points[a]
+    bp = m.points[b]
+    cp = m.points[c]
+    dp = m.points[d]
+    if serial_segments_dist_sq(ap, cp, bp, dp) > wp.float32(1.0):
+        return True
+    if not serial_unfold_convex(ap, bp, cp, dp):
+        return True
+    angle = max_angle
+    no_limit = wp.float32(2.0) * wp.float32(3.1415927410125732)
+    if angle < no_limit:
+        ratio = wp.max(serial_aspect_ratio(ap, cp, dp), serial_aspect_ratio(cp, ap, bp))
+        if ratio > wp.float32(1000.0):
+            angle = no_limit
+    return serial_delaunay_quad(
+        wp.vec3d(ap), wp.vec3d(bp), wp.vec3d(cp), wp.vec3d(dp), wp.float64(angle)
+    )
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def serial_subdivide(
+    mesh: SerialMesh, max_sq: wp.float32, max_splits: wp.int32, max_angle: wp.float32
+) -> None:
+    """Split the region's longest edges one at a time, flipping around each new vertex."""
+    n_undirected = mesh.counts[0] // 2
+    for ue in range(n_undirected):
+        e = 2 * ue
+        lone = mesh.org[e] < 0 and mesh.org[e + 1] < 0 and mesh.nxt[e] == e
+        if not lone:
+            serial_queue_edge(mesh, ue, max_sq)
+    splits = wp.int32(0)
+    while splits < max_splits and mesh.counts[3] > 0 and mesh.counts[5] == 0:
+        length = mesh.heap_len[0]
+        ue = mesh.heap_edge[0]
+        serial_heap_pop(mesh)
+        if length != serial_len_sq(mesh, ue):
+            continue
+        e = 2 * ue
+        o = mesh.points[mesh.org[e]]
+        d = mesh.points[mesh.org[e + 1]]
+        center = wp.float32(0.5) * d + wp.float32(0.5) * o
+        serial_split_edge(mesh, e, splits)
+        mesh.points[mesh.org[e]] = center
+        splits += 1
+        # The flip fan around the new vertex.
+        e0 = e
+        f = e
+        while True:
+            test = mesh.prv[f ^ 1]
+            if (
+                mesh.lft[test] >= 0
+                and mesh.lft[test ^ 1] >= 0
+                and not serial_keeps(mesh, test, max_angle)
+            ):
+                serial_flip_edge(mesh, test)
+            else:
+                f = mesh.nxt[f]
+                if f == e0:
+                    break
+        ei = e
+        while True:
+            serial_queue_edge(mesh, ei >> 1, max_sq)
+            ei = mesh.nxt[ei]
+            if ei == e:
+                break
+    mesh.counts[4] = splits
+
+
+# The interval DP of ``method="meshlib"``'s hole triangulation, one launch a diagonal, a thread an
+# interval: ``ordito._serial_mesh.plan_fill``'s NumPy batch, element for element, for the metrics
+# built from ``+ - * /`` and square roots alone (correctly rounded on both devices, unfused here).
+SERIAL_METRIC_CIRCUMSCRIBED = 0
+SERIAL_METRIC_PLANE = 1
+SERIAL_METRIC_PLANE_NORMALIZED = 2
+SERIAL_METRIC_MIN_AREA = 3
+SERIAL_METRIC_EDGE_LENGTH = 4
+SERIAL_METRIC_COMPLEX_FILL = 5
+_SERIAL_BAD = 1e10
+_SERIAL_DBL_MAX = 1.7976931348623157e308
+
+
+@wp.func
+def serial_lsq_f(v: wp.vec3) -> wp.float32:
+    return v[0] * v[0] + v[1] * v[1] + v[2] * v[2]
+
+
+@wp.func
+def serial_circum_sq_f(a: wp.vec3, b: wp.vec3, c: wp.vec3) -> wp.float32:
+    ab = serial_lsq_f(b - a)
+    ca = serial_lsq_f(a - c)
+    bc = serial_lsq_f(c - b)
+    if ab <= wp.float32(0.0):
+        return ca
+    if ca <= wp.float32(0.0):
+        return bc
+    if bc <= wp.float32(0.0):
+        return ab
+    f = serial_lsq_f(serial_cross_f(b - a, c - a))
+    if f <= wp.float32(0.0):
+        return wp.float32(wp.inf)
+    return ab * ca * bc / f
+
+
+@wp.func
+def serial_aspect_ratio_d(a: wp.vec3d, b: wp.vec3d, c: wp.vec3d) -> wp.float64:
+    u = c - b
+    v = a - c
+    w = b - a
+    bc = wp.sqrt(serial_dot_d(u, u))
+    ca = wp.sqrt(serial_dot_d(v, v))
+    ab = wp.sqrt(serial_dot_d(w, w))
+    half = (bc + ca + ab) / wp.float64(2.0)
+    den = wp.float64(8.0) * (half - bc) * (half - ca) * (half - ab)
+    if den <= wp.float64(0.0):
+        return wp.float64(_SERIAL_DBL_MAX)
+    return bc * ca * ab / den
+
+
+@wp.func
+def serial_fill_triangle(
+    points: wp.array[wp.vec3],
+    a: wp.int32,
+    b: wp.int32,
+    c: wp.int32,
+    metric: wp.int32,
+    normal: wp.vec3d,
+    inverse_area: wp.float64,
+) -> wp.float64:
+    """Evaluate the fill metric's triangle term of ``(a, b, c)`` as ``_serial_mesh`` does."""
+    pa = points[a]
+    pb = points[b]
+    pc = points[c]
+    if metric == SERIAL_METRIC_CIRCUMSCRIBED:
+        return wp.float64(wp.sqrt(serial_circum_sq_f(pa, pb, pc)))
+    if metric == SERIAL_METRIC_COMPLEX_FILL:
+        ratio = wp.float64(serial_aspect_ratio(pa, pb, pc))
+        area = wp.float64(wp.sqrt(serial_lsq_f(serial_cross_f(pb - pa, pc - pa))))
+        if ratio > wp.float64(_SERIAL_BAD):
+            return wp.float64(_SERIAL_BAD)
+        return ratio + wp.float64(1e2) * area * inverse_area
+    ad = wp.vec3d(pa)
+    bd = wp.vec3d(pb)
+    cd = wp.vec3d(pc)
+    face = serial_cross_d(bd - ad, cd - ad)
+    if metric == SERIAL_METRIC_MIN_AREA:
+        return wp.sqrt(serial_dot_d(face, face))
+    diameter = wp.sqrt(serial_circum_sq_d(ad, bd, cd))
+    dot = normal[0] * face[0] + normal[1] * face[1] + normal[2] * face[2]
+    if metric == SERIAL_METRIC_PLANE:
+        if dot < wp.float64(0.0):
+            return wp.float64(_SERIAL_BAD)
+        return diameter
+    area_sq = serial_dot_d(face, face)
+    ratio = serial_aspect_ratio_d(ad, bd, cd)
+    if (
+        area_sq == wp.float64(0.0)
+        or dot < wp.float64(0.0)
+        or dot * dot * wp.float64(4.0) < area_sq
+        or ratio > wp.float64(_SERIAL_BAD)
+    ):
+        return wp.float64(_SERIAL_BAD)
+    return diameter * ratio
+
+
+@wp.func
+def serial_fill_edge(
+    points: wp.array[wp.vec3],
+    a: wp.int32,
+    b: wp.int32,
+    lft: wp.int32,
+    rgt: wp.int32,
+    metric: wp.int32,
+) -> wp.float64:
+    """Evaluate the fill metric's term of edge ``a b`` between the triangles at ``lft``, ``rgt``."""
+    pa = points[a]
+    pb = points[b]
+    if metric == SERIAL_METRIC_EDGE_LENGTH:
+        return wp.float64(wp.sqrt(serial_lsq_f(pb - pa)))
+    ab = pb - pa
+    norm_a = serial_cross_f(points[rgt] - pb, -ab)
+    norm_c = serial_cross_f(points[lft] - pa, ab)
+    sa = wp.sqrt(serial_lsq_f(norm_a))
+    sc = wp.sqrt(serial_lsq_f(norm_c))
+    den = sa * sc
+    cos = serial_dot_f(norm_a, norm_c) / (sa * sc)
+    if den == wp.float32(0.0) or cos <= wp.float32(-1.0):
+        return wp.float64(_SERIAL_BAD)
+    x = (wp.float32(1.0) - cos) / (wp.float32(1.0) + cos)
+    x = x * x
+    return wp.float64(x * x)
+
+
+@wp.func
+def serial_apex_vertex(
+    apex: wp.int32, vert: wp.array[wp.int32], across: wp.int32, smooth_rim: wp.int32
+) -> wp.int32:
+    if apex >= 0:
+        return vert[apex]
+    if smooth_rim != 0:
+        return across
+    return -1
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def serial_fill_dp_diagonal(
+    points: wp.array[wp.vec3],
+    vert: wp.array[wp.int32],
+    across: wp.array[wp.int32],
+    linked_offsets: wp.array[wp.int32],
+    linked: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    offsets_start: wp.int32,
+    offsets_count: wp.int32,
+    steps: wp.int32,
+    metric: wp.int32,
+    has_triangle: wp.int32,
+    has_edge: wp.int32,
+    smooth_rim: wp.int32,
+    normal: wp.vec3d,
+    inverse_area: wp.float64,
+    weight: wp.array2d[wp.float64],
+    apex: wp.array2d[wp.int32],
+) -> None:
+    """Fill the DP cells ``(i, i + steps)``: each one's lightest apex, the first of a tie."""
+    i = wp.int32(wp.tid())
+    n = vert.shape[0]
+    c = (i + steps) % n
+    blocked = wp.bool(False)
+    for k in range(linked_offsets[i], linked_offsets[i + 1]):
+        if linked[k] == c:
+            blocked = True
+    # A fresh variable: initialized straight from a module constant, the accumulator would be the
+    # constant's own variable, and the later comparison with that constant would read itself.
+    best = wp.float64(_SERIAL_DBL_MAX) + wp.float64(0.0)
+    best_v = wp.int32(-1)
+    va = vert[i]
+    vc = vert[c]
+    for k in range(offsets_start, offsets_start + offsets_count):
+        v = (i + 1 + offsets[k]) % n
+        vv = vert[v]
+        w = weight[i, v] + weight[v, c]
+        if has_triangle != 0:
+            w = w + serial_fill_triangle(points, va, vv, vc, metric, normal, inverse_area)
+        if has_edge != 0:
+            left = serial_apex_vertex(apex[i, v], vert, across[i], smooth_rim)
+            right = serial_apex_vertex(apex[v, c], vert, across[v], smooth_rim)
+            if left >= 0:
+                w = w + serial_fill_edge(points, va, vv, left, vc, metric)
+            if right >= 0:
+                w = w + serial_fill_edge(points, vv, vc, right, va, metric)
+        if va == vc or wp.isnan(w):
+            w = wp.float64(wp.inf)
+        if w < best:
+            best = w
+            best_v = v
+    if best < wp.float64(_SERIAL_DBL_MAX) and not blocked:
+        weight[i, c] = best
+        apex[i, c] = best_v
+    else:
+        weight[i, c] = wp.float64(_SERIAL_DBL_MAX)
+        apex[i, c] = -1
+
+
 def _declare_block_dims() -> None:
     """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
     declare_block_dims(

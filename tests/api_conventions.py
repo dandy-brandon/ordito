@@ -589,6 +589,9 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # composed one on exit, as in ``icp``'s other loop; ``closest`` holds each landmark's match
     # between the passes of one round.
     ("registration", "landmark_icp"): frozenset({"closest", "total"}),
+    # ``method="meshlib"``'s serial refinement edits one half-edge structure in place: its records,
+    # positions, region flags, split queue and split log, bundled in ``mesh``.
+    ("holes", "serial_subdivide"): frozenset({"mesh"}),
     ("cholesky", "factor_panel_tiled"): frozenset({"fronts", "scratch", "status"}),
     ("cholesky", "update_panel_entries"): frozenset({"fronts", "blocks"}),
     ("cholesky", "update_panel_tiles"): frozenset({"fronts", "blocks"}),

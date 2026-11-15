@@ -73,6 +73,8 @@ A variable initialized to a bare literal (`count = 0.0`, `n = 0`) is a compile-t
 
 Never let `ruff check --fix` strip the constructor (it rewrites `int(0)` to `0`); legacy spellings carry `# noqa: UP018, RUF046`.
 
+An accumulator initialized from a **module-level constant** (`best = wp.float64(_DBL_MAX)`) is that constant's own codegen variable: the loop's assignments rewrite it, and a later `best < wp.float64(_DBL_MAX)` reads `best < best` (2026-11-15, `kernels/holes.serial_fill_dp_diagonal`: every DP cell took the unreachable branch, both devices). Initialize from a computed expression, `wp.float64(_DBL_MAX) + wp.float64(0.0)`, and read the generated `.cpp` when a branch never fires.
+
 ---
 
 ## 2. Kernel architecture and launches
