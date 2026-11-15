@@ -477,12 +477,23 @@ def heat_geodesic(
     RuntimeError
         If ``vertices``, ``faces`` and ``sources`` are not all on one device.
 
+    Warns
+    -----
+    UserWarning
+        At the default ``t``, when the heat solve fails its accuracy check and cannot be factored
+        (see Notes).
+
     Notes
     -----
     The default time is the solver's, which on a mesh more than about 400 mean edges across is
     longer than the method's library takes (see [`HeatSolver`][ordito.heat.HeatSolver]): there
     MeshLab's, igl's and geometry-central's far field falls below the ``float64`` range, and
     their distance stops growing far from the sources.
+
+    On a mesh whose heat solve fails its accuracy check and whose system is too large to factor
+    within [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET] (tens of millions of
+    vertices), the iterate stands and the distance is unreliable far from the sources; at the
+    default time this warns.
 
     The ``vertices, faces`` form logs at ``INFO`` on the ``ordito.heat`` logger when it built a
     factorization it is about to drop (the heat solve's verification failed on an ill-conditioned
@@ -4335,6 +4346,17 @@ class HeatSolver:
                 "could not be factored",
                 role,
             )
+            if self.t is None:
+                # At the default time the field spans the float64 range by construction, so the
+                # failure is real; a caller's long ``t`` can fail it on a far field merely tiny.
+                warnings.warn(
+                    f"HeatSolver: the {role} diffusion failed its accuracy check and its system is "
+                    "too large to factor within CHOLESKY_MEMORY_BUDGET, so conjugate gradient's "
+                    "iterate is used: the field, and a distance or transport formed from it, is "
+                    "unreliable far from the sources. Raise ordito.cholesky.CHOLESKY_MEMORY_BUDGET "
+                    "if the device holds the factorization, or pass a longer t.",
+                    stacklevel=4,
+                )
 
     def _kept(self, role: str, matrix: odt.SparseMatrix) -> _KeptSystem:
         """Count a solve of ``role``'s system, factoring it on its second (rent or buy)."""

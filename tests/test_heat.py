@@ -3067,7 +3067,8 @@ def test_an_unfactorable_ill_conditioned_mesh_solves_poisson_by_multigrid(
 
     No reference covers a factorization refused for its size. With the budget set to nothing, the
     heat solve's iterate fails its backward-error check on ``saddle_graded`` and its fallback is
-    refused: the solver must still say it is ill-conditioned, and its Poisson solve, offered no
+    refused: the solver must warn and still say it is ill-conditioned (with a caller's own time,
+    only the latter), and its Poisson solve, offered no
     factorization, must take one multigrid hierarchy (kept for the next solve) and recover a field
     ``u`` from ``-L u`` up to its constant. Mutation probe: keying the flag on a built
     factorization alone (the old rule) leaves ``ill_conditioned`` false and builds no hierarchy.
@@ -3089,9 +3090,16 @@ def test_an_unfactorable_ill_conditioned_mesh_solves_poisson_by_multigrid(
     rhs_np = np.zeros(n_vertices)
     rhs_np[0] = 1.0
     heat_wp = wp.zeros(n_vertices, dtype=wp.float64, device=device)
-    solver.diffuse(wp.array(rhs_np, dtype=wp.float64, device=device), heat_wp)
+    with pytest.warns(UserWarning, match="too large to factor"):
+        solver.diffuse(wp.array(rhs_np, dtype=wp.float64, device=device), heat_wp)
     assert solver.ill_conditioned
     assert solver.nbytes == 0
+    # A caller's own time can fail the check on a far field merely tiny: no warning.
+    timed = mesh.heat_solver(t=4.0 * od.edges.mean_unique_edge_length(vertices_wp, faces_wp) ** 2)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        timed.diffuse(wp.array(rhs_np, dtype=wp.float64, device=device), heat_wp)
+    assert timed.ill_conditioned
 
     poisson = solver.operators[3]
     offsets = poisson.offsets.numpy()[: n_vertices + 1]
