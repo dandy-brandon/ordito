@@ -1370,3 +1370,11 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `offset_mesh(method="meshlib")` against MeshLib's `offsetMesh`, whose extraction is ported
   (`marching_cubes(method="openvdb")`, Class A) and whose OpenVDB `meshToLevelSet` band field is
   not. Scoped, with source availability and licensing, in `reference/component-status.md` (16.0b).
+- **The `method="meshlib"` host floor** (`ordito/_serial_mesh.py`): after the native engine,
+  what remains is Python over the list-backed `Topology` (the builder about 80 ms of
+  `refill_region`'s 260 ms on `sphere_med`; `_NativeMesh.padded` / `store` copy every list to and
+  from arrays around each native kernel) and `sparse_cholesky`'s setup on smoothing systems of a
+  few hundred to a few thousand unknowns (15-27 ms of a 40-75 ms fill). An array-backed
+  `Topology` the native kernels edit in place is the lever for the first; a host solve for the
+  second moves outputs by rounding, so it needs the owner's go-ahead. Status in
+  `reference/component-status.md` ("Native engine and optimize sweep").
