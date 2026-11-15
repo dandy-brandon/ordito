@@ -34,6 +34,7 @@ from ordito.kernels.reduce import (
     last_ticket,
     load_coherent_float_2d,
     load_coherent_int_2d,
+    load_coherent_vec3d,
     load_volatile_int,
     take_ticket,
     thread_fence,
@@ -3809,6 +3810,180 @@ def serial_fill_dp_in_turn(dp: FillDp, step_offsets: wp.array[wp.int32]) -> None
             serial_fill_dp_cell(dp, i, start, count, k + 2)
 
 
+# A dense Cholesky solve of ``method="meshlib"``'s smoothing systems on CUDA
+# (``ordito._serial_mesh._solve_spd``, up to ``_DENSE_DEVICE_SOLVE_MAX`` unknowns): the summed
+# entries scattered into a zeroed matrix padded with the identity to whole tiles, a right-looking
+# blocked factorization (a launch a panel for its diagonal tile and the panel under it, one for
+# the trailing update), then both substitutions in one launch, a warp a row panel, each waiting on
+# device flags for the panels it reads. Each panel's diagonal factor is also inverted, so a
+# substitution step is a product, and each solved panel is stored transposed in the upper
+# triangle, which nothing else reads, so both substitutions read the factor along rows.
+# 2026-11-15, against the sparse factorization at 1 000 unknowns: 0.5-0.6x a solve (its analysis
+# alone was ~4 ms); the float32 answers equal on every system compared, the float64 ones within
+# the systems' conditioning (2e-13), which a refinement round does not reduce. Measured shapes:
+# one block substituting serially with 32-wide tiles cost 4 ms (one SM's float64 rate); a
+# dataflow factorization, a block a tile, cost more than a launch a panel (its last diagonal tile
+# runs every product before it on one SM); 64-wide tiles exceed shared memory.
+
+SERIAL_DENSE_TILE = 16
+SERIAL_DENSE_BLOCK = 64
+SERIAL_DENSE_SOLVE_BLOCK = 32
+
+
+@wp.kernel(enable_backward=False, module="unique")
+def serial_dense_scatter(
+    rows: wp.array[wp.int32],
+    cols: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    n: wp.int32,
+    out_matrix: wp.array2d[wp.float64],
+) -> None:
+    """Write each summed entry, and a unit diagonal past ``n`` to fill the last tile."""
+    t = wp.int32(wp.tid())
+    if t < rows.shape[0]:
+        out_matrix[rows[t], cols[t]] = values[t]
+    else:
+        d = n + t - rows.shape[0]
+        if d < out_matrix.shape[0]:
+            out_matrix[d, d] = wp.float64(1.0)
+
+
+@wp.func
+def serial_dense_identity():
+    return wp.tile_diag_add(
+        wp.tile_zeros(shape=(SERIAL_DENSE_TILE, SERIAL_DENSE_TILE), dtype=wp.float64),
+        wp.tile_ones(shape=(SERIAL_DENSE_TILE,), dtype=wp.float64),
+    )
+
+
+@wp.kernel(enable_backward=False, module="unique")
+def serial_dense_panel(
+    matrix: wp.array2d[wp.float64], k0: wp.int32, out_inverse: wp.array2d[wp.float64]
+) -> None:
+    """Factor the diagonal tile at ``k0`` (block 0) and solve the panel's tile ``b`` under it."""
+    b, _ = wp.tid()
+    t = SERIAL_DENSE_TILE
+    factor = wp.tile_cholesky(
+        wp.tile_load(matrix, shape=(SERIAL_DENSE_TILE, SERIAL_DENSE_TILE), offset=(k0, k0))
+    )
+    if b == 0:
+        inverted = wp.tile_lower_solve(factor, serial_dense_identity())
+        wp.tile_store(out_inverse, inverted, offset=(k0, 0))
+        wp.tile_store(out_inverse, wp.tile_transpose(inverted), offset=(k0, t))
+        wp.tile_store(matrix, factor, offset=(k0, k0))
+    else:
+        i0 = k0 + b * t
+        solved = wp.tile_lower_solve(
+            factor,
+            wp.tile_transpose(
+                wp.tile_load(matrix, shape=(SERIAL_DENSE_TILE, SERIAL_DENSE_TILE), offset=(i0, k0))
+            ),
+        )
+        wp.tile_store(matrix, wp.tile_transpose(solved), offset=(i0, k0))
+        wp.tile_store(matrix, solved, offset=(k0, i0))
+
+
+@wp.kernel(enable_backward=False, module="unique")
+def serial_dense_update(matrix: wp.array2d[wp.float64], k0: wp.int32) -> None:
+    """Subtract the panel at ``k0``'s product from trailing lower tile ``(p, q)``, ``q <= p``."""
+    pair, _ = wp.tid()
+    t = SERIAL_DENSE_TILE
+    p = wp.int32((wp.sqrt(wp.float64(8 * pair + 1)) - wp.float64(1.0)) / wp.float64(2.0))
+    while (p + 1) * (p + 2) // 2 <= pair:
+        p += 1
+    while p * (p + 1) // 2 > pair:
+        p -= 1
+    q = pair - p * (p + 1) // 2
+    i0 = k0 + (p + 1) * t
+    j0 = k0 + (q + 1) * t
+    tile = wp.tile_load(matrix, shape=(SERIAL_DENSE_TILE, SERIAL_DENSE_TILE), offset=(i0, j0))
+    wp.tile_matmul(
+        wp.tile_load(matrix, shape=(SERIAL_DENSE_TILE, SERIAL_DENSE_TILE), offset=(i0, k0)),
+        wp.tile_transpose(
+            wp.tile_load(matrix, shape=(SERIAL_DENSE_TILE, SERIAL_DENSE_TILE), offset=(j0, k0))
+        ),
+        tile,
+        alpha=wp.float64(-1.0),
+    )
+    wp.tile_store(matrix, tile, offset=(i0, j0))
+
+
+@wp.func
+def serial_dense_wait(flags: wp.array[wp.int32], index: wp.int32, lane: wp.int32):
+    # Until the block solving panel ``index`` has raised its flag, behind its fence.
+    if lane == 0:
+        while load_volatile_int(flags, index) == 0:
+            pass
+        thread_fence()
+    block_barrier()
+
+
+@wp.func
+def serial_dense_finish(
+    inverse: wp.array2d[wp.float64],
+    staged: wp.array[wp.vec3d],
+    out_x: wp.array[wp.vec3d],
+    flags: wp.array[wp.int32],
+    flag: wp.int32,
+    column: wp.int32,
+    p0: wp.int32,
+    lane: wp.int32,
+    s: wp.vec3d,
+):
+    # Multiply the panel's reduced right-hand side by its diagonal tile's inverse (``column`` 0)
+    # or that inverse's transpose (``column`` the tile width), publish it and raise ``flag``.
+    t = SERIAL_DENSE_TILE
+    if lane < t:
+        staged[p0 + lane] = s
+    block_barrier()
+    if lane < t:
+        x = wp.vec3d()
+        for c in range(t):
+            x += inverse[p0 + c, column + lane] * staged[p0 + c]
+        out_x[p0 + lane] = x
+    block_barrier()
+    if lane == 0:
+        thread_fence()
+        flags[flag] = 1
+
+
+@wp.kernel(enable_backward=False, module="unique")
+def serial_dense_solve(
+    matrix: wp.array2d[wp.float64],
+    inverse: wp.array2d[wp.float64],
+    rhs: wp.array[wp.vec3d],
+    flags: wp.array[wp.int32],
+    staged: wp.array[wp.vec3d],
+    forward: wp.array[wp.vec3d],
+    out_x: wp.array[wp.vec3d],
+) -> None:
+    """Solve ``L L^T x = rhs`` by row panel, a block each, panels waiting on the ones they read."""
+    p, lane = wp.tid()
+    t = SERIAL_DENSE_TILE
+    m = matrix.shape[0] // t
+    p0 = p * t
+    # Forward: L y = rhs, reading L's panel q above this one through its transposed copy.
+    s = wp.vec3d()
+    if lane < t:
+        s = rhs[p0 + lane]
+    for q in range(p):
+        serial_dense_wait(flags, q, lane)
+        if lane < t:
+            for c in range(t):
+                s -= matrix[q * t + c, p0 + lane] * load_coherent_vec3d(forward, q * t + c)
+    serial_dense_finish(inverse, staged, forward, flags, p, t, p0, lane, s)
+    # Backward: L^T x = y, from the last panel up.
+    if lane < t:
+        s = forward[p0 + lane]
+    for back in range(m - 1 - p):
+        q = m - 1 - back
+        serial_dense_wait(flags, m + q, lane)
+        if lane < t:
+            for c in range(t):
+                s -= matrix[q * t + c, p0 + lane] * load_coherent_vec3d(out_x, q * t + c)
+    serial_dense_finish(inverse, staged, out_x, flags, m + p, 0, p0, lane, s)
+
+
 # The band search of ``method="meshlib"``'s stitch, natively: ``ordito._serial_mesh._band_search``
 # over its precomputed terms, a best-first search whose queue is the standard library's binary
 # heap sift for sift, so equal weights pop in the reference's order.
@@ -4015,6 +4190,9 @@ def _declare_block_dims() -> None:
         __name__,
         (HOLE_DP_BLOCK, HOLE_DP_BLOCK_LONG, STITCH_DP_TILE, ROW_ARGMIN_BLOCK, CLOSEST_PAIR_BLOCK),
     )
+    for kernel in (serial_dense_panel, serial_dense_update):
+        declare_block_dims(kernel, (SERIAL_DENSE_BLOCK,))
+    declare_block_dims(serial_dense_solve, (SERIAL_DENSE_SOLVE_BLOCK,))
 
 
 _declare_block_dims()

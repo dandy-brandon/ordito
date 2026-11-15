@@ -597,6 +597,9 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # and writes its own, so they are both input and output across the launches.
     # Its band search's state and queue, rewritten as the search runs, bundled in ``q``.
     ("holes", "serial_band_search"): frozenset({"q"}),
+    # The dense smoothing solve factors its matrix in place, a launch a panel.
+    ("holes", "serial_dense_panel"): frozenset({"matrix"}),
+    ("holes", "serial_dense_update"): frozenset({"matrix"}),
     ("cholesky", "factor_panel_tiled"): frozenset({"fronts", "scratch", "status"}),
     ("cholesky", "update_panel_entries"): frozenset({"fronts", "blocks"}),
     ("cholesky", "update_panel_tiles"): frozenset({"fronts", "blocks"}),

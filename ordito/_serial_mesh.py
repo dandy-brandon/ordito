@@ -1782,6 +1782,9 @@ def _exclude_full_components(topology: _Walk, verts: set[int]) -> set[int]:
 
 # Below this many unknowns a dense host factorization beats a device one's fixed cost.
 _DENSE_SOLVE_MAX = 400
+# Up to this many a dense factorization on a CUDA device beats the sparse one's analysis
+# (2026-11-15: 0.32-0.41x at 500 unknowns, 0.84-0.86x at 1 500, 1.4-1.8x at 2 500).
+_DENSE_DEVICE_SOLVE_MAX = 1536
 
 
 class _HeldFactor:
@@ -1804,9 +1807,10 @@ def _solve_spd(
     """
     Solve the symmetric positive definite system given by COO entries, for ``(n, k)`` columns.
 
-    A direct solve, refined in ``float64``: dense on the host for a small system or without a
-    device, otherwise a sparse Cholesky factorization on ``device``, refactored in place when
-    ``reuse`` holds one of the same pattern.
+    A direct solve in ``float64``: dense on the host for a small system or without a device, dense
+    on a CUDA ``device`` up to ``_DENSE_DEVICE_SOLVE_MAX`` unknowns (unless ``reuse`` asks for a
+    factorization kept across a loop), otherwise a sparse Cholesky factorization on ``device``,
+    refined, and refactored in place when ``reuse`` holds one of the same pattern.
     """
     if device is None or n <= _DENSE_SOLVE_MAX:
         a = np.zeros((n, n))
@@ -1819,6 +1823,9 @@ def _solve_spd(
     keys = rows.astype(np.int64) * n + cols
     unique, inverse = np.unique(keys, return_inverse=True)
     values = np.bincount(inverse, weights=vals, minlength=unique.size)
+    resolved = wp.get_device(device)
+    if resolved.is_cuda and reuse is None and n <= _DENSE_DEVICE_SOLVE_MAX and rhs.shape[1] <= 3:
+        return _dense_solve_on_device(unique, values, n, rhs, resolved)
     offsets = np.searchsorted(unique // n, np.arange(n + 1)).astype(np.int32)
     matrix = od.array.bsr_from_csr(
         n,
@@ -1871,6 +1878,73 @@ class _Lists:
         if array is None:
             array = self.arrays[name] = np.asarray(values, dtype=np.int64)
         return array[index]
+
+
+def _dense_solve_on_device(
+    keys: np.ndarray, values: np.ndarray, n: int, rhs: np.ndarray, device: wp.Device
+) -> np.ndarray:
+    """Solve the system of summed ``values`` at sorted ``keys``: a dense Cholesky on ``device``."""
+    from ordito import _launch
+    from ordito._common import read_array
+    from ordito.kernels import holes as kernel_holes
+
+    tile = kernel_holes.SERIAL_DENSE_TILE
+    m = -(-n // tile)
+    padded = m * tile
+    matrix = wp.zeros((padded, padded), dtype=wp.float64, device=device)
+    inverse = _launch.empty((padded, 2 * tile), dtype=wp.float64, device=device)
+    _launch.launch(
+        kernel_holes.serial_dense_scatter,
+        dim=keys.size + padded - n,
+        inputs=[
+            wp.array((keys // n).astype(np.int32), dtype=wp.int32, device=device),
+            wp.array((keys % n).astype(np.int32), dtype=wp.int32, device=device),
+            wp.array(values, dtype=wp.float64, device=device),
+            n,
+        ],
+        outputs=[matrix],
+        device=device,
+    )
+    for k in range(m):
+        k0 = k * tile
+        below = m - k - 1
+        _launch.launch_tiled(
+            kernel_holes.serial_dense_panel,
+            dim=below + 1,
+            inputs=[matrix, k0],
+            outputs=[inverse],
+            device=device,
+            block_dim=kernel_holes.SERIAL_DENSE_BLOCK,
+        )
+        if below:
+            _launch.launch_tiled(
+                kernel_holes.serial_dense_update,
+                dim=below * (below + 1) // 2,
+                inputs=[matrix, k0],
+                device=device,
+                block_dim=kernel_holes.SERIAL_DENSE_BLOCK,
+            )
+    columns = np.zeros((padded, 3))
+    columns[:n, : rhs.shape[1]] = rhs
+    staged = _launch.empty(3 * padded, dtype=wp.vec3d, device=device)
+    x = staged[2 * padded :]
+    _launch.launch_tiled(
+        kernel_holes.serial_dense_solve,
+        dim=m,
+        inputs=[
+            matrix,
+            inverse,
+            wp.array(columns, dtype=wp.vec3d, device=device),
+            wp.zeros(2 * m, dtype=wp.int32, device=device),
+            staged[:padded],
+            staged[padded : 2 * padded],
+        ],
+        outputs=[x],
+        device=device,
+        block_dim=kernel_holes.SERIAL_DENSE_SOLVE_BLOCK,
+    )
+    # The answer feeds the host pipeline's next serial step.
+    return read_array(x)[:n, : rhs.shape[1]]
 
 
 class _Rings:
