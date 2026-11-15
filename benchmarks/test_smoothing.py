@@ -1350,3 +1350,36 @@ def test_smooth_region_boundary(bench_case: BenchCase) -> None:
         lambda: od.smoothing.smooth_region_boundary(vertices, faces, region_wp, 4), rounds=3
     )
     assert smoothed.shape == (bench_case.n_vertices,)
+
+
+@pytest.mark.benchmark(group="smooth_region_boundary_meshlib")
+@pytest.mark.benchmeshes("sphere_small", "sphere_med")
+@pytest.mark.benchlibs("ordito", "meshlib")
+def test_smooth_region_boundary_meshlib(bench_case: BenchCase) -> None:
+    """
+    ``smooth_region_boundary(method="meshlib")`` against ``smoothRegionBoundary``: the same mesh.
+
+    ``smooth_region_boundary``'s region and four passes; the band's flips and positions are equal
+    (tests/test_smoothing.py::test_smooth_region_boundary_meshlib_method_matches_meshlib). ordito's
+    side runs the flips and the passes on the host after building the whole mesh's half-edge
+    structure there, which is what grows from ``sphere_small`` to ``sphere_med``.
+    """
+    region_np = np.ascontiguousarray(_free_mask_np(bench_case)[bench_case.faces_np].any(axis=1))
+    if bench_case.kind == "meshlib":
+
+        def smooth_ml() -> int:
+            mesh_ml = mesh_ml_from_numpy(bench_case.vertices_np, bench_case.faces_np)
+            mm.smoothRegionBoundary(mesh_ml, face_bitset_ml(region_np), 4)
+            return mesh_ml.topology.numValidVerts()
+
+        assert bench_case.run(smooth_ml, rounds=3) > 0
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    region_wp = wp.array(region_np, dtype=wp.bool, device=bench_case.device)
+    smoothed, _flipped = bench_case.run(
+        lambda: od.smoothing.smooth_region_boundary(
+            vertices, faces, region_wp, 4, method="meshlib"
+        ),
+        rounds=3,
+    )
+    assert smoothed.shape == (bench_case.n_vertices,)

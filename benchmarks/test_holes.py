@@ -327,6 +327,41 @@ def test_fill_smooth(bench_case: BenchCase, triangulate_only: bool) -> None:
     assert result[1].size >= faces.size
 
 
+@pytest.mark.benchmark(group="fill_smooth_meshlib")
+@pytest.mark.benchmeshes("saddle_small", "rim_short")
+@pytest.mark.benchlibs("ordito", "meshlib")
+def test_fill_smooth_meshlib(bench_case: BenchCase) -> None:
+    """
+    ``fill_smooth(method="meshlib")`` against ``fillHoleNicely`` on every hole: the same work.
+
+    Both sides take the reference's defaults -- the circumscribed metric and a zero target, so each
+    hole is split to the 1 000-split budget -- and return the same mesh
+    (tests/test_holes.py::test_fill_smooth_meshlib_method_matches_meshlib). ordito's side runs the
+    serial queue on the host, its device side only the upload, so the row is the price of an exact
+    answer: read it against ``fill_smooth``'s ``refined`` row. ``saddle_small`` has one rim,
+    ``rim_short`` two of 512 vertices, where the planner's interval DP is the larger share.
+    """
+    if bench_case.kind == "meshlib":
+
+        def run_ml() -> int:
+            mesh_ml = bench_case.new_mesh_ml()
+            settings_ml = mm.FillHoleNicelySettings()
+            for edge_ml in mesh_ml.topology.findHoleRepresentiveEdges():
+                mm.fillHoleNicely(mesh_ml, edge_ml, settings_ml)
+            return mesh_ml.topology.numValidFaces()
+
+        assert bench_case.run(run_ml, rounds=_ROUNDS) > 0
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    result = bench_case.run(
+        lambda: od.holes.fill_smooth(
+            vertices, faces, "circumscribed", max_edge=0.0, method="meshlib"
+        ),
+        rounds=_ROUNDS,
+    )
+    assert result[1].size > faces.size
+
+
 _region_cache: dict[tuple[str, str], tuple[wp.array[wp.bool], np.ndarray]] = {}
 
 
@@ -398,6 +433,37 @@ def test_refill_region(bench_case: BenchCase, triangulate_only: bool) -> None:
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     _out_vertices, out_faces = bench_case.run(
         lambda: od.holes.refill_region(vertices, faces, mask_wp, triangulate_only=triangulate_only),
+        rounds=_ROUNDS,
+    )
+    assert int(out_faces.shape[0]) > 0
+
+
+@pytest.mark.benchmark(group="refill_region_meshlib")
+@pytest.mark.benchmeshes("sphere_small", "saddle_small")
+@pytest.mark.benchlibs("ordito", "meshlib")
+def test_refill_region_meshlib(bench_case: BenchCase) -> None:
+    """
+    ``refill_region(method="meshlib")`` against ``patchMesh``, on ``refill_region``'s cap region.
+
+    The same mesh on both sides (tests/test_holes.py::test_refill_region_meshlib_method_matches_
+    meshlib): the deletion, each rim patched with 1.5 times its mean edge length as the target.
+    ordito's side builds the whole mesh's half-edge structure on the host first, so this row grows
+    with the mesh where the reference's deletion does not.
+    """
+    if bench_case.kind == "meshlib":
+        _mask_wp, mask_np = _cap_region(bench_case)
+
+        def run_ml() -> int:
+            mesh_ml = bench_case.new_mesh_ml()
+            mm.patchMesh(mesh_ml, face_bitset_ml(mask_np), mm.FillHoleNicelySettings())
+            return mesh_ml.topology.numValidFaces()
+
+        assert bench_case.run(run_ml, rounds=_ROUNDS) > 0
+        return
+    mask_wp, _mask_np = _cap_region(bench_case)
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    _out_vertices, out_faces = bench_case.run(
+        lambda: od.holes.refill_region(vertices, faces, mask_wp, "circumscribed", method="meshlib"),
         rounds=_ROUNDS,
     )
     assert int(out_faces.shape[0]) > 0
@@ -593,6 +659,39 @@ def test_stitch_smooth(bench_case: BenchCase) -> None:
     (va, fa), (vb, fb) = _stitch_halves(bench_case)
     _vertices, faces = bench_case.run(
         lambda: od.holes.stitch_smooth(va, fa, vb, fb), rounds=_ROUNDS
+    )
+    assert faces.size // 3 >= (fa.size + fb.size) // 3 + _stitch_band_size(bench_case)
+
+
+@pytest.mark.benchmark(group="stitch_smooth_meshlib")
+@pytest.mark.benchmeshes("rim_short")
+@pytest.mark.benchlibs("ordito", "meshlib")
+def test_stitch_smooth_meshlib(bench_case: BenchCase) -> None:
+    """
+    ``stitch_smooth(method="meshlib")`` against ``stitchHolesNicely``: the same band.
+
+    Both sides split the band to the 1 000-split budget (a zero target, the reference's default)
+    and return the same mesh (tests/test_holes.py::test_stitch_smooth_meshlib_method_matches_
+    meshlib). The band search visits pairs of rim positions one at a time from a priority queue, a
+    host loop on ordito's side.
+    """
+    if bench_case.kind == "meshlib":
+        vertices_np, faces_np = _stitch_pair_np(bench_case)
+
+        def run_ml() -> int:
+            mesh_ml = mesh_ml_from_numpy(vertices_np, faces_np)
+            edges_ml = mesh_ml.topology.findHoleRepresentiveEdges()
+            settings_ml = mm.StitchHolesNicelySettings()
+            settings_ml.triangulateParams.metric = mm.getComplexStitchMetric(mesh_ml)
+            mm.stitchHolesNicely(mesh_ml, edges_ml[0], edges_ml[1], settings_ml)
+            return mesh_ml.topology.numValidFaces()
+
+        assert bench_case.run(run_ml, rounds=_ROUNDS) > len(faces_np)
+        return
+    (va, fa), (vb, fb) = _stitch_halves(bench_case)
+    _vertices, faces = bench_case.run(
+        lambda: od.holes.stitch_smooth(va, fa, vb, fb, max_edge=0.0, method="meshlib"),
+        rounds=_ROUNDS,
     )
     assert faces.size // 3 >= (fa.size + fb.size) // 3 + _stitch_band_size(bench_case)
 
@@ -904,6 +1003,49 @@ def test_bridge_edges_smooth(bench_case: BenchCase) -> None:
     )
     assert int(strip_faces.shape[0]) > faces.size
     assert int(strip_vertices.shape[0]) >= bench_case.n_vertices
+
+
+@pytest.mark.benchmark(group="bridge_edges_smooth_meshlib")
+@pytest.mark.benchmeshes("saddle_small", "saddle")
+@pytest.mark.benchlibs("ordito", "meshlib")
+def test_bridge_edges_smooth_meshlib(bench_case: BenchCase) -> None:
+    """
+    ``bridge_edges_smooth(method="meshlib")`` against ``makeSmoothBridge``: the same strip.
+
+    ``bridge_edges_smooth``'s edge pair and step; the two strips are equal
+    (tests/test_holes.py::test_bridge_edges_smooth_meshlib_method_matches_meshlib). The strip is a
+    handful of splits; what grows with the mesh on ordito's side is reading it back and building its
+    half-edge structure on the host, which the reference holds already.
+    """
+    corners = bench_case.faces_np.reshape(-1, 3)
+    directed = np.concatenate([corners[:, [0, 1]], corners[:, [1, 2]], corners[:, [2, 0]]], axis=0)
+    _, first, counts = np.unique(
+        np.sort(directed, axis=1), axis=0, return_index=True, return_counts=True
+    )
+    rim_np = directed[first[counts == 1]]
+    edge_a = (int(rim_np[0][0]), int(rim_np[0][1]))
+    edge_b = (int(rim_np[len(rim_np) // 2][0]), int(rim_np[len(rim_np) // 2][1]))
+    extent = bench_case.vertices_np.max(0) - bench_case.vertices_np.min(0)
+    sampling_step = 0.05 * float(np.linalg.norm(extent))
+
+    if bench_case.kind == "meshlib":
+
+        def bridge_ml() -> int:
+            mesh_ml = mesh_ml_from_numpy(bench_case.vertices_np, bench_case.faces_np)
+            a_ml = mesh_ml.topology.findEdge(mm.VertId(edge_a[1]), mm.VertId(edge_a[0]))
+            b_ml = mesh_ml.topology.findEdge(mm.VertId(edge_b[1]), mm.VertId(edge_b[0]))
+            return mm.makeSmoothBridge(mesh_ml, a_ml, b_ml, sampling_step).newFaces
+
+        assert bench_case.run(bridge_ml, rounds=3) > 0
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    _strip_vertices, strip_faces = bench_case.run(
+        lambda: od.holes.bridge_edges_smooth(
+            vertices, faces, edge_a, edge_b, sampling_step, method="meshlib"
+        ),
+        rounds=3,
+    )
+    assert int(strip_faces.shape[0]) > faces.size
 
 
 @pytest.mark.benchmark(group="join_closest_components")

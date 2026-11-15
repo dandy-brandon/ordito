@@ -2573,6 +2573,13 @@
    "readback": 1
   }
  },
+ "benchmarks/test_holes.py::test_bridge_edges_smooth_meshlib[saddle_small-ordito-cpu]": {
+  "counts": {
+   "alloc": 3,
+   "h2h": 3,
+   "readback": 2
+  }
+ },
  "benchmarks/test_holes.py::test_build_bottom[saddle_small-ordito-cpu]": {
   "counts": {
    "launch": 2,
@@ -2785,6 +2792,20 @@
    "sort": 9
   }
  },
+ "benchmarks/test_holes.py::test_fill_smooth_meshlib[rim_short-ordito-cpu]": {
+  "counts": {
+   "alloc": 3,
+   "h2h": 3,
+   "readback": 2
+  }
+ },
+ "benchmarks/test_holes.py::test_fill_smooth_meshlib[saddle_small-ordito-cpu]": {
+  "counts": {
+   "alloc": 3,
+   "h2h": 3,
+   "readback": 2
+  }
+ },
  "benchmarks/test_holes.py::test_fill_smooth_target_edge[holes_dense-ordito-cpu-derived]": {
   "counts": {
    "launch": 60,
@@ -2882,6 +2903,20 @@
    "sort": 13
   }
  },
+ "benchmarks/test_holes.py::test_refill_region_meshlib[saddle_small-ordito-cpu]": {
+  "counts": {
+   "alloc": 3,
+   "h2h": 3,
+   "readback": 3
+  }
+ },
+ "benchmarks/test_holes.py::test_refill_region_meshlib[sphere_small-ordito-cpu]": {
+  "counts": {
+   "alloc": 3,
+   "h2h": 3,
+   "readback": 3
+  }
+ },
  "benchmarks/test_holes.py::test_stitch[rim_short-ordito-cpu]": {
   "counts": {
    "launch": 15,
@@ -2927,6 +2962,16 @@
    "readback": 16,
    "scan": 14,
    "sort": 8
+  }
+ },
+ "benchmarks/test_holes.py::test_stitch_smooth_meshlib[rim_short-ordito-cpu]": {
+  "counts": {
+   "launch": 10,
+   "alloc": 11,
+   "h2h": 3,
+   "readback": 8,
+   "scan": 2,
+   "sort": 2
   }
  },
  "benchmarks/test_homology.py::test_homology_generators[handles_1-ordito-cpu]": {
@@ -7155,6 +7200,13 @@
    "alloc": 14,
    "readback": 6,
    "scan": 3
+  }
+ },
+ "benchmarks/test_smoothing.py::test_smooth_region_boundary_meshlib[sphere_small-ordito-cpu]": {
+  "counts": {
+   "alloc": 2,
+   "h2h": 2,
+   "readback": 3
   }
  },
  "benchmarks/test_smoothing.py::test_smooth_region_fixed_rim[sphere_small-ordito-cpu]": {

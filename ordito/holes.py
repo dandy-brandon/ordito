@@ -77,7 +77,7 @@ from warp._src.codegen import StructInstance
 
 import ordito as od
 import ordito.typing as odt
-from ordito import _launch
+from ordito import _launch, _serial_mesh
 from ordito._common import read_array, read_scalar, read_values, require_same_device
 from ordito.config import is_deterministic
 from ordito.constants import TOLERANCE_ZERO
@@ -1724,6 +1724,7 @@ def fill_smooth(
     resolve_multiple_edges: bool = True,
     smooth_boundary: bool = True,
     refine: Literal["max_edge", "density"] = "max_edge",
+    method: Literal["parallel", "meshlib"] = "parallel",
     return_patch: Literal[False] = False,
     n_vertices: int | None = None,
     mates: wp.array[wp.int32] | None = None,
@@ -1746,6 +1747,7 @@ def fill_smooth(
     resolve_multiple_edges: bool = True,
     smooth_boundary: bool = True,
     refine: Literal["max_edge", "density"] = "max_edge",
+    method: Literal["parallel", "meshlib"] = "parallel",
     return_patch: Literal[True],
     n_vertices: int | None = None,
     mates: wp.array[wp.int32] | None = None,
@@ -1768,6 +1770,7 @@ def fill_smooth(
     resolve_multiple_edges: bool = True,
     smooth_boundary: bool = True,
     refine: Literal["max_edge", "density"] = "max_edge",
+    method: Literal["parallel", "meshlib"] = "parallel",
     return_patch: Literal[False] = False,
     n_vertices: int | None = None,
     mates: wp.array[wp.int32] | None = None,
@@ -1790,6 +1793,7 @@ def fill_smooth(
     resolve_multiple_edges: bool = True,
     smooth_boundary: bool = True,
     refine: Literal["max_edge", "density"] = "max_edge",
+    method: Literal["parallel", "meshlib"] = "parallel",
     return_patch: Literal[True],
     n_vertices: int | None = None,
     mates: wp.array[wp.int32] | None = None,
@@ -1813,6 +1817,7 @@ def fill_smooth(
     resolve_multiple_edges: bool = True,
     smooth_boundary: bool = True,
     refine: Literal["max_edge", "density"] = "max_edge",
+    method: Literal["parallel", "meshlib"] = "parallel",
     return_patch: bool = False,
     n_vertices: int | None = None,
     mates: wp.array[wp.int32] | None = None,
@@ -1878,6 +1883,16 @@ def fill_smooth(
         a single target length cannot be right at both ends of the grading: ``"density"`` keeps the
         patch triangle size closer to the local surrounding scale there than a single ``max_edge``
         target can. ``max_edge`` and ``max_edge_splits`` are ignored under ``"density"``.
+    method
+        ``"parallel"`` (default) fills, refines and smooths every hole together, in batches of
+        conflict-free splits on the device; it is the default because it returns in a small
+        fraction of the serial path's time. ``"meshlib"`` reproduces that library's hole patching
+        exactly, for a caller whose answer must equal it: one hole at a time in the order of their
+        lowest rim edge, each triangulated by its sub-sampled interval DP, then split longest edge
+        first from one priority queue (ties to the higher edge id in its numbering of the mesh),
+        each split followed by Delaunay flips around the new vertex, then smoothed. It runs on the
+        host, one split after another, so its cost grows with the splits; ``max_edge_splits`` is a
+        budget per hole, and it takes only ``refine="max_edge"``.
     return_patch
         When ``True``, also return a length-``n_out_faces`` ``wp.bool`` mask of the patch faces.
     n_vertices
@@ -1898,7 +1913,9 @@ def fill_smooth(
         ``(n_out_vertices,)`` original vertices followed by the inserted patch vertices, on
         ``vertices.device``.
     new_faces : wp.array[wp.int32]
-        ``(3 * n_out_faces,)`` original faces followed by the patch faces.
+        ``(3 * n_out_faces,)`` original faces followed by the patch faces. Under
+        ``method="meshlib"`` a split of a rim edge also cuts the face outside it: that face keeps
+        its place as one half and the other half is appended.
     patch_mask : wp.array[wp.bool]
         ``(n_out_faces,)`` mask of the patch faces in ``new_faces``; only when ``return_patch`` is
         ``True``.
@@ -1908,13 +1925,16 @@ def fill_smooth(
         inserts interpolates the vertices of the edge or face it split, which the smoothing then
         moves without changing where it came from, so a carried float field is that
         interpolation rather than the smoothed position. The patch faces have no source
-        (``-1``).
+        (``-1``); a face cut from an input face has that face's.
 
     Raises
     ------
     ValueError
-        If ``metric``, ``edge_weights`` or ``refine`` is unknown, or if a loop is filled and
-        ``faces`` holds an index outside ``[0, n_vertices)``.
+        If ``metric``, ``edge_weights``, ``refine`` or ``method`` is unknown, if ``method`` is
+        ``"meshlib"`` with ``refine="density"``, or if ``faces`` holds an index outside
+        ``[0, n_vertices)`` and a loop is filled (whatever is filled, under ``"meshlib"``).
+        Under ``"meshlib"``, also if a face cannot be linked into an oriented manifold half-edge
+        structure (an edge in three or more faces, or a vertex whose faces form separate fans).
     RuntimeError
         If ``vertices``, ``faces`` and ``mates`` are not all on one device.
 
@@ -1963,6 +1983,29 @@ def fill_smooth(
     if edge_weights not in ("cotan", "unit"):
         raise ValueError(f"edge_weights must be 'cotan' or 'unit', got {edge_weights!r}")
     _check_refine(refine)
+    _check_method(method, "parallel", refine)
+    if method == "meshlib":
+        vertices_np, faces_np = _serial_inputs(vertices, faces, n_vertices)
+        result = _serial_mesh.fill_holes(
+            vertices_np,
+            faces_np,
+            metric=metric,
+            triangulate_only=triangulate_only,
+            max_edge=max_edge,
+            max_splits=max_edge_splits,
+            max_angle=max_angle_change_after_flip,
+            smooth_curvature=smooth_curvature,
+            natural=natural_smooth,
+            cotan=edge_weights == "cotan",
+            avoid_existing=resolve_multiple_edges,
+            smooth_rim=smooth_boundary,
+            preserve_largest=preserve_largest_hole,
+            track=return_provenance,
+            device=faces.device,
+        )
+        return _serial_result(
+            result, faces.device, vertices.size, faces_np.shape[0], return_patch, return_provenance
+        )
 
     device = faces.device
     n_faces = faces.size // 3
@@ -2090,6 +2133,7 @@ def refill_region(
     max_edge: float | None = None,
     smooth_curvature: bool = True,
     refine: Literal["max_edge", "density"] = "max_edge",
+    method: Literal["parallel", "meshlib"] = "parallel",
     return_patch: Literal[False] = False,
     return_provenance: Literal[False] = False,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
@@ -2104,6 +2148,7 @@ def refill_region(
     max_edge: float | None = None,
     smooth_curvature: bool = True,
     refine: Literal["max_edge", "density"] = "max_edge",
+    method: Literal["parallel", "meshlib"] = "parallel",
     return_patch: Literal[True],
     return_provenance: Literal[False] = False,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]: ...
@@ -2118,6 +2163,7 @@ def refill_region(
     max_edge: float | None = None,
     smooth_curvature: bool = True,
     refine: Literal["max_edge", "density"] = "max_edge",
+    method: Literal["parallel", "meshlib"] = "parallel",
     return_patch: Literal[False] = False,
     return_provenance: Literal[True],
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
@@ -2132,6 +2178,7 @@ def refill_region(
     max_edge: float | None = None,
     smooth_curvature: bool = True,
     refine: Literal["max_edge", "density"] = "max_edge",
+    method: Literal["parallel", "meshlib"] = "parallel",
     return_patch: Literal[True],
     return_provenance: Literal[True],
 ) -> tuple[
@@ -2147,6 +2194,7 @@ def refill_region(
     max_edge: float | None = None,
     smooth_curvature: bool = True,
     refine: Literal["max_edge", "density"] = "max_edge",
+    method: Literal["parallel", "meshlib"] = "parallel",
     return_patch: bool = False,
     return_provenance: bool = False,
 ) -> (
@@ -2184,13 +2232,22 @@ def refill_region(
         patch is then ``n - 2`` triangles per rim of ``n`` vertices and adds no new vertices.
     max_edge
         Target edge length for the refinement. ``None`` uses the mean rim edge length, so the
-        patch arrives at roughly the surrounding mesh's resolution.
+        patch arrives at roughly the surrounding mesh's resolution; under ``method="meshlib"`` it
+        is 1.5 times each rim's own mean edge length, as that library's patching takes it.
     smooth_curvature
         Minimize curvature rather than area when smoothing the patch, as in
         [`fill_smooth`][ordito.holes.fill_smooth].
     refine
         Subdivision criterion for the refinement stage; see
         [`fill_smooth`][ordito.holes.fill_smooth].
+    method
+        ``"parallel"`` (default) deletes the region and patches every rim it opened together on
+        the device, as [`fill_smooth`][ordito.holes.fill_smooth] does, and is the default for the
+        same reason: it is far faster. ``"meshlib"`` reproduces that library's region patching
+        exactly: the region's boundary loops in its edge order, cut at repeated vertices, each
+        filled from its first edge by that library's hole patching (see
+        [`fill_smooth`][ordito.holes.fill_smooth]), with smoothing across the rim, on the host. It
+        takes only ``refine="max_edge"``.
     return_patch
         Also return the per-face mask of the new patch, for a caller that wants to keep working on
         it.
@@ -2218,8 +2275,11 @@ def refill_region(
     Raises
     ------
     ValueError
-        If ``metric`` or ``refine`` is not one of the supported names, or ``face_mask`` does not
-        have one entry per face.
+        If ``metric``, ``refine`` or ``method`` is not one of the supported names, if ``method``
+        is ``"meshlib"`` with ``refine="density"``, or if ``face_mask`` does not have one entry per
+        face; under ``"meshlib"``, also if ``faces`` holds an index outside
+        ``[0, n_vertices)`` or a face cannot be linked into an oriented manifold half-edge
+        structure.
     RuntimeError
         If ``vertices``, ``faces`` and ``face_mask`` are not all on one device.
 
@@ -2256,6 +2316,30 @@ def refill_region(
     require_same_device(vertices=vertices, faces=faces, face_mask=face_mask)
     _check_fill_metric(metric)
     _check_refine(refine)
+    _check_method(method, "parallel", refine)
+    if method == "meshlib":
+        n_faces = faces.size // 3
+        if face_mask.size != n_faces:
+            raise ValueError(
+                f"face_mask must have one entry per face, got {face_mask.size} for {n_faces}"
+            )
+        vertices_np, faces_np = _serial_inputs(vertices, faces)
+        # The region joins the faces on the host, where the serial pipeline runs.
+        region_np = read_array(face_mask).astype(bool)
+        result = _serial_mesh.refill(
+            vertices_np,
+            faces_np,
+            region_np,
+            metric=metric,
+            triangulate_only=triangulate_only,
+            max_edge=max_edge,
+            smooth_curvature=smooth_curvature,
+            track=return_provenance,
+            device=faces.device,
+        )
+        return _serial_result(
+            result, faces.device, vertices.size, n_faces, return_patch, return_provenance
+        )
 
     deleted = None
     if return_provenance:
@@ -3108,6 +3192,7 @@ def stitch_smooth(
     natural_smooth: bool = False,
     edge_weights: str = "cotan",
     refine: Literal["max_edge", "density"] = "max_edge",
+    method: Literal["parallel", "meshlib"] = "parallel",
     return_patch: Literal[False] = False,
     n_vertices_a: int | None = None,
     n_vertices_b: int | None = None,
@@ -3132,6 +3217,7 @@ def stitch_smooth(
     natural_smooth: bool = False,
     edge_weights: str = "cotan",
     refine: Literal["max_edge", "density"] = "max_edge",
+    method: Literal["parallel", "meshlib"] = "parallel",
     return_patch: Literal[True],
     n_vertices_a: int | None = None,
     n_vertices_b: int | None = None,
@@ -3156,6 +3242,7 @@ def stitch_smooth(
     natural_smooth: bool = False,
     edge_weights: str = "cotan",
     refine: Literal["max_edge", "density"] = "max_edge",
+    method: Literal["parallel", "meshlib"] = "parallel",
     return_patch: Literal[False] = False,
     n_vertices_a: int | None = None,
     n_vertices_b: int | None = None,
@@ -3180,6 +3267,7 @@ def stitch_smooth(
     natural_smooth: bool = False,
     edge_weights: str = "cotan",
     refine: Literal["max_edge", "density"] = "max_edge",
+    method: Literal["parallel", "meshlib"] = "parallel",
     return_patch: Literal[True],
     n_vertices_a: int | None = None,
     n_vertices_b: int | None = None,
@@ -3205,6 +3293,7 @@ def stitch_smooth(
     natural_smooth: bool = False,
     edge_weights: str = "cotan",
     refine: Literal["max_edge", "density"] = "max_edge",
+    method: Literal["parallel", "meshlib"] = "parallel",
     return_patch: bool = False,
     n_vertices_a: int | None = None,
     n_vertices_b: int | None = None,
@@ -3252,6 +3341,14 @@ def stitch_smooth(
         See [`fill_smooth`][ordito.holes.fill_smooth].
     refine
         See [`fill_smooth`][ordito.holes.fill_smooth].
+    method
+        ``"parallel"`` (default) refines and smooths the band on the device, as
+        [`fill_smooth`][ordito.holes.fill_smooth] does, and is the default for the same reason:
+        it is far faster. ``"meshlib"`` reproduces that library's band stitching exactly: the band
+        starts at the rims' closest vertex pair and is chosen by a best-first search over pairs of
+        rim positions, then refined and smoothed as that library's hole patching does (see
+        [`fill_smooth`][ordito.holes.fill_smooth]), on the host. It takes only
+        ``refine="max_edge"``.
     return_patch
         See [`fill_smooth`][ordito.holes.fill_smooth].
     n_vertices_a, n_vertices_b
@@ -3272,7 +3369,9 @@ def stitch_smooth(
         ``(n_out_vertices,)`` concatenated vertices followed by any inserted band vertices, on
         ``faces_a.device``.
     new_faces : wp.array[wp.int32]
-        ``(3 * n_out_faces,)`` concatenated, reindexed faces followed by the band faces.
+        ``(3 * n_out_faces,)`` concatenated, reindexed faces followed by the band faces; under
+        ``method="meshlib"`` a split of a rim edge also cuts the face outside it, whose second
+        half is appended.
     patch_mask : wp.array[wp.bool]
         ``(n_out_faces,)`` mask of the band faces; only when ``return_patch`` is ``True``.
     provenance : Provenance
@@ -3281,14 +3380,17 @@ def stitch_smooth(
         them). Every input vertex and face is its own source. A band vertex the refinement
         inserts interpolates the vertices of the edge or face it split, which the smoothing then
         moves without changing where it came from, so a carried float field is that
-        interpolation rather than the smoothed position. The band faces have no source (``-1``).
+        interpolation rather than the smoothed position. The band faces have no source (``-1``);
+        a face cut from an input face has that face's.
 
     Raises
     ------
     ValueError
         If either mesh lacks exactly one boundary loop, or ``metric`` / ``edge_weights`` /
-        ``refine`` is unknown, or if a mesh's faces hold an index outside ``[0, n_vertices)``
-        for its bound.
+        ``refine`` / ``method`` is unknown, if ``method`` is ``"meshlib"`` with
+        ``refine="density"``, or if a mesh's faces hold an index outside ``[0, n_vertices)``
+        for its bound; under ``"meshlib"``, also if a face cannot be linked into an oriented
+        manifold half-edge structure.
     RuntimeError
         If ``vertices_a``, ``faces_a``, ``vertices_b``, ``faces_b``, ``mates_a`` and ``mates_b`` are
         not all on one device.
@@ -3346,6 +3448,7 @@ def stitch_smooth(
     if edge_weights not in ("cotan", "unit"):
         raise ValueError(f"edge_weights must be 'cotan' or 'unit', got {edge_weights!r}")
     _check_refine(refine)
+    _check_method(method, "parallel", refine)
 
     loop_a, loop_b = _single_boundary_loops(
         vertices_a,
@@ -3356,6 +3459,34 @@ def stitch_smooth(
         mates_a=mates_a,
         mates_b=mates_b,
     )
+    if method == "meshlib":
+        va_np, fa_np = _serial_inputs(vertices_a, faces_a, n_vertices_a)
+        vb_np, fb_np = _serial_inputs(vertices_b, faces_b, n_vertices_b)
+        n_a = va_np.shape[0]
+        result = _serial_mesh.stitch(
+            np.concatenate((va_np, vb_np)),
+            np.concatenate((fa_np, fb_np + n_a)),
+            n_a,
+            metric=metric,
+            up=up_dir,
+            triangulate_only=triangulate_only,
+            max_edge=max_edge,
+            max_splits=max_edge_splits,
+            max_angle=max_angle_change_after_flip,
+            smooth_curvature=smooth_curvature,
+            natural=natural_smooth,
+            cotan=edge_weights == "cotan",
+            track=return_provenance,
+            device=faces_a.device,
+        )
+        return _serial_result(
+            result,
+            faces_a.device,
+            n_a + vb_np.shape[0],
+            fa_np.shape[0] + fb_np.shape[0],
+            return_patch,
+            return_provenance,
+        )
 
     device = faces_a.device
     n_faces_before = (faces_a.size + faces_b.size) // 3
@@ -3536,6 +3667,91 @@ def _check_refine(refine: str) -> None:
     """
     if refine not in ("max_edge", "density"):
         raise ValueError(f"unknown refine {refine!r}, expected 'max_edge' or 'density'")
+
+
+def _check_method(method: str, default: str, refine: str = "max_edge") -> None:
+    """
+    Reject an unknown ``method``, and a ``refine`` the serial pipeline does not have.
+
+    Raises
+    ------
+    ValueError
+        If ``method`` is neither ``default`` nor ``"meshlib"``, or if it is ``"meshlib"`` with
+        ``refine="density"``: that pipeline refines by edge length alone.
+    """
+    if method not in (default, "meshlib"):
+        raise ValueError(f"method must be {default!r} or 'meshlib', got {method!r}")
+    if method == "meshlib" and refine != "max_edge":
+        raise ValueError(f"method='meshlib' refines by edge length only, got refine={refine!r}")
+
+
+def _serial_inputs(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], n_vertices: int | None = None
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Read a mesh back for the serial pipeline of ``method="meshlib"``.
+
+    Raises
+    ------
+    ValueError
+        If ``faces`` holds an index outside ``[0, n_vertices)``.
+    """
+    # The serial pipeline runs on the host: its every step is a dependent walk over a half-edge
+    # structure that the next split or flip rewrites.
+    vertices_np = read_array(vertices).reshape(-1, 3).astype(np.float32)
+    faces_np = read_array(faces).reshape(-1, 3).astype(np.int32)
+    bound = vertices_np.shape[0] if n_vertices is None else n_vertices
+    if faces_np.size and (int(faces_np.min()) < 0 or int(faces_np.max()) >= bound):
+        raise ValueError(f"faces holds an index outside [0, {bound})")
+    return vertices_np, faces_np
+
+
+def _serial_result(
+    result: _serial_mesh.Result,
+    device: wp.DeviceLike,
+    n_vertices: int,
+    n_faces: int,
+    return_patch: bool,
+    return_provenance: bool,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]
+    | tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool], od.interpolation.Provenance]
+):
+    """Upload a serial pipeline's result and assemble the patching call's returns."""
+    vertices, faces, patch, provenance = _serial_arrays(
+        result, device, n_vertices, n_faces, return_provenance
+    )
+    return _patched_result(vertices, faces, patch, return_patch, provenance)
+
+
+def _serial_arrays(
+    result: _serial_mesh.Result,
+    device: wp.DeviceLike,
+    n_vertices: int,
+    n_faces: int,
+    return_provenance: bool,
+) -> tuple[
+    wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool], od.interpolation.Provenance | None
+]:
+    """Upload a serial pipeline's mesh and patch, with its provenance when asked for."""
+    vertices = wp.array(result.vertices, dtype=wp.vec3, device=device)
+    faces = wp.array(result.faces.reshape(-1), dtype=wp.int32, device=device)
+    patch = wp.array(result.patch, dtype=wp.bool, device=device)
+    provenance = None
+    if return_provenance:
+        assert result.sources is not None
+        assert result.weights is not None
+        assert result.face_source is not None
+        provenance = od.interpolation.Provenance.from_rows(
+            odt.as_array2d(wp.array(result.sources, dtype=wp.int32, device=device), wp.int32),
+            odt.as_array2d(wp.array(result.weights, dtype=wp.float32, device=device), wp.float32),
+            wp.array(result.face_source, dtype=wp.int32, device=device),
+            n_vertices,
+            n_faces,
+        )
+    return vertices, faces, patch, provenance
 
 
 def _single_boundary_loops(
@@ -4582,6 +4798,7 @@ def bridge_edges_smooth(
     sampling_step: float,
     validate: bool = True,
     *,
+    method: Literal["hermite", "meshlib"] = "hermite",
     return_provenance: Literal[False] = False,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
 @overload
@@ -4593,6 +4810,7 @@ def bridge_edges_smooth(
     sampling_step: float,
     validate: bool = True,
     *,
+    method: Literal["hermite", "meshlib"] = "hermite",
     return_provenance: Literal[True],
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], od.interpolation.Provenance]: ...
 def bridge_edges_smooth(
@@ -4603,6 +4821,7 @@ def bridge_edges_smooth(
     sampling_step: float,
     validate: bool = True,
     *,
+    method: Literal["hermite", "meshlib"] = "hermite",
     return_provenance: bool = False,
 ) -> (
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
@@ -4642,6 +4861,13 @@ def bridge_edges_smooth(
     validate
         Check that both edges are boundary edges of ``faces`` and that the patch would not
         duplicate an existing edge, as in [`bridge_edges`][ordito.holes.bridge_edges].
+    method
+        ``"hermite"`` (default) samples one cubic Hermite segment in closed form on the device,
+        reading back only the six positions it needs, where the other method reads the whole mesh
+        back. ``"meshlib"`` reproduces that library's smooth bridge exactly: a quadrangle between
+        the two edges split along a least-squares fair spline through the four control points,
+        refitted three times to its resampled polyline, with the strip's width tapering between
+        the two edge lengths.
     return_provenance
         If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
         any per-vertex or per-face field onto the result.
@@ -4661,9 +4887,11 @@ def bridge_edges_smooth(
     Raises
     ------
     ValueError
-        If ``sampling_step`` is not positive, if either edge is not a directed edge of ``faces``
-        (checked whatever ``validate`` says, since the strip needs both incident faces), or for any
-        of the reasons [`bridge_edges`][ordito.holes.bridge_edges] raises.
+        If ``sampling_step`` is not positive, if ``method`` is unknown, if either edge is not a
+        directed edge of ``faces`` (checked whatever ``validate`` says, since the strip needs both
+        incident faces), or for any of the reasons [`bridge_edges`][ordito.holes.bridge_edges]
+        raises. Under ``"meshlib"``, also if the bridge would duplicate an existing edge, or if a
+        face cannot be linked into an oriented manifold half-edge structure.
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
 
@@ -4717,10 +4945,28 @@ def bridge_edges_smooth(
     require_same_device(vertices=vertices, faces=faces)
     if sampling_step <= 0.0:
         raise ValueError(f"sampling_step must be positive, got {sampling_step}")
+    if method not in ("hermite", "meshlib"):
+        raise ValueError(f"method must be 'hermite' or 'meshlib', got {method!r}")
     device = faces.device
     a0, a1 = int(edge_a[0]), int(edge_a[1])
     b0, b1 = int(edge_b[0]), int(edge_b[1])
     _require_distinct_edges((a0, a1), (b0, b1))
+    if method == "meshlib":
+        vertices_np, faces_np = _serial_inputs(vertices, faces)
+        result = _serial_mesh.bridge(
+            vertices_np, faces_np, (a0, a1), (b0, b1), sampling_step, track=return_provenance
+        )
+        if result.faces.shape[0] == faces_np.shape[0]:
+            raise ValueError(
+                "both edges must be boundary edges of faces, and the bridge may not duplicate an "
+                "existing edge"
+            )
+        out_vertices, out_faces, _, provenance = _serial_arrays(
+            result, device, vertices.size, faces_np.shape[0], return_provenance
+        )
+        if provenance is None:
+            return out_vertices, out_faces
+        return out_vertices, out_faces, provenance
     # One scan of the faces answers the whole validation, finds each edge's opposite corner and
     # gathers the six positions the spline needs, all in one readback: a strip with interior
     # samples joins nothing but its own new vertices, so only the one-segment case -- the flat

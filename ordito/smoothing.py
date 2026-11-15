@@ -60,10 +60,11 @@ import warp.optim.linear as wpl
 import ordito as od
 import ordito.linalg as twl
 import ordito.typing as odt
-from ordito import _launch, laplacian
+from ordito import _launch, _serial_mesh, laplacian
 from ordito._common import (
     accumulate_and_normalize,
     offsets_buffer,
+    read_array,
     read_scalar,
     read_values,
     require_same_device,
@@ -4218,14 +4219,35 @@ def _edge_weights(
     return weights, 0
 
 
+@overload
 def smooth_region_boundary(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     region: wp.array[wp.bool],
     iterations: int = 4,
     *,
+    method: Literal["fixed_topology"] = "fixed_topology",
     vertex_faces: tuple[wp.array[wp.int32], wp.array[wp.int32]] | None = None,
-) -> wp.array[wp.vec3]:
+) -> wp.array[wp.vec3]: ...
+@overload
+def smooth_region_boundary(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    region: wp.array[wp.bool],
+    iterations: int = 4,
+    *,
+    method: Literal["meshlib"],
+    vertex_faces: tuple[wp.array[wp.int32], wp.array[wp.int32]] | None = None,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
+def smooth_region_boundary(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    region: wp.array[wp.bool],
+    iterations: int = 4,
+    *,
+    method: Literal["fixed_topology", "meshlib"] = "fixed_topology",
+    vertex_faces: tuple[wp.array[wp.int32], wp.array[wp.int32]] | None = None,
+) -> wp.array[wp.vec3] | tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Straighten the *rim curve* of a face region, by sliding the vertices that lie on it.
 
@@ -4255,6 +4277,14 @@ def smooth_region_boundary(
         only vertices that touch both a selected and an unselected face may move.
     iterations
         Number of solve-and-project passes. ``0`` returns a copy.
+    method
+        ``"fixed_topology"`` (default) slides the band's vertices and leaves the face buffer as it
+        is, so anything indexed by it stays valid; that promise is why it is the default.
+        ``"meshlib"`` reproduces that library's rim
+        smoothing exactly: before the passes, each band edge joining two band vertices with the
+        same side on both its faces is flipped where its quadrangle unfolds convex, which lets
+        the rim cross triangles it would otherwise zigzag around; the passes then solve the
+        least-squares cotangent fit of the field on the host. It returns the faces too.
     vertex_faces
         ``(3 * n_faces,)`` and ``(n_vertices + 1,)`` optional precomputed
         [`vertex_face_adjacency`][ordito.adjacency.vertex_face_adjacency] as
@@ -4264,16 +4294,20 @@ def smooth_region_boundary(
 
     Returns
     -------
-    wp.array[wp.vec3]
+    vertices : wp.array[wp.vec3]
         ``(n_vertices,)`` positions on ``vertices.device`` with the rim band slid along the
-        surface. Connectivity and the face mask are untouched, so ``region`` stays valid against
-        the result.
+        surface. Under the default method connectivity and the face mask are untouched, so
+        ``region`` stays valid against the result.
+    faces : wp.array[wp.int32]
+        ``(3 * n_faces,)`` faces after the band's flips; only under ``method="meshlib"``. A flip
+        keeps the two faces' places, so ``region`` still selects the same face slots.
 
     Raises
     ------
     ValueError
-        If ``iterations`` is negative, or if ``region`` is not a length-``n_faces`` ``wp.bool``
-        array.
+        If ``iterations`` is negative, if ``method`` is unknown, or if ``region`` is not a
+        length-``n_faces`` ``wp.bool`` array; under ``method="meshlib"``, also if a face cannot be
+        linked into an oriented manifold half-edge structure.
     RuntimeError
         If ``vertices``, ``faces``, ``region`` and ``vertex_faces`` are not all on one device.
 
@@ -4319,12 +4353,24 @@ def smooth_region_boundary(
     require_same_device(vertices=vertices, faces=faces, region=region, vertex_faces=vertex_faces)
     if iterations < 0:
         raise ValueError(f"iterations must be non-negative, got {iterations}")
+    if method not in ("fixed_topology", "meshlib"):
+        raise ValueError(f"method must be 'fixed_topology' or 'meshlib', got {method!r}")
     device = faces.device
     n_faces = faces.size // 3
     if len(region.shape) != 1 or region.size != n_faces or region.dtype is not wp.bool:
         raise ValueError(
             f"region must be a length-{n_faces} wp.bool array, got shape {tuple(region.shape)} "
             f"of {region.dtype}"
+        )
+    if method == "meshlib":
+        # The flips and the passes run on the host: each flip rewrites the half-edge structure the
+        # next one walks.
+        smoothed_np, flipped_np = _serial_mesh.rim_smooth(
+            read_array(vertices), read_array(faces), read_array(region), iterations, device
+        )
+        return (
+            wp.array(smoothed_np, dtype=wp.vec3, device=device),
+            wp.array(flipped_np.reshape(-1), dtype=wp.int32, device=device),
         )
     n_vertices = vertices.size
     if n_vertices == 0 or n_faces == 0 or iterations == 0:

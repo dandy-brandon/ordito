@@ -3301,6 +3301,50 @@ def test_smooth_region_boundary_matches_meshlib(device: str, subdivisions: int) 
     assert np.abs(np.linalg.norm(smoothed_ml[moved_ml], axis=1) - 1.0).max() < 0.0065
 
 
+# A region below a tilted plane, whose staircase rim leaves band edges to flip at both
+# resolutions, and the same region speckled with single faces, where the flips do most of the work.
+@pytest.mark.parity("smooth_region_boundary_meshlib", "meshlib")
+@pytest.mark.parametrize("subdivisions", [3, 4])
+@pytest.mark.parametrize("iterations", [1, 4])
+@pytest.mark.parametrize("speckled", [False, True])
+def test_smooth_region_boundary_meshlib_method_matches_meshlib(
+    device: str, subdivisions: int, iterations: int, speckled: bool
+) -> None:
+    """
+    Class A against ``smoothRegionBoundary``: the same faces, slot for slot, and positions.
+
+    ``method="meshlib"`` flips the band's edges as that library does before the passes, then
+    solves the field's least-squares cotangent fit and slides each band vertex to its zero set, so
+    the face buffers are equal row for row (a flip keeps its two faces' places) and the positions
+    to rounding; the default method, which does not flip, moves the same vertices up to 0.0052
+    away (``test_smooth_region_boundary_matches_meshlib``).
+    """
+    mesh_tm = tm.creation.icosphere(subdivisions=subdivisions, radius=1.0)
+    vertices_np = np.asarray(mesh_tm.vertices)
+    faces_np = np.asarray(mesh_tm.faces)
+    centres_np = vertices_np[faces_np].mean(axis=1)
+    region_np = centres_np[:, 2] + 0.3 * centres_np[:, 0] > 0.2
+    if speckled:
+        region_np |= np.random.default_rng(0).random(len(faces_np)) < 0.1
+    mesh_ml = trimesh_to_meshlib(mesh_tm)
+    region_ml = mm.FaceBitSet(numpy_to_meshlib_bitset(region_np))
+    region_ml.resize(len(faces_np))
+    mm.smoothRegionBoundary(mesh_ml, region_ml, iterations)
+    smoothed_ml = cast(npt.NDArray[np.float64], mn.toNumpyArray(mesh_ml.points))
+    faces_ml = mn.getNumpyFaces(mesh_ml.topology)
+
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np.ravel(), device)
+    region_wp = wp.array(region_np, dtype=wp.bool, device=device)
+    smoothed_wp, flipped_wp = od.smoothing.smooth_region_boundary(
+        vertices_wp, faces_wp, region_wp, iterations, method="meshlib"
+    )
+    # Non-vacuity: the reference flipped band edges and moved vertices.
+    assert not np.array_equal(faces_ml, faces_np)
+    assert np.abs(smoothed_ml - vertices_wp.numpy()).max() > 1e-3
+    assert np.array_equal(flipped_wp.numpy().reshape(-1, 3), faces_ml)
+    assert np.allclose(smoothed_wp.numpy(), smoothed_ml, rtol=1e-5, atol=1e-5)
+
+
 def test_smooth_region_boundary_leaves_connectivity_and_the_rest_alone(device: str) -> None:
     """
     Not a library comparison: the promises the signature makes, and the degenerate regions.

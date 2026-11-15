@@ -1364,9 +1364,7 @@ Per-component facts, design choices and measured declines live in `reference/com
 read the component's section there before optimizing or diagnosing it. This section lists only
 what is still open. Re-measure before acting on any of it, and delete an item when it closes.
 
-- **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
+- **A Class C pair an option could make Class A**, by porting the reference's algorithm:
   `offset_mesh(method="meshlib")` against MeshLib's `offsetMesh`, whose extraction is ported
   (`marching_cubes(method="openvdb")`, Class A) and whose OpenVDB `meshToLevelSet` band field is
-  not; MeshLib's "nice" fills and stitches (`fill_smooth`, `refill_region`, `stitch_smooth`,
-  `bridge_edges_smooth`, `smooth_region_boundary`), which follow a serial priority queue. Scoped
-  per port, with source availability and licensing, in `reference/component-status.md` (16.0b).
+  not. Scoped, with source availability and licensing, in `reference/component-status.md` (16.0b).
