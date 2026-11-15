@@ -3029,6 +3029,57 @@ def test_graded_heat_diffusion_falls_back_to_a_factorization_that_matches_scipy(
     assert np.abs(heat_wp.numpy() - heat_np).max() < 1e-10 * np.ptp(heat_np)
 
 
+def test_an_unfactorable_ill_conditioned_mesh_solves_poisson_by_multigrid(
+    graded_saddle: GradedSaddle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: past the memory budget the Poisson solve's multigrid answer is exact.
+
+    No reference covers a factorization refused for its size. With the budget set to nothing, the
+    heat solve's iterate fails its backward-error check on ``saddle_graded`` and its fallback is
+    refused: the solver must still say it is ill-conditioned, and its Poisson solve, offered no
+    factorization, must take one multigrid hierarchy (kept for the next solve) and recover a field
+    ``u`` from ``-L u`` up to its constant. Mutation probe: keying the flag on a built
+    factorization alone (the old rule) leaves ``ill_conditioned`` false and builds no hierarchy.
+    """
+    _, _, vertices_wp, faces_wp = graded_saddle
+    device = vertices_wp.device
+    monkeypatch.setattr(od.cholesky, "CHOLESKY_MEMORY_BUDGET", 0)
+    hierarchies: list[int] = []
+    multigrid = od.linalg.multigrid_preconditioner
+
+    def counting(matrix: Any, *args: Any, **kwargs: Any) -> Any:
+        hierarchies.append(int(matrix.nrow))
+        return multigrid(matrix, *args, **kwargs)
+
+    monkeypatch.setattr(od.linalg, "multigrid_preconditioner", counting)
+    mesh = od.Trimesh(vertices_wp, faces_wp)
+    solver = mesh.heat_solver()
+    n_vertices = vertices_wp.size
+    rhs_np = np.zeros(n_vertices)
+    rhs_np[0] = 1.0
+    heat_wp = wp.zeros(n_vertices, dtype=wp.float64, device=device)
+    solver.diffuse(wp.array(rhs_np, dtype=wp.float64, device=device), heat_wp)
+    assert solver.ill_conditioned
+    assert solver.nbytes == 0
+
+    poisson = solver.operators[3]
+    offsets = poisson.offsets.numpy()[: n_vertices + 1]
+    poisson_sp = sp.csr_matrix(
+        (poisson.values.numpy()[: offsets[-1]], poisson.columns.numpy()[: offsets[-1]], offsets),
+        shape=(n_vertices, n_vertices),
+    )
+    field_np = vertices_wp.numpy()[:, 0].astype(np.float64)
+    rhs_wp = wp.array(poisson_sp @ field_np, dtype=wp.float64, device=device)
+    for _ in range(2):
+        solution_wp = wp.zeros(n_vertices, dtype=wp.float64, device=device)
+        solver.solve_poisson(rhs_wp, solution_wp)
+        solution_np = solution_wp.numpy()
+        error = (solution_np - solution_np.mean()) - (field_np - field_np.mean())
+        assert np.abs(error).max() < 1e-5 * np.ptp(field_np)
+    assert hierarchies == [n_vertices]
+
+
 @pytest.mark.parametrize("on_trimesh", [False, True], ids=["vertices_faces", "trimesh"])
 def test_a_discarded_factorization_is_logged(
     graded_saddle: GradedSaddle, caplog: pytest.LogCaptureFixture, on_trimesh: bool

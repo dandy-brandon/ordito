@@ -3590,6 +3590,9 @@ class HeatSolver:
         # Set once a settled iterate of this mesh's systems fails its backward-error check: the
         # operators are ill-conditioned in places, so the Poisson solve is factored at once too.
         self._ill_conditioned = False
+        # A diffusion's check failed and its system could not be factored (past the budget): the
+        # Poisson systems, stored over its pattern, are not offered a factorization either.
+        self._unfactorable = False
         # The heat system pinned to zero on the rim, its preconditioner and rim mask, once built;
         # ``()`` for a mesh with no rim, which has no pinned solve to run.
         self._pinned: (
@@ -3612,6 +3615,9 @@ class HeatSolver:
         # geometry-central's regularized Poisson system and its preconditioner, once built
         # (``_solve_regularized_poisson``).
         self._regularized: tuple[odt.SparseMatrix, wpl.LinearOperator] | None = None
+        # A Poisson-type system's multigrid hierarchy, by role: built for an ill-conditioned mesh
+        # whose factorization was refused, and kept like the factorization it stands in for.
+        self._multigrid: dict[str, wpl.LinearOperator] = {}
 
     @property
     def operators(self) -> HeatOperators:
@@ -3812,15 +3818,17 @@ class HeatSolver:
 
     def release(self) -> None:
         """
-        Drop every kept factorization and forget the solve counts.
+        Drop every kept factorization and multigrid hierarchy, and forget the solve counts.
 
         The operators stay, and so does [`ill_conditioned`][ordito.heat.HeatSolver.ill_conditioned]:
         it describes the mesh's operators, not a factorization, so after a release a Poisson solve
-        on an ill-conditioned mesh is still factored at once rather than iterated first.
+        on an ill-conditioned mesh is still factored at once rather than iterated first (or, past
+        the memory budget, preconditioned by multigrid).
         """
         for kept in self._systems.values():
             kept.factorization.release()
         self._systems.clear()
+        self._multigrid.clear()
 
     def factor(self) -> bool:
         """
@@ -4060,13 +4068,23 @@ class HeatSolver:
             # the Poisson system is stored over its pattern: the numeric factorization alone costs
             # less than one Poisson iteration on such an operator.
             kept.factorization.factor(heat.factorization)
-        elif self._ill_conditioned:
+        elif self._ill_conditioned and not self._unfactorable:
             # A diffusion on this mesh failed its check: its Poisson iteration is as slow as the
             # diffusion's was, and an analysis and factorization cost less.
             kept.factorization.factor()
         if kept.factorization.factorization is not None:
             kept.factorization.solve(rhs, solution, tol=_CG_TOLERANCE)
             return
+        if self._ill_conditioned:
+            # No factorization (refused past the memory budget): the iteration is as slow as the
+            # diffusion's was, and a multigrid hierarchy's rounds, unlike the polynomial's, do not
+            # grow with the mesh. On a well-conditioned mesh the polynomial is the cheaper one.
+            multigrid = self._multigrid.get(role)
+            if multigrid is None:
+                multigrid = self._multigrid[role] = twl.multigrid_preconditioner(
+                    cast("odt.BsrMatrix[wp.float64]", matrix)
+                )
+            preconditioner = multigrid
         twl.solve_spd(matrix, rhs, solution, tol=_CG_TOLERANCE, preconditioner=preconditioner)
 
     def diffuse_pinned(self, rhs: wp.array[wp.float64], solution: wp.array[wp.float64]) -> bool:
@@ -4281,6 +4299,7 @@ class HeatSolver:
         """
         kept = self._kept(role, matrix)
         held = kept.factorization.factorization is not None
+        was_refused = kept.factorization.refused
         twl.solve_spd_settled(
             matrix,
             rhs,
@@ -4300,6 +4319,15 @@ class HeatSolver:
             _LOGGER.debug(
                 "HeatSolver: the %s system's settled iterate failed its backward-error check; "
                 "factored it",
+                role,
+            )
+        elif not held and kept.factorization.refused and not was_refused:
+            # The check failed and its fallback factorization was refused: the iterate stands.
+            self._ill_conditioned = True
+            self._unfactorable = True
+            _LOGGER.debug(
+                "HeatSolver: the %s system's settled iterate failed its backward-error check and "
+                "could not be factored",
                 role,
             )
 

@@ -2259,6 +2259,11 @@ class OperatorFactorization:
         """Device memory the built factorization holds, in bytes; ``0`` when none is."""
         return 0 if self._factorization is None else self._factorization.nbytes
 
+    @property
+    def refused(self) -> bool:
+        """Whether ``factor`` was refused (indefinite, or past the memory budget) since release."""
+        return self._refused
+
     def factor(
         self, sharing: OperatorFactorization | None = None, *, expandable: bool = False
     ) -> bool:
