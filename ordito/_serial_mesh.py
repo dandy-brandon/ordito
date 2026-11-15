@@ -807,6 +807,8 @@ class Metric:
         kernel_id: int = -1,
         normal: np.ndarray | None = None,
         inverse_area: float = 0.0,
+        band_id: int = -1,
+        up: tuple[float, float, float] | None = None,
     ) -> None:
         self.triangle_term = triangle
         self.edge_term = edge
@@ -816,6 +818,9 @@ class Metric:
         self.kernel_id = kernel_id
         self.normal = np.zeros(3) if normal is None else normal
         self.inverse_area = inverse_area
+        # The id of the same band metric in ``kernels/holes.serial_band_search``, -1 for none.
+        self.band_id = band_id
+        self.up = up
 
     @property
     def has_triangle(self) -> bool:
@@ -1033,11 +1038,15 @@ def stitch_metric(
     """Return the band metric ``name``."""
     if name == "complex_stitch":
         triangle, edge = _complex_stitch(points)
-        return Metric(triangle=triangle, edge=edge)
+        return Metric(triangle=triangle, edge=edge, band_id=0)
     if name == "edge_length_stitch":
-        return Metric(triangle=_edge_length_stitch(points))
+        return Metric(triangle=_edge_length_stitch(points), band_id=1)
     if name == "vertical":
-        return Metric(triangle=_vertical_stitch(points, up if up is not None else (0.0, 0.0, 1.0)))
+        return Metric(
+            triangle=_vertical_stitch(points, up if up is not None else (0.0, 0.0, 1.0)),
+            band_id=2,
+            up=up,
+        )
     raise ValueError(name)
 
 
@@ -1950,17 +1959,21 @@ def stitch_holes(topology: Topology, points: Points, a0: int, b0: int, metric: M
         b_map.append(b)
         b = topology.nxt[b] ^ 1
 
-    terms = _band_terms(topology, a_map, b_map, metric)
     start = float(np.sqrt(best))
     native = None
-    if not metric.use_max:
-        closing = _band_closing_terms(topology, a_map, b_map, metric) if metric.has_edge else None
+    if metric.band_id >= 0:
+        closing = (
+            _band_closing_terms(topology, a_map, b_map, metric)
+            if metric.has_edge
+            else np.zeros((2, 2))
+        )
         native = _band_search_native(
-            na, nb, start, terms, np.zeros((2, 2)) if closing is None else closing, metric
+            topology, data, a_map, b_map, start, closing, metric.band_id, metric.up
         )
     if native is not None:
         prev_a, prev_b = (t.tolist() for t in native)
     else:
+        terms = _band_terms(topology, a_map, b_map, metric)
         prev_a, prev_b = _band_search(
             na, nb, start, terms, metric, _StdHeap(), topology, a_map, b_map
         )
@@ -2075,27 +2088,44 @@ def _band_closing_terms(
 
 
 def _band_search_native(
-    na: int, nb: int, start: float, terms: _BandTerms, close_terms: np.ndarray, metric: Metric
+    topology: Topology,
+    points: np.ndarray,
+    a_map: list[int],
+    b_map: list[int],
+    start: float,
+    close_terms: np.ndarray,
+    metric_id: int,
+    up: tuple[float, float, float] | None,
 ) -> tuple[np.ndarray, np.ndarray] | None:
     """
     Run the band search natively (``kernels/holes.serial_band_search``), in one CPU thread.
 
-    Returns each state's predecessor tables, or ``None`` when the queue outgrew its capacity.
+    The kernel forms each metric term as the search reaches its state. Returns each state's
+    predecessor tables, or ``None`` when the queue outgrew its capacity.
     """
     from ordito.kernels import holes as kernel_holes
 
+    org = topology.org
+    na, nb = len(a_map), len(b_map)
     shape = (na + 1, nb + 1)
-    empty = np.zeros((1, *shape))
 
-    def table(values: np.ndarray | None, dtype: type) -> Any:
-        source = empty if values is None else values
-        return wp.array(np.ascontiguousarray(source, dtype=dtype), device="cpu")
+    def across(loop: list[int]) -> np.ndarray:
+        return np.array(
+            [org[topology.prv[e] ^ 1] if topology.lft[e ^ 1] >= 0 else -1 for e in loop],
+            dtype=np.int32,
+        )
 
     q = kernel_holes.BandSearch()
-    q.tri = table(terms.tri, np.float64)
-    q.closing = table(terms.closing, np.float64)
-    q.opening = table(terms.opening, np.float64)
-    q.has_opening = table(terms.has_opening, np.int32)
+    q.points = wp.array(points, dtype=wp.vec3, device="cpu")
+    q.a_vert = wp.array(np.array([org[e] for e in a_map], dtype=np.int32), device="cpu")
+    q.b_vert = wp.array(np.array([org[e] for e in b_map], dtype=np.int32), device="cpu")
+    q.a_across = wp.array(across(a_map), device="cpu")
+    q.b_across = wp.array(across(b_map), device="cpu")
+    q.metric = metric_id
+    u = np.asarray(up if up is not None else (0.0, 0.0, 1.0), dtype=np.float32).astype(np.float64)
+    length = float(np.sqrt(_lsq(u)))
+    unit = u * (1.0 / length) if length > 0 else np.zeros(3)
+    q.up = wp.vec3d(*(float(x) for x in unit))
     q.close_term = wp.array(close_terms, dtype=wp.float64, device="cpu")
     weight = np.full(shape, _DBL_MAX)
     prev_a = np.full(shape, -1, dtype=np.int32)
@@ -2105,13 +2135,10 @@ def _band_search_native(
     q.prev_b = wp.array(prev_b, dtype=wp.int32, device="cpu", copy=False)
     capacity = 4 * (na + 1) * (nb + 1) + 16
     q.heap_w = wp.array(np.empty(capacity), dtype=wp.float64, device="cpu", copy=False)
-    q.heap_s = wp.array(
-        np.empty((capacity, 4), dtype=np.int32), dtype=wp.int32, device="cpu", copy=False
-    )
+    heap_s = np.empty((capacity, 4), dtype=np.int32)
+    q.heap_s = wp.array(heap_s, dtype=wp.int32, device="cpu", copy=False)
     status = np.zeros(2, dtype=np.int32)
     q.status = wp.array(status, dtype=wp.int32, device="cpu", copy=False)
-    q.has_tri = int(metric.has_triangle)
-    q.has_edge = int(metric.has_edge)
     wp.launch(kernel_holes.serial_band_search, dim=1, inputs=[q, float(start)], device="cpu")
     if status[1] != 0:
         return None

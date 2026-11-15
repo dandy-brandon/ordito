@@ -3277,11 +3277,11 @@
  "benchmarks/test_holes.py::test_stitch_smooth_meshlib[rim_short-ordito-cuda]": {
   "counts": {
    "launch": 494,
-   "alloc": 104,
+   "alloc": 105,
    "memset": 48,
    "h2d": 11,
    "d2h": 20,
-   "h2h": 5,
+   "h2h": 6,
    "sync": 4,
    "scan": 30,
    "sort": 28

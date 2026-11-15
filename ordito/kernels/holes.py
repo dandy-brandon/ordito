@@ -3789,15 +3789,23 @@ def serial_fill_dp_diagonal(
 # heap sift for sift, so equal weights pop in the reference's order.
 
 
+SERIAL_BAND_COMPLEX = 0
+SERIAL_BAND_EDGE_LENGTH = 1
+SERIAL_BAND_VERTICAL = 2
+
+
 @wp.struct
 class BandSearch:
-    """The band's term tables, its state tables and the snapshot queue of its search."""
+    """The band's rim tables, its state tables and the snapshot queue of its search."""
 
-    # (na + 1, nb + 1) terms by state: [k] advancing on loop k; closing [2 k + j] after a step on j.
-    tri: wp.array3d[wp.float64]
-    closing: wp.array3d[wp.float64]
-    opening: wp.array3d[wp.float64]
-    has_opening: wp.array3d[wp.int32]
+    points: wp.array[wp.vec3]
+    # Each rim position's vertex, and the vertex across its rim edge's existing triangle (or -1).
+    a_vert: wp.array[wp.int32]
+    b_vert: wp.array[wp.int32]
+    a_across: wp.array[wp.int32]
+    b_across: wp.array[wp.int32]
+    metric: wp.int32
+    up: wp.vec3d
     # The band-closing edge term for a last step on loop k, after a first step on A (j = 0) or not.
     close_term: wp.array2d[wp.float64]
     weight: wp.array2d[wp.float64]
@@ -3807,8 +3815,49 @@ class BandSearch:
     heap_s: wp.array2d[wp.int32]
     # status[0]: queued snapshots; status[1]: 1 once the queue overflowed its capacity.
     status: wp.array[wp.int32]
-    has_tri: wp.int32
-    has_edge: wp.int32
+
+
+@wp.func
+def serial_normalized_f(v: wp.vec3) -> wp.vec3:
+    length = wp.sqrt(serial_dot_f(v, v))
+    if length > wp.float32(0.0):
+        inv = wp.float32(1.0) / length
+        return wp.vec3(v[0] * inv, v[1] * inv, v[2] * inv)
+    return wp.vec3(wp.float32(0.0), wp.float32(0.0), wp.float32(0.0))
+
+
+@wp.func
+def band_triangle(q: BandSearch, a: wp.int32, b: wp.int32, c: wp.int32) -> wp.float64:
+    """Evaluate the band metric's triangle term of ``(a, b, c)`` as ``_serial_mesh`` does."""
+    pa = q.points[a]
+    pb = q.points[b]
+    pc = q.points[c]
+    if q.metric == SERIAL_BAND_COMPLEX:
+        return wp.float64((serial_aspect_ratio(pa, pb, pc) - wp.float32(1.0)) * wp.float32(1e-2))
+    if q.metric == SERIAL_BAND_EDGE_LENGTH:
+        return wp.float64(wp.sqrt(serial_lsq_f(pc - pa)))
+    ad = wp.vec3d(pa)
+    ab = wp.vec3d(pb) - ad
+    ac = wp.vec3d(pc) - ad
+    bc = wp.vec3d(pc) - wp.vec3d(pb)
+    norm = serial_cross_d(ab, ac)
+    parallel = wp.abs(q.up[0] * norm[0] + q.up[1] * norm[1] + q.up[2] * norm[2])
+    sides = serial_dot_d(ab, ab) + serial_dot_d(ac, ac) + serial_dot_d(bc, bc)
+    return (
+        serial_dot_d(norm, norm)
+        + wp.float64(100.0) * parallel * parallel
+        + sides * sides * wp.float64(0.5)
+    )
+
+
+@wp.func
+def band_edge(q: BandSearch, a: wp.int32, b: wp.int32, lft: wp.int32, rgt: wp.int32) -> wp.float64:
+    """Evaluate the complex band metric's term of edge ``a b`` between ``lft``, ``rgt``."""
+    pa = q.points[a]
+    ab = q.points[b] - pa
+    norm_l = serial_normalized_f(serial_cross_f(q.points[lft] - pa, ab))
+    norm_r = serial_normalized_f(serial_cross_f(ab, q.points[rgt] - pa))
+    return (wp.float64(1.0) - wp.float64(serial_dot_f(norm_l, norm_r))) * wp.float64(1e4)
 
 
 @wp.func
@@ -3897,19 +3946,29 @@ def serial_band_search(q: BandSearch, start: wp.float64) -> None:
             xb = b + k
             skip = xa > na or xb > nb or (xa == na and xb == 0) or (xb == nb and xa == 0)
             if not skip:
-                total = w
-                if q.has_tri != 0:
-                    total = total + q.tri[k, a, b]
-                if q.has_edge != 0:
+                a0 = q.a_vert[a % na]
+                b0 = q.b_vert[b % nb]
+                c = wp.where(k == 0, q.a_vert[(a + 1) % na], q.b_vert[(b + 1) % nb])
+                total = w + band_triangle(q, a0, b0, c)
+                if q.metric == SERIAL_BAND_COMPLEX:
                     if came >= 0:
-                        total = total + q.closing[2 * k + came, a, b]
-                    if q.has_opening[k, a, b] != 0:
-                        total = total + q.opening[k, a, b]
+                        back = wp.where(
+                            came == 0, q.a_vert[(a - 1 + na) % na], q.b_vert[(b - 1 + nb) % nb]
+                        )
+                        total = total + band_edge(q, a0, b0, back, c)
+                    if k == 0:
+                        op = q.a_across[a % na]
+                        if op >= 0:
+                            total = total + band_edge(q, c, a0, op, b0)
+                    else:
+                        op = q.b_across[(b + 1) % nb]
+                        if op >= 0:
+                            total = total + band_edge(q, b0, c, op, a0)
                 if total < q.weight[xa, xb]:
                     q.weight[xa, xb] = total
                     q.prev_a[xa, xb] = a
                     q.prev_b[xa, xb] = b
-                    if xa == na and xb == nb and q.has_edge != 0:
+                    if xa == na and xb == nb and q.metric == SERIAL_BAND_COMPLEX:
                         # Where the band closes: walk back to the state after its first step.
                         spin_a = wp.int32(-1)
                         x = a
