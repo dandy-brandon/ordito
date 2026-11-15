@@ -1666,54 +1666,78 @@ def _solve_spd(
     return read_array(solution).T
 
 
+class _Rings:
+    """
+    The half-edge arrays one smoothing solve reads, and every listed vertex's ring walked in step.
+
+    ``rows`` / ``edges`` list each ring's half-edges from the vertex's stored edge onward, rows in
+    the order given and each row in ring order; ``step`` is an entry's position in its ring, so a
+    sum taken step by step adds each row's terms in ring order.
+    """
+
+    def __init__(self, topology: Topology, verts: np.ndarray) -> None:
+        self.nxt = np.asarray(topology.nxt, dtype=np.int64)
+        self.prv = np.asarray(topology.prv, dtype=np.int64)
+        self.org = np.asarray(topology.org, dtype=np.int64)
+        self.lft = np.asarray(topology.lft, dtype=np.int64)
+        epv = np.asarray(topology.edge_per_vertex, dtype=np.int64)
+        start = epv[verts]
+        rows_by_step: list[np.ndarray] = []
+        edges_by_step: list[np.ndarray] = []
+        row = np.arange(verts.size)
+        cur = start
+        while row.size:
+            rows_by_step.append(row)
+            edges_by_step.append(cur)
+            cur = self.nxt[cur]
+            more = cur != start[row]
+            row, cur = row[more], cur[more]
+        step = np.concatenate([np.full(r.size, k) for k, r in enumerate(rows_by_step)])
+        rows = np.concatenate(rows_by_step)
+        edges = np.concatenate(edges_by_step)
+        order = np.lexsort((step, rows))
+        self.rows, self.edges, self.step = rows[order], edges[order], step[order]
+        self.dest = self.org[self.edges ^ 1]
+        self.counts = np.bincount(self.rows, minlength=verts.size)
+
+    def sum_in_ring_order(self, terms: np.ndarray, n_rows: int) -> np.ndarray:
+        """Sum each row's ``terms`` (entries in row order) one ring step at a time."""
+        out = np.zeros((n_rows, *terms.shape[1:]))
+        for k in range(int(self.step.max()) + 1 if self.step.size else 0):
+            at = self.step == k
+            np.add.at(out, self.rows[at], terms[at])
+        return out
+
+
 def umbrella_fixed_rim(
     topology: Topology, points: Points, verts: list[int], device: wp.DeviceLike = None
 ) -> None:
     """Place each vertex of ``verts`` at the mean of its neighbours, the others held fixed."""
     if not verts:
         return
-    index = {v: i for i, v in enumerate(verts)}
-    rows: list[int] = []
-    cols: list[int] = []
-    vals: list[float] = []
-    rhs = np.zeros((len(verts), 3))
+    verts_np = np.asarray(verts, dtype=np.int64)
+    rings = _Rings(topology, verts_np)
     data = points.data
-    for n, v in enumerate(verts):
-        total = 0.0
-        fixed = [0.0, 0.0, 0.0]
-        for e in topology.org_ring(topology.edge_per_vertex[v]):
-            total += 1.0
-            d = topology.org[e ^ 1]
-            j = index.get(d)
-            if j is None:
-                p = data[d]
-                fixed[0] += float(p[0])
-                fixed[1] += float(p[1])
-                fixed[2] += float(p[2])
-            else:
-                rows.append(n)
-                cols.append(j)
-                vals.append(-1.0)
-        rows.append(n)
-        cols.append(n)
-        vals.append(total)
-        rhs[n] = fixed
-    x = _solve_spd(np.array(rows), np.array(cols), np.array(vals), len(verts), rhs, device)
-    data[np.array(verts)] = x.astype(np.float32)
+    index = np.full(len(topology.edge_per_vertex), -1, dtype=np.int64)
+    index[verts_np] = np.arange(verts_np.size)
+    col = index[rings.dest]
+    free_nbr = col >= 0
+    fixed_terms = np.where(free_nbr[:, None], 0.0, data[rings.dest].astype(np.float64))
+    rhs = rings.sum_in_ring_order(fixed_terms, verts_np.size)
+    rows = np.concatenate((rings.rows[free_nbr], np.arange(verts_np.size)))
+    cols = np.concatenate((col[free_nbr], np.arange(verts_np.size)))
+    vals = np.concatenate((np.full(int(free_nbr.sum()), -1.0), rings.counts.astype(np.float64)))
+    x = _solve_spd(rows, cols, vals, verts_np.size, rhs, device)
+    data[verts_np] = x.astype(np.float32)
 
 
-def _left_cotans(topology: Topology, data: np.ndarray, edges: np.ndarray) -> np.ndarray:
+def _left_cotans(rings: _Rings, data: np.ndarray, edges: np.ndarray) -> np.ndarray:
     """Each half-edge's cotangent of the angle opposite it in its left triangle, 0 with none."""
-    has = np.array([topology.lft[e] >= 0 for e in edges.tolist()], dtype=bool)
-    tris = np.array(
-        [
-            topology.tri_verts(e) if h else (0, 0, 0)
-            for e, h in zip(edges.tolist(), has, strict=True)
-        ],
-        dtype=np.int64,
-    ).reshape(-1, 3)
-    u = data[tris[:, 0]] - data[tris[:, 2]]
-    w = data[tris[:, 1]] - data[tris[:, 2]]
+    has = rings.lft[edges] >= 0
+    corner = rings.org[rings.prv[edges ^ 1] ^ 1]
+    a, b, c = rings.org[edges], rings.org[edges ^ 1], corner
+    u = data[a] - data[c]
+    w = data[b] - data[c]
     nom = _dot(u, w)
     den = np.sqrt(_lsq(_cross(u, w)))
     with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
@@ -1738,43 +1762,32 @@ def _laplacian_least_squares(
     each row scaled by the reciprocal of its weight sum, and a row whose weights sum to zero is
     dropped.
     """
-    free = set(free_list)
-    index = {v: i for i, v in enumerate(free_list)}
-    first_layer = sorted(expand_verts(topology, free, 1) - free)
-    order = free_list + first_layer
-    ring_vert: list[int] = []
-    ring_edge: list[int] = []
-    starts = [0]
-    for v in order:
-        for e in topology.org_ring(topology.edge_per_vertex[v]):
-            ring_vert.append(v)
-            ring_edge.append(e)
-        starts.append(len(ring_edge))
-    edges = np.array(ring_edge, dtype=np.int64)
+    n_free = len(free_list)
+    free_np = np.asarray(free_list, dtype=np.int64)
+    free_rings = _Rings(topology, free_np)
+    is_free = np.zeros(len(topology.edge_per_vertex), dtype=bool)
+    is_free[free_np] = True
+    first_layer = np.unique(free_rings.dest[~is_free[free_rings.dest]])
+    order = np.concatenate((free_np, first_layer))
+    rings = _Rings(topology, order)
+    edges = rings.edges
     if cotan:
-        both = _left_cotans(topology, data, edges) + _left_cotans(topology, data, edges ^ 1)
+        both = _left_cotans(rings, data, edges) + _left_cotans(rings, data, edges ^ 1)
         weights = np.clip(both, F32(-1), F32(10)).astype(np.float64)
     else:
         weights = np.ones(edges.size)
-    dest = np.array([topology.org[e ^ 1] for e in ring_edge], dtype=np.int64)
-    weight_list = weights.tolist()
-    totals = []
-    for r in range(len(order)):
-        total = 0.0
-        for k in range(starts[r], starts[r + 1]):
-            total += weight_list[k]
-        totals.append(total)
-    totals_np = np.array(totals)
+    dest = rings.dest
+    totals_np = rings.sum_in_ring_order(weights, order.size)
     keep_row = totals_np != 0
     scale = np.where(keep_row, 1.0 / np.where(keep_row, totals_np, 1.0), 0.0)
-    counts = np.diff(np.array(starts))
-    row_of_entry = np.repeat(np.arange(len(order)), counts)
+    row_of_entry = rings.rows
     coeff = -weights * scale[row_of_entry]
     kept_rows = np.flatnonzero(keep_row)
-    row_id = np.full(len(order), -1, dtype=np.int64)
+    row_id = np.full(order.size, -1, dtype=np.int64)
     row_id[kept_rows] = np.arange(kept_rows.size)
-    n_free = len(free_list)
-    free_col = np.array([index.get(d, -1) for d in dest.tolist()], dtype=np.int64)
+    index = np.full(len(topology.edge_per_vertex), -1, dtype=np.int64)
+    index[free_np] = np.arange(n_free)
+    free_col = index[dest]
     entry_ok = keep_row[row_of_entry]
     is_free_nbr = (free_col >= 0) & entry_ok
     m_rows = np.concatenate(
@@ -1785,7 +1798,7 @@ def _laplacian_least_squares(
     k_cols = values.shape[1]
     rhs = np.zeros((len(order), k_cols))
     layer = np.arange(n_free, len(order))
-    rhs[layer] = -values[np.array(first_layer, dtype=np.int64)] if first_layer else 0.0
+    rhs[layer] = -values[first_layer] if first_layer.size else 0.0
     fixed_nbr = (free_col < 0) & entry_ok
     np.add.at(rhs, row_of_entry[fixed_nbr], -coeff[fixed_nbr, None] * values[dest[fixed_nbr]])
     rhs = rhs[kept_rows]
