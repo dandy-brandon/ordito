@@ -1784,6 +1784,14 @@ def _exclude_full_components(topology: _Walk, verts: set[int]) -> set[int]:
 _DENSE_SOLVE_MAX = 400
 
 
+class _HeldFactor:
+    """A sparse factorization a loop of solves over one pattern refactors instead of rebuilding."""
+
+    def __init__(self) -> None:
+        self.factor: Any = None
+        self.keys = np.empty(0, dtype=np.int64)
+
+
 def _solve_spd(
     rows: np.ndarray,
     cols: np.ndarray,
@@ -1791,12 +1799,14 @@ def _solve_spd(
     n: int,
     rhs: np.ndarray,
     device: wp.DeviceLike,
+    reuse: _HeldFactor | None = None,
 ) -> np.ndarray:
     """
     Solve the symmetric positive definite system given by COO entries, for ``(n, k)`` columns.
 
     A direct solve, refined in ``float64``: dense on the host for a small system or without a
-    device, otherwise a sparse Cholesky factorization on ``device``.
+    device, otherwise a sparse Cholesky factorization on ``device``, refactored in place when
+    ``reuse`` holds one of the same pattern.
     """
     if device is None or n <= _DENSE_SOLVE_MAX:
         a = np.zeros((n, n))
@@ -1818,7 +1828,13 @@ def _solve_spd(
         wp.array(values, dtype=wp.float64, device=device),
         nnz=int(unique.size),
     )
-    factor = od.cholesky.sparse_cholesky(matrix)
+    if reuse is not None and reuse.factor is not None and np.array_equal(reuse.keys, unique):
+        factor = reuse.factor
+        factor.refactor(matrix)
+    else:
+        factor = od.cholesky.sparse_cholesky(matrix)
+        if reuse is not None:
+            reuse.factor, reuse.keys = factor, unique
     columns = np.ascontiguousarray(rhs.T)
     rhs_wp = odt.as_array2d(wp.array(columns, dtype=wp.float64, device=device), wp.float64)
     solution = odt.as_array2d(wp.zeros(columns.shape, dtype=wp.float64, device=device), wp.float64)
@@ -1942,6 +1958,7 @@ def _laplacian_least_squares(
     values: np.ndarray,
     cotan: bool,
     device: wp.DeviceLike,
+    reuse: _HeldFactor | None = None,
 ) -> np.ndarray:
     """
     Solve for the free values in the least-squares sense, the first ring's ``values`` held fixed.
@@ -2008,7 +2025,7 @@ def _laplacian_least_squares(
     a_rows, a_cols, a_vals = m_cols[ia], m_cols[ib], m_vals[ia] * m_vals[ib]
     b = np.zeros((n_free, k_cols))
     np.add.at(b, m_cols, m_vals[:, None] * rhs[m_rows])
-    return _solve_spd(a_rows, a_cols, a_vals, n_free, b, device)
+    return _solve_spd(a_rows, a_cols, a_vals, n_free, b, device, reuse)
 
 
 def cotan_fairing(
@@ -2737,8 +2754,10 @@ def smooth_region_rim(
     moved = np.empty((free_list.size, 3), dtype=np.float32)
     moved_wp = wp.array(moved, dtype=wp.vec3, device="cpu", copy=False)
     free_python = free_list.tolist()
+    # Every iteration solves over the same pattern: only the cotangents move.
+    reuse = _HeldFactor()
     for _ in range(iterations):
-        _harmonic_field(topology, data, free_python, field, device)
+        _harmonic_field(topology, data, free_python, field, device, reuse)
         if free_list.size:
             wp.launch(
                 kernel_holes.rim_slide,
@@ -2756,12 +2775,13 @@ def _harmonic_field(
     free_list: list[int],
     field: np.ndarray,
     device: wp.DeviceLike = None,
+    reuse: _HeldFactor | None = None,
 ) -> None:
     """Least-squares cotangent-harmonic values of ``field`` at ``free_list``, the rest fixed."""
     if not free_list:
         return
     x = _laplacian_least_squares(
-        topology, data, free_list, field.astype(np.float64)[:, None], True, device
+        topology, data, free_list, field.astype(np.float64)[:, None], True, device, reuse
     )
     field[np.array(free_list)] = x[:, 0].astype(np.float32)
 
