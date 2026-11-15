@@ -541,6 +541,34 @@ def test_icp_point_to_point_matches_open3d_and_trimesh(device: str) -> None:
     assert cost_wp < 1e-6
 
 
+@pytest.mark.parametrize("method", ["trimesh", "open3d", "pytorch3d"])
+def test_icp_library_names_are_all_points(
+    device: str, method: Literal["trimesh", "open3d", "pytorch3d"]
+) -> None:
+    """
+    Ordito against ordito: each library name is the default ``"all_points"``, bit for bit.
+
+    The aliases name the libraries the default reproduces, which are its oracles
+    (``test_icp_point_to_point_matches_open3d_and_trimesh`` and
+    ``test_icp_point_cloud_matches_pytorch3d``).
+    """
+    rng = np.random.default_rng(12)
+    target_np = rng.standard_normal((300, 3)).astype(np.float32)
+    rotation_np, translation_np = _rigid_transform(0.15, [0.2, 0.7, 0.1], [0.05, -0.03, 0.04])
+    source_np = (target_np @ rotation_np.T + translation_np).astype(np.float32)
+    source_wp = points_to_warp(source_np, device)
+    target_wp = points_to_warp(target_np, device)
+
+    matrix_wp, transformed_wp, cost_wp = od.registration.icp(source_wp, target_wp)
+    alias_matrix_wp, alias_transformed_wp, alias_cost_wp = od.registration.icp(
+        source_wp, target_wp, method=method
+    )
+    assert _rms(transformed_wp.numpy(), target_np) < 3.5e-6  # non-vacuity: it aligned
+    assert np.array_equal(alias_matrix_wp.numpy(), matrix_wp.numpy())
+    assert np.array_equal(alias_transformed_wp.numpy(), transformed_wp.numpy())
+    assert alias_cost_wp == cost_wp
+
+
 @pytest.mark.parity("icp_point_cloud", "meshlib")
 def test_icp_point_to_point_matches_meshlib(device: str) -> None:
     """

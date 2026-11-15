@@ -554,6 +554,11 @@ def geodesic_path(
         ``(n_paths,)`` vertices to trace from.
     method
         ``"heat"`` or ``"potpourri3d"``, the two ways above.
+
+        ``"heat"`` is the default because it costs one heat solve however many targets share the
+        source, and its paths come out only slightly longer than exact ones. ``"potpourri3d"`` gives
+        a locally exact geodesic and suits few targets: its flips run path after path, so its cost
+        grows with their number.
     t
         Heat diffusion time, forwarded to
         [`heat_geodesic`][ordito.heat.heat_geodesic]. ``None`` uses its default. Read by

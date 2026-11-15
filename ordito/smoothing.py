@@ -196,7 +196,7 @@ def filter_laplacian(
     volume_constraint: bool = True,
     laplacian_operator: odt.BsrMatrix[wp.float32] | None = None,
     *,
-    method: Literal["jacobi", "pyvista"] = "jacobi",
+    method: Literal["jacobi", "trimesh", "pyvista"] = "jacobi",
     edge_angle: float = 15.0,
     rim_smoothing: bool = True,
 ) -> wp.array[wp.vec3]:
@@ -249,7 +249,14 @@ def filter_laplacian(
         The update.
 
         - ``"jacobi"`` (default) — every vertex at once, from the previous pass's positions.
+        - ``"trimesh"`` — the same as ``"jacobi"``, under the name of the library it
+          reproduces ([`trimesh.smoothing.filter_laplacian`][]).
         - ``"pyvista"`` — vertex by vertex in index order, VTK's (see above). Explicit only.
+
+        ``"jacobi"`` is the default because its answer does not depend on how the vertices are
+        numbered, and it alone takes the implicit step and a supplied operator: ``"pyvista"`` moves
+        each vertex from neighbours already moved in the same pass, so renumbering the mesh changes
+        its result.
     edge_angle
         Under ``method="pyvista"``, the largest turn, in degrees, of the path through a rim or
         crowded vertex's two neighbours that still lets it slide along them. Unread otherwise.
@@ -265,8 +272,9 @@ def filter_laplacian(
     Raises
     ------
     ValueError
-        If ``method`` is not ``"jacobi"`` or ``"pyvista"``, or under ``method="pyvista"`` if
-        ``implicit_time_integration`` is set or ``laplacian_operator`` is given.
+        If ``method`` is not ``"jacobi"``, ``"trimesh"`` or ``"pyvista"``, or under
+        ``method="pyvista"`` if ``implicit_time_integration`` is set or ``laplacian_operator`` is
+        given.
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
 
@@ -308,8 +316,8 @@ def filter_laplacian(
     ```
     """
     require_same_device(vertices=vertices, faces=faces)
-    if method not in ("jacobi", "pyvista"):
-        raise ValueError(f"method must be 'jacobi' or 'pyvista', got {method!r}")
+    if method not in ("jacobi", "trimesh", "pyvista"):
+        raise ValueError(f"method must be 'jacobi', 'trimesh' or 'pyvista', got {method!r}")
     if method == "pyvista" and implicit_time_integration:
         raise ValueError("method='pyvista' is explicit: implicit_time_integration must be False")
     if method == "pyvista" and laplacian_operator is not None:
@@ -835,7 +843,7 @@ def filter_humphrey(
     iterations: int = 10,
     laplacian_operator: odt.BsrMatrix[wp.float32] | None = None,
     *,
-    method: Literal["vollmer", "meshlab"] = "vollmer",
+    method: Literal["vollmer", "trimesh", "meshlab"] = "vollmer",
 ) -> wp.array[wp.vec3]:
     """
     Laplacian smoothing with Humphrey (HC) filtering (Vollmer et al.).
@@ -874,7 +882,13 @@ def filter_humphrey(
         The update.
 
         - ``"vollmer"`` (default) — Vollmer et al.'s, as trimesh implements it.
+        - ``"trimesh"`` — the same as ``"vollmer"``, under the name of the library it
+          reproduces ([`trimesh.smoothing.filter_humphrey`][]).
         - ``"meshlab"`` — MeshLab's, with the sign of the neighbours' term reversed (see above).
+
+        ``"vollmer"`` is the default because it is the update Vollmer et al. derive, whose second
+        step pushes each vertex back against the shrinkage of the first; MeshLab's adds the
+        neighbours' mean correction where the derivation subtracts it.
 
     Returns
     -------
@@ -884,7 +898,7 @@ def filter_humphrey(
     Raises
     ------
     ValueError
-        If ``method`` is not ``"vollmer"`` or ``"meshlab"``.
+        If ``method`` is not ``"vollmer"``, ``"trimesh"`` or ``"meshlab"``.
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
 
@@ -907,8 +921,8 @@ def filter_humphrey(
     ```
     """
     require_same_device(vertices=vertices, faces=faces)
-    if method not in ("vollmer", "meshlab"):
-        raise ValueError(f"method must be 'vollmer' or 'meshlab', got {method!r}")
+    if method not in ("vollmer", "trimesh", "meshlab"):
+        raise ValueError(f"method must be 'vollmer', 'trimesh' or 'meshlab', got {method!r}")
     device = vertices.device
     n = vertices.size
     if n == 0 or iterations == 0:
@@ -1607,6 +1621,11 @@ def relax_approx(
         ``float32``, the radius inclusive), rebuilt from each pass's starting positions, with the
         fit formed in ``float64``. A path is never shorter than the straight line, so this ball is
         the smaller of the two; walking it again every pass is what the option costs.
+
+        ``"geodesic_ball"`` is the default because it builds the neighbourhoods once, so further
+        passes cost only the fits, and under ``fit="quadric"`` its surface lies at least as close to
+        the underlying shape as ``"meshlib"``'s. Under ``fit="planar"`` the smaller ball of
+        ``"meshlib"`` flattens a curved surface less.
 
     Returns
     -------
@@ -4654,6 +4673,11 @@ def filter_normals(
           each edge's indicator for the next solve, ``v_e = rho / (rho + 2 gamma |n_f - n_r|^2)``
           with ``rho = beta / 0.002``: near ``1`` on a smooth edge and near ``0`` across a crease,
           which stops the crease from diffusing. The first solve takes ``v = 1``.
+
+        ``"edge_neighbors"`` is the default because on smooth regions it comes closest to the
+        noise-free normals, and its passes cost far less than one linear solve per iteration. Under
+        heavy noise ``"meshlib"`` with a larger ``gamma`` keeps the faces along a sharp crease
+        closer to their true normals.
     gamma
         The smoothing weight of ``method="meshlib"``: ``0`` keeps the input normals, and the
         larger it is the further each solve diffuses. Default ``5``. Must be non-negative.

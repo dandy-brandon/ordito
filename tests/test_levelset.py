@@ -160,6 +160,30 @@ def test_marching_cubes_matches_igl_and_pyvista(device: str) -> None:
         assert np.unique(matched_np).size == reference_np.shape[0]
 
 
+@pytest.mark.parametrize("method", ["igl", "pyvista"])
+def test_marching_cubes_library_names_are_classic(
+    device: str, method: Literal["igl", "pyvista"]
+) -> None:
+    """
+    Ordito against ordito: each library name is the default ``"classic"``, bit for bit.
+
+    The aliases name libraries the default reproduces, which are its oracles
+    (``test_marching_cubes_matches_igl_and_pyvista``).
+    """
+    axis_np = np.linspace(-1.5, 1.5, 16)
+    x_np, y_np, z_np = np.meshgrid(axis_np, axis_np, axis_np, indexing="ij")
+    field_np = np.sqrt(x_np**2 + y_np**2 + z_np**2) - 1.0
+    field_wp = odt.as_array3d(
+        wp.array(np.ascontiguousarray(field_np, dtype=np.float32), dtype=wp.float32, device=device),
+        wp.float32,
+    )
+    vertices_wp, faces_wp = od.levelset.marching_cubes(field_wp)
+    alias_vertices_wp, alias_faces_wp = od.levelset.marching_cubes(field_wp, method=method)
+    assert faces_wp.size > 0  # non-vacuity: there is a surface
+    assert np.array_equal(alias_vertices_wp.numpy(), vertices_wp.numpy())
+    assert np.array_equal(alias_faces_wp.numpy(), faces_wp.numpy())
+
+
 @pytest.mark.parity("marching_cubes", "meshlib")
 def test_marching_cubes_matches_meshlib(device: str) -> None:
     """

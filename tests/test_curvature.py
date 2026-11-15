@@ -64,6 +64,29 @@ def test_principal_curvature_with_supplied_face_tables(
     assert np.allclose(pv2_wp.numpy(), pv2_igl, atol=1e-5, rtol=1e-5)
 
 
+@pytest.mark.parametrize("frame_independent", [True, False])
+def test_principal_curvature_igl_is_quadric(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], frame_independent: bool
+) -> None:
+    """
+    Ordito against ordito: ``method="igl"`` is the default ``"quadric"``, bit for bit.
+
+    The alias names the library the fit ports; ``igl.principal_curvature`` is the oracle of both
+    at ``frame_independent=False`` (``test_principal_curvature_with_supplied_face_tables``), and
+    the alias leaves that switch to the caller like the default does.
+    """
+    _, mesh_wp = sphere_irregular
+    quadric = od.curvature.principal_curvature(
+        mesh_wp.points, mesh_wp.indices, frame_independent=frame_independent
+    )
+    igl_wp = od.curvature.principal_curvature(
+        mesh_wp.points, mesh_wp.indices, frame_independent=frame_independent, method="igl"
+    )
+    assert np.ptp(quadric[2].numpy()) > 1e-3  # non-vacuity: curvature varies
+    for alias_wp, default_wp in zip(igl_wp, quadric, strict=True):
+        assert np.array_equal(alias_wp.numpy(), default_wp.numpy())
+
+
 @pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 def test_principal_curvature_graded(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """

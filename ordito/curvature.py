@@ -59,7 +59,7 @@ def principal_curvature(
     face_normals: wp.array[wp.vec3] | None = None,
     face_areas: wp.array[wp.float32] | None = None,
     mean_edge_length: float | None = None,
-    method: Literal["quadric", "pyvista", "meyer", "taubin", "normal_cycles"] = "quadric",
+    method: Literal["quadric", "igl", "pyvista", "meyer", "taubin", "normal_cycles"] = "quadric",
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.float32], wp.array[wp.float32]]:
     """
     Principal curvature directions and magnitudes per vertex via quadric fitting.
@@ -103,7 +103,9 @@ def principal_curvature(
         ``radius``; passing it spares the reduction and readback that measure it. Trusted, not
         checked.
     method
-        ``"quadric"`` (the default) is the fit above. ``"pyvista"`` is VTK's ``vtkCurvatures``
+        ``"quadric"`` (the default) is the fit above, and ``"igl"`` the same fit under the name
+        of the library it ports (``igl.principal_curvature``, which it matches exactly with
+        ``frame_independent=False``). ``"pyvista"`` is VTK's ``vtkCurvatures``
         (``pyvista.PolyData.curvature("maximum")`` / ``("minimum")``): no fit, but
         ``H +- sqrt(H^2 - K)`` over its 1-ring Gaussian curvature ``K`` (three times the angle
         defect over the incident faces' area) and mean curvature ``H`` (half the mean, over the
@@ -122,6 +124,11 @@ def principal_curvature(
         belonging to the direction across its eigenvector. All four 1-ring methods leave
         ``radius``, ``frame_independent`` and the face tables unread.
 
+        ``"quadric"`` is the default because it fits a surface over a neighbourhood ball whose size
+        ``radius`` sets, which averages out noise smaller than the ball and gives the principal
+        directions; the 1-ring methods see one ring of faces, and ``"pyvista"`` and ``"meyer"`` give
+        no directions.
+
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.float32], wp.array[wp.float32]]
@@ -134,8 +141,8 @@ def principal_curvature(
     Raises
     ------
     ValueError
-        If ``method`` is not ``"quadric"``, ``"pyvista"``, ``"meyer"``, ``"taubin"`` or
-        ``"normal_cycles"``.
+        If ``method`` is not ``"quadric"``, ``"igl"``, ``"pyvista"``, ``"meyer"``, ``"taubin"``
+        or ``"normal_cycles"``.
     RuntimeError
         If ``vertices``, ``faces``, ``face_normals`` and ``face_areas`` are not all on one device.
 
@@ -171,14 +178,14 @@ def principal_curvature(
     require_same_device(
         vertices=vertices, faces=faces, face_normals=face_normals, face_areas=face_areas
     )
-    if method not in ("quadric", "pyvista", "meyer", "taubin", "normal_cycles"):
+    if method not in ("quadric", "igl", "pyvista", "meyer", "taubin", "normal_cycles"):
         raise ValueError(
-            "method must be 'quadric', 'pyvista', 'meyer', 'taubin' or 'normal_cycles', "
+            "method must be 'quadric', 'igl', 'pyvista', 'meyer', 'taubin' or 'normal_cycles', "
             f"got {method!r}"
         )
     device = vertices.device
     n_vertices = vertices.size
-    if method != "quadric":
+    if method not in ("quadric", "igl"):
         return _one_ring_principal_curvatures(vertices, faces, method)
 
     # Area-weighted vertex normals. The pair is used only when both halves were supplied, which is

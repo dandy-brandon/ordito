@@ -1286,6 +1286,10 @@ def heat_signed_distance(
           other heat operators. Its default ``t`` fails on fine meshes, as potpourri3d's does
           (see Notes).
 
+        ``"vertex_connection"`` is the default because it is the more accurate of the two at every
+        mesh resolution, and its default ``t`` keeps the field representable on meshes about four
+        times finer than ``"potpourri3d"``'s does (see Notes).
+
     Returns
     -------
     wp.array[wp.float64]
@@ -2778,6 +2782,10 @@ def log_map(
     method
         Where the radial direction and the radius come from: ``"heat_geodesic"`` or
         ``"potpourri3d"``, as described above.
+
+        ``"heat_geodesic"`` is the default because its radius tracks the exact geodesic distance
+        more closely than the integrated radius of ``"potpourri3d"``, by the widest margin on graded
+        meshes.
 
     Returns
     -------

@@ -1437,6 +1437,10 @@ def plane_outlier_mask(
         plane's normal points to, that normal being the covariance eigenvector of the
         closed-form 3x3 solution, signed by the largest cross product of two rows of the
         shifted covariance.
+
+        ``"unsigned"`` is the default because a spike can stand off either side of a surface:
+        ``"meshlib"`` flags only the side its fitted normal happens to point to, so it misses the
+        spikes on the other.
     grid
         Optional pre-built hash grid over ``points``, from
         [`hashgrid_from_points`][ordito.neighbors.hashgrid_from_points].

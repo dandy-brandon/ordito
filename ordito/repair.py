@@ -1671,6 +1671,11 @@ def remove_non_manifold_faces(
 
         - ``"all"`` (default) — every face on a non-manifold edge.
         - ``"meshlab"`` — the smallest first, until each edge is manifold (see above).
+
+        ``"all"`` is the default because it is one pass with no host readback, and its rule reads
+        the topology alone, so no face area decides which sheet survives. ``"meshlab"`` removes far
+        fewer faces (around a fin it keeps the surface and drops the fin), at the cost of a round of
+        readbacks per link in its chain of decisions.
     return_provenance
         If ``True``, also return the [`Provenance`][ordito.interpolation.Provenance] that carries
         any per-vertex or per-face field onto the result.

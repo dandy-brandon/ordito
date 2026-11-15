@@ -142,6 +142,22 @@ def test_filter_laplacian_matches_trimesh(
     assert np.allclose(smoothed_wp.numpy(), mesh_ref.vertices, rtol=1e-5, atol=1e-5)
 
 
+def test_filter_laplacian_trimesh_is_jacobi(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Ordito against ordito: ``method="trimesh"`` is the default ``"jacobi"``, bit for bit.
+
+    The alias names the library the default reproduces; trimesh is the oracle of both
+    (``test_filter_laplacian_matches_trimesh``).
+    """
+    _, mesh_wp = saddle_graded
+    jacobi_wp = od.smoothing.filter_laplacian(mesh_wp.points, mesh_wp.indices, iterations=4)
+    trimesh_wp = od.smoothing.filter_laplacian(
+        mesh_wp.points, mesh_wp.indices, iterations=4, method="trimesh"
+    )
+    assert not np.array_equal(jacobi_wp.numpy(), mesh_wp.points.numpy())  # non-vacuity: it moved
+    assert np.array_equal(trimesh_wp.numpy(), jacobi_wp.numpy())
+
+
 def test_filter_laplacian_matches_trimesh_above_the_row_chunk_gate(device: str) -> None:
     """
     Class A: explicit Laplacian smoothing against trimesh above the row-chunk gate.
@@ -913,6 +929,22 @@ def test_filter_humphrey(request: pytest.FixtureRequest, mesh_name: str) -> None
     assert np.allclose(smoothed_wp.numpy(), mesh_ref.vertices, rtol=1e-5, atol=1e-5)
 
 
+def test_filter_humphrey_trimesh_is_vollmer(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Ordito against ordito: ``method="trimesh"`` is the default ``"vollmer"``, bit for bit.
+
+    The alias names the library the default reproduces; trimesh is the oracle of both
+    (``test_filter_humphrey``).
+    """
+    _, mesh_wp = saddle_graded
+    vollmer_wp = od.smoothing.filter_humphrey(mesh_wp.points, mesh_wp.indices, iterations=4)
+    trimesh_wp = od.smoothing.filter_humphrey(
+        mesh_wp.points, mesh_wp.indices, iterations=4, method="trimesh"
+    )
+    assert not np.array_equal(vollmer_wp.numpy(), mesh_wp.points.numpy())  # non-vacuity: it moved
+    assert np.array_equal(trimesh_wp.numpy(), vollmer_wp.numpy())
+
+
 @pytest.mark.parametrize("iterations", [1, 4])
 @pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("filter_humphrey_meshlab", "pymeshlab")
@@ -954,7 +986,7 @@ def test_filter_humphrey_rejects_unknown_method(
 ) -> None:
     """Not a parity assert: an unknown ``method`` raises, naming the options."""
     _, mesh_wp = sphere_irregular
-    with pytest.raises(ValueError, match="'vollmer' or 'meshlab'"):
+    with pytest.raises(ValueError, match="'vollmer', 'trimesh' or 'meshlab'"):
         od.smoothing.filter_humphrey(
             mesh_wp.points,
             mesh_wp.indices,

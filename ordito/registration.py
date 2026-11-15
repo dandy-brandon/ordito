@@ -315,7 +315,7 @@ def icp(
     reflection: bool = False,
     translation: bool = True,
     scale: bool = False,
-    method: Literal["all_points", "pyvista"] = "all_points",
+    method: Literal["all_points", "trimesh", "open3d", "pytorch3d", "pyvista"] = "all_points",
     target_index: wp.Mesh | wp.Bvh | None = None,
 ) -> tuple[wp.array[wp.mat44], wp.array[wp.vec3], float]:
     """
@@ -371,12 +371,22 @@ def icp(
         similarity transform.
     method
         ``"all_points"`` matches every point of *a* each iteration, as described above.
+        ``"trimesh"``, ``"open3d"`` and ``"pytorch3d"`` are the same method under the names of
+        the libraries whose point-to-point ICP it reproduces ([`trimesh.registration.icp`][],
+        Open3D's ``registration_icp`` with ``TransformationEstimationPointToPoint``, and
+        ``pytorch3d.ops.iterative_closest_point``): the same converged transform, each with its
+        own stopping rule.
         ``"pyvista"`` is ``vtkIterativeClosestPointTransform`` as ``pyvista``'s ``align`` runs it:
         every ``n // 100``-th point of *a* is a landmark (every point when ``n <= 100``), *a* is
         first translated so its centroid lands on the target's (both centroids over every point,
         after ``initial``), and each iteration fits a rigid map of the landmarks onto their
         matches and composes it onto the transform so far. It is rigid only, in ``float64``.
         ``align``'s defaults are ``max_iterations=500`` and ``threshold=1e-5``.
+
+        ``"all_points"`` is the default because it matches every source point each iteration and
+        re-aligns the original cloud every time, so no error accumulates, and it takes the distance
+        gate, reflection, translation and scale; ``"pyvista"`` matches a subsample of landmarks,
+        composes each step onto the last, and is rigid only.
     target_index
         The structure the correspondence search queries, already built, to spare the build each
         call otherwise pays (worth it when one target is registered against repeatedly): a
@@ -399,9 +409,10 @@ def icp(
     Raises
     ------
     ValueError
-        If ``method`` is not ``"all_points"`` or ``"pyvista"``, or if ``method="pyvista"`` is
-        combined with ``max_distance``, ``reflection=True``, ``translation=False`` or
-        ``scale=True``, which VTK's rigid landmark fit does not have.
+        If ``method`` is not ``"all_points"``, ``"trimesh"``, ``"open3d"``, ``"pytorch3d"`` or
+        ``"pyvista"``, or if ``method="pyvista"`` is combined with ``max_distance``,
+        ``reflection=True``, ``translation=False`` or ``scale=True``, which VTK's rigid landmark
+        fit does not have.
     TypeError
         If ``target_index`` is not a ``wp.Bvh`` for a point-cloud target, or not a ``wp.Mesh`` for
         a mesh target.
@@ -444,8 +455,11 @@ def icp(
         initial=initial,
         target_index=target_index,
     )
-    if method not in ("all_points", "pyvista"):
-        raise ValueError(f"method must be 'all_points' or 'pyvista', got {method!r}")
+    if method not in ("all_points", "trimesh", "open3d", "pytorch3d", "pyvista"):
+        raise ValueError(
+            "method must be 'all_points', 'trimesh', 'open3d', 'pytorch3d' or 'pyvista', "
+            f"got {method!r}"
+        )
     if method == "pyvista" and (max_distance is not None or reflection or not translation or scale):
         raise ValueError(
             "method='pyvista' is a rigid fit with no distance gate: it takes no max_distance, "

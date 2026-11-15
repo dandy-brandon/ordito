@@ -1758,6 +1758,10 @@ def face_defective_mask(
         - ``"meshlab"`` — each edge-neighbour's normal in turn, flagging the face when any one
           differs by more than the angle: MeshLab's ``nfratio``.
 
+        ``"consensus"`` is the default because it flags far fewer correct faces: MeshLab's test
+        flags both faces of every edge sharper than the angle, so it marks a reversed face's
+        neighbours, and every face of a cube (see Notes).
+
     Returns
     -------
     wp.array[wp.bool]

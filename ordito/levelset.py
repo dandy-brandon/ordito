@@ -152,7 +152,7 @@ def marching_cubes(
     *,
     bounds: tuple[wp.vec3, wp.vec3] | tuple[wp.vec3d, wp.vec3d] | None = None,
     edge_margin: float = 0.0,
-    method: Literal["classic", "lewiner", "openvdb"] = "classic",
+    method: Literal["classic", "igl", "pyvista", "lewiner", "openvdb"] = "classic",
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Extract the ``iso`` level set of a dense scalar lattice as a triangle mesh.
@@ -190,7 +190,11 @@ def marching_cubes(
         Not taken by ``method="lewiner"``, whose vertices are linear in the field.
     method
         The triangulation. ``"classic"`` (the default) is Lorensen and Cline's 256-case table as
-        Warp's ``warp.geometry.IsoSurfaceMarchingCubes`` has it (see ``Notes``). ``"lewiner"`` is
+        Warp's ``warp.geometry.IsoSurfaceMarchingCubes`` has it (see ``Notes``). ``"igl"`` and
+        ``"pyvista"`` are the same triangulation under the names of two libraries that return
+        the same vertices and triangles from it (``igl.marching_cubes``,
+        ``pyvista.ImageData.contour``, whose triangles VTK winds the other way round), once each
+        library's lattice convention is matched. ``"lewiner"`` is
         Lewiner et al.'s topologically controlled marching cubes (MC33): a face or the interior of
         a cell whose corners alone leave the surface ambiguous is resolved by the bilinear and
         trilinear field there, some cells gain a vertex inside them, and the result is a closed,
@@ -202,6 +206,11 @@ def marching_cubes(
         level crosses and a quad, split in two triangles, across each crossing edge (see
         ``Notes``); [`offset_mesh`][ordito.levelset.offset_mesh]'s ``method="meshlib"`` extracts
         with it.
+
+        ``"classic"`` is the default because it is the table the reference libraries share (Warp,
+        libigl, VTK and pytorch3d return its triangles) and the fastest of the three extractions;
+        choose ``"lewiner"`` when an ambiguous cell must be resolved by the field inside it (see
+        ``Notes``).
 
     Returns
     -------
@@ -216,10 +225,10 @@ def marching_cubes(
     TypeError
         If ``field`` is not a rank-3 ``wp.float32`` or ``wp.float64`` array.
     ValueError
-        If ``method`` is not ``"classic"``, ``"lewiner"`` or ``"openvdb"``, any of ``field``'s
-        dimensions is below 2, ``edge_margin`` is outside ``[0, 0.5)`` (or not ``0`` under
-        ``"lewiner"`` or ``"openvdb"``),
-        ``field`` has ``2**31`` nodes or more, or the level set has ``2**31`` vertices or more or
+        If ``method`` is not ``"classic"``, ``"igl"``, ``"pyvista"``, ``"lewiner"`` or
+        ``"openvdb"``, any of ``field``'s dimensions is below 2, ``edge_margin`` is outside
+        ``[0, 0.5)`` (or not ``0`` under ``"lewiner"`` or ``"openvdb"``), ``field`` has
+        ``2**31`` nodes or more, or the level set has ``2**31`` vertices or more or
         ``3 * n_faces`` reaches ``2**31``: the extraction indexes in ``int32``.
 
     See Also
@@ -297,8 +306,10 @@ def marching_cubes(
     print(f"{od.measures.volume(vertices, faces):.2f}")  # 2.12
     ```
     """
-    if method not in ("classic", "lewiner", "openvdb"):
-        raise ValueError(f"method must be 'classic', 'lewiner' or 'openvdb', got {method!r}")
+    if method not in ("classic", "igl", "pyvista", "lewiner", "openvdb"):
+        raise ValueError(
+            f"method must be 'classic', 'igl', 'pyvista', 'lewiner' or 'openvdb', got {method!r}"
+        )
     if method == "lewiner":
         return _marching_cubes_lewiner(field, iso, bounds, edge_margin)
     if method == "openvdb":
