@@ -1737,28 +1737,28 @@
  },
  "benchmarks/test_geodesic_walk.py::test_geodesic_path[sphere_med-ordito-cpu-1]": {
   "counts": {
-   "launch": 25,
-   "alloc": 18,
-   "readback": 6,
+   "launch": 27,
+   "alloc": 20,
+   "readback": 8,
    "scan": 2,
    "sort": 2
   }
  },
  "benchmarks/test_geodesic_walk.py::test_geodesic_path[sphere_med-ordito-cpu-4096]": {
   "counts": {
-   "launch": 34,
-   "alloc": 32,
+   "launch": 36,
+   "alloc": 34,
    "h2h": 2,
-   "readback": 9,
+   "readback": 11,
    "scan": 3,
    "sort": 4
   }
  },
  "benchmarks/test_geodesic_walk.py::test_geodesic_path[sphere_med-ordito-cpu-64]": {
   "counts": {
-   "launch": 25,
-   "alloc": 18,
-   "readback": 6,
+   "launch": 27,
+   "alloc": 20,
+   "readback": 8,
    "scan": 2,
    "sort": 2
   }
@@ -2240,42 +2240,42 @@
  },
  "benchmarks/test_heat.py::test_heat_geodesic[sphere_small-ordito-cpu-full]": {
   "counts": {
-   "launch": 16,
-   "alloc": 8,
-   "readback": 4,
+   "launch": 18,
+   "alloc": 10,
+   "readback": 6,
    "sort": 1
   }
  },
  "benchmarks/test_heat.py::test_heat_geodesic_conditioning[saddle-ordito-cpu]": {
   "counts": {
-   "launch": 16,
-   "alloc": 8,
-   "readback": 4,
+   "launch": 18,
+   "alloc": 10,
+   "readback": 6,
    "sort": 1
   }
  },
  "benchmarks/test_heat.py::test_heat_geodesic_conditioning[saddle_graded-ordito-cpu]": {
   "counts": {
-   "launch": 226,
-   "alloc": 43,
-   "readback": 8,
+   "launch": 228,
+   "alloc": 45,
+   "readback": 10,
    "scan": 18,
    "sort": 19
   }
  },
  "benchmarks/test_heat.py::test_heat_geodesic_igl[saddle-ordito-cpu]": {
   "counts": {
-   "launch": 23,
-   "alloc": 12,
-   "readback": 7,
+   "launch": 25,
+   "alloc": 14,
+   "readback": 9,
    "sort": 1
   }
  },
  "benchmarks/test_heat.py::test_heat_geodesic_igl[saddle_graded-ordito-cpu]": {
   "counts": {
-   "launch": 233,
-   "alloc": 47,
-   "readback": 11,
+   "launch": 235,
+   "alloc": 49,
+   "readback": 13,
    "scan": 18,
    "sort": 19
   }

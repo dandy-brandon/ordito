@@ -451,7 +451,7 @@ def heat_geodesic(
         the nearest source and is zero at the source set.
     t
         Diffusion time. When ``None``, the squared mean edge length ``method`` names, which
-        balances accuracy and smoothing.
+        balances accuracy and smoothing, lengthened on a mesh too fine for it (see Notes).
     use_robust
         At ``"meshlab"`` and ``"igl"``, forwarded to
         [`heat_operators`][ordito.heat.heat_operators]: build the Laplacian from mollified edge
@@ -479,10 +479,10 @@ def heat_geodesic(
 
     Notes
     -----
-    At ``"potpourri3d"`` the default time is the solver's, which on a mesh more than about 400
-    mean edges across is longer than geometry-central's (see
-    [`HeatSolver`][ordito.heat.HeatSolver]): there geometry-central's far field falls below the
-    ``float64`` range and its distance is wrong far from the sources.
+    The default time is the solver's, which on a mesh more than about 400 mean edges across is
+    longer than the method's library takes (see [`HeatSolver`][ordito.heat.HeatSolver]): there
+    MeshLab's, igl's and geometry-central's far field falls below the ``float64`` range, and
+    their distance stops growing far from the sources.
 
     The ``vertices, faces`` form logs at ``INFO`` on the ``ordito.heat`` logger when it built a
     factorization it is about to drop (the heat solve's verification failed on an ill-conditioned
@@ -3509,11 +3509,12 @@ class HeatSolver:
     ``exp(-d / sqrt(t))`` at distance ``d`` from its source, so at the squared mean edge length a
     mesh fine enough -- about a million faces for a source on one side of a sphere -- puts its far
     side below the smallest ``float64``, and every direction and ratio computed there is lost.
-    With ``t`` left ``None`` and the ``"potpourri3d"`` discretization (the vector heat method's,
-    and with ``use_robust`` its intrinsic cover's), the time is therefore at least
-    ``(diagonal / 400) ** 2``, the bounding-box diagonal standing in for the farthest distance
-    from a source: meshes up to about 400 mean edges across keep the squared mean edge length,
-    and finer ones get the longest time the field can span in range.
+    With ``t`` left ``None``, at every ``method`` (and with ``use_robust``, on the intrinsic
+    cover), the time is therefore at least ``(diagonal / 400) ** 2``, the bounding-box diagonal
+    standing in for the farthest distance from a source: meshes up to about 400 mean edges across
+    keep the method's squared mean edge length, and finer ones get the longest time the field can
+    span in range. There the ``"meshlab"`` and ``"igl"`` discretizations part from their
+    libraries, whose far field underflows to a distance that stops growing.
     [`heat_signed_distance`][ordito.heat.heat_signed_distance]'s edge discretization does the
     same from its own default. The operators are then this
     solver's own rather than the mesh's cached
@@ -3689,20 +3690,24 @@ class HeatSolver:
         """
         Return the time the vertex systems are built at and the settle window their solves take.
 
-        The time is ``t``, or ``None`` for the default the device forms, ``h ** 2``; a
-        ``"potpourri3d"`` solver raises an unset ``t`` to the ``_DIFFUSION_DECAY`` floor where that
-        is longer than the mesh's own ``h ** 2`` (the cover's, with ``use_robust``, is within the
-        flips' change of it) and scales its window to its time.
+        The time is ``t``, or ``None`` for the default the device forms, ``h ** 2`` with the
+        method's own ``h`` (MeshLab's over every face's three edges, the others' over the unique
+        edges); an unset ``t`` is raised to the ``_DIFFUSION_DECAY`` floor where that is longer
+        than the default (with ``use_robust``, the cover's is within the flips' change of it), and
+        the window scales to the time.
         """
         if self._resolved is None:
-            t, rounds = self.t, _HEAT_SETTLE_ROUNDS
-            if self.method == "potpourri3d":
-                default = self._mean_edge_length() ** 2
-                if t is None:
-                    floor = _diffusion_floor(self._bound_mesh())
-                    t = floor if floor > default else None
-                rounds = _settle_window(t, default)
-            self._resolved = (t, rounds)
+            t = self.t
+            mean = (
+                self._bound_mesh().mean_edge_length
+                if self.method == "meshlab"
+                else self._mean_edge_length()
+            )
+            default = mean**2
+            if t is None:
+                floor = _diffusion_floor(self._bound_mesh())
+                t = floor if floor > default else None
+            self._resolved = (t, _settle_window(t, default))
         return self._resolved
 
     def _mean_edge_length(self) -> float:

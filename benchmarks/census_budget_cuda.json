@@ -1833,34 +1833,34 @@
  },
  "benchmarks/test_geodesic_walk.py::test_geodesic_path[sphere_med-ordito-cuda-1]": {
   "counts": {
-   "launch": 30,
-   "alloc": 18,
-   "memset": 12,
+   "launch": 32,
+   "alloc": 20,
+   "memset": 14,
    "d2d": 2,
-   "d2h": 7,
+   "d2h": 9,
    "scan": 4,
    "sort": 1
   }
  },
  "benchmarks/test_geodesic_walk.py::test_geodesic_path[sphere_med-ordito-cuda-4096]": {
   "counts": {
-   "launch": 46,
-   "alloc": 33,
-   "memset": 15,
+   "launch": 48,
+   "alloc": 35,
+   "memset": 17,
    "d2d": 3,
    "h2d": 1,
-   "d2h": 10,
+   "d2h": 12,
    "scan": 6,
    "sort": 4
   }
  },
  "benchmarks/test_geodesic_walk.py::test_geodesic_path[sphere_med-ordito-cuda-64]": {
   "counts": {
-   "launch": 30,
-   "alloc": 18,
-   "memset": 12,
+   "launch": 32,
+   "alloc": 20,
+   "memset": 14,
    "d2d": 2,
-   "d2h": 7,
+   "d2h": 9,
    "scan": 4,
    "sort": 1
   }
@@ -2393,33 +2393,33 @@
  },
  "benchmarks/test_heat.py::test_heat_geodesic[sphere_small-ordito-cuda-full]": {
   "counts": {
-   "launch": 19,
-   "alloc": 8,
-   "memset": 6,
+   "launch": 21,
+   "alloc": 10,
+   "memset": 8,
    "d2d": 2,
-   "d2h": 5,
+   "d2h": 7,
    "scan": 1,
    "sort": 1
   }
  },
  "benchmarks/test_heat.py::test_heat_geodesic_conditioning[saddle-ordito-cuda]": {
   "counts": {
-   "launch": 19,
-   "alloc": 8,
-   "memset": 6,
+   "launch": 21,
+   "alloc": 10,
+   "memset": 8,
    "d2d": 2,
-   "d2h": 5,
+   "d2h": 7,
    "scan": 1,
    "sort": 1
   }
  },
  "benchmarks/test_heat.py::test_heat_geodesic_conditioning[saddle_graded-ordito-cuda]": {
   "counts": {
-   "launch": 580,
-   "alloc": 44,
-   "memset": 27,
+   "launch": 582,
+   "alloc": 46,
+   "memset": 29,
    "d2d": 1,
-   "d2h": 12,
+   "d2h": 14,
    "sync": 4,
    "scan": 19,
    "sort": 19
@@ -2427,22 +2427,22 @@
  },
  "benchmarks/test_heat.py::test_heat_geodesic_igl[saddle-ordito-cuda]": {
   "counts": {
-   "launch": 27,
-   "alloc": 12,
-   "memset": 8,
+   "launch": 29,
+   "alloc": 14,
+   "memset": 10,
    "d2d": 3,
-   "d2h": 8,
+   "d2h": 10,
    "scan": 1,
    "sort": 1
   }
  },
  "benchmarks/test_heat.py::test_heat_geodesic_igl[saddle_graded-ordito-cuda]": {
   "counts": {
-   "launch": 588,
-   "alloc": 48,
-   "memset": 29,
+   "launch": 590,
+   "alloc": 50,
+   "memset": 31,
    "d2d": 2,
-   "d2h": 15,
+   "d2h": 17,
    "sync": 4,
    "scan": 19,
    "sort": 19

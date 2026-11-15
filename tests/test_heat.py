@@ -3029,6 +3029,36 @@ def test_graded_heat_diffusion_falls_back_to_a_factorization_that_matches_scipy(
     assert np.abs(heat_wp.numpy() - heat_np).max() < 1e-10 * np.ptp(heat_np)
 
 
+# Not ``"potpourri3d"``: its time was lengthened already, and its Poisson solve's ``1e-6`` identity
+# shift, an absolute one, shortens a strip this long by a fifth whatever the time.
+@pytest.mark.parametrize("method", ["meshlab", "igl"])
+def test_default_time_keeps_the_far_end_of_a_long_strip(device: str, method: str) -> None:
+    """
+    Not a library comparison: MeshLab's and igl's own time underflow here; the oracle is exact.
+
+    A flat strip 1 500 unit cells long and two wide is far more than 400 mean edges across. At the
+    squared mean edge length the diffused heat falls by about a neper a cell, below the
+    ``float64`` range halfway along, where MeshLab's and igl's distance stops growing; their
+    default time is lengthened there, so the heat method's distance from one end is the strip's
+    own length to within its few per cent. Mutation probe: keeping the lengthening at
+    ``"potpourri3d"`` alone leaves both short of the far end by more than a third.
+    """
+    cells = 1500
+    vertices_wp, faces_wp = od.creation.grid(
+        count=(cells + 1, 3), extents=(float(cells), 2.0), center=False, device=device
+    )
+    xs = vertices_wp.numpy()[:, 0].astype(np.float64)
+    start = np.flatnonzero(xs == 0.0)
+    distance_np = od.heat.heat_geodesic(
+        vertices_wp,
+        faces_wp,
+        wp.array(start.astype(np.int32), dtype=wp.int32, device=device),
+        method=method,
+    ).numpy()
+    far = xs == float(cells)
+    assert np.abs(distance_np[far] - cells).max() < 0.03 * cells
+
+
 def test_an_unfactorable_ill_conditioned_mesh_solves_poisson_by_multigrid(
     graded_saddle: GradedSaddle, monkeypatch: pytest.MonkeyPatch
 ) -> None:
