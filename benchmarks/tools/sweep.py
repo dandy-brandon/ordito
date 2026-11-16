@@ -384,6 +384,9 @@ def merge(out: Path, sweeps: list[Path], done: Path | None) -> None:
         if module in modules:
             assert done is not None
             data = json.loads((done / f"{module}.json").read_text())
+            # A file an earlier merge wrote may lack the GPU; the sweeps ran on this machine.
+            if "gpu" in machine:
+                data.setdefault("machine_info", {}).setdefault("gpu", machine["gpu"])
         else:
             stamp = time.strftime("%Y-%m-%dT%H:%M:%S")
             data = {"machine_info": machine, "datetime": stamp, "benchmarks": []}
@@ -425,10 +428,20 @@ def merge(out: Path, sweeps: list[Path], done: Path | None) -> None:
 
 
 def _machine_info() -> dict[str, Any]:
-    """Return pytest-benchmark's description of this machine, for a module no run recorded."""
+    """
+    Return pytest-benchmark's description of this machine, with its GPU, as a run records it.
+
+    The sweeps' rows carry no machine record, so the GPU name ``conftest``'s
+    ``pytest_benchmark_update_machine_info`` adds to a run's JSON is added here too; without it
+    ``render_docs.py`` reads "GPU: not recorded" on every page.
+    """
+    import warp as wp
     from pytest_benchmark.plugin import pytest_benchmark_generate_machine_info
 
-    return pytest_benchmark_generate_machine_info()
+    machine = pytest_benchmark_generate_machine_info()
+    if wp.get_cuda_device_count() > 0:
+        machine["gpu"] = wp.get_cuda_device(0).name
+    return machine
 
 
 def main(argv: list[str] | None = None) -> None:
