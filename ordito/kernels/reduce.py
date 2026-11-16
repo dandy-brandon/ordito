@@ -22,6 +22,7 @@ from ordito.constants import (
     UINT64_MAX_CONSTANT,
 )
 from ordito.kernels.array import (
+    UINT32_SIGN_BIT,
     KernelTable,
     atomic_min_packed_box,
     csr_row_long,
@@ -3033,7 +3034,7 @@ def radix_select_close(
 
 @wp.func
 def ordered_int32_key(x: wp.int32) -> wp.uint64:
-    return wp.uint64(wp.cast(x, wp.uint32) ^ wp.uint32(0x80000000))
+    return wp.uint64(wp.cast(x, wp.uint32) ^ UINT32_SIGN_BIT)
 
 
 @wp.func

@@ -33,6 +33,7 @@ one-lane blocks run the same code.
 import warp as wp
 
 from ordito.kernels.array import (
+    UINT32_ALL_BITS,
     binary_search_index,
     binary_search_index_left,
     csr_row_long,
@@ -3437,7 +3438,7 @@ def farthest_rows(
     value = wp.min(first[v], second[v])
     if value < wp.float32(0.0):
         return
-    key = (wp.uint64(value) << wp.uint64(32)) | wp.uint64(wp.uint32(0xFFFFFFFF) - wp.uint32(v))
+    key = (wp.uint64(value) << wp.uint64(32)) | wp.uint64(UINT32_ALL_BITS - wp.uint32(v))
     wp.atomic_max(out_key, labels[v], key)
 
 
@@ -3459,7 +3460,7 @@ def farthest_seeds(
         if use_first != 0:
             seed = c
         else:
-            seed = wp.int32(wp.uint32(0xFFFFFFFF) - wp.uint32(key[c] & wp.uint64(0xFFFFFFFF)))
+            seed = wp.int32(UINT32_ALL_BITS - wp.uint32(key[c] & wp.uint64(0xFFFFFFFF)))
     out_seed[c] = seed
 
 

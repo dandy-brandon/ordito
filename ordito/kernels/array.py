@@ -502,6 +502,16 @@ def next_up(x: wp.float32) -> wp.float32:
     return wp.cast(wp.cast(x, wp.int32) + 1, wp.float32)
 
 
+# 32-bit constants above ``INT32_MAX``, typed at module scope: an inline ``wp.uint32(0x80000000)``
+# is generated as an ``int32`` temporary first, which the C++ compilers warn narrows the value.
+UINT32_SIGN_BIT = wp.uint32(0x80000000)
+UINT32_ALL_BITS = wp.uint32(0xFFFFFFFF)
+# The second multiplier of the ``lowbias32`` integer hash (``index_hash``).
+LOWBIAS32_MULTIPLIER = wp.uint32(0x846CA68B)
+# Knuth's multiplicative hash, ``floor(2**32 / phi)``.
+KNUTH_MULTIPLIER = wp.uint32(2654435761)
+
+
 @wp.func
 def ordered_float_bits(x: wp.float32) -> wp.uint32:
     """
@@ -517,9 +527,9 @@ def ordered_float_bits(x: wp.float32) -> wp.uint32:
     if wp.isnan(value):
         value = wp.float32(wp.nan)
     bits = wp.cast(value, wp.uint32)
-    if (bits & wp.uint32(0x80000000)) != wp.uint32(0):
+    if (bits & UINT32_SIGN_BIT) != wp.uint32(0):
         return ~bits
-    return bits | wp.uint32(0x80000000)
+    return bits | UINT32_SIGN_BIT
 
 
 @wp.func
@@ -542,7 +552,7 @@ def ordered_double_bits(x: wp.float64) -> wp.uint64:
 def float_from_ordered_bits(key: wp.uint32) -> wp.float32:
     # The float ``ordered_float_bits`` maps onto ``key`` (``+0.0`` for a zero, the quiet ``NaN``).
     bits = ~key
-    if (key & wp.uint32(0x80000000)) != wp.uint32(0):
+    if (key & UINT32_SIGN_BIT) != wp.uint32(0):
         bits = key & wp.uint32(0x7FFFFFFF)
     return wp.cast(bits, wp.float32)
 
@@ -2488,7 +2498,7 @@ def lowbias32(x: wp.uint32) -> wp.uint32:
     # across runs and across launches -- which is why the collapse pass can recompute a lock key in
     # a later kernel instead of storing it.
     x = (x ^ (x >> wp.uint32(16))) * wp.uint32(0x7FEB352D)
-    x = (x ^ (x >> wp.uint32(15))) * wp.uint32(0x846CA68B)
+    x = (x ^ (x >> wp.uint32(15))) * LOWBIAS32_MULTIPLIER
     return x ^ (x >> wp.uint32(16))
 
 

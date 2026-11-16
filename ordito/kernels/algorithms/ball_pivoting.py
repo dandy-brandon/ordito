@@ -87,7 +87,13 @@ from typing import Any
 import warp as wp
 
 from ordito.constants import INT32_MAX_CONSTANT, TWO_PI, UINT64_MAX_CONSTANT
-from ordito.kernels.array import declare_block_dims, device_is_cpu, pack_edge_key, popcount32
+from ordito.kernels.array import (
+    KNUTH_MULTIPLIER,
+    declare_block_dims,
+    device_is_cpu,
+    pack_edge_key,
+    popcount32,
+)
 from ordito.kernels.grouping import decode_key, hash_find, hash_find_or_insert
 from ordito.kernels.neighbors import (
     hash_grid_box,
@@ -1528,7 +1534,7 @@ def wave_salt(wave: wp.int32) -> wp.int32:
     # wave numbers give unrelated salts rather than salts differing in one bit, masked to 31 bits so
     # xoring it into a non-negative point index cannot set the sign bit -- which is what keeps the
     # packed key under 2^63 and clear of the unclaimed sentinel.
-    return wp.int32((wp.uint32(wave) * wp.uint32(2654435761)) & wp.uint32(0x7FFFFFFF))
+    return wp.int32((wp.uint32(wave) * KNUTH_MULTIPLIER) & wp.uint32(0x7FFFFFFF))
 
 
 @wp.func

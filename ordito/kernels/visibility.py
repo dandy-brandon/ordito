@@ -4,6 +4,7 @@ import warp as wp
 
 from ordito.constants import FLOAT32_INF_CONSTANT, TILE_1D, TOLERANCE_PLANAR_CONSTANT
 from ordito.kernels.array import (
+    UINT32_SIGN_BIT,
     RegisterBlockedTable,
     append_slot,
     declare_block_dims,
@@ -671,10 +672,10 @@ def pack_support_candidate(projection: wp.float32, index: wp.int32) -> wp.uint64
     # selects the greatest projection with the LOWEST index as the tie-break. Zero never
     # occurs as a real packed value, so it doubles as the "no candidate" sentinel.
     bits = wp.cast(projection, wp.uint32)
-    if bits & wp.uint32(0x80000000) != wp.uint32(0):
+    if bits & UINT32_SIGN_BIT != wp.uint32(0):
         key = ~bits
     else:
-        key = bits | wp.uint32(0x80000000)
+        key = bits | UINT32_SIGN_BIT
     return (wp.uint64(key) << wp.uint64(32)) | wp.uint64(~wp.uint32(index))
 
 
