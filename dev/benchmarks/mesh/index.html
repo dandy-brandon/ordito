@@ -6304,7 +6304,7 @@
 <p><em>Measured on GPU: not recorded · CPU: Intel Xeon w7-2495X</em></p>
 <h2 id="summary">Summary</h2>
 <figure class="bench-figure">
-<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="mesh: time relative to ordito"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="300.0" y1="0" x2="300.0" y2="44"/><text class="bench-tick" x="300.0" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="404.0" y1="0" x2="404.0" y2="44"/><text class="bench-tick" x="404.0" y="57" text-anchor="middle">10x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">100x</text><g><title>ordito (CUDA): the reference, 1x</title><rect class="bench-subject" x="196" y="9.0" width="104.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="305.0" y="18.0">1x</text></g><g><title>trimesh: 29x ordito&#x27;s time, geometric mean over 13 functions; slower than ordito in 13</title><rect class="bench-reference" x="196" y="29.0" width="256.0" height="10"/><image class="bench-logo bench-logo-trimesh" href="../../assets/logos/trimesh.png" x="172.0" y="30.2" width="18.0" height="7.7"/><text class="bench-label" x="166" y="38.0" text-anchor="end">trimesh</text><text class="bench-value" x="457.0" y="38.0">29x  (13)</text></g></svg>
+<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="mesh: time relative to ordito"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="300.0" y1="0" x2="300.0" y2="44"/><text class="bench-tick" x="300.0" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="404.0" y1="0" x2="404.0" y2="44"/><text class="bench-tick" x="404.0" y="57" text-anchor="middle">10x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">100x</text><g><title>ordito (CUDA): the reference, 1x</title><rect class="bench-subject" x="196" y="9.0" width="104.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="305.0" y="18.0">1x</text></g><g><title>trimesh: 28x ordito&#x27;s time, geometric mean over 13 functions; slower than ordito in 13</title><rect class="bench-reference" x="196" y="29.0" width="254.9" height="10"/><image class="bench-logo bench-logo-trimesh" href="../../assets/logos/trimesh.png" x="172.0" y="30.2" width="18.0" height="7.7"/><text class="bench-label" x="166" y="38.0" text-anchor="end">trimesh</text><text class="bench-value" x="455.9" y="38.0">28x  (13)</text></g></svg>
 <figcaption>Time relative to ordito (CUDA), geometric mean over the mesh functions both implement; in parentheses, the number of functions. Log scale. Runs stopped at the time limit are left out.</figcaption>
 </figure>
 
@@ -6322,7 +6322,7 @@
 <tbody>
 <tr>
 <td>trimesh</td>
-<td>29x</td>
+<td>28x</td>
 <td>13</td>
 <td>13</td>
 </tr>
@@ -6331,7 +6331,7 @@
 </details>
 <h2 id="mesh_vertex_normals"><code>mesh_vertex_normals</code></h2>
 <figure class="bench-figure">
-<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="mesh_vertex_normals on dragon (871 414 faces) · warm=False"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="258.4" y1="0" x2="258.4" y2="44"/><text class="bench-tick" x="258.4" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="320.8" y1="0" x2="320.8" y2="44"/><text class="bench-tick" x="320.8" y="57" text-anchor="middle">10x</text><line class="bench-grid" x1="383.2" y1="0" x2="383.2" y2="44"/><text class="bench-tick" x="383.2" y="57" text-anchor="middle">100x</text><line class="bench-grid" x1="445.6" y1="0" x2="445.6" y2="44"/><text class="bench-tick" x="445.6" y="57" text-anchor="middle">1000x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">10000x</text><g><title>ordito (CUDA): 121.3 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="62.4" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="263.4" y="18.0">1x · 121.3 µs</text></g><g><title>trimesh: 417.21 ms, 3438x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="283.1" height="10"/><image class="bench-logo bench-logo-trimesh" href="../../assets/logos/trimesh.png" x="172.0" y="30.2" width="18.0" height="7.7"/><text class="bench-label" x="166" y="38.0" text-anchor="end">trimesh</text><text class="bench-value" x="484.1" y="38.0">3438x · 417.21 ms</text></g></svg>
+<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="mesh_vertex_normals on dragon (871 414 faces) · warm=False"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="258.4" y1="0" x2="258.4" y2="44"/><text class="bench-tick" x="258.4" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="320.8" y1="0" x2="320.8" y2="44"/><text class="bench-tick" x="320.8" y="57" text-anchor="middle">10x</text><line class="bench-grid" x1="383.2" y1="0" x2="383.2" y2="44"/><text class="bench-tick" x="383.2" y="57" text-anchor="middle">100x</text><line class="bench-grid" x1="445.6" y1="0" x2="445.6" y2="44"/><text class="bench-tick" x="445.6" y="57" text-anchor="middle">1000x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">10000x</text><g><title>ordito (CUDA): 128.6 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="62.4" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="263.4" y="18.0">1x · 128.6 µs</text></g><g><title>trimesh: 417.21 ms, 3243x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="281.5" height="10"/><image class="bench-logo bench-logo-trimesh" href="../../assets/logos/trimesh.png" x="172.0" y="30.2" width="18.0" height="7.7"/><text class="bench-label" x="166" y="38.0" text-anchor="end">trimesh</text><text class="bench-value" x="482.5" y="38.0">3243x · 417.21 ms</text></g></svg>
 <figcaption>dragon (871 414 faces) · warm=False · time relative to ordito, log scale</figcaption>
 </figure>
 
@@ -6348,13 +6348,13 @@
 <tbody>
 <tr>
 <td>ordito (CUDA)</td>
-<td>121.3 µs</td>
+<td>128.6 µs</td>
 <td>1x</td>
 </tr>
 <tr>
 <td>trimesh</td>
 <td>417.21 ms</td>
-<td>3438x</td>
+<td>3243x</td>
 </tr>
 </tbody>
 </table>
@@ -6372,52 +6372,52 @@
 <tbody>
 <tr>
 <td>sphere_small warm=False</td>
-<td>53.6 µs</td>
+<td>47.3 µs</td>
 <td></td>
 </tr>
 <tr>
 <td>sphere_small warm=True</td>
-<td>3.0 µs</td>
+<td>4.4 µs</td>
 <td></td>
 </tr>
 <tr>
 <td>bunny_decimated warm=False</td>
-<td>43.6 µs</td>
+<td>44.2 µs</td>
 <td>4.25 ms</td>
 </tr>
 <tr>
 <td>bunny_decimated warm=True</td>
-<td>2.4 µs</td>
+<td>2.8 µs</td>
 <td>2.5 µs</td>
 </tr>
 <tr>
 <td>bunny warm=False</td>
-<td>51.8 µs</td>
+<td>48.9 µs</td>
 <td>20.30 ms</td>
 </tr>
 <tr>
 <td>bunny warm=True</td>
-<td>3.5 µs</td>
+<td>2.9 µs</td>
 <td>2.5 µs</td>
 </tr>
 <tr>
 <td>dragon warm=False</td>
-<td>121.3 µs</td>
+<td>128.6 µs</td>
 <td>417.21 ms</td>
 </tr>
 <tr>
 <td>dragon warm=True</td>
-<td>3.8 µs</td>
+<td>3.9 µs</td>
 <td>3.9 µs</td>
 </tr>
 <tr>
 <td>happy_buddha warm=False</td>
-<td>155.6 µs</td>
+<td>173.6 µs</td>
 <td>531.99 ms</td>
 </tr>
 <tr>
 <td>happy_buddha warm=True</td>
-<td>4.3 µs</td>
+<td>4.0 µs</td>
 <td>4.0 µs</td>
 </tr>
 <tr>
@@ -6427,7 +6427,7 @@
 </tr>
 <tr>
 <td>lucy warm=True</td>
-<td>2.9 µs</td>
+<td>2.5 µs</td>
 <td>2.1 µs</td>
 </tr>
 </tbody>
@@ -6435,7 +6435,7 @@
 </details>
 <h2 id="mesh_face_adjacency"><code>mesh_face_adjacency</code></h2>
 <figure class="bench-figure">
-<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="mesh_face_adjacency on dragon (871 414 faces) · warm=False"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="274.0" y1="0" x2="274.0" y2="44"/><text class="bench-tick" x="274.0" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="352.0" y1="0" x2="352.0" y2="44"/><text class="bench-tick" x="352.0" y="57" text-anchor="middle">10x</text><line class="bench-grid" x1="430.0" y1="0" x2="430.0" y2="44"/><text class="bench-tick" x="430.0" y="57" text-anchor="middle">100x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">1000x</text><g><title>ordito (CUDA): 470.1 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="78.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="279.0" y="18.0">1x · 470.1 µs</text></g><g><title>trimesh: 264.89 ms, 563x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="292.6" height="10"/><image class="bench-logo bench-logo-trimesh" href="../../assets/logos/trimesh.png" x="172.0" y="30.2" width="18.0" height="7.7"/><text class="bench-label" x="166" y="38.0" text-anchor="end">trimesh</text><text class="bench-value" x="493.6" y="38.0">563x · 264.89 ms</text></g></svg>
+<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="mesh_face_adjacency on dragon (871 414 faces) · warm=False"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="274.0" y1="0" x2="274.0" y2="44"/><text class="bench-tick" x="274.0" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="352.0" y1="0" x2="352.0" y2="44"/><text class="bench-tick" x="352.0" y="57" text-anchor="middle">10x</text><line class="bench-grid" x1="430.0" y1="0" x2="430.0" y2="44"/><text class="bench-tick" x="430.0" y="57" text-anchor="middle">100x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">1000x</text><g><title>ordito (CUDA): 479.8 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="78.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="279.0" y="18.0">1x · 479.8 µs</text></g><g><title>trimesh: 264.89 ms, 552x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="291.9" height="10"/><image class="bench-logo bench-logo-trimesh" href="../../assets/logos/trimesh.png" x="172.0" y="30.2" width="18.0" height="7.7"/><text class="bench-label" x="166" y="38.0" text-anchor="end">trimesh</text><text class="bench-value" x="492.9" y="38.0">552x · 264.89 ms</text></g></svg>
 <figcaption>dragon (871 414 faces) · warm=False · time relative to ordito, log scale</figcaption>
 </figure>
 
@@ -6452,13 +6452,13 @@
 <tbody>
 <tr>
 <td>ordito (CUDA)</td>
-<td>470.1 µs</td>
+<td>479.8 µs</td>
 <td>1x</td>
 </tr>
 <tr>
 <td>trimesh</td>
 <td>264.89 ms</td>
-<td>563x</td>
+<td>552x</td>
 </tr>
 </tbody>
 </table>
@@ -6476,62 +6476,62 @@
 <tbody>
 <tr>
 <td>sphere_small warm=False</td>
-<td>150.2 µs</td>
+<td>131.4 µs</td>
 <td></td>
 </tr>
 <tr>
 <td>sphere_small warm=True</td>
-<td>3.8 µs</td>
+<td>3.6 µs</td>
 <td></td>
 </tr>
 <tr>
 <td>bunny_decimated warm=False</td>
-<td>127.4 µs</td>
+<td>131.4 µs</td>
 <td>3.90 ms</td>
 </tr>
 <tr>
 <td>bunny_decimated warm=True</td>
-<td>2.8 µs</td>
+<td>2.2 µs</td>
 <td>2.4 µs</td>
 </tr>
 <tr>
 <td>bunny warm=False</td>
-<td>149.9 µs</td>
+<td>166.1 µs</td>
 <td>16.22 ms</td>
 </tr>
 <tr>
 <td>bunny warm=True</td>
-<td>3.3 µs</td>
+<td>3.2 µs</td>
 <td>2.3 µs</td>
 </tr>
 <tr>
 <td>dragon warm=False</td>
-<td>470.1 µs</td>
+<td>479.8 µs</td>
 <td>264.89 ms</td>
 </tr>
 <tr>
 <td>dragon warm=True</td>
-<td>3.4 µs</td>
+<td>2.1 µs</td>
 <td>2.2 µs</td>
 </tr>
 <tr>
 <td>happy_buddha warm=False</td>
-<td>699.4 µs</td>
+<td>642.7 µs</td>
 <td>337.35 ms</td>
 </tr>
 <tr>
 <td>happy_buddha warm=True</td>
-<td>2.9 µs</td>
+<td>4.2 µs</td>
 <td>2.2 µs</td>
 </tr>
 <tr>
 <td>lucy warm=False</td>
-<td>19.45 ms</td>
+<td>19.27 ms</td>
 <td>10.796 s</td>
 </tr>
 <tr>
 <td>lucy warm=True</td>
-<td>2.4 µs</td>
+<td>2.8 µs</td>
 <td>2.2 µs</td>
 </tr>
 </tbody>
@@ -6539,7 +6539,7 @@
 </details>
 <h2 id="mesh_boundary_loops"><code>mesh_boundary_loops</code></h2>
 <figure class="bench-figure">
-<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="mesh_boundary_loops on rim_long (131 072 faces) · warm=False"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="274.0" y1="0" x2="274.0" y2="44"/><text class="bench-tick" x="274.0" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="352.0" y1="0" x2="352.0" y2="44"/><text class="bench-tick" x="352.0" y="57" text-anchor="middle">10x</text><line class="bench-grid" x1="430.0" y1="0" x2="430.0" y2="44"/><text class="bench-tick" x="430.0" y="57" text-anchor="middle">100x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">1000x</text><g><title>ordito (CUDA): 392.3 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="78.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="279.0" y="18.0">1x · 392.3 µs</text></g><g><title>trimesh: 299.39 ms, 763x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="302.8" height="10"/><image class="bench-logo bench-logo-trimesh" href="../../assets/logos/trimesh.png" x="172.0" y="30.2" width="18.0" height="7.7"/><text class="bench-label" x="166" y="38.0" text-anchor="end">trimesh</text><text class="bench-value" x="503.8" y="38.0">763x · 299.39 ms</text></g></svg>
+<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="mesh_boundary_loops on rim_long (131 072 faces) · warm=False"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="274.0" y1="0" x2="274.0" y2="44"/><text class="bench-tick" x="274.0" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="352.0" y1="0" x2="352.0" y2="44"/><text class="bench-tick" x="352.0" y="57" text-anchor="middle">10x</text><line class="bench-grid" x1="430.0" y1="0" x2="430.0" y2="44"/><text class="bench-tick" x="430.0" y="57" text-anchor="middle">100x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">1000x</text><g><title>ordito (CUDA): 383.7 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="78.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="279.0" y="18.0">1x · 383.7 µs</text></g><g><title>trimesh: 299.39 ms, 780x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="303.6" height="10"/><image class="bench-logo bench-logo-trimesh" href="../../assets/logos/trimesh.png" x="172.0" y="30.2" width="18.0" height="7.7"/><text class="bench-label" x="166" y="38.0" text-anchor="end">trimesh</text><text class="bench-value" x="504.6" y="38.0">780x · 299.39 ms</text></g></svg>
 <figcaption>rim_long (131 072 faces) · warm=False · time relative to ordito, log scale</figcaption>
 </figure>
 
@@ -6556,13 +6556,13 @@
 <tbody>
 <tr>
 <td>ordito (CUDA)</td>
-<td>392.3 µs</td>
+<td>383.7 µs</td>
 <td>1x</td>
 </tr>
 <tr>
 <td>trimesh</td>
 <td>299.39 ms</td>
-<td>763x</td>
+<td>780x</td>
 </tr>
 </tbody>
 </table>
@@ -6580,32 +6580,32 @@
 <tbody>
 <tr>
 <td>holes_many warm=False</td>
-<td>477.1 µs</td>
+<td>486.5 µs</td>
 <td>142.04 ms</td>
 </tr>
 <tr>
 <td>holes_many warm=True</td>
-<td>2.4 µs</td>
+<td>2.7 µs</td>
 <td>133.03 ms</td>
 </tr>
 <tr>
 <td>sphere_med warm=False</td>
-<td>141.9 µs</td>
+<td>146.8 µs</td>
 <td>13.16 ms</td>
 </tr>
 <tr>
 <td>sphere_med warm=True</td>
-<td>3.3 µs</td>
+<td>2.1 µs</td>
 <td>4.75 ms</td>
 </tr>
 <tr>
 <td>rim_long warm=False</td>
-<td>392.3 µs</td>
+<td>383.7 µs</td>
 <td>299.39 ms</td>
 </tr>
 <tr>
 <td>rim_long warm=True</td>
-<td>2.5 µs</td>
+<td>3.0 µs</td>
 <td>283.75 ms</td>
 </tr>
 </tbody>
@@ -6613,7 +6613,7 @@
 </details>
 <h2 id="mesh_is_watertight"><code>mesh_is_watertight</code></h2>
 <figure class="bench-figure">
-<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="mesh_is_watertight on dragon (871 414 faces) · warm=False"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="274.0" y1="0" x2="274.0" y2="44"/><text class="bench-tick" x="274.0" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="352.0" y1="0" x2="352.0" y2="44"/><text class="bench-tick" x="352.0" y="57" text-anchor="middle">10x</text><line class="bench-grid" x1="430.0" y1="0" x2="430.0" y2="44"/><text class="bench-tick" x="430.0" y="57" text-anchor="middle">100x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">1000x</text><g><title>ordito (CUDA): 332.4 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="78.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="279.0" y="18.0">1x · 332.4 µs</text></g><g><title>trimesh: 224.64 ms, 676x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="298.7" height="10"/><image class="bench-logo bench-logo-trimesh" href="../../assets/logos/trimesh.png" x="172.0" y="30.2" width="18.0" height="7.7"/><text class="bench-label" x="166" y="38.0" text-anchor="end">trimesh</text><text class="bench-value" x="499.7" y="38.0">676x · 224.64 ms</text></g></svg>
+<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="mesh_is_watertight on dragon (871 414 faces) · warm=False"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="274.0" y1="0" x2="274.0" y2="44"/><text class="bench-tick" x="274.0" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="352.0" y1="0" x2="352.0" y2="44"/><text class="bench-tick" x="352.0" y="57" text-anchor="middle">10x</text><line class="bench-grid" x1="430.0" y1="0" x2="430.0" y2="44"/><text class="bench-tick" x="430.0" y="57" text-anchor="middle">100x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">1000x</text><g><title>ordito (CUDA): 334.7 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="78.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="279.0" y="18.0">1x · 334.7 µs</text></g><g><title>trimesh: 224.64 ms, 671x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="298.5" height="10"/><image class="bench-logo bench-logo-trimesh" href="../../assets/logos/trimesh.png" x="172.0" y="30.2" width="18.0" height="7.7"/><text class="bench-label" x="166" y="38.0" text-anchor="end">trimesh</text><text class="bench-value" x="499.5" y="38.0">671x · 224.64 ms</text></g></svg>
 <figcaption>dragon (871 414 faces) · warm=False · time relative to ordito, log scale</figcaption>
 </figure>
 
@@ -6630,13 +6630,13 @@
 <tbody>
 <tr>
 <td>ordito (CUDA)</td>
-<td>332.4 µs</td>
+<td>334.7 µs</td>
 <td>1x</td>
 </tr>
 <tr>
 <td>trimesh</td>
 <td>224.64 ms</td>
-<td>676x</td>
+<td>671x</td>
 </tr>
 </tbody>
 </table>
@@ -6654,7 +6654,111 @@
 <tbody>
 <tr>
 <td>sphere_small warm=False</td>
-<td>497.9 µs</td>
+<td>548.4 µs</td>
+<td></td>
+</tr>
+<tr>
+<td>sphere_small warm=True</td>
+<td>3.7 µs</td>
+<td></td>
+</tr>
+<tr>
+<td>bunny_decimated warm=False</td>
+<td>161.8 µs</td>
+<td>4.09 ms</td>
+</tr>
+<tr>
+<td>bunny_decimated warm=True</td>
+<td>2.4 µs</td>
+<td>3.8 µs</td>
+</tr>
+<tr>
+<td>bunny warm=False</td>
+<td>210.2 µs</td>
+<td>14.03 ms</td>
+</tr>
+<tr>
+<td>bunny warm=True</td>
+<td>2.6 µs</td>
+<td>3.3 µs</td>
+</tr>
+<tr>
+<td>dragon warm=False</td>
+<td>334.7 µs</td>
+<td>224.64 ms</td>
+</tr>
+<tr>
+<td>dragon warm=True</td>
+<td>4.1 µs</td>
+<td>3.4 µs</td>
+</tr>
+<tr>
+<td>happy_buddha warm=False</td>
+<td>6.17 ms</td>
+<td>297.18 ms</td>
+</tr>
+<tr>
+<td>happy_buddha warm=True</td>
+<td>2.5 µs</td>
+<td>3.2 µs</td>
+</tr>
+<tr>
+<td>lucy warm=False</td>
+<td>11.96 ms</td>
+<td>9.473 s</td>
+</tr>
+<tr>
+<td>lucy warm=True</td>
+<td>2.6 µs</td>
+<td>4.0 µs</td>
+</tr>
+</tbody>
+</table>
+</details>
+<h2 id="mesh_triangles_center"><code>mesh_triangles_center</code></h2>
+<figure class="bench-figure">
+<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="mesh_triangles_center on dragon (871 414 faces) · warm=False"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="258.4" y1="0" x2="258.4" y2="44"/><text class="bench-tick" x="258.4" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="320.8" y1="0" x2="320.8" y2="44"/><text class="bench-tick" x="320.8" y="57" text-anchor="middle">10x</text><line class="bench-grid" x1="383.2" y1="0" x2="383.2" y2="44"/><text class="bench-tick" x="383.2" y="57" text-anchor="middle">100x</text><line class="bench-grid" x1="445.6" y1="0" x2="445.6" y2="44"/><text class="bench-tick" x="445.6" y="57" text-anchor="middle">1000x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">10000x</text><g><title>ordito (CUDA): 34.5 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="62.4" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="263.4" y="18.0">1x · 34.5 µs</text></g><g><title>trimesh: 104.53 ms, 3029x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="279.6" height="10"/><image class="bench-logo bench-logo-trimesh" href="../../assets/logos/trimesh.png" x="172.0" y="30.2" width="18.0" height="7.7"/><text class="bench-label" x="166" y="38.0" text-anchor="end">trimesh</text><text class="bench-value" x="480.6" y="38.0">3029x · 104.53 ms</text></g></svg>
+<figcaption>dragon (871 414 faces) · warm=False · time relative to ordito, log scale</figcaption>
+</figure>
+
+<details class="note">
+<summary>Values</summary>
+<table>
+<thead>
+<tr>
+<th>Library</th>
+<th>Median</th>
+<th>Relative to ordito</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ordito (CUDA)</td>
+<td>34.5 µs</td>
+<td>1x</td>
+</tr>
+<tr>
+<td>trimesh</td>
+<td>104.53 ms</td>
+<td>3029x</td>
+</tr>
+</tbody>
+</table>
+</details>
+<details class="note">
+<summary>All inputs</summary>
+<table>
+<thead>
+<tr>
+<th>Input</th>
+<th>ordito (CUDA)</th>
+<th>trimesh</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>sphere_small warm=False</td>
+<td>32.7 µs</td>
 <td></td>
 </tr>
 <tr>
@@ -6664,111 +6768,7 @@
 </tr>
 <tr>
 <td>bunny_decimated warm=False</td>
-<td>150.9 µs</td>
-<td>4.09 ms</td>
-</tr>
-<tr>
-<td>bunny_decimated warm=True</td>
-<td>2.7 µs</td>
-<td>3.8 µs</td>
-</tr>
-<tr>
-<td>bunny warm=False</td>
-<td>255.2 µs</td>
-<td>14.03 ms</td>
-</tr>
-<tr>
-<td>bunny warm=True</td>
-<td>3.7 µs</td>
-<td>3.3 µs</td>
-</tr>
-<tr>
-<td>dragon warm=False</td>
-<td>332.4 µs</td>
-<td>224.64 ms</td>
-</tr>
-<tr>
-<td>dragon warm=True</td>
-<td>3.3 µs</td>
-<td>3.4 µs</td>
-</tr>
-<tr>
-<td>happy_buddha warm=False</td>
-<td>6.15 ms</td>
-<td>297.18 ms</td>
-</tr>
-<tr>
-<td>happy_buddha warm=True</td>
-<td>2.6 µs</td>
-<td>3.2 µs</td>
-</tr>
-<tr>
-<td>lucy warm=False</td>
-<td>11.78 ms</td>
-<td>9.473 s</td>
-</tr>
-<tr>
-<td>lucy warm=True</td>
-<td>2.4 µs</td>
-<td>4.0 µs</td>
-</tr>
-</tbody>
-</table>
-</details>
-<h2 id="mesh_triangles_center"><code>mesh_triangles_center</code></h2>
-<figure class="bench-figure">
-<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="mesh_triangles_center on dragon (871 414 faces) · warm=False"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="258.4" y1="0" x2="258.4" y2="44"/><text class="bench-tick" x="258.4" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="320.8" y1="0" x2="320.8" y2="44"/><text class="bench-tick" x="320.8" y="57" text-anchor="middle">10x</text><line class="bench-grid" x1="383.2" y1="0" x2="383.2" y2="44"/><text class="bench-tick" x="383.2" y="57" text-anchor="middle">100x</text><line class="bench-grid" x1="445.6" y1="0" x2="445.6" y2="44"/><text class="bench-tick" x="445.6" y="57" text-anchor="middle">1000x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">10000x</text><g><title>ordito (CUDA): 33.4 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="62.4" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="263.4" y="18.0">1x · 33.4 µs</text></g><g><title>trimesh: 104.53 ms, 3134x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="280.6" height="10"/><image class="bench-logo bench-logo-trimesh" href="../../assets/logos/trimesh.png" x="172.0" y="30.2" width="18.0" height="7.7"/><text class="bench-label" x="166" y="38.0" text-anchor="end">trimesh</text><text class="bench-value" x="481.6" y="38.0">3134x · 104.53 ms</text></g></svg>
-<figcaption>dragon (871 414 faces) · warm=False · time relative to ordito, log scale</figcaption>
-</figure>
-
-<details class="note">
-<summary>Values</summary>
-<table>
-<thead>
-<tr>
-<th>Library</th>
-<th>Median</th>
-<th>Relative to ordito</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>ordito (CUDA)</td>
-<td>33.4 µs</td>
-<td>1x</td>
-</tr>
-<tr>
-<td>trimesh</td>
-<td>104.53 ms</td>
-<td>3134x</td>
-</tr>
-</tbody>
-</table>
-</details>
-<details class="note">
-<summary>All inputs</summary>
-<table>
-<thead>
-<tr>
-<th>Input</th>
-<th>ordito (CUDA)</th>
-<th>trimesh</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>sphere_small warm=False</td>
-<td>30.2 µs</td>
-<td></td>
-</tr>
-<tr>
-<td>sphere_small warm=True</td>
-<td>3.9 µs</td>
-<td></td>
-</tr>
-<tr>
-<td>bunny_decimated warm=False</td>
-<td>21.1 µs</td>
+<td>22.3 µs</td>
 <td>1.74 ms</td>
 </tr>
 <tr>
@@ -6778,42 +6778,42 @@
 </tr>
 <tr>
 <td>bunny warm=False</td>
-<td>31.1 µs</td>
+<td>22.3 µs</td>
 <td>8.46 ms</td>
 </tr>
 <tr>
 <td>bunny warm=True</td>
-<td>3.7 µs</td>
+<td>3.6 µs</td>
 <td>2.1 µs</td>
 </tr>
 <tr>
 <td>dragon warm=False</td>
-<td>33.4 µs</td>
+<td>34.5 µs</td>
 <td>104.53 ms</td>
 </tr>
 <tr>
 <td>dragon warm=True</td>
-<td>2.9 µs</td>
+<td>2.7 µs</td>
 <td>2.2 µs</td>
 </tr>
 <tr>
 <td>happy_buddha warm=False</td>
-<td>38.8 µs</td>
+<td>40.5 µs</td>
 <td>130.46 ms</td>
 </tr>
 <tr>
 <td>happy_buddha warm=True</td>
-<td>4.0 µs</td>
+<td>4.1 µs</td>
 <td>2.3 µs</td>
 </tr>
 <tr>
 <td>lucy warm=False</td>
-<td>566.4 µs</td>
+<td>562.6 µs</td>
 <td>3.597 s</td>
 </tr>
 <tr>
 <td>lucy warm=True</td>
-<td>3.2 µs</td>
+<td>3.5 µs</td>
 <td>2.1 µs</td>
 </tr>
 </tbody>
@@ -6821,7 +6821,7 @@
 </details>
 <h2 id="mesh_centroid"><code>mesh_centroid</code></h2>
 <figure class="bench-figure">
-<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="mesh_centroid on dragon (871 414 faces) · warm=False"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="258.4" y1="0" x2="258.4" y2="44"/><text class="bench-tick" x="258.4" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="320.8" y1="0" x2="320.8" y2="44"/><text class="bench-tick" x="320.8" y="57" text-anchor="middle">10x</text><line class="bench-grid" x1="383.2" y1="0" x2="383.2" y2="44"/><text class="bench-tick" x="383.2" y="57" text-anchor="middle">100x</text><line class="bench-grid" x1="445.6" y1="0" x2="445.6" y2="44"/><text class="bench-tick" x="445.6" y="57" text-anchor="middle">1000x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">10000x</text><g><title>ordito (CUDA): 60.4 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="62.4" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="263.4" y="18.0">1x · 60.4 µs</text></g><g><title>trimesh: 173.11 ms, 2866x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="278.1" height="10"/><image class="bench-logo bench-logo-trimesh" href="../../assets/logos/trimesh.png" x="172.0" y="30.2" width="18.0" height="7.7"/><text class="bench-label" x="166" y="38.0" text-anchor="end">trimesh</text><text class="bench-value" x="479.1" y="38.0">2866x · 173.11 ms</text></g></svg>
+<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="mesh_centroid on dragon (871 414 faces) · warm=False"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="258.4" y1="0" x2="258.4" y2="44"/><text class="bench-tick" x="258.4" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="320.8" y1="0" x2="320.8" y2="44"/><text class="bench-tick" x="320.8" y="57" text-anchor="middle">10x</text><line class="bench-grid" x1="383.2" y1="0" x2="383.2" y2="44"/><text class="bench-tick" x="383.2" y="57" text-anchor="middle">100x</text><line class="bench-grid" x1="445.6" y1="0" x2="445.6" y2="44"/><text class="bench-tick" x="445.6" y="57" text-anchor="middle">1000x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">10000x</text><g><title>ordito (CUDA): 64.7 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="62.4" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="263.4" y="18.0">1x · 64.7 µs</text></g><g><title>trimesh: 173.11 ms, 2674x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="276.3" height="10"/><image class="bench-logo bench-logo-trimesh" href="../../assets/logos/trimesh.png" x="172.0" y="30.2" width="18.0" height="7.7"/><text class="bench-label" x="166" y="38.0" text-anchor="end">trimesh</text><text class="bench-value" x="477.3" y="38.0">2674x · 173.11 ms</text></g></svg>
 <figcaption>dragon (871 414 faces) · warm=False · time relative to ordito, log scale</figcaption>
 </figure>
 
@@ -6838,13 +6838,13 @@
 <tbody>
 <tr>
 <td>ordito (CUDA)</td>
-<td>60.4 µs</td>
+<td>64.7 µs</td>
 <td>1x</td>
 </tr>
 <tr>
 <td>trimesh</td>
 <td>173.11 ms</td>
-<td>2866x</td>
+<td>2674x</td>
 </tr>
 </tbody>
 </table>
@@ -6862,17 +6862,17 @@
 <tbody>
 <tr>
 <td>sphere_small warm=False</td>
-<td>56.5 µs</td>
+<td>62.0 µs</td>
 <td></td>
 </tr>
 <tr>
 <td>sphere_small warm=True</td>
-<td>3.9 µs</td>
+<td>6.0 µs</td>
 <td></td>
 </tr>
 <tr>
 <td>bunny_decimated warm=False</td>
-<td>46.7 µs</td>
+<td>50.6 µs</td>
 <td>2.80 ms</td>
 </tr>
 <tr>
@@ -6882,17 +6882,17 @@
 </tr>
 <tr>
 <td>bunny warm=False</td>
-<td>54.7 µs</td>
+<td>58.9 µs</td>
 <td>13.44 ms</td>
 </tr>
 <tr>
 <td>bunny warm=True</td>
-<td>2.5 µs</td>
+<td>3.1 µs</td>
 <td>2.3 µs</td>
 </tr>
 <tr>
 <td>dragon warm=False</td>
-<td>60.4 µs</td>
+<td>64.7 µs</td>
 <td>173.11 ms</td>
 </tr>
 <tr>
@@ -6902,22 +6902,22 @@
 </tr>
 <tr>
 <td>happy_buddha warm=False</td>
-<td>66.2 µs</td>
+<td>73.4 µs</td>
 <td>215.96 ms</td>
 </tr>
 <tr>
 <td>happy_buddha warm=True</td>
-<td>3.8 µs</td>
+<td>3.0 µs</td>
 <td>2.3 µs</td>
 </tr>
 <tr>
 <td>lucy warm=False</td>
-<td>376.4 µs</td>
+<td>368.6 µs</td>
 <td>6.471 s</td>
 </tr>
 <tr>
 <td>lucy warm=True</td>
-<td>2.3 µs</td>
+<td>2.1 µs</td>
 <td>2.1 µs</td>
 </tr>
 </tbody>
@@ -6925,7 +6925,7 @@
 </details>
 <h2 id="mesh_center_mass"><code>mesh_center_mass</code></h2>
 <figure class="bench-figure">
-<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="mesh_center_mass on dragon (871 414 faces) · warm=False"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="258.4" y1="0" x2="258.4" y2="44"/><text class="bench-tick" x="258.4" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="320.8" y1="0" x2="320.8" y2="44"/><text class="bench-tick" x="320.8" y="57" text-anchor="middle">10x</text><line class="bench-grid" x1="383.2" y1="0" x2="383.2" y2="44"/><text class="bench-tick" x="383.2" y="57" text-anchor="middle">100x</text><line class="bench-grid" x1="445.6" y1="0" x2="445.6" y2="44"/><text class="bench-tick" x="445.6" y="57" text-anchor="middle">1000x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">10000x</text><g><title>ordito (CUDA): 178.6 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="62.4" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="263.4" y="18.0">1x · 178.6 µs</text></g><g><title>trimesh: 549.56 ms, 3076x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="280.1" height="10"/><image class="bench-logo bench-logo-trimesh" href="../../assets/logos/trimesh.png" x="172.0" y="30.2" width="18.0" height="7.7"/><text class="bench-label" x="166" y="38.0" text-anchor="end">trimesh</text><text class="bench-value" x="481.1" y="38.0">3076x · 549.56 ms</text></g></svg>
+<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="mesh_center_mass on dragon (871 414 faces) · warm=False"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="258.4" y1="0" x2="258.4" y2="44"/><text class="bench-tick" x="258.4" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="320.8" y1="0" x2="320.8" y2="44"/><text class="bench-tick" x="320.8" y="57" text-anchor="middle">10x</text><line class="bench-grid" x1="383.2" y1="0" x2="383.2" y2="44"/><text class="bench-tick" x="383.2" y="57" text-anchor="middle">100x</text><line class="bench-grid" x1="445.6" y1="0" x2="445.6" y2="44"/><text class="bench-tick" x="445.6" y="57" text-anchor="middle">1000x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">10000x</text><g><title>ordito (CUDA): 176.0 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="62.4" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="263.4" y="18.0">1x · 176.0 µs</text></g><g><title>trimesh: 549.56 ms, 3122x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="280.5" height="10"/><image class="bench-logo bench-logo-trimesh" href="../../assets/logos/trimesh.png" x="172.0" y="30.2" width="18.0" height="7.7"/><text class="bench-label" x="166" y="38.0" text-anchor="end">trimesh</text><text class="bench-value" x="481.5" y="38.0">3122x · 549.56 ms</text></g></svg>
 <figcaption>dragon (871 414 faces) · warm=False · time relative to ordito, log scale</figcaption>
 </figure>
 
@@ -6942,13 +6942,13 @@
 <tbody>
 <tr>
 <td>ordito (CUDA)</td>
-<td>178.6 µs</td>
+<td>176.0 µs</td>
 <td>1x</td>
 </tr>
 <tr>
 <td>trimesh</td>
 <td>549.56 ms</td>
-<td>3076x</td>
+<td>3122x</td>
 </tr>
 </tbody>
 </table>
@@ -6966,37 +6966,37 @@
 <tbody>
 <tr>
 <td>sphere_small warm=False</td>
-<td>100.0 µs</td>
+<td>104.0 µs</td>
 <td></td>
 </tr>
 <tr>
 <td>sphere_small warm=True</td>
-<td>3.7 µs</td>
+<td>3.1 µs</td>
 <td></td>
 </tr>
 <tr>
 <td>bunny_decimated warm=False</td>
-<td>67.6 µs</td>
+<td>96.7 µs</td>
 <td>7.18 ms</td>
 </tr>
 <tr>
 <td>bunny_decimated warm=True</td>
-<td>3.2 µs</td>
+<td>3.6 µs</td>
 <td>2.4 µs</td>
 </tr>
 <tr>
 <td>bunny warm=False</td>
-<td>67.0 µs</td>
+<td>102.2 µs</td>
 <td>31.41 ms</td>
 </tr>
 <tr>
 <td>bunny warm=True</td>
-<td>3.2 µs</td>
+<td>3.6 µs</td>
 <td>2.3 µs</td>
 </tr>
 <tr>
 <td>dragon warm=False</td>
-<td>178.6 µs</td>
+<td>176.0 µs</td>
 <td>549.56 ms</td>
 </tr>
 <tr>
@@ -7006,12 +7006,12 @@
 </tr>
 <tr>
 <td>happy_buddha warm=False</td>
-<td>209.0 µs</td>
+<td>213.3 µs</td>
 <td>713.42 ms</td>
 </tr>
 <tr>
 <td>happy_buddha warm=True</td>
-<td>5.2 µs</td>
+<td>3.3 µs</td>
 <td>2.2 µs</td>
 </tr>
 <tr>
@@ -7029,7 +7029,7 @@
 </details>
 <h2 id="mesh_moment_inertia"><code>mesh_moment_inertia</code></h2>
 <figure class="bench-figure">
-<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="mesh_moment_inertia on dragon (871 414 faces) · warm=False"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="258.4" y1="0" x2="258.4" y2="44"/><text class="bench-tick" x="258.4" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="320.8" y1="0" x2="320.8" y2="44"/><text class="bench-tick" x="320.8" y="57" text-anchor="middle">10x</text><line class="bench-grid" x1="383.2" y1="0" x2="383.2" y2="44"/><text class="bench-tick" x="383.2" y="57" text-anchor="middle">100x</text><line class="bench-grid" x1="445.6" y1="0" x2="445.6" y2="44"/><text class="bench-tick" x="445.6" y="57" text-anchor="middle">1000x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">10000x</text><g><title>ordito (CUDA): 148.5 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="62.4" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="263.4" y="18.0">1x · 148.5 µs</text></g><g><title>trimesh: 553.31 ms, 3727x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="285.3" height="10"/><image class="bench-logo bench-logo-trimesh" href="../../assets/logos/trimesh.png" x="172.0" y="30.2" width="18.0" height="7.7"/><text class="bench-label" x="166" y="38.0" text-anchor="end">trimesh</text><text class="bench-value" x="486.3" y="38.0">3727x · 553.31 ms</text></g></svg>
+<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="mesh_moment_inertia on dragon (871 414 faces) · warm=False"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="258.4" y1="0" x2="258.4" y2="44"/><text class="bench-tick" x="258.4" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="320.8" y1="0" x2="320.8" y2="44"/><text class="bench-tick" x="320.8" y="57" text-anchor="middle">10x</text><line class="bench-grid" x1="383.2" y1="0" x2="383.2" y2="44"/><text class="bench-tick" x="383.2" y="57" text-anchor="middle">100x</text><line class="bench-grid" x1="445.6" y1="0" x2="445.6" y2="44"/><text class="bench-tick" x="445.6" y="57" text-anchor="middle">1000x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">10000x</text><g><title>ordito (CUDA): 143.2 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="62.4" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="263.4" y="18.0">1x · 143.2 µs</text></g><g><title>trimesh: 553.31 ms, 3863x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="286.2" height="10"/><image class="bench-logo bench-logo-trimesh" href="../../assets/logos/trimesh.png" x="172.0" y="30.2" width="18.0" height="7.7"/><text class="bench-label" x="166" y="38.0" text-anchor="end">trimesh</text><text class="bench-value" x="487.2" y="38.0">3863x · 553.31 ms</text></g></svg>
 <figcaption>dragon (871 414 faces) · warm=False · time relative to ordito, log scale</figcaption>
 </figure>
 
@@ -7046,13 +7046,13 @@
 <tbody>
 <tr>
 <td>ordito (CUDA)</td>
-<td>148.5 µs</td>
+<td>143.2 µs</td>
 <td>1x</td>
 </tr>
 <tr>
 <td>trimesh</td>
 <td>553.31 ms</td>
-<td>3727x</td>
+<td>3863x</td>
 </tr>
 </tbody>
 </table>
@@ -7070,47 +7070,47 @@
 <tbody>
 <tr>
 <td>sphere_small warm=False</td>
-<td>97.7 µs</td>
+<td>113.4 µs</td>
 <td></td>
 </tr>
 <tr>
 <td>sphere_small warm=True</td>
-<td>3.7 µs</td>
+<td>3.9 µs</td>
 <td></td>
 </tr>
 <tr>
 <td>bunny_decimated warm=False</td>
-<td>80.1 µs</td>
+<td>91.1 µs</td>
 <td>7.37 ms</td>
 </tr>
 <tr>
 <td>bunny_decimated warm=True</td>
-<td>3.5 µs</td>
+<td>2.5 µs</td>
 <td>2.3 µs</td>
 </tr>
 <tr>
 <td>bunny warm=False</td>
-<td>89.3 µs</td>
+<td>106.1 µs</td>
 <td>31.54 ms</td>
 </tr>
 <tr>
 <td>bunny warm=True</td>
-<td>3.3 µs</td>
+<td>3.4 µs</td>
 <td>2.2 µs</td>
 </tr>
 <tr>
 <td>dragon warm=False</td>
-<td>148.5 µs</td>
+<td>143.2 µs</td>
 <td>553.31 ms</td>
 </tr>
 <tr>
 <td>dragon warm=True</td>
-<td>3.3 µs</td>
+<td>3.6 µs</td>
 <td>2.5 µs</td>
 </tr>
 <tr>
 <td>happy_buddha warm=False</td>
-<td>180.5 µs</td>
+<td>184.5 µs</td>
 <td>712.77 ms</td>
 </tr>
 <tr>
@@ -7125,7 +7125,7 @@
 </tr>
 <tr>
 <td>lucy warm=True</td>
-<td>2.9 µs</td>
+<td>3.2 µs</td>
 <td>2.2 µs</td>
 </tr>
 </tbody>
@@ -7133,7 +7133,7 @@
 </details>
 <h2 id="mesh_extents"><code>mesh_extents</code></h2>
 <figure class="bench-figure">
-<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="mesh_extents on dragon (871 414 faces) · warm=False"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="274.0" y1="0" x2="274.0" y2="44"/><text class="bench-tick" x="274.0" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="352.0" y1="0" x2="352.0" y2="44"/><text class="bench-tick" x="352.0" y="57" text-anchor="middle">10x</text><line class="bench-grid" x1="430.0" y1="0" x2="430.0" y2="44"/><text class="bench-tick" x="430.0" y="57" text-anchor="middle">100x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">1000x</text><g><title>ordito (CUDA): 85.4 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="78.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="279.0" y="18.0">1x · 85.4 µs</text></g><g><title>trimesh: 56.81 ms, 665x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="298.2" height="10"/><image class="bench-logo bench-logo-trimesh" href="../../assets/logos/trimesh.png" x="172.0" y="30.2" width="18.0" height="7.7"/><text class="bench-label" x="166" y="38.0" text-anchor="end">trimesh</text><text class="bench-value" x="499.2" y="38.0">665x · 56.81 ms</text></g></svg>
+<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="mesh_extents on dragon (871 414 faces) · warm=False"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="274.0" y1="0" x2="274.0" y2="44"/><text class="bench-tick" x="274.0" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="352.0" y1="0" x2="352.0" y2="44"/><text class="bench-tick" x="352.0" y="57" text-anchor="middle">10x</text><line class="bench-grid" x1="430.0" y1="0" x2="430.0" y2="44"/><text class="bench-tick" x="430.0" y="57" text-anchor="middle">100x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">1000x</text><g><title>ordito (CUDA): 93.6 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="78.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="279.0" y="18.0">1x · 93.6 µs</text></g><g><title>trimesh: 56.81 ms, 607x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="295.1" height="10"/><image class="bench-logo bench-logo-trimesh" href="../../assets/logos/trimesh.png" x="172.0" y="30.2" width="18.0" height="7.7"/><text class="bench-label" x="166" y="38.0" text-anchor="end">trimesh</text><text class="bench-value" x="496.1" y="38.0">607x · 56.81 ms</text></g></svg>
 <figcaption>dragon (871 414 faces) · warm=False · time relative to ordito, log scale</figcaption>
 </figure>
 
@@ -7150,13 +7150,13 @@
 <tbody>
 <tr>
 <td>ordito (CUDA)</td>
-<td>85.4 µs</td>
+<td>93.6 µs</td>
 <td>1x</td>
 </tr>
 <tr>
 <td>trimesh</td>
 <td>56.81 ms</td>
-<td>665x</td>
+<td>607x</td>
 </tr>
 </tbody>
 </table>
@@ -7174,215 +7174,7 @@
 <tbody>
 <tr>
 <td>sphere_small warm=False</td>
-<td>58.7 µs</td>
-<td></td>
-</tr>
-<tr>
-<td>sphere_small warm=True</td>
-<td>3.3 µs</td>
-<td></td>
-</tr>
-<tr>
-<td>bunny_decimated warm=False</td>
-<td>67.0 µs</td>
-<td>1.07 ms</td>
-</tr>
-<tr>
-<td>bunny_decimated warm=True</td>
-<td>2.4 µs</td>
-<td>3.2 µs</td>
-</tr>
-<tr>
-<td>bunny warm=False</td>
-<td>82.2 µs</td>
-<td>4.56 ms</td>
-</tr>
-<tr>
-<td>bunny warm=True</td>
-<td>3.0 µs</td>
-<td>2.2 µs</td>
-</tr>
-<tr>
-<td>dragon warm=False</td>
-<td>85.4 µs</td>
-<td>56.81 ms</td>
-</tr>
-<tr>
-<td>dragon warm=True</td>
-<td>2.2 µs</td>
-<td>2.3 µs</td>
-</tr>
-<tr>
-<td>happy_buddha warm=False</td>
-<td>91.6 µs</td>
-<td>69.56 ms</td>
-</tr>
-<tr>
-<td>happy_buddha warm=True</td>
-<td>2.7 µs</td>
-<td>2.0 µs</td>
-</tr>
-<tr>
-<td>lucy warm=False</td>
-<td>290.1 µs</td>
-<td>2.409 s</td>
-</tr>
-<tr>
-<td>lucy warm=True</td>
-<td>3.0 µs</td>
-<td>2.1 µs</td>
-</tr>
-</tbody>
-</table>
-</details>
-<h2 id="mesh_edges_sorted"><code>mesh_edges_sorted</code></h2>
-<figure class="bench-figure">
-<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="mesh_edges_sorted on dragon (871 414 faces) · warm=False"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="258.4" y1="0" x2="258.4" y2="44"/><text class="bench-tick" x="258.4" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="320.8" y1="0" x2="320.8" y2="44"/><text class="bench-tick" x="320.8" y="57" text-anchor="middle">10x</text><line class="bench-grid" x1="383.2" y1="0" x2="383.2" y2="44"/><text class="bench-tick" x="383.2" y="57" text-anchor="middle">100x</text><line class="bench-grid" x1="445.6" y1="0" x2="445.6" y2="44"/><text class="bench-tick" x="445.6" y="57" text-anchor="middle">1000x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">10000x</text><g><title>ordito (CUDA): 39.9 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="62.4" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="263.4" y="18.0">1x · 39.9 µs</text></g><g><title>trimesh: 104.15 ms, 2612x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="275.6" height="10"/><image class="bench-logo bench-logo-trimesh" href="../../assets/logos/trimesh.png" x="172.0" y="30.2" width="18.0" height="7.7"/><text class="bench-label" x="166" y="38.0" text-anchor="end">trimesh</text><text class="bench-value" x="476.6" y="38.0">2612x · 104.15 ms</text></g></svg>
-<figcaption>dragon (871 414 faces) · warm=False · time relative to ordito, log scale</figcaption>
-</figure>
-
-<details class="note">
-<summary>Values</summary>
-<table>
-<thead>
-<tr>
-<th>Library</th>
-<th>Median</th>
-<th>Relative to ordito</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>ordito (CUDA)</td>
-<td>39.9 µs</td>
-<td>1x</td>
-</tr>
-<tr>
-<td>trimesh</td>
-<td>104.15 ms</td>
-<td>2612x</td>
-</tr>
-</tbody>
-</table>
-</details>
-<details class="note">
-<summary>All inputs</summary>
-<table>
-<thead>
-<tr>
-<th>Input</th>
-<th>ordito (CUDA)</th>
-<th>trimesh</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>sphere_small warm=False</td>
-<td>31.0 µs</td>
-<td></td>
-</tr>
-<tr>
-<td>sphere_small warm=True</td>
-<td>6.0 µs</td>
-<td></td>
-</tr>
-<tr>
-<td>bunny_decimated warm=False</td>
-<td>21.7 µs</td>
-<td>1.65 ms</td>
-</tr>
-<tr>
-<td>bunny_decimated warm=True</td>
-<td>3.2 µs</td>
-<td>2.8 µs</td>
-</tr>
-<tr>
-<td>bunny warm=False</td>
-<td>30.0 µs</td>
-<td>8.28 ms</td>
-</tr>
-<tr>
-<td>bunny warm=True</td>
-<td>2.5 µs</td>
-<td>2.2 µs</td>
-</tr>
-<tr>
-<td>dragon warm=False</td>
-<td>39.9 µs</td>
-<td>104.15 ms</td>
-</tr>
-<tr>
-<td>dragon warm=True</td>
-<td>4.7 µs</td>
-<td>2.2 µs</td>
-</tr>
-<tr>
-<td>happy_buddha warm=False</td>
-<td>42.4 µs</td>
-<td>136.91 ms</td>
-</tr>
-<tr>
-<td>happy_buddha warm=True</td>
-<td>3.4 µs</td>
-<td>2.2 µs</td>
-</tr>
-<tr>
-<td>lucy warm=False</td>
-<td>707.5 µs</td>
-<td>3.773 s</td>
-</tr>
-<tr>
-<td>lucy warm=True</td>
-<td>3.0 µs</td>
-<td>2.3 µs</td>
-</tr>
-</tbody>
-</table>
-</details>
-<h2 id="mesh_faces_unique_edges"><code>mesh_faces_unique_edges</code></h2>
-<figure class="bench-figure">
-<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="mesh_faces_unique_edges on dragon (871 414 faces) · warm=False"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="274.0" y1="0" x2="274.0" y2="44"/><text class="bench-tick" x="274.0" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="352.0" y1="0" x2="352.0" y2="44"/><text class="bench-tick" x="352.0" y="57" text-anchor="middle">10x</text><line class="bench-grid" x1="430.0" y1="0" x2="430.0" y2="44"/><text class="bench-tick" x="430.0" y="57" text-anchor="middle">100x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">1000x</text><g><title>ordito (CUDA): 362.7 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="78.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="279.0" y="18.0">1x · 362.7 µs</text></g><g><title>trimesh: 262.34 ms, 723x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="301.0" height="10"/><image class="bench-logo bench-logo-trimesh" href="../../assets/logos/trimesh.png" x="172.0" y="30.2" width="18.0" height="7.7"/><text class="bench-label" x="166" y="38.0" text-anchor="end">trimesh</text><text class="bench-value" x="502.0" y="38.0">723x · 262.34 ms</text></g></svg>
-<figcaption>dragon (871 414 faces) · warm=False · time relative to ordito, log scale</figcaption>
-</figure>
-
-<details class="note">
-<summary>Values</summary>
-<table>
-<thead>
-<tr>
-<th>Library</th>
-<th>Median</th>
-<th>Relative to ordito</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>ordito (CUDA)</td>
-<td>362.7 µs</td>
-<td>1x</td>
-</tr>
-<tr>
-<td>trimesh</td>
-<td>262.34 ms</td>
-<td>723x</td>
-</tr>
-</tbody>
-</table>
-</details>
-<details class="note">
-<summary>All inputs</summary>
-<table>
-<thead>
-<tr>
-<th>Input</th>
-<th>ordito (CUDA)</th>
-<th>trimesh</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>sphere_small warm=False</td>
-<td>164.6 µs</td>
+<td>83.0 µs</td>
 <td></td>
 </tr>
 <tr>
@@ -7392,60 +7184,60 @@
 </tr>
 <tr>
 <td>bunny_decimated warm=False</td>
-<td>141.8 µs</td>
-<td>4.45 ms</td>
+<td>67.5 µs</td>
+<td>1.07 ms</td>
 </tr>
 <tr>
 <td>bunny_decimated warm=True</td>
-<td>2.9 µs</td>
-<td>2.0 µs</td>
+<td>2.3 µs</td>
+<td>3.2 µs</td>
 </tr>
 <tr>
 <td>bunny warm=False</td>
-<td>153.1 µs</td>
-<td>21.85 ms</td>
+<td>98.7 µs</td>
+<td>4.56 ms</td>
 </tr>
 <tr>
 <td>bunny warm=True</td>
-<td>2.9 µs</td>
+<td>3.7 µs</td>
 <td>2.2 µs</td>
 </tr>
 <tr>
 <td>dragon warm=False</td>
-<td>362.7 µs</td>
-<td>262.34 ms</td>
+<td>93.6 µs</td>
+<td>56.81 ms</td>
 </tr>
 <tr>
 <td>dragon warm=True</td>
-<td>2.8 µs</td>
-<td>2.1 µs</td>
+<td>3.3 µs</td>
+<td>2.3 µs</td>
 </tr>
 <tr>
 <td>happy_buddha warm=False</td>
-<td>435.2 µs</td>
-<td>322.12 ms</td>
+<td>80.8 µs</td>
+<td>69.56 ms</td>
 </tr>
 <tr>
 <td>happy_buddha warm=True</td>
-<td>3.4 µs</td>
-<td>2.1 µs</td>
+<td>4.2 µs</td>
+<td>2.0 µs</td>
 </tr>
 <tr>
 <td>lucy warm=False</td>
-<td>12.59 ms</td>
-<td>10.628 s</td>
+<td>303.4 µs</td>
+<td>2.409 s</td>
 </tr>
 <tr>
 <td>lucy warm=True</td>
-<td>1.9 µs</td>
-<td>2.2 µs</td>
+<td>3.1 µs</td>
+<td>2.1 µs</td>
 </tr>
 </tbody>
 </table>
 </details>
-<h2 id="mesh_is_winding_consistent"><code>mesh_is_winding_consistent</code></h2>
+<h2 id="mesh_edges_sorted"><code>mesh_edges_sorted</code></h2>
 <figure class="bench-figure">
-<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="mesh_is_winding_consistent on dragon (871 414 faces) · warm=False"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="258.4" y1="0" x2="258.4" y2="44"/><text class="bench-tick" x="258.4" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="320.8" y1="0" x2="320.8" y2="44"/><text class="bench-tick" x="320.8" y="57" text-anchor="middle">10x</text><line class="bench-grid" x1="383.2" y1="0" x2="383.2" y2="44"/><text class="bench-tick" x="383.2" y="57" text-anchor="middle">100x</text><line class="bench-grid" x1="445.6" y1="0" x2="445.6" y2="44"/><text class="bench-tick" x="445.6" y="57" text-anchor="middle">1000x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">10000x</text><g><title>ordito (CUDA): 188.4 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="62.4" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="263.4" y="18.0">1x · 188.4 µs</text></g><g><title>trimesh: 232.65 ms, 1235x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="255.3" height="10"/><image class="bench-logo bench-logo-trimesh" href="../../assets/logos/trimesh.png" x="172.0" y="30.2" width="18.0" height="7.7"/><text class="bench-label" x="166" y="38.0" text-anchor="end">trimesh</text><text class="bench-value" x="456.3" y="38.0">1235x · 232.65 ms</text></g></svg>
+<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="mesh_edges_sorted on dragon (871 414 faces) · warm=False"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="258.4" y1="0" x2="258.4" y2="44"/><text class="bench-tick" x="258.4" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="320.8" y1="0" x2="320.8" y2="44"/><text class="bench-tick" x="320.8" y="57" text-anchor="middle">10x</text><line class="bench-grid" x1="383.2" y1="0" x2="383.2" y2="44"/><text class="bench-tick" x="383.2" y="57" text-anchor="middle">100x</text><line class="bench-grid" x1="445.6" y1="0" x2="445.6" y2="44"/><text class="bench-tick" x="445.6" y="57" text-anchor="middle">1000x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">10000x</text><g><title>ordito (CUDA): 38.3 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="62.4" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="263.4" y="18.0">1x · 38.3 µs</text></g><g><title>trimesh: 104.15 ms, 2717x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="276.7" height="10"/><image class="bench-logo bench-logo-trimesh" href="../../assets/logos/trimesh.png" x="172.0" y="30.2" width="18.0" height="7.7"/><text class="bench-label" x="166" y="38.0" text-anchor="end">trimesh</text><text class="bench-value" x="477.7" y="38.0">2717x · 104.15 ms</text></g></svg>
 <figcaption>dragon (871 414 faces) · warm=False · time relative to ordito, log scale</figcaption>
 </figure>
 
@@ -7462,13 +7254,13 @@
 <tbody>
 <tr>
 <td>ordito (CUDA)</td>
-<td>188.4 µs</td>
+<td>38.3 µs</td>
 <td>1x</td>
 </tr>
 <tr>
 <td>trimesh</td>
-<td>232.65 ms</td>
-<td>1235x</td>
+<td>104.15 ms</td>
+<td>2717x</td>
 </tr>
 </tbody>
 </table>
@@ -7486,37 +7278,245 @@
 <tbody>
 <tr>
 <td>sphere_small warm=False</td>
-<td>145.9 µs</td>
+<td>29.3 µs</td>
 <td></td>
 </tr>
 <tr>
 <td>sphere_small warm=True</td>
-<td>3.5 µs</td>
+<td>2.6 µs</td>
 <td></td>
 </tr>
 <tr>
 <td>bunny_decimated warm=False</td>
-<td>111.1 µs</td>
-<td>3.18 ms</td>
+<td>20.9 µs</td>
+<td>1.65 ms</td>
 </tr>
 <tr>
 <td>bunny_decimated warm=True</td>
-<td>3.0 µs</td>
+<td>2.2 µs</td>
+<td>2.8 µs</td>
+</tr>
+<tr>
+<td>bunny warm=False</td>
+<td>35.4 µs</td>
+<td>8.28 ms</td>
+</tr>
+<tr>
+<td>bunny warm=True</td>
+<td>3.1 µs</td>
+<td>2.2 µs</td>
+</tr>
+<tr>
+<td>dragon warm=False</td>
+<td>38.3 µs</td>
+<td>104.15 ms</td>
+</tr>
+<tr>
+<td>dragon warm=True</td>
+<td>3.4 µs</td>
+<td>2.2 µs</td>
+</tr>
+<tr>
+<td>happy_buddha warm=False</td>
+<td>57.3 µs</td>
+<td>136.91 ms</td>
+</tr>
+<tr>
+<td>happy_buddha warm=True</td>
+<td>4.6 µs</td>
+<td>2.2 µs</td>
+</tr>
+<tr>
+<td>lucy warm=False</td>
+<td>711.6 µs</td>
+<td>3.773 s</td>
+</tr>
+<tr>
+<td>lucy warm=True</td>
+<td>3.5 µs</td>
+<td>2.3 µs</td>
+</tr>
+</tbody>
+</table>
+</details>
+<h2 id="mesh_faces_unique_edges"><code>mesh_faces_unique_edges</code></h2>
+<figure class="bench-figure">
+<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="mesh_faces_unique_edges on dragon (871 414 faces) · warm=False"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="274.0" y1="0" x2="274.0" y2="44"/><text class="bench-tick" x="274.0" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="352.0" y1="0" x2="352.0" y2="44"/><text class="bench-tick" x="352.0" y="57" text-anchor="middle">10x</text><line class="bench-grid" x1="430.0" y1="0" x2="430.0" y2="44"/><text class="bench-tick" x="430.0" y="57" text-anchor="middle">100x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">1000x</text><g><title>ordito (CUDA): 364.2 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="78.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="279.0" y="18.0">1x · 364.2 µs</text></g><g><title>trimesh: 262.34 ms, 720x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="300.9" height="10"/><image class="bench-logo bench-logo-trimesh" href="../../assets/logos/trimesh.png" x="172.0" y="30.2" width="18.0" height="7.7"/><text class="bench-label" x="166" y="38.0" text-anchor="end">trimesh</text><text class="bench-value" x="501.9" y="38.0">720x · 262.34 ms</text></g></svg>
+<figcaption>dragon (871 414 faces) · warm=False · time relative to ordito, log scale</figcaption>
+</figure>
+
+<details class="note">
+<summary>Values</summary>
+<table>
+<thead>
+<tr>
+<th>Library</th>
+<th>Median</th>
+<th>Relative to ordito</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ordito (CUDA)</td>
+<td>364.2 µs</td>
+<td>1x</td>
+</tr>
+<tr>
+<td>trimesh</td>
+<td>262.34 ms</td>
+<td>720x</td>
+</tr>
+</tbody>
+</table>
+</details>
+<details class="note">
+<summary>All inputs</summary>
+<table>
+<thead>
+<tr>
+<th>Input</th>
+<th>ordito (CUDA)</th>
+<th>trimesh</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>sphere_small warm=False</td>
+<td>178.1 µs</td>
+<td></td>
+</tr>
+<tr>
+<td>sphere_small warm=True</td>
+<td>2.5 µs</td>
+<td></td>
+</tr>
+<tr>
+<td>bunny_decimated warm=False</td>
+<td>140.2 µs</td>
+<td>4.45 ms</td>
+</tr>
+<tr>
+<td>bunny_decimated warm=True</td>
+<td>3.3 µs</td>
 <td>2.0 µs</td>
 </tr>
 <tr>
 <td>bunny warm=False</td>
-<td>153.7 µs</td>
+<td>196.4 µs</td>
+<td>21.85 ms</td>
+</tr>
+<tr>
+<td>bunny warm=True</td>
+<td>3.4 µs</td>
+<td>2.2 µs</td>
+</tr>
+<tr>
+<td>dragon warm=False</td>
+<td>364.2 µs</td>
+<td>262.34 ms</td>
+</tr>
+<tr>
+<td>dragon warm=True</td>
+<td>3.0 µs</td>
+<td>2.1 µs</td>
+</tr>
+<tr>
+<td>happy_buddha warm=False</td>
+<td>418.3 µs</td>
+<td>322.12 ms</td>
+</tr>
+<tr>
+<td>happy_buddha warm=True</td>
+<td>4.3 µs</td>
+<td>2.1 µs</td>
+</tr>
+<tr>
+<td>lucy warm=False</td>
+<td>12.59 ms</td>
+<td>10.628 s</td>
+</tr>
+<tr>
+<td>lucy warm=True</td>
+<td>2.0 µs</td>
+<td>2.2 µs</td>
+</tr>
+</tbody>
+</table>
+</details>
+<h2 id="mesh_is_winding_consistent"><code>mesh_is_winding_consistent</code></h2>
+<figure class="bench-figure">
+<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="mesh_is_winding_consistent on dragon (871 414 faces) · warm=False"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="258.4" y1="0" x2="258.4" y2="44"/><text class="bench-tick" x="258.4" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="320.8" y1="0" x2="320.8" y2="44"/><text class="bench-tick" x="320.8" y="57" text-anchor="middle">10x</text><line class="bench-grid" x1="383.2" y1="0" x2="383.2" y2="44"/><text class="bench-tick" x="383.2" y="57" text-anchor="middle">100x</text><line class="bench-grid" x1="445.6" y1="0" x2="445.6" y2="44"/><text class="bench-tick" x="445.6" y="57" text-anchor="middle">1000x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">10000x</text><g><title>ordito (CUDA): 190.9 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="62.4" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="263.4" y="18.0">1x · 190.9 µs</text></g><g><title>trimesh: 232.65 ms, 1219x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="255.0" height="10"/><image class="bench-logo bench-logo-trimesh" href="../../assets/logos/trimesh.png" x="172.0" y="30.2" width="18.0" height="7.7"/><text class="bench-label" x="166" y="38.0" text-anchor="end">trimesh</text><text class="bench-value" x="456.0" y="38.0">1219x · 232.65 ms</text></g></svg>
+<figcaption>dragon (871 414 faces) · warm=False · time relative to ordito, log scale</figcaption>
+</figure>
+
+<details class="note">
+<summary>Values</summary>
+<table>
+<thead>
+<tr>
+<th>Library</th>
+<th>Median</th>
+<th>Relative to ordito</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ordito (CUDA)</td>
+<td>190.9 µs</td>
+<td>1x</td>
+</tr>
+<tr>
+<td>trimesh</td>
+<td>232.65 ms</td>
+<td>1219x</td>
+</tr>
+</tbody>
+</table>
+</details>
+<details class="note">
+<summary>All inputs</summary>
+<table>
+<thead>
+<tr>
+<th>Input</th>
+<th>ordito (CUDA)</th>
+<th>trimesh</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>sphere_small warm=False</td>
+<td>162.2 µs</td>
+<td></td>
+</tr>
+<tr>
+<td>sphere_small warm=True</td>
+<td>4.1 µs</td>
+<td></td>
+</tr>
+<tr>
+<td>bunny_decimated warm=False</td>
+<td>108.8 µs</td>
+<td>3.18 ms</td>
+</tr>
+<tr>
+<td>bunny_decimated warm=True</td>
+<td>3.4 µs</td>
+<td>2.0 µs</td>
+</tr>
+<tr>
+<td>bunny warm=False</td>
+<td>116.7 µs</td>
 <td>13.73 ms</td>
 </tr>
 <tr>
 <td>bunny warm=True</td>
-<td>2.4 µs</td>
+<td>3.6 µs</td>
 <td>2.0 µs</td>
 </tr>
 <tr>
 <td>dragon warm=False</td>
-<td>188.4 µs</td>
+<td>190.9 µs</td>
 <td>232.65 ms</td>
 </tr>
 <tr>
@@ -7526,12 +7526,12 @@
 </tr>
 <tr>
 <td>happy_buddha warm=False</td>
-<td>219.0 µs</td>
+<td>222.7 µs</td>
 <td>303.71 ms</td>
 </tr>
 <tr>
 <td>happy_buddha warm=True</td>
-<td>4.0 µs</td>
+<td>5.6 µs</td>
 <td>2.2 µs</td>
 </tr>
 <tr>
@@ -7541,7 +7541,7 @@
 </tr>
 <tr>
 <td>lucy warm=True</td>
-<td>2.9 µs</td>
+<td>3.2 µs</td>
 <td>2.3 µs</td>
 </tr>
 </tbody>
@@ -7549,7 +7549,7 @@
 </details>
 <h2 id="mesh_contains"><code>mesh_contains</code></h2>
 <figure class="bench-figure">
-<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="mesh_contains on sphere_med (81 920 faces)"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="300.0" y1="0" x2="300.0" y2="44"/><text class="bench-tick" x="300.0" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="404.0" y1="0" x2="404.0" y2="44"/><text class="bench-tick" x="404.0" y="57" text-anchor="middle">10x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">100x</text><g><title>ordito (CUDA): 581.0 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="104.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="305.0" y="18.0">1x · 581.0 µs</text></g><g><title>trimesh: 6.65 ms, 11x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="214.1" height="10"/><image class="bench-logo bench-logo-trimesh" href="../../assets/logos/trimesh.png" x="172.0" y="30.2" width="18.0" height="7.7"/><text class="bench-label" x="166" y="38.0" text-anchor="end">trimesh</text><text class="bench-value" x="415.1" y="38.0">11x · 6.65 ms</text></g></svg>
+<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="mesh_contains on sphere_med (81 920 faces)"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="300.0" y1="0" x2="300.0" y2="44"/><text class="bench-tick" x="300.0" y="57" text-anchor="middle">1x</text><line class="bench-grid" x1="404.0" y1="0" x2="404.0" y2="44"/><text class="bench-tick" x="404.0" y="57" text-anchor="middle">10x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">100x</text><g><title>ordito (CUDA): 580.2 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="104.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="305.0" y="18.0">1x · 580.2 µs</text></g><g><title>trimesh: 6.65 ms, 11x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="214.1" height="10"/><image class="bench-logo bench-logo-trimesh" href="../../assets/logos/trimesh.png" x="172.0" y="30.2" width="18.0" height="7.7"/><text class="bench-label" x="166" y="38.0" text-anchor="end">trimesh</text><text class="bench-value" x="415.1" y="38.0">11x · 6.65 ms</text></g></svg>
 <figcaption>sphere_med (81 920 faces) · time relative to ordito, log scale</figcaption>
 </figure>
 
@@ -7566,7 +7566,7 @@
 <tbody>
 <tr>
 <td>ordito (CUDA)</td>
-<td>581.0 µs</td>
+<td>580.2 µs</td>
 <td>1x</td>
 </tr>
 <tr>
@@ -7590,12 +7590,12 @@
 <tbody>
 <tr>
 <td>shells_8</td>
-<td>1.64 ms</td>
+<td>1.65 ms</td>
 <td>14.45 ms</td>
 </tr>
 <tr>
 <td>sphere_med</td>
-<td>581.0 µs</td>
+<td>580.2 µs</td>
 <td>6.65 ms</td>
 </tr>
 </tbody>
@@ -7620,22 +7620,22 @@
 <tr>
 <td><code>mesh_vector_heat_operators</code></td>
 <td>sphere_large warm=True</td>
-<td>4.0 µs</td>
+<td>4.1 µs</td>
 </tr>
 <tr>
 <td><code>mesh_invalidation</code></td>
 <td>lucy mode=with_faces</td>
-<td>19.75 ms</td>
+<td>19.64 ms</td>
 </tr>
 <tr>
 <td><code>mesh_carry_directions</code></td>
 <td>lucy mode=rotate_device</td>
-<td>984.9 µs</td>
+<td>994.0 µs</td>
 </tr>
 <tr>
 <td><code>mesh_from_warp_mesh</code></td>
 <td>sphere_small</td>
-<td>4.9 µs</td>
+<td>5.5 µs</td>
 </tr>
 <tr>
 <td><code>mesh_traced_mesh</code></td>
@@ -7645,32 +7645,32 @@
 <tr>
 <td><code>mesh_mesh_for_rays</code></td>
 <td>lucy n_rays=1099511627776</td>
-<td>3.882 s</td>
+<td>3.822 s</td>
 </tr>
 <tr>
 <td><code>mesh_halfedge_mates</code></td>
 <td>lucy warm=True</td>
-<td>3.2 µs</td>
+<td>3.0 µs</td>
 </tr>
 <tr>
 <td><code>mesh_oriented_boundary_edges</code></td>
 <td>lucy warm=True</td>
-<td>3.1 µs</td>
+<td>3.9 µs</td>
 </tr>
 <tr>
 <td><code>mesh_boundary_vertex_indices</code></td>
 <td>lucy warm=True</td>
-<td>2.8 µs</td>
+<td>3.1 µs</td>
 </tr>
 <tr>
 <td><code>mesh_is_orientable</code></td>
 <td>lucy warm=True</td>
-<td>2.2 µs</td>
+<td>1.9 µs</td>
 </tr>
 <tr>
 <td><code>mesh_is_self_intersecting</code></td>
 <td>lucy warm=True</td>
-<td>3.1 µs</td>
+<td>2.6 µs</td>
 </tr>
 <tr>
 <td><code>mesh_mesh_operator_pattern</code></td>
@@ -7680,17 +7680,17 @@
 <tr>
 <td><code>mesh_laplacian_operator</code></td>
 <td>lucy warm=True</td>
-<td>2.3 µs</td>
+<td>1.9 µs</td>
 </tr>
 <tr>
 <td><code>mesh_heat_solver</code></td>
 <td>sphere_small warm=True</td>
-<td>6.2 µs</td>
+<td>7.2 µs</td>
 </tr>
 <tr>
 <td><code>mesh_fixed_vertex_solver</code></td>
 <td>sphere_small warm=True</td>
-<td>4.9 µs</td>
+<td>5.1 µs</td>
 </tr>
 </tbody>
 </table>
