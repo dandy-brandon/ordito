@@ -3032,7 +3032,9 @@ def test_graded_heat_diffusion_falls_back_to_a_factorization_that_matches_scipy(
 # Not ``"potpourri3d"``: its time was lengthened already, and its Poisson solve's ``1e-6`` identity
 # shift, an absolute one, shortens a strip this long by a fifth whatever the time.
 @pytest.mark.parametrize("method", ["meshlab", "igl"])
-def test_default_time_keeps_the_far_end_of_a_long_strip(device: str, method: str) -> None:
+def test_default_time_keeps_the_far_end_of_a_long_strip(
+    device: str, method: od.heat.GeodesicHeatMethod
+) -> None:
     """
     Not a library comparison: MeshLab's and igl's own time underflow here; the oracle is exact.
 
