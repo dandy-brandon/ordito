@@ -1828,7 +1828,7 @@ def _dense_solve_on_device(
 ) -> np.ndarray:
     """Solve the system of summed ``values`` at sorted ``keys``: a dense Cholesky on ``device``."""
     from ordito import _launch
-    from ordito._common import read_array
+    from ordito._common import load_mathdx_kernel, read_array
     from ordito.kernels import holes as kernel_holes
 
     tile = kernel_holes.SERIAL_DENSE_TILE
@@ -1848,6 +1848,8 @@ def _dense_solve_on_device(
         outputs=[matrix],
         device=device,
     )
+    for kernel in (kernel_holes.serial_dense_panel, kernel_holes.serial_dense_update):
+        load_mathdx_kernel(kernel, device, kernel_holes.SERIAL_DENSE_BLOCK)
     for k in range(m):
         k0 = k * tile
         below = m - k - 1

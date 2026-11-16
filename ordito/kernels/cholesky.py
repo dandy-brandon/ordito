@@ -437,7 +437,10 @@ def unit_entry(i: wp.int32, j: wp.int32) -> wp.float64:
     return wp.where(i == j, wp.float64(1.0), wp.float64(0.0))
 
 
-@wp.kernel
+# In a module of its own: its tile solves link MathDx objects from Warp's link-time cache, which
+# no other kernel here needs, so the rest of the module builds at every width without them and
+# a stale cache fails this launch alone (``_common.load_mathdx_kernel`` repairs it).
+@wp.kernel(enable_backward=False, module="unique")
 def factor_panel_tiled(
     level: wp.array[wp.int32],
     front_offset: wp.array[wp.int64],

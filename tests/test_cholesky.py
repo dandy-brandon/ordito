@@ -21,6 +21,7 @@ import warp as wp
 
 import ordito as od
 import ordito.typing as odt
+from ordito import _common
 from ordito.kernels import cholesky as kernel_cholesky
 from ordito.kernels import linalg as kernel_linalg
 from tests.conversions import bsr_to_csr, numpy_to_warp, scipy_to_bsr, warp_empty
@@ -150,6 +151,60 @@ def test_sparse_cholesky_is_reproducible(
     first.solve(rhs, a)
     second.solve(rhs, b)
     assert np.array_equal(a.numpy(), b.numpy())
+
+
+@pytest.mark.parametrize("rebuilds", [True, False], ids=["rebuilds", "still-fails"])
+def test_sparse_cholesky_repairs_a_stale_mathdx_link_cache(
+    device: str,
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
+    monkeypatch: pytest.MonkeyPatch,
+    rebuilds: bool,
+) -> None:
+    """
+    Ordito against ordito: a factor built after a failed MathDx link solves as one built normally.
+
+    The panel factor links MathDx objects from Warp's ``lto`` cache, which two Warp builds on
+    different CUDA toolkits share; one's objects can fail to link in the other. The module's first
+    build is made to fail: the cache is cleared (a recorder here, so the real cache survives) and
+    the build retried with a warning, after which the factor must solve bit for bit as an
+    undisturbed build does (the factorization is reproducible); a second failure must raise with
+    the cause noted. The CPU links no MathDx.
+    """
+    if not wp.get_device(device).is_cuda:
+        pytest.skip("the CPU links no MathDx")
+    _, mesh_wp = saddle_graded
+    system = _heat_system(mesh_wp)
+    n = int(system.nrow)
+    rhs = wp.array(np.random.default_rng(7).standard_normal(n), dtype=wp.float64, device=device)
+    expected = wp.zeros(n, dtype=wp.float64, device=device)
+    od.cholesky.sparse_cholesky(system, mesh_wp.points).solve(rhs, expected)
+    module = cast(Any, kernel_cholesky.factor_panel_tiled).module
+    real_load = module.load
+    loads: list[int | None] = []
+    cleared: list[bool] = []
+
+    def flaky_load(load_device: Any, block_dim: int | None = None) -> Any:
+        loads.append(block_dim)
+        if len(loads) == 1 or not rebuilds:
+            raise RuntimeError("CUDA kernel build failed with error code 4294967295")
+        return real_load(load_device, block_dim)
+
+    monkeypatch.setattr(module, "load", flaky_load)
+    monkeypatch.setattr(wp, "clear_lto_cache", lambda: cleared.append(True))
+    monkeypatch.setattr(_common, "_MATHDX_LOADED", set())
+    if not rebuilds:
+        with pytest.warns(RuntimeWarning, match="MathDx"), pytest.raises(RuntimeError) as raised:
+            od.cholesky.sparse_cholesky(system, mesh_wp.points)
+        assert any("WARP_CACHE_PATH" in note for note in raised.value.__notes__)
+        assert cleared == [True]
+        return
+    with pytest.warns(RuntimeWarning, match="MathDx"):
+        factor = od.cholesky.sparse_cholesky(system, mesh_wp.points)
+    assert cleared == [True]
+    assert len(loads) >= 2  # the panel path ran, so the failed first build was met
+    solution = wp.zeros(n, dtype=wp.float64, device=device)
+    factor.solve(rhs, solution)
+    assert np.array_equal(solution.numpy(), expected.numpy())
 
 
 def test_singular_component_takes_the_initial_guess_mean(

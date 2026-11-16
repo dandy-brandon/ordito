@@ -46,6 +46,7 @@ import warp as wp
 import ordito.typing as odt
 from ordito import _launch
 from ordito._common import (
+    load_mathdx_kernel,
     read_array,
     read_scalar,
     read_values,
@@ -79,9 +80,8 @@ _SIGN_PROBE_ROWS = 64
 _PANEL_FACTOR_LANES = 64
 _DISSECTION_LANES = 128
 _BOOKKEEPING_LANES = 512
-kernel_array.declare_block_dims(
-    kernel_cholesky.__name__, (_PANEL_FACTOR_LANES, _DISSECTION_LANES, _BOOKKEEPING_LANES)
-)
+kernel_array.declare_block_dims(kernel_cholesky.__name__, (_DISSECTION_LANES, _BOOKKEEPING_LANES))
+kernel_array.declare_block_dims(kernel_cholesky.factor_panel_tiled, (_PANEL_FACTOR_LANES,))
 
 
 class NotPositiveDefiniteError(ValueError):
@@ -1254,6 +1254,7 @@ class _Plan:
                 )  # fmt: skip
             elif big is not None:
                 nodes, work, rows_below, max_ncol = big
+                load_mathdx_kernel(kernel_cholesky.factor_panel_tiled, device, _PANEL_FACTOR_LANES)
                 for p, (entries, tiles) in enumerate(work):
                     row_dim = (nodes.size, rows_below + min((p + 1) * panel, max_ncol))
                     # The diagonal block as a tile, and the rows by its inverse. Three launches a

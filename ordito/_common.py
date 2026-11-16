@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import itertools
 import math
+import os
+import warnings
 import weakref
 from collections.abc import Callable, Iterable, Sequence
 from typing import Any, TypeVar, cast
@@ -565,6 +567,59 @@ def read_array(arr: odt.ArrayNd | wp.indexedarray[Any, Any]) -> np.ndarray:
 
 # ``read_values``' scratch per ``(dtype, count)`` and its NumPy view, as ``_SCALAR_SCRATCH``.
 _VALUES_SCRATCH: dict[tuple[type, int], tuple[wp.array[Any], np.ndarray[Any, Any]]] = {}
+
+
+def load_mathdx_kernel(kernel: odt.Kernel, device: wp.DeviceLike, block_dim: int) -> None:
+    """
+    Build ``kernel``'s module on ``device`` at ``block_dim``, repairing a stale MathDx link cache.
+
+    A kernel whose tile solves or products Warp links from MathDx reads their objects from the
+    ``lto`` directory of Warp's kernel cache, which is keyed by the Warp version and the call, not
+    by the CUDA toolkit: two builds of one Warp version on different toolkits share it, and an
+    object the other toolkit wrote can fail to link (``nvJitLink`` asking for a newer version).
+    When the build fails, the cache is cleared, the module's recorded failure reset and the build
+    tried once more, with a warning; a second failure raises with the cause noted. Call it before
+    the kernel's first launch on a device; later calls cost a set lookup. The CPU links no MathDx.
+
+    Raises
+    ------
+    Exception
+        Warp's build error, when the module fails to build again after the cache is cleared.
+    """
+    resolved = wp.get_device(device)
+    module = cast(wp.Kernel, kernel).module
+    key = (module.name, resolved.alias, int(block_dim))
+    if resolved.is_cpu or key in _MATHDX_LOADED:
+        return
+    try:
+        module.load(resolved, block_dim)
+    except Exception as first:  # noqa: BLE001 - Warp raises a bare Exception for a failed build
+        lto_dir = os.path.join(wp.config.kernel_cache_dir or "", "lto")
+        warnings.warn(
+            f"Warp could not build {module.name!r} on {resolved.alias} ({first}); its MathDx "
+            f"objects in {lto_dir} were likely written by a Warp build on another CUDA toolkit. "
+            "Cleared that cache and rebuilt. Give each environment its own WARP_CACHE_PATH to "
+            "avoid the rebuild.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+        wp.clear_lto_cache()
+        module.mark_modified()
+        try:
+            module.load(resolved, block_dim)
+        except Exception as second:
+            second.add_note(
+                f"{module.name!r} still failed to build after clearing Warp's MathDx link cache "
+                f"({lto_dir}). Workarounds: a fresh WARP_CACHE_PATH, or "
+                "warp.config.enable_mathdx_solver = False and enable_mathdx_gemm = False before "
+                "the first launch (Warp's own tile solvers, slower)."
+            )
+            raise
+    _MATHDX_LOADED.add(key)
+
+
+# The ``(module, device, block_dim)`` variants ``load_mathdx_kernel`` has built.
+_MATHDX_LOADED: set[tuple[str, str, int]] = set()
 
 
 def index_extrema(indices: odt.ArrayNdInt) -> tuple[int, int]:
