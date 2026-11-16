@@ -821,6 +821,14 @@ def test_marching_cubes_openvdb_places_vertices_in_bounds_and_takes_float64(devi
             (1, 9, 9), np.float32, {"method": "openvdb"}, ValueError, "at least 2", id="openvdb-1w"
         ),
         pytest.param((1, 9, 9), np.float32, {}, ValueError, "at least 2 wide", id="one-wide"),
+        pytest.param(
+            (1, 9, 9),
+            np.float32,
+            {"method": "lewiner"},
+            ValueError,
+            "at least 2 wide",
+            id="lewiner-one-wide",
+        ),
     ],
 )
 def test_marching_cubes_rejects_invalid_arguments(
@@ -1159,6 +1167,16 @@ def test_offset_mesh_guards(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> Non
         od.levelset.offset_mesh(vertices_wp, warp_empty(0, wp.int32, mesh_wp.device), 0.1)
     with pytest.raises(ValueError, match="'padded', 'meshlib' or 'meshlab'"):
         od.levelset.offset_mesh(vertices_wp, faces_wp, 0.1, method="openvdb")  # pyright: ignore[reportArgumentType]
+    # An inward offset of a box of zero extent leaves no spacing to derive (an outward one has its
+    # padding); a spacing too fine for int32 lattice indices is refused before allocating.
+    with pytest.raises(ValueError, match="zero extent"):
+        od.levelset.offset_mesh(
+            wp.zeros(3, dtype=wp.vec3, device=mesh_wp.device),
+            wp.array([0, 1, 2], dtype=wp.int32, device=mesh_wp.device),
+            -0.1,
+        )
+    with pytest.raises(ValueError, match="more nodes than int32 indices address"):
+        od.levelset.offset_mesh(vertices_wp, faces_wp, 0.1, 1e-5, method="meshlib")
     box = od.bounds.aabb(vertices_wp)
     for method in ("meshlib", "meshlab"):
         with pytest.raises(ValueError, match="takes no bounds"):

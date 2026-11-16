@@ -195,10 +195,6 @@ class Topology:
 
     # -- navigation --------------------------------------------------------------------------
 
-    def dest(self, e: int) -> int:
-        """Return the destination vertex of half-edge ``e``."""
-        return self.org[e ^ 1]
-
     def org_ring(self, e: int) -> Iterator[int]:
         """Half-edges leaving ``org(e)``, counter-clockwise from ``e``."""
         i = e
@@ -217,10 +213,6 @@ class Topology:
             if i == e:
                 return
 
-    def left_degree(self, e: int) -> int:
-        """Count the half-edges around the left of ``e``."""
-        return sum(1 for _ in self.left_ring(e))
-
     def is_left_tri(self, e: int) -> bool:
         """Report whether the left of ``e`` closes after exactly three half-edges."""
         a = self.prv[e ^ 1]
@@ -230,10 +222,6 @@ class Topology:
         if b == e:
             return False
         return self.prv[b ^ 1] == e
-
-    def is_lone(self, e: int) -> bool:
-        """Report whether undirected edge of ``e`` is disconnected (deleted or never linked)."""
-        return self.org[e] < 0 and self.org[e ^ 1] < 0 and self.nxt[e] == e
 
     def find_edge(self, o: int, d: int) -> int:
         """Find a half-edge from ``o`` to ``d`` around ``o`` from its stored edge, else ``-1``."""
@@ -324,25 +312,6 @@ class Topology:
 
     # -- editing -----------------------------------------------------------------------------
 
-    def flip_edge(self, e: int) -> None:
-        """Replace the diagonal ``e`` of the quadrangle of its two triangles with the other one."""
-        lf = self.lft[e]
-        rf = self.lft[e ^ 1]
-        self._set_left_ring(e, -1)
-        self._set_left_ring(e ^ 1, -1)
-        a = self.nxt[e ^ 1] ^ 1
-        b = self.nxt[e] ^ 1
-        self.splice(self.prv[e], e)
-        self.splice(self.prv[e ^ 1], e ^ 1)
-        self.splice(a, e)
-        self.splice(b, e ^ 1)
-        self._set_left_ring(e, lf)
-        self._set_left_ring(e ^ 1, rf)
-        if lf >= 0:
-            self.edge_per_face[lf] = e
-        if rf >= 0:
-            self.edge_per_face[rf] = e ^ 1
-
     def split_edge(self, e: int, region: set[int] | None = None) -> int:
         """
         Split ``e`` at a new vertex and its two triangles each in two.
@@ -407,32 +376,6 @@ class Topology:
                     row[v] = row.get(v, 0.0) + 0.5 * w
             self.vertex_rows[new_vert] = row
         return e0
-
-    def delete_face(self, f: int, keep_edges: set[int] | None = None) -> None:
-        """
-        Remove face ``f`` and whatever only it held.
-
-        Each of its edges no other face holds is unlinked unless in ``keep_edges`` (undirected
-        ids), and so is each vertex left without edges.
-        """
-        e = self.edge_per_face[f]
-        if e < 0:
-            return
-        self.set_left(e, -1)
-        degree = self.left_degree(e)
-        for _ in range(degree):
-            e1 = e
-            e = self.prv[e ^ 1]
-            if self.lft[e1 ^ 1] >= 0 or (keep_edges is not None and e1 >> 1 in keep_edges):
-                continue
-            for x in (e1, e1 ^ 1):
-                if self.prv[x] == x:
-                    self.set_org(x, -1)
-                else:
-                    v = self.org[x]
-                    if v >= 0 and self.edge_per_vertex[v] == x:
-                        self.edge_per_vertex[v] = self.nxt[x]
-                    self.splice(self.prv[x], x)
 
     # -- export ------------------------------------------------------------------------------
 

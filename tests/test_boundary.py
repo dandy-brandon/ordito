@@ -1161,17 +1161,29 @@ def test_batched_loop_measures_agree_with_the_list_forms(
     )
 
 
+_NON_DECREASING = "offsets must run non-decreasing"
+
+
 @pytest.mark.parametrize(
-    "offsets",
-    [[0, 3], [0, 3, 2, 6], [1, 6], [0, 7]],
-    ids=["unterminated", "decreasing", "start", "end"],
+    ("offsets", "match"),
+    [
+        ([0, 3], _NON_DECREASING),
+        ([0, 3, 2, 6], _NON_DECREASING),
+        ([1, 6], _NON_DECREASING),
+        ([0, 7], _NON_DECREASING),
+        ([], "offsets must be a non-empty rank-1 total-terminated array"),
+    ],
+    ids=["unterminated", "decreasing", "start", "end", "empty"],
 )
-def test_packed_loop_measures_reject_malformed_offsets(device: str, offsets: list[int]) -> None:
+def test_packed_loop_measures_reject_malformed_offsets(
+    device: str, offsets: list[int], match: str
+) -> None:
     """
     Not a library comparison: the ``validate`` guard is what keeps a malformed pair off the kernel.
 
     Six packed positions. An unterminated, length-``n`` offsets array fails it like any other
-    malformed one, and ``validate=False`` is the documented way past it.
+    malformed one, an empty one (not even the terminating total) is named as such, and
+    ``validate=False`` is the documented way past it.
     """
     vertices_wp = wp.zeros(6, dtype=wp.vec3, device=device)
     flat_wp = wp.array(np.arange(6, dtype=np.int32), dtype=wp.int32, device=device)
@@ -1180,7 +1192,7 @@ def test_packed_loop_measures_reject_malformed_offsets(device: str, offsets: lis
         od.boundary.loop_perimeters_from_offsets,
         od.boundary.loop_directed_areas_from_offsets,
     ):
-        with pytest.raises(ValueError, match="offsets must run non-decreasing"):
+        with pytest.raises(ValueError, match=match):
             measure(vertices_wp, flat_wp, offsets_wp)
     good_wp = wp.array(np.array([0, 2, 6], dtype=np.int32), dtype=wp.int32, device=device)
     assert od.boundary.loop_perimeters_from_offsets(vertices_wp, flat_wp, good_wp).shape == (2,)

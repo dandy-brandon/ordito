@@ -645,6 +645,17 @@ _VALIDATION_CASES: list[tuple[str, Callable[[str], object], str]] = [
         "Resolution must be positive",
     ),
     (
+        "rasterize_negative_subpixel_bits",
+        lambda device: od.texture.rasterize_attribute(
+            _point_uv(device, _THREE_UV),
+            _one_face(device),
+            _float_rows(np.zeros((3, 1), dtype=np.float32), device),
+            8,
+            subpixel_bits=-1,
+        ),
+        "subpixel_bits must be non-negative",
+    ),
+    (
         "rasterize_uv_out_of_range",
         lambda device: od.texture.rasterize_attribute(
             _point_uv(device, _OUT_OF_RANGE_UV),
@@ -736,3 +747,12 @@ def test_rejects_invalid_arguments(device: str, call: Callable[[str], object], m
     """
     with pytest.raises(ValueError, match=match):
         call(device)
+
+
+def test_remap_attribute_from_uv_rejects_an_image_of_rank_four(device: str) -> None:
+    """Not a library comparison: the documented ``TypeError`` for an image of neither rank."""
+    with pytest.raises(TypeError, match=r"image must be \(H, W\) or \(H, W, C\)"):
+        od.texture.remap_attribute_from_uv(
+            _point_uv(device, [[0.25, 0.25]]),
+            wp.zeros((2, 2, 1, 1), dtype=wp.float32, device=device),  # pyright: ignore[reportArgumentType]  # the rank under test
+        )

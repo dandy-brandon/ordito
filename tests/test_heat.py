@@ -53,6 +53,7 @@ import warp as wp
 from meshlib import mrmeshpy as mm
 
 import ordito as od
+import ordito.typing as odt
 from tests.conftest import (
     MESHES,
     ROUND_FRAME_SHIFT,
@@ -318,7 +319,8 @@ def test_heat_geodesic_rejects_unknown_options(device: str) -> None:
     vector operators, and the ``"potpourri3d"`` solver with ``use_robust`` no rim-pinned
     diffusion (its intrinsic cover has no rim). ``heat_operators`` also refuses ``cot_entries``
     with ``use_robust``: the two ask for different half-cotangent tables, and honouring one
-    silently would let ``use_robust`` look honoured while the extrinsic table was used.
+    silently would let ``use_robust`` look honoured while the extrinsic table was used. A table of
+    another face count is refused too.
     """
     mesh_wp = trimesh_to_warp(tm.creation.icosphere(subdivisions=1), device)
     sources_wp = wp.array([0], dtype=wp.int32, device=device)
@@ -326,6 +328,15 @@ def test_heat_geodesic_rejects_unknown_options(device: str) -> None:
     with pytest.raises(ValueError, match="mutually exclusive"):
         od.heat.heat_operators(
             mesh_wp.points, mesh_wp.indices, cot_entries=cot_entries_wp, use_robust=True
+        )
+    with pytest.raises(ValueError, match="cot_entries must have shape"):
+        od.heat.heat_operators(
+            mesh_wp.points,
+            mesh_wp.indices,
+            cot_entries=odt.as_array2d(
+                wp.zeros((3, 3), dtype=wp.float32, device=device), wp.float32
+            ),
+            method="igl",
         )
     with pytest.raises(ValueError, match="method must be 'meshlab', 'igl' or 'potpourri3d'"):
         od.heat.heat_geodesic(mesh_wp.points, mesh_wp.indices, sources_wp, method="geometry")  # pyright: ignore[reportArgumentType]

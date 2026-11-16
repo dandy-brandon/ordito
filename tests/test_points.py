@@ -2353,6 +2353,14 @@ _INVALID_CALLS: dict[str, tuple[Callable[[str], object], str]] = {
         lambda device: od.radius_outlier_mask(_four_zeros(device), 1.0, 0),
         "min_neighbors",
     ),
+    "plane_outlier_zero_radius": (
+        lambda device: od.plane_outlier_mask(_four_zeros(device), 0.0, 0.1),
+        "radius must be > 0",
+    ),
+    "normal_outlier_zero_radius": (
+        lambda device: od.normal_outlier_mask(_four_zeros(device), _four_zeros(device), 0.0),
+        "radius must be > 0",
+    ),
     "farthest_point_count_above_n": (
         lambda device: od.farthest_point_sample(_four_zeros(device), 5),
         "count",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -184,6 +185,64 @@ def test_load_mesh_data_reads_ply_corner_texcoords(
 
     mesh_wp = od.io.load_mesh(path, device=device)
     assert mesh_wp.indices.numpy().tolist() == faces_np.tolist()
+
+
+def _truncate_bytes(count: int) -> Callable[[bytes], bytes]:
+    return lambda body: body[:-count]
+
+
+# Each case corrupts the square of ``_write_ply_with_corner_texcoords`` one way. The binary file's
+# last face is the quad, whose lists are wider than the triangles', so its faces are walked row by
+# row: the quad ends ``1 + 16`` bytes of corners then ``1 + 32`` of texcoords.
+_MALFORMED_PLY_CASES = [
+    pytest.param(
+        False,
+        lambda body: body.rsplit(b"\n", 2)[0] + b"\n",
+        "ends inside element",
+        id="ascii-short",
+    ),
+    pytest.param(
+        False, lambda body: body.rstrip(b"\n") + b" 7\n", "malformed 'face' row", id="ascii-extra"
+    ),
+    pytest.param(True, _truncate_bytes(33), "ends inside 'face'", id="binary-before-count"),
+    pytest.param(True, _truncate_bytes(3), "ends inside 'face'", id="binary-inside-list"),
+    pytest.param(
+        False,
+        lambda body: body.replace(b"format ascii", b"format binary_middle_endian"),
+        "unknown format",
+        id="format",
+    ),
+    pytest.param(
+        False, lambda body: body.replace(b"float x\n", b"float u\n"), "no vertex x", id="no-x"
+    ),
+]
+
+
+@pytest.mark.parametrize(("binary", "corrupt", "match"), _MALFORMED_PLY_CASES)
+def test_load_mesh_rejects_a_malformed_ply_with_corner_texcoords(
+    tmp_path: Path, device: str, binary: bool, corrupt: Callable[[bytes], bytes], match: str
+) -> None:
+    """
+    Not a library comparison: ordito's own PLY reader refuses a file it cannot decode whole.
+
+    A PLY file whose faces carry a texcoord list is read by ordito (``meshio`` cannot decode the
+    list), so its body checks are the only ones between a truncated or inconsistent file and a
+    mesh built from whatever bytes were there: each of its documented rejections, by the path
+    that reaches it.
+    """
+    path = tmp_path / "square.ply"
+    _write_ply_with_corner_texcoords(path, binary)
+    path.write_bytes(corrupt(path.read_bytes()))
+    with pytest.raises(ValueError, match=match):
+        od.io.load_mesh(path, device=device)
+
+
+def test_load_mesh_rejects_an_obj_with_no_triangle(tmp_path: Path, device: str) -> None:
+    """Not a library comparison: an OBJ of points and one quad has no triangle to build from."""
+    path = tmp_path / "quad.obj"
+    path.write_text("v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nf 1 2 3 4\n")
+    with pytest.raises(ValueError, match="has no triangle faces"):
+        od.io.load_mesh(path, device=device)
 
 
 @pytest.mark.parity(

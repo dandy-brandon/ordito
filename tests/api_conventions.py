@@ -164,6 +164,7 @@ _EXTRA_TEST_FILES = frozenset(
         "array_indexing_probe",  # ditto: Python-scope gather semantics
         "aggregate",  # covers benchmarks.results and benchmarks.tools.aggregate: tooling
         "launch",  # covers ordito._launch, the private launcher every wrapper module calls
+        "serial_mesh",  # covers ordito._serial_mesh, the host editing behind method="meshlib"
         "docs_examples",  # runs the README's and docs/ pages' code blocks, which span modules
         "examples",  # covers the examples/ gallery package (pages in step with code), not ordito
     }

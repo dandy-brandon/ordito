@@ -112,9 +112,11 @@ def test_scalar_reductions_2d_global(device: str, shape: tuple[int, int]) -> Non
     """
     Class A: rank-2 ``axis=None`` reductions against NumPy.
 
-    Parametrized over narrow *and* wide trailing extents on purpose: ``(m, 2)`` is the edge-table
-    shape [`ordito.graph.connected_components`][] validates, and it clips the ``TILE_2D`` square
-    so the tile branch never runs — a wide-only fixture would leave that path untested.
+    A contiguous rank-2 array is flattened onto the rank-1 kernels
+    (``reduce._flattened_for_global``), so this pins that dispatch, at a wide extent and at
+    ``(m, 2)``, the edge-table shape [`ordito.graph.connected_components`][] validates; the rank-2
+    kernels themselves are reached only by a non-contiguous array
+    (``test_scalar_reduce_global_noncontiguous``).
     """
     values_np = _scalar_values(shape, np.float32, seed=42)
     _assert_scalar_reductions(values_np, wp.array(values_np, dtype=wp.float32, device=device))

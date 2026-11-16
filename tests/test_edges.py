@@ -710,6 +710,11 @@ _INVALID_EDGE_CASES: list[tuple[str, Callable[[str], object], str]] = [
         "n_vertices must be positive, got 0",
     ),
     (
+        "unique_edge_count-zero-n_vertices",
+        lambda d: od.edges.unique_edge_count(_two_triangles(d)[1], n_vertices=0),
+        "n_vertices must be positive, got 0",
+    ),
+    (
         "edges_sorted-past-n_vertices",
         lambda d: od.edges.edges_unique(
             _two_triangles(d)[1], edges_sorted=_rows(d, [[0, 3], [1, 2]]), n_vertices=3

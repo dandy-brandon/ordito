@@ -552,38 +552,55 @@ def test_knn_initial_radius_degenerate_clouds(device: str):
 
 
 @pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
-@pytest.mark.parametrize("k", [1, 40])
+@pytest.mark.parametrize(
+    ("query_form", "k"), [("single", 1), ("single", 40), ("batch", 1), ("batch", 10)]
+)
 @pytest.mark.parametrize("max_radius", [math.inf, 0.5])
 @pytest.mark.parity("query_nearest_bvh_k1", "scipy")
 @pytest.mark.parity("query_nearest_hashgrid_k1", "scipy")
+@pytest.mark.parity("query_nearest_bvh_k7", "scipy")
+@pytest.mark.parity("query_nearest_hashgrid_k7", "scipy")
 @pytest.mark.parity("bvh_from_points", "scipy")
 @pytest.mark.parity("hashgrid_from_points", "scipy")
-def test_query_nearest_single(
-    device: str, backend: Literal["bvh", "hashgrid"], k: int, max_radius: float
+def test_query_nearest_matches_kdtree(
+    device: str,
+    backend: Literal["bvh", "hashgrid"],
+    query_form: Literal["single", "batch"],
+    k: int,
+    max_radius: float,
 ):
     """
     Class A: k-nearest indices and distances against ``KDTree.query``, over k and ``max_radius``.
 
-    Exact rather than set-compared because the clouds are random and tie-free, so the k-th
-    neighbour is unambiguous; [`test_query_nearest_ties`] handles the constructed case where it
-    is not. The ``max_radius`` axis is what pins the sentinel written for a query with fewer
-    than k neighbours in range.
+    ``single`` passes one ``wp.vec3`` (at a data point), ``batch`` an array of queries offset
+    ``+ 0.5`` off the cloud so some fall short of k: querying *at* a data point makes the first
+    neighbour trivially itself at distance zero, which hides an off-by-one in the heap. Exact
+    rather than set-compared because the clouds are random and tie-free, so the k-th neighbour is
+    unambiguous; [`test_query_nearest_ties`] handles the constructed case where it is not. The
+    ``max_radius`` axis is what pins the sentinel written for a query with fewer than k
+    neighbours in range.
     """
     rng = np.random.default_rng(0)
-    points = rng.random((50, 3), dtype=np.float32) * 4.0
-    kdtree = KDTree(points)
-    query = points[0].copy()
-
+    points_wp: wp.array[wp.vec3]
+    query_wp: wp.vec3 | wp.array[wp.vec3]
+    if query_form == "single":
+        points = rng.random((50, 3), dtype=np.float32) * 4.0
+        queries = points[0].copy()
+        query_wp = wp.vec3(queries[0], queries[1], queries[2])
+    else:
+        points = rng.random((50, 3), dtype=np.float32) * 2.0
+        queries = points[[10, 20, 30]] + 0.5
+        query_wp = points_to_warp(queries, device)
     points_wp = points_to_warp(points, device)
-    query_wp = wp.vec3(query[0], query[1], query[2])
-    query_distances_np, query_indices_np = kdtree.query(query, k=k, distance_upper_bound=max_radius)
+    query_distances_np, query_indices_np = KDTree(points).query(
+        queries, k=k, distance_upper_bound=max_radius
+    )
     query_indices_np = np.atleast_1d(np.asarray(query_indices_np))
     query_indices_np[query_indices_np == len(points)] = -1
     query_distances_np = np.atleast_1d(np.asarray(query_distances_np))
 
-    query_nearest = partial(od.neighbors.query_nearest, backend=backend)
-    query_indices_wp, query_distances_wp = query_nearest(
-        points_wp, query_wp, k=k, max_radius=max_radius
+    query_indices_wp, query_distances_wp = od.neighbors.query_nearest(
+        points_wp, query_wp, k=k, max_radius=max_radius, backend=backend
     )
 
     assert np.array_equal(query_indices_wp.numpy(), query_indices_np)
@@ -653,44 +670,6 @@ def test_query_nearest_k1_descends_any_point_tree(
     assert 0 < np.count_nonzero(within) < within.size
     assert np.array_equal(indices_wp.numpy(), np.where(within, indices_kd, -1))
     assert np.all(np.isinf(distances_wp.numpy()[~within]))
-
-
-@pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
-@pytest.mark.parametrize("k", [1, 10])
-@pytest.mark.parametrize("max_radius", [math.inf, 0.5])
-@pytest.mark.parity("query_nearest_bvh_k7", "scipy")
-@pytest.mark.parity("query_nearest_hashgrid_k7", "scipy")
-def test_query_nearest_batch(
-    device: str, backend: Literal["bvh", "hashgrid"], k: int, max_radius: float
-):
-    """
-    Class A: the batched form, with queries offset off the cloud so some fall short of k.
-
-    The ``+ 0.5`` displacement is deliberate -- querying *at* a data point makes the first
-    neighbour trivially itself at distance zero, which hides an off-by-one in the heap.
-    """
-    rng = np.random.default_rng(0)
-    points = rng.random((50, 3), dtype=np.float32) * 2.0
-    kdtree = KDTree(points)
-    queries = points[[10, 20, 30]] + 0.5
-
-    points_wp = points_to_warp(points, device)
-    query_wp = points_to_warp(queries, device)
-
-    query_distances_np, query_indices_np = kdtree.query(
-        queries, k=k, distance_upper_bound=max_radius
-    )
-    query_indices_np = np.asarray(query_indices_np)
-    query_indices_np[query_indices_np == len(points)] = -1
-    query_distances_np = np.asarray(query_distances_np)
-
-    query_nearest = partial(od.neighbors.query_nearest, backend=backend)
-    query_indices_wp, query_distances_wp = query_nearest(
-        points_wp, query_wp, k=k, max_radius=max_radius
-    )
-
-    assert np.array_equal(query_indices_wp.numpy(), query_indices_np)
-    assert np.allclose(query_distances_wp.numpy(), query_distances_np, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
@@ -1239,6 +1218,23 @@ def test_query_nearest_empty(device: str, backend: Literal["bvh", "hashgrid"], k
         assert distances.shape == distances_np.shape
         assert np.array_equal(distances.numpy(), distances_np.astype(np.float32))
         assert np.array_equal(indices.numpy(), np.full(distances_np.shape, -1, dtype=np.int32))
+
+
+@pytest.mark.parametrize(
+    ("radii_np", "error", "match"),
+    [
+        pytest.param(np.ones(8, dtype=np.float64), TypeError, "must be float32", id="float64"),
+        pytest.param(np.ones(7, dtype=np.float32), ValueError, r"must be \(8,\)", id="short"),
+    ],
+)
+def test_query_nearest_rejects_a_mismatched_radius_array(
+    device: str, radii_np: np.ndarray, error: type[Exception], match: str
+) -> None:
+    """Not a library comparison: a per-query ``max_radius`` is one ``float32`` a query row."""
+    points_wp = points_to_warp(np.random.default_rng(0).random((8, 3), dtype=np.float32), device)
+    radii_wp = wp.array(radii_np, dtype=wp.dtype_from_numpy(radii_np.dtype), device=device)
+    with pytest.raises(error, match=match):
+        od.neighbors.query_nearest(points_wp, points_wp, k=2, max_radius=radii_wp)
 
 
 @pytest.mark.parametrize("backend", ["bvh", "hashgrid"])

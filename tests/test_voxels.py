@@ -2207,8 +2207,18 @@ def test_invalid_arguments_raise(device: str):
         od.voxels.cells(grid, order="lexicographic")  # pyright: ignore[reportArgumentType]  # deliberately off-menu
     with pytest.raises(ValueError, match="pooling"):
         od.voxels.pool_by_voxel(grid, points, points, pooling="median")  # pyright: ignore[reportArgumentType]  # deliberately off-menu
+    with pytest.raises(ValueError, match="pooling"):
+        od.voxels.voxel_down_sample(points, 1.0, pooling="median")  # pyright: ignore[reportArgumentType]  # deliberately off-menu
     with pytest.raises(ValueError, match="connectivity"):
         od.voxels.dilate(grid, connectivity=7)  # pyright: ignore[reportArgumentType]  # deliberately off-menu
+    with pytest.raises(ValueError, match="connectivity"):
+        od.voxels.surface_voxels(grid, connectivity=7)  # pyright: ignore[reportArgumentType]  # deliberately off-menu
+    with pytest.raises(ValueError, match="iterations must be non-negative"):
+        od.voxels.erode(grid, iterations=-1)
+    with pytest.raises(ValueError, match="three columns"):
+        od.voxels.occupancy_at_cells(
+            grid, odt.as_array2d(wp.zeros((1, 2), dtype=wp.int32, device=device), wp.int32)
+        )
     with pytest.raises(ValueError, match="three columns"):
         od.voxels.from_cells(
             odt.as_array2d(wp.zeros((0, 2), dtype=wp.int32, device=device), wp.int32),

@@ -1620,6 +1620,36 @@ def test_poisson_rejects_invalid_arguments(
         od.reconstruction.screened_poisson(points_wp, normals_wp, **arguments)  # pyright: ignore[reportArgumentType]
 
 
+@pytest.mark.parametrize(
+    ("degenerate", "method", "match"),
+    [
+        pytest.param(
+            "coincident_points", "dense", "non-degenerate bounding box", id="coincident_points"
+        ),
+        pytest.param("zero_normals", "octree", "nonzero normal", id="zero_normals"),
+    ],
+)
+def test_poisson_rejects_a_degenerate_cloud(
+    device: str, degenerate: str, method: Literal["dense", "octree"], match: str
+) -> None:
+    """
+    Not a library comparison: a cloud that spans no box, or carries no orientation, is refused.
+
+    Points all at one place leave the solve no cube to fit; normals all zero splat no field, so
+    the octree reconstruction would have nothing to place an iso-surface on.
+    """
+    points_np, normals_np = _sphere_cloud(2)
+    if degenerate == "coincident_points":
+        points_np = np.zeros_like(points_np)
+    else:
+        normals_np = np.zeros_like(normals_np)
+    points_wp, normals_wp = _to_warp(points_np, normals_np, device)
+    with pytest.raises(ValueError, match=match):
+        od.reconstruction.screened_poisson(
+            points_wp, normals_wp, depth=5, full_depth=4, method=method
+        )
+
+
 def test_poisson_cpu_matches_cuda():
     """Class A: the CPU cascadic solve reconstructs the CUDA surface, vertex for vertex."""
     if not wp.is_cuda_available():

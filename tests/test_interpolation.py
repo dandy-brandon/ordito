@@ -793,6 +793,32 @@ def test_provenance_constructors_and_transfers(device: str) -> None:
     assert identity.vertex_values(labels_wp).numpy().tolist() == [10, 11, 12, 13]
 
 
+def test_provenance_constructors_reject_mismatched_tables(device: str) -> None:
+    """
+    Not a library comparison: each constructor's tables must agree in shape before any launch.
+
+    ``from_rows`` pairs every source with its weight, so two shapes would read one past the other;
+    ``from_edge_points`` places one point a row, so a parameter per edge is one a row.
+    """
+    no_faces = warp_empty(0, wp.int32, device)
+    with pytest.raises(ValueError, match="sources and weights must have one shape"):
+        od.interpolation.Provenance.from_rows(
+            odt.as_array2d(wp.zeros((3, 2), dtype=wp.int32, device=device), wp.int32),
+            odt.as_array2d(wp.zeros((3, 3), dtype=wp.float32, device=device), wp.float32),
+            no_faces,
+            4,
+            0,
+        )
+    with pytest.raises(ValueError, match="t must have one entry per edge, got 1 for 2 edges"):
+        od.interpolation.Provenance.from_edge_points(
+            2,
+            wp.array([[0, 1], [1, 0]], dtype=wp.int32, device=device),
+            no_faces,
+            0,
+            t=wp.array([0.5], dtype=wp.float32, device=device),
+        )
+
+
 @pytest.mark.parametrize(
     ("radius", "sharpness", "k"),
     [

@@ -516,23 +516,27 @@ def test_filter_laplacian_matches_meshlib_relax(
 
 
 @pytest.mark.parametrize(
-    ("lamb", "mesh_name"),
+    ("lamb", "mesh_name", "volume_constraint"),
     [
-        pytest.param(0.5, "saddle_graded", id="0.5-saddle_graded"),
-        pytest.param(5.0, "sphere_irregular", id="5.0-sphere_irregular"),
-        pytest.param(5.0, "saddle_graded", id="5.0-saddle_graded"),
+        pytest.param(0.5, "saddle_graded", False, id="0.5-saddle_graded"),
+        pytest.param(5.0, "sphere_irregular", False, id="5.0-sphere_irregular"),
+        pytest.param(5.0, "saddle_graded", False, id="5.0-saddle_graded"),
         pytest.param(
             50.0,
             "saddle_graded",
+            False,
             # BiCGSTAB on the graded saddle's lamb = 50 system is the device's cost: 15.5 s on the
             # CPU device, 0.10 s on CUDA.
             marks=pytest.mark.slow_cpu(15.5),
             id="50.0-saddle_graded",
         ),
+        pytest.param(0.0, "sphere_irregular", True, id="volume-0.0-sphere_irregular"),
+        pytest.param(0.5, "sphere_irregular", True, id="volume-0.5-sphere_irregular"),
+        pytest.param(50.0, "sphere_irregular", True, id="volume-50.0-sphere_irregular"),
     ],
 )
-def test_filter_laplacian_implicit_on_open_meshes(
-    request: pytest.FixtureRequest, mesh_name: str, lamb: float
+def test_filter_laplacian_implicit_matches_trimesh(
+    request: pytest.FixtureRequest, mesh_name: str, lamb: float, volume_constraint: bool
 ) -> None:
     """
     Class A: the implicit filter against trimesh, on closed *and* open meshes, at every ``lamb``.
@@ -541,7 +545,10 @@ def test_filter_laplacian_implicit_on_open_meshes(
     mesh with a boundary the backward-Euler system is not symmetric. A conjugate-gradient solve of
     it matched trimesh on a closed mesh and returned vertices ~1e4 off on an open one
     (``hemisphere`` at ``lamb = 5``); the open arm is the point. ``lamb = 50`` pushes the
-    fixed-point step count past its cap, so it exercises the BiCGSTAB fallback.
+    fixed-point step count past its cap, so it exercises the BiCGSTAB fallback. With
+    ``volume_constraint`` each ``lamb`` takes another branch before the anchored rescale it adds
+    after every pass: ``0`` is the identity system (two fixed-point steps reproduce the input),
+    ``0.5`` the fixed-point iteration and ``50`` the BiCGSTAB fallback.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     smoothed_wp = od.smoothing.filter_laplacian(
@@ -550,14 +557,18 @@ def test_filter_laplacian_implicit_on_open_meshes(
         lamb=lamb,
         iterations=3,
         implicit_time_integration=True,
-        volume_constraint=False,
+        volume_constraint=volume_constraint,
     )
     mesh_ref = mesh_tm.copy()
     tms.filter_laplacian(
-        mesh_ref, lamb=lamb, iterations=3, implicit_time_integration=True, volume_constraint=False
+        mesh_ref,
+        lamb=lamb,
+        iterations=3,
+        implicit_time_integration=True,
+        volume_constraint=volume_constraint,
     )
-    # Non-vacuity: the filter must actually move the mesh.
-    assert np.abs(mesh_ref.vertices - mesh_tm.vertices).max() > 1e-3
+    # Non-vacuity: the filter must actually move the mesh, unless ``lamb`` is zero.
+    assert (np.abs(mesh_ref.vertices - mesh_tm.vertices).max() > 1e-3) == (lamb > 0.0)
     assert np.allclose(smoothed_wp.numpy(), mesh_ref.vertices, rtol=1e-4, atol=1e-4)
 
 
@@ -689,34 +700,6 @@ def _hub_cap(spokes: int, rings: int, theta: float) -> tuple[np.ndarray, np.ndar
         faces.append(np.stack([inner + spoke, outer + following, inner + following], axis=1))
     vertices_np = np.concatenate(points).astype(np.float32).astype(np.float64)
     return vertices_np, np.concatenate(faces)
-
-
-@pytest.mark.parametrize("lamb", [0.0, 0.5, 50.0])
-def test_filter_laplacian_implicit_with_volume_constraint_matches_trimesh(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], lamb: float
-) -> None:
-    """
-    Class A: the implicit filter with the volume rescale after every pass, against trimesh.
-
-    Each of the three ``lamb`` takes another branch: ``0`` is the identity system (two fixed-point
-    steps reproduce the input), ``0.5`` the fixed-point iteration and ``50`` the BiCGSTAB fallback,
-    and both solves are followed by the anchored rescale that ``volume_constraint`` adds.
-    """
-    mesh_tm, mesh_wp = sphere_irregular
-    smoothed_wp = od.smoothing.filter_laplacian(
-        mesh_wp.points,
-        mesh_wp.indices,
-        lamb=lamb,
-        iterations=3,
-        implicit_time_integration=True,
-        volume_constraint=True,
-    )
-    mesh_ref = mesh_tm.copy()
-    tms.filter_laplacian(
-        mesh_ref, lamb=lamb, iterations=3, implicit_time_integration=True, volume_constraint=True
-    )
-    assert (np.abs(mesh_ref.vertices - mesh_tm.vertices).max() > 1e-3) == (lamb > 0.0)
-    assert np.allclose(smoothed_wp.numpy(), mesh_ref.vertices, rtol=1e-4, atol=1e-4)
 
 
 def test_filter_laplacian_implicit_duplicate_built_operator(
@@ -3343,6 +3326,16 @@ def test_smooth_region_boundary_meshlib_method_matches_meshlib(
     assert np.abs(smoothed_ml - vertices_wp.numpy()).max() > 1e-3
     assert np.array_equal(flipped_wp.numpy().reshape(-1, 3), faces_ml)
     assert np.allclose(smoothed_wp.numpy(), smoothed_ml, rtol=1e-5, atol=1e-5)
+
+
+def test_smooth_region_boundary_rejects_an_unknown_method(device: str) -> None:
+    """Not a library comparison: ``method`` is a menu, guarded with its options named."""
+    vertices_wp, faces_wp = numpy_to_warp(
+        np.eye(3, dtype=np.float32), np.arange(3, dtype=np.int32), device
+    )
+    region_wp = wp.ones(1, dtype=wp.bool, device=device)
+    with pytest.raises(ValueError, match="method must be 'fixed_topology' or 'meshlib'"):
+        od.smoothing.smooth_region_boundary(vertices_wp, faces_wp, region_wp, method="vtk")  # pyright: ignore[reportArgumentType, reportCallIssue]
 
 
 def test_smooth_region_boundary_leaves_connectivity_and_the_rest_alone(device: str) -> None:

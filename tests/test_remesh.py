@@ -3844,9 +3844,10 @@ def test_subdivide_loop_and_to_size_provenance_describe_the_result(
     Loop's operator reproduces its relocated positions (its faces leave the input surface, so
     only the counts and positions are checked); ``subdivide_to_size``'s chained midpoints -- a
     midpoint of midpoints after several passes -- reproduce its positions, and each refined face
-    lies inside its source face.
+    lies inside its source face. Its midpoints lie on input edges, so the surface area (and a
+    closed mesh's volume) is unchanged.
     """
-    _, mesh_wp = request.getfixturevalue(mesh_name)
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     loop_v, loop_f, loop = od.remesh.subdivide_loop(vertices_wp, faces_wp, return_provenance=True)
     assert_provenance_describes(
@@ -3858,6 +3859,15 @@ def test_subdivide_loop_and_to_size_provenance_describe_the_result(
     )
     assert sized_v.size > vertices_wp.size  # several passes ran
     assert_provenance_describes(sized, vertices_wp, faces_wp, sized_v, sized_f)
+    vertices_np, faces_np = vertices_wp.numpy(), faces_wp.numpy().reshape(-1, 3)
+    sized_v_np, sized_f_np = sized_v.numpy(), sized_f.numpy().reshape(-1, 3)
+    assert np.isclose(
+        _surface_area(sized_v_np, sized_f_np), _surface_area(vertices_np, faces_np), rtol=1e-4
+    )
+    if mesh_tm.is_watertight:
+        assert np.isclose(
+            _signed_volume(sized_v_np, sized_f_np), _signed_volume(vertices_np, faces_np), rtol=1e-4
+        )
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
@@ -4332,67 +4342,6 @@ def test_subdivide_to_size_max_edge(
         n_e = np.unique(undirected_edges(new_f_np), axis=0).shape[0]
         n_f = new_f_np.shape[0]
         assert n_v - n_e + n_f == mesh_tm.euler_number
-
-
-@pytest.mark.parametrize("mesh_name", MESHES)
-def test_subdivide_to_size_preserves_surface_and_reports_its_source_faces(
-    mesh_name: str, request: pytest.FixtureRequest
-) -> None:
-    """
-    Not a library comparison: the output covers the input and knows where each face came from.
-
-    Midpoints lie on original edges, so surface area (and closed volume) is unchanged; and each
-    output face carries a valid source id and lies inside that source triangle.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    vertices_np = mesh_wp.points.numpy()
-    faces_np = mesh_tm.faces.astype(np.int32)
-    n_in_faces = faces_np.shape[0]
-    max_edge = 0.4 * _max_edge_length(vertices_np, faces_np)
-
-    new_v_wp, new_f_wp, provenance = od.remesh.subdivide_to_size(
-        mesh_wp.points, mesh_wp.indices, max_edge, return_provenance=True
-    )
-    index_wp = provenance.face_index
-    new_v_np = new_v_wp.numpy()
-    new_f_np = new_f_wp.numpy().reshape(-1, 3)
-    index_np = index_wp.numpy()
-
-    assert np.isclose(
-        _surface_area(new_v_np, new_f_np), _surface_area(vertices_np, faces_np), rtol=1e-4
-    )
-    if mesh_tm.is_watertight:
-        assert np.isclose(
-            _signed_volume(new_v_np, new_f_np), _signed_volume(vertices_np, faces_np), rtol=1e-4
-        )
-
-    assert index_np.size == new_f_np.shape[0]
-    assert index_np.min() >= 0
-    assert index_np.max() < n_in_faces
-
-    # Every output-face centroid lies inside its claimed source triangle. The barycentrics are
-    # taken in float64: the Gram determinant below cancels catastrophically on a sliver, and in
-    # float32 it reached zero on ``saddle_graded``'s aspect-4 900 faces, dividing by zero.
-    centroids = new_v_np[new_f_np].astype(np.float64).mean(axis=1)
-    src = vertices_np[faces_np[index_np]].astype(np.float64)
-    a, b, c = src[:, 0], src[:, 1], src[:, 2]
-    v0, v1, v2 = b - a, c - a, centroids - a
-    d00 = np.einsum("ij,ij->i", v0, v0)
-    d01 = np.einsum("ij,ij->i", v0, v1)
-    d11 = np.einsum("ij,ij->i", v1, v1)
-    d20 = np.einsum("ij,ij->i", v2, v0)
-    d21 = np.einsum("ij,ij->i", v2, v1)
-    denom = d00 * d11 - d01 * d01
-    bary_v = (d11 * d20 - d01 * d21) / denom
-    bary_w = (d00 * d21 - d01 * d20) / denom
-    bary_u = 1.0 - bary_v - bary_w
-    tol = 1e-3
-    assert np.all(bary_u >= -tol)
-    assert np.all(bary_v >= -tol)
-    assert np.all(bary_w >= -tol)
-    assert np.all(bary_u <= 1.0 + tol)
-    assert np.all(bary_v <= 1.0 + tol)
-    assert np.all(bary_w <= 1.0 + tol)
 
 
 def test_subdivide_to_size_max_iter_exceeded(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
@@ -4883,6 +4832,7 @@ _REMESH_REJECTS_MISMATCHED_REGION_CASES = [
         "refine_region_to_density",
         lambda v, f, r: od.remesh.refine_region_to_density(v, f, region=r),
     ),
+    ("subdivide_region_to_size", lambda v, f, r: od.remesh.subdivide_region_to_size(v, f, r, 0.1)),
 ]
 
 

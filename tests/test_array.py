@@ -2108,6 +2108,7 @@ _INVALID_ARGUMENT_CASES = [
     "csr_from_triplets_mismatched_lengths",
     "csr_transpose_blocks",
     "index_sparse_data_size",
+    "bit_ranks_out_size",
 ]
 
 
@@ -2260,6 +2261,12 @@ def test_invalid_arguments_raise(device: str, case: str) -> None:
         faces_wp = odt.as_array2d(wp.zeros((2, 3), dtype=wp.int32, device=device), wp.int32)
         with pytest.raises(ValueError, match="same size as indices, got 5 and 6"):
             od.array.index_sparse(4, faces_wp, wp.zeros(5, dtype=wp.float32, device=device))
+    elif case == "bit_ranks_out_size":
+        with pytest.raises(ValueError, match="out must hold 3 ranks, one per word, got 2"):
+            od.array.bit_ranks(
+                wp.zeros(3, dtype=wp.uint32, device=device),
+                out=wp.zeros(2, dtype=wp.int32, device=device),
+            )
     else:
         table_wp = wp.zeros((3, 4), dtype=wp.int32, device=device)
         with pytest.raises(ValueError, match="contiguous"):

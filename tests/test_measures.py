@@ -312,3 +312,10 @@ def test_euler_characteristic_on_tiny_random_face_sets(device: str) -> None:
             assert euler_wp == int(mesh_tm.euler_number)
             answers.add(euler_wp)
     assert len(answers) > 3
+
+
+def test_euler_characteristic_rejects_a_non_positive_vertex_count(device: str) -> None:
+    """Not a library comparison: a vertex count of zero cannot hold a face's corners."""
+    faces_wp = wp.array([0, 1, 2], dtype=wp.int32, device=device)
+    with pytest.raises(ValueError, match="n_vertices must be positive, got 0"):
+        od.measures.euler_characteristic(faces_wp, n_vertices=0)

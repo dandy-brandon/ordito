@@ -1083,6 +1083,12 @@ _INVALID_CALLS: dict[str, tuple[Callable[[str], object], str]] = {
         ),
         r"angle must be in \[0, 180\]",
     ),
+    "seam_edge_vertices_one_column": (
+        lambda device: od.seams.seam_edge_vertices(
+            _quad_mesh(device)[0], odt.empty_2d((2, 1), wp.int32, device=device)
+        ),
+        "at least two columns",
+    ),
     "cut_edges_not_pairs": (
         lambda device: od.seams.cut_along_edges(
             _quad_vertices(device),

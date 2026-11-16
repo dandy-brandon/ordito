@@ -632,6 +632,25 @@ def numpy_to_meshlib_triangulation(rows_np: np.ndarray) -> mm.Triangulation:
     return triangulation_ml
 
 
+def meshlib_topology_to_numpy(topology_ml: mm.MeshTopology) -> dict[str, np.ndarray]:
+    """
+    Read a ``meshlib.mrmeshpy.MeshTopology``'s half-edge records as int64 arrays.
+
+    Returns ``nxt``, ``org`` and ``lft`` by half-edge (``2 k`` and ``2 k + 1`` are undirected edge
+    ``k``), and ``edge_per_vertex`` and ``edge_per_face``, each ``-1`` where MeshLib holds an
+    invalid id: the fields of ``ordito._serial_mesh.Topology``, under its names. MeshLib binds no
+    bulk reader for ``next`` / ``org`` / ``left``, so they are read an ``EdgeId`` at a time.
+    """
+    edges_ml = [mm.EdgeId(e) for e in range(2 * topology_ml.undirectedEdgeSize())]
+    return {
+        "nxt": np.fromiter((topology_ml.next(e).get() for e in edges_ml), np.int64, len(edges_ml)),
+        "org": np.fromiter((topology_ml.org(e).get() for e in edges_ml), np.int64, len(edges_ml)),
+        "lft": np.fromiter((topology_ml.left(e).get() for e in edges_ml), np.int64, len(edges_ml)),
+        "edge_per_vertex": meshlib_indices_to_numpy(topology_ml.edgePerVertex().vec),
+        "edge_per_face": meshlib_indices_to_numpy(topology_ml.edgePerFace().vec),
+    }
+
+
 # MeshLib's bound ``std::vector<uint64_t>``, the type ``BitSet.fromBlocks`` takes: ``unsigned long``
 # on Linux, ``unsigned long long`` on macOS and Windows.
 _MESHLIB_BLOCKS = (

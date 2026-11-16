@@ -26,6 +26,7 @@ import trimesh as tm
 import warp as wp
 
 import ordito as od
+import ordito.typing as odt
 from ordito._common import scan_count_checked
 from ordito.kernels import array as kernel_array
 from tests.comparisons import sparse_allclose
@@ -792,6 +793,38 @@ def test_lscm_hessian_matches_igl(
         pattern=mesh.mesh_operator_pattern,
     )
     assert sparse_allclose(bsr_to_csr(hessian_cached_wp), hessian_igl, rtol=1e-5, atol=1e-5)
+
+
+def test_lscm_hessian_rejects_cached_inputs_of_another_mesh(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a library comparison: a cached pattern or cotangent table must describe this mesh.
+
+    The pattern's slots and the cotangent rows are read per face and vertex, so a pattern of
+    another operator or size, or a table of another face count, would place entries wrongly.
+    """
+    _, mesh_wp = sphere_irregular
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    n_vertices = vertices_wp.size
+    directed = od.laplacian.mesh_operator_pattern(
+        faces_wp, n_vertices, operator="laplacian_directed"
+    )
+    with pytest.raises(ValueError, match="lscm_hessian needs operator='cotmatrix'"):
+        od.energies.lscm_hessian(vertices_wp, faces_wp, pattern=directed)
+    other_size = od.laplacian.mesh_operator_pattern(faces_wp, n_vertices + 1)
+    with pytest.raises(ValueError, match="lscm_hessian needs operator='cotmatrix'"):
+        od.energies.lscm_hessian(vertices_wp, faces_wp, pattern=other_size)
+    short_entries = odt.as_array2d(
+        wp.zeros((3, 3), dtype=wp.float64, device=vertices_wp.device), wp.float64
+    )
+    with pytest.raises(ValueError, match="cot_entries must have shape"):
+        od.energies.lscm_hessian(
+            vertices_wp,
+            faces_wp,
+            cot_entries=short_entries,
+            pattern=od.laplacian.mesh_operator_pattern(faces_wp, n_vertices),
+        )
 
 
 def test_lscm_hessian_on_a_hub_matches_its_definition(device: str) -> None:

@@ -891,6 +891,60 @@ _DEGENERATE_CASES: list[tuple[str, Callable[[str], np.ndarray], tuple[int, ...],
         (1,),
         0.0,
     ),
+    (
+        "chamfer_points_to_mesh_no_faces",
+        lambda device: np.array(
+            [
+                od.metrics.chamfer_points_to_mesh(
+                    _zeros_cloud(device, 5),
+                    _zeros_cloud(device, 3),
+                    warp_empty(0, wp.int32, device),
+                )
+            ]
+        ),
+        (1,),
+        0.0,
+    ),
+    (
+        "chamfer_mesh_to_mesh_no_faces_unreduced",
+        lambda device: od.metrics.chamfer_mesh_to_mesh(
+            _zeros_cloud(device, 3),
+            warp_empty(0, wp.int32, device),
+            _zeros_cloud(device, 3),
+            wp.array([0, 1, 2], dtype=wp.int32, device=device),
+            point_reduction=None,
+            single_directional=True,
+        ).numpy(),
+        (0,),
+        0.0,
+    ),
+    (
+        "hausdorff_points_to_points_empty_cloud",
+        lambda device: np.array(
+            [
+                od.metrics.hausdorff_points_to_points(
+                    warp_empty(0, wp.vec3, device), _zeros_cloud(device, 5)
+                )
+            ]
+        ),
+        (1,),
+        0.0,
+    ),
+    (
+        "hausdorff_mesh_to_mesh_no_faces",
+        lambda device: np.array(
+            [
+                od.metrics.hausdorff_mesh_to_mesh(
+                    _zeros_cloud(device, 3),
+                    wp.array([0, 1, 2], dtype=wp.int32, device=device),
+                    _zeros_cloud(device, 3),
+                    warp_empty(0, wp.int32, device),
+                )
+            ]
+        ),
+        (1,),
+        0.0,
+    ),
     ("hausdorff_identical_clouds", _identical_cloud_hausdorff, (1,), 0.0),
     ("chamfer_identical_meshes", _identical_mesh_chamfer, (1,), 1e-6),
 ]
@@ -916,6 +970,39 @@ def test_degenerate_inputs_measure_zero(
     values_np = case(device)
     assert values_np.shape == shape
     assert np.all(np.abs(values_np) <= atol)
+
+
+@pytest.mark.parametrize(
+    "chamfer",
+    [
+        pytest.param(
+            lambda x, faces, reduction: od.metrics.chamfer_points_to_points(
+                x, x, point_reduction=reduction
+            ),
+            id="points_to_points",
+        ),
+        pytest.param(
+            lambda x, faces, reduction: od.metrics.chamfer_points_to_mesh(
+                x, x, faces, point_reduction=reduction
+            ),
+            id="points_to_mesh",
+        ),
+        pytest.param(
+            lambda x, faces, reduction: od.metrics.chamfer_mesh_to_mesh(
+                x, faces, x, faces, point_reduction=reduction
+            ),
+            id="mesh_to_mesh",
+        ),
+    ],
+)
+def test_chamfer_rejects_an_unknown_point_reduction(
+    device: str, chamfer: Callable[[wp.array[wp.vec3], wp.array[wp.int32], str], object]
+) -> None:
+    """Not a library comparison: ``point_reduction`` is a menu, refused before any search."""
+    x_wp = points_to_warp(np.eye(3, dtype=np.float32), device)
+    faces_wp = wp.array([0, 1, 2], dtype=wp.int32, device=device)
+    with pytest.raises(ValueError, match="point_reduction must be one of"):
+        chamfer(x_wp, faces_wp, "median")
 
 
 # ---------------------------------------------------------------------------

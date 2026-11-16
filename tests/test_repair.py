@@ -3692,25 +3692,6 @@ def test_fix_self_intersections_reports_provenance(
         assert (face_index_np >= 0).any()
 
 
-def test_fix_self_intersections_leaves_a_clean_mesh_alone(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    """
-    Not a library comparison: a clean input is returned unchanged.
-
-    The identity case matters more than it looks: the local method's loop reads its own detector to
-    decide whether to run at all, so a mesh with nothing wrong must come back with the same faces
-    rather than through one round of cut-and-refill.
-    """
-    _, mesh_wp = sphere_irregular
-    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
-    assert not od.validation.is_self_intersecting(mesh_wp)
-
-    same_vertices_wp, same_faces_wp = od.repair.fix_self_intersections(vertices_wp, faces_wp)
-    assert np.array_equal(same_faces_wp.numpy(), faces_wp.numpy())
-    assert np.allclose(same_vertices_wp.numpy(), vertices_wp.numpy())
-
-
 @pytest.mark.parametrize("hops", [0, 1, 2, 5])
 def test_fix_self_intersections_dilation_matches_expand_vertex_mask(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh], hops: int
@@ -4877,6 +4858,9 @@ _CLEAN_MESH_REPAIR_CASES = [
         "collapse_small_triangles",
         lambda v, f: od.repair.collapse_small_triangles(v, f, epsilon=1e-9),
     ),
+    # The local method's loop reads its own detector to decide whether to run at all, so a clean
+    # mesh must come back as it was rather than through one round of cut-and-refill.
+    ("fix_self_intersections", lambda v, f: od.repair.fix_self_intersections(v, f)),
     # Not ``remove_folded_faces``: ``sphere_irregular`` has one genuine fold (a 163.9-degree
     # dihedral at its sharpest spike, past the 160-degree default), so it is not a clean input for
     # that predicate; ``test_remove_folded_faces_drops_exactly_the_folded_pairs`` holds it to the
@@ -4968,6 +4952,11 @@ _INVALID_ARGUMENT_CASES = [
         "remove_non_manifold_faces_method",
         lambda v, f: od.repair.remove_non_manifold_faces(v, f, method="smallest"),  # pyright: ignore[reportArgumentType]
         "'all' or 'meshlab'",
+    ),
+    (
+        "resolve_duplicated_faces_method",
+        lambda _v, f: od.repair.resolve_duplicated_faces(f, method="nope"),  # pyright: ignore[reportArgumentType]
+        "method must be 'cancel', 'igl', 'open3d' or 'meshlab'",
     ),
     (
         "straighten_boundary_iterations",
