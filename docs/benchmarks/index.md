@@ -18,7 +18,7 @@ repository (from 16 thousand to 28 million triangles) and synthetic meshes that 
 cost driver: many components, long boundaries, needle triangles, high valence.
 
 <!-- bench:provenance -->
-*Measured on GPU: not recorded · CPU: Intel Xeon w7-2495X*
+*Measured on GPU: NVIDIA GeForce RTX 5090 · CPU: Intel Xeon w7-2495X*
 <!-- /bench:provenance -->
 
 ## Summary

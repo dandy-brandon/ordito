@@ -9,7 +9,7 @@ search:
 
 Benchmarks of [`ordito.intersection`](../api/ordito/intersection.md) against every library that computes the same thing. Each chart shows the time of every library relative to ordito on CUDA (1x, in green): a longer bar took longer. The table under each chart lists every input the function was measured on. See [Benchmarks](index.md) for how to read and reproduce these numbers.
 
-*Measured on GPU: not recorded · CPU: Intel Xeon w7-2495X*
+*Measured on GPU: NVIDIA GeForce RTX 5090 · CPU: Intel Xeon w7-2495X*
 
 ## Summary
 
