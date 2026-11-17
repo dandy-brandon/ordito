@@ -274,12 +274,19 @@ def test_marching_cubes_matches_pytorch3d(device: str) -> None:
     match misses by whole lattice cells, which is the assert that keeps the transform load-bearing.
 
     Measured on the 20^3 ellipsoid at ``iso = 0.9``: **704** vertices and **1 400** faces from
-    both, the transformed coordinates agree at **0.0**, and every one of the **704** occupied cells
-    holds the same directed rim polygon. What the two do not share is how a cell's polygon is
-    triangulated: **1 256** of the 1 400 triangles coincide (824 of 956 on the radial field, 4 684
-    of 5 910 on a trigonometric one), and the other diagonal choice moves area and volume by
-    1.5e-7 and 3.7e-5 (up to 1.9e-5 and 6.9e-5 on the trigonometric field), so the surfaces are
-    compared polygon by polygon rather than triangle by triangle or by a 1e-5 volume.
+    both, the transformed coordinates agree to one ``float32`` ulp, and every one of the **704**
+    occupied cells holds the same directed rim polygon. What the two do not share is how a cell's
+    polygon is triangulated: **1 256** of the 1 400 triangles coincide (824 of 956 on the radial
+    field, 4 684 of 5 910 on a trigonometric one), and the other diagonal choice moves area and
+    volume by 1.5e-7 and 3.7e-5 (up to 1.9e-5 and 6.9e-5 on the trigonometric field), so the
+    surfaces are compared polygon by polygon rather than triangle by triangle or by a 1e-5 volume.
+
+    One ulp, not ``0.0``: pytorch3d interpolates ``p1 * (1 - ratio) + p2 * ratio``, which a compiler
+    targeting FMA contracts to ``fma(p2, ratio, p1 * (1 - ratio))``, one rounding instead of two.
+    pytorch3d is compiled from source, so its last bit follows the build: GCC 13 at its default
+    target matched ordito at ``0.0``, and CI's Ubuntu 26.04 build (2026-11-17) moved 129 of 702
+    vertices by exactly one ulp (``1.907e-06`` at coordinates 16-19), as that formula evaluated
+    with and without FMA reproduces. A wrong interpolation misses by a fraction of a cell.
 
     Note the import: ``marching_cubes`` is **not** re-exported from ``pytorch3d.ops``, only from
     ``pytorch3d.ops.marching_cubes``, so ``p3d_ops.marching_cubes`` is an ``AttributeError``.
@@ -305,8 +312,11 @@ def test_marching_cubes_matches_pytorch3d(device: str) -> None:
     assert faces_od_np.shape[0] == faces_p3d.shape[0]
     # The transform is load-bearing: untransformed, the vertex sets miss by whole cells.
     assert np.max(cKDTree(vertices_p3d).query(vertices_np)[0]) > 1.0
+    # One ulp at the largest lattice coordinate, the most an FMA-contracted reference build moves
+    # a vertex along its edge (strict bound: 1.5 ulp passes one, fails two).
+    one_ulp = float(np.spacing(np.float32(resolution - 1)))
     matched_np = assert_nearest_bijection(
-        np.ascontiguousarray(vertices_p3d[:, ::-1]), vertices_np, 0.0
+        np.ascontiguousarray(vertices_p3d[:, ::-1]), vertices_np, 1.5 * one_ulp
     )
     faces_p3d_np = matched_np[faces_p3d[:, ::-1]]
 
