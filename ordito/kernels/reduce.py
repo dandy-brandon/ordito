@@ -688,6 +688,10 @@ def store_sum_and_count(
 # then does the ``atomic_add`` into the caller's float accumulator, pre-summed the same way where
 # a warp shares the group.
 GROUP_SUM_NONFINITE = wp.int32(2047)
+# The same field as a stored word: its own constant, because a kernel-scope cast of
+# ``GROUP_SUM_NONFINITE`` to ``int64`` rewrites the constant's variable where the cast stands, and
+# a test of the constant before it then reads the variable unset.
+GROUP_SUM_NONFINITE_WORD = wp.int64(2047)
 
 
 @wp.struct
@@ -1258,7 +1262,7 @@ def add_group_sum_term(
     if field == GROUP_SUM_NONFINITE:
         return
     if group_sum_field(value) > field:
-        sums.words[group_sum_field_index(sums, group)] = wp.int64(GROUP_SUM_NONFINITE)
+        sums.words[group_sum_field_index(sums, group)] = GROUP_SUM_NONFINITE_WORD
         return
     two_words = group_sum_two_words(sums)
     words = group_sum_words(value, field, sums.headroom, two_words)
@@ -1554,6 +1558,7 @@ def _reduce_1d_tiled(
     term_dtype=wp.float32,
     tiles_per_block=TILES_PER_BLOCK_1D,
     folded=False,
+    module_options=None,
 ):
     """
     axis=None on a 1-D array: ``TILES_PER_BLOCK_1D`` tiles per block, one atomic per block.
@@ -1599,6 +1604,7 @@ def _reduce_1d_tiled(
     terms are never stored. A mapped kernel is a ``float32`` reduction and goes into ``term``'s own
     module, so a caller's term family never changes this module's hash. ``tiles_per_block`` is the
     fold width: ``TILES_PER_BLOCK_1D`` but for a mapped sum built narrower (see ``term_sum_1d``).
+    ``module_options`` puts a mapped kernel in a module of its own built with them instead.
     """
     element = array_term if term is None else term
     value_dtype = dtype if term is None else term_dtype
@@ -1673,7 +1679,11 @@ def _reduce_1d_tiled(
         return wp.kernel(_k, name=name)
     _k.__annotations__["source"] = dtype
     _k.__annotations__["out_result"] = wp.array[term_dtype]
-    return wp.kernel(_k, name=name, module=term.module)
+    if module_options is None:
+        return wp.kernel(_k, name=name, module=term.module)
+    kernel = wp.kernel(_k, name=name, module="unique", module_options=module_options)
+    declare_block_dims(kernel, (TILE_1D,))
+    return kernel
 
 
 def _weighted_sum_1d_tiled(name, dtype, partials=False, folded=False):
@@ -2100,12 +2110,24 @@ class TermSum(NamedTuple):
         return -(-n // (self.tiles_per_block * TILE_1D))
 
 
+# The module options of a ``term_sum_1d`` whose ``@wp.struct`` NVRTC 12.9 miscompiles for sm_120
+# (Warp's ``+cu12`` build on Blackwell RTX GPUs): at ``-O3`` it reads the struct parameter's
+# fields through its ``cvta.param`` address converted with ``cvta.to.local``, an address no thread
+# owns, so the launch faults (CUDA error 700). The two Poisson iso-value sums hit it, and whether a
+# kernel does turns on its whole module (a term rebuilt elsewhere compiled clean, its ``float32``
+# twin did not), so they take ``-O2``, which emits no such load, in modules of their own: the
+# whole Poisson modules at ``-O2`` cost the octree solve 1.16-1.22x. NVRTC 13 and every
+# architecture below sm_120 compile all of them correctly.
+NVRTC12_STRUCT_TERM_OPTIONS = {"optimization_level": 2}
+
+
 def term_sum_1d(
     term: wp.Function,
     terms_type: type,
     name: str,
     dtype: type = wp.float32,
     tiles_per_block: int = TILES_PER_BLOCK_1D,
+    module_options: dict[str, object] | None = None,
 ) -> TermSum:
     """
     Build the [`TermSum`][ordito.kernels.reduce.TermSum] of ``term(local, offset, terms)``.
@@ -2119,7 +2141,9 @@ def term_sum_1d(
     two sums that share one pass over their items (each component folds as its own ``float32``
     sum). ``tiles_per_block`` narrows the fold for a term whose own
     latency, not the items' count, bounds a lane's walk: the total is then that width's block
-    tree, no longer the standard width's bits.
+    tree, no longer the standard width's bits. ``module_options`` builds the two kernels in modules
+    of their own with those Warp module options (a compiler workaround a term needs), instead of
+    in ``term``'s module.
     """
     return TermSum(
         kernel=_reduce_1d_tiled(
@@ -2132,6 +2156,7 @@ def term_sum_1d(
             term_dtype=dtype,
             tiles_per_block=tiles_per_block,
             folded=True,
+            module_options=module_options,
         ),
         partials=_reduce_1d_tiled(
             _tile_sum,
@@ -2143,6 +2168,7 @@ def term_sum_1d(
             term,
             dtype,
             tiles_per_block,
+            module_options=module_options,
         ),
         dtype=dtype,
         tiles_per_block=tiles_per_block,

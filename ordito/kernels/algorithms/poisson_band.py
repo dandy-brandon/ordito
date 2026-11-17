@@ -83,7 +83,7 @@ from ordito.kernels.reconstruction import (
     splat_cell,
     splat_sample,
 )
-from ordito.kernels.reduce import block_sum, term_sum_1d
+from ordito.kernels.reduce import NVRTC12_STRUCT_TERM_OPTIONS, block_sum, term_sum_1d
 
 wp.set_module_options({"enable_backward": False})
 
@@ -1211,7 +1211,12 @@ def band_sample_term(local: wp.int32, offset: wp.int32, terms: BandSampleTerms) 
 
 
 # The uniform band iso-value's sum, bit for bit ``reduce.sum`` of what ``band_sample`` writes.
-BAND_SAMPLE_SUM = term_sum_1d(band_sample_term, BandSampleTerms, "poisson_band_sample_sum")
+BAND_SAMPLE_SUM = term_sum_1d(
+    band_sample_term,
+    BandSampleTerms,
+    "poisson_band_sample_sum",
+    module_options=NVRTC12_STRUCT_TERM_OPTIONS,
+)
 
 
 @wp.func

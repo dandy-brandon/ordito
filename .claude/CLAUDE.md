@@ -75,6 +75,13 @@ Never let `ruff check --fix` strip the constructor (it rewrites `int(0)` to `0`)
 
 An accumulator initialized from a **module-level constant** (`best = wp.float64(_DBL_MAX)`) is that constant's own codegen variable: the loop's assignments rewrite it, and a later `best < wp.float64(_DBL_MAX)` reads `best < best` (2026-11-15, `kernels/holes.serial_fill_dp_diagonal`: every DP cell took the unreachable branch, both devices). Initialize from a computed expression, `wp.float64(_DBL_MAX) + wp.float64(0.0)`, and read the generated `.cpp` when a branch never fires.
 
+The same rewrite strikes a **cast of a compile-time constant to another type**: an unrolled
+`for side in range(6)` variable or a module constant passed to `wp.uint64(...)` / `wp.int64(...)`
+becomes that constant's variable, assigned only where the cast stands, so every read before it
+(another cast, a comparison) reads it unset (§12.3). Never change a constant's type in kernel
+scope: cast a variable derived from it (`f = wp.int32(side)`, then `wp.uint64(f)`), or give the
+other type its own module constant (`GROUP_SUM_NONFINITE_WORD`).
+
 ---
 
 ## 2. Kernel architecture and launches
@@ -858,6 +865,16 @@ On CPU, `launch_tiled` runs one thread per block and `wp.block_dim()` reads 1. T
 - Never substitute an algebraic identity inside a sign test that feeds a branch; CUDA differs, CPU does not. Exactly coplanar float32 corners give float64 plane distances of ~1e-19 with mixed signs on CUDA (FMA) and exact zeros on CPU: snap a distance within its own rounding to zero before branching on its sign (`predicates.plane_distances_d`; without it two disjoint coplanar triangles "intersected" on CUDA).
 - `mesh_query_point_no_sign` is inexact (~2e-5, the point worse than the distance; its face need not be the nearest, so an exact match re-searches the faces within that distance, `kernels/registration.landmark_match`); `length < r` and `length_sq < r*r` differ in float32 (§2.4); NaN breaks `searchsorted(side="right")` (§3.1).
 - A unit-cube map `p * inverse + translation` that nvcc contracts to an FMA rounds once where the upstream rounds twice: a point on a cell face moves by an ulp, and a quadratic B-spline weight that is exactly zero there becomes nonzero, refining cells the reference leaves as leaves (`dragon` octree depth 10: nine cells, 48 vertices off). Match a reference's rounding with `__fmul_rn` / `__fadd_rn` in a `wp.func_native` (`kernels/algorithms/poisson_octree.unit_position`, `square_area`).
+- **A kernel-scope cast that changes a constant's type rewrites the constant's variable in place**
+  (Warp 1.19, 2026-11-17): the generated code declares the unrolled loop variable or module
+  constant with the cast's type and assigns it where the cast stands, so a read above the cast
+  (in source order, or in a branch the cast's branch skips) reads it uninitialised. Release builds
+  folded that undefined read to the one value ever assigned, so every result was right and no
+  test saw it; `-O0` (`wp.config.mode = "debug"`) read garbage: `poisson_octree.cell_segments`'s
+  `f = wp.int32(side)` read 34 and indexed past the extraction table, the sparse Cholesky panel
+  bound `first + wp.int32(q2) < last` and the exact group sum's non-finite test read the same
+  way. A five-line kernel reproduces it. Rule: §1.6. Finding one: in the generated source, a
+  `var_N = <literal>;` assignment whose `var_N` the same function reads earlier.
 - Kernel-scope unary minus is `T(0.0) - x` (`warp/native/builtin.h` `neg`), so `-wp.float64(0.0)`
   is `+0.0`; a negative zero is the literal `wp.float64(-0.0)`, which emits `-0.0` (2026-11-13: a
   list started at `-wp.float64(0.0)` turned four `-0.0` entries of a sum to `+0.0`).
@@ -883,6 +900,21 @@ On CPU, `launch_tiled` runs one thread per block and `wp.block_dim()` reads 1. T
 - A kernel-scope `not` on a bool lowers as a select; share sentinel-returning predicates, not bools.
 - `@wp.func` keeps `inspect.currentframe()` in a local, a frame that refers to itself, so every decoration leaves a cycle only the collector frees, and through `f_back` it holds the whole importing stack. A submodule imported from inside a call (the first `od.<module>` a wrapper touches) kept that call's frame and every array bound in it, outputs included, until a full collection (26.9 MiB after a depth-9 octree call; the 1 000-odd decorations of an import outlive young collections). `ordito.__getattr__` therefore imports on a helper thread, whose stack starts at the thread (`_import_submodule`); a full `gc.collect()` after each import instead cost 110-150 ms. Warp 1.19 deletes the frame (GH-2068): with the collector off, a direct import inside a call frees that call's locals on 1.19 and not on 1.18, on Python 3.11, 3.13 and 3.14. The helper thread goes when the floor reaches 1.19.
 - `wp.constant(x)` is an identity; a tile `shape=` must be a plain integer; wrap typed constants in `int()` on the host.
+- **NVRTC 12.9 (Warp's `+cu12` build) miscompiles some `@wp.struct` kernel parameters for
+  sm_120** (2026-11-17, reported against 0.3.0 on an RTX PRO 6000 and an RTX 5090): it takes the
+  parameter's `cvta.param` address, converts it with `cvta.to.local` and reads the fields there,
+  an address no thread owns, so the launch faults (CUDA error 700; compute-sanitizer: one invalid
+  `__local__` read address for every thread). Only the two Poisson iso-value term sums hit it,
+  for sm_120 only (the same modules compiled clean for sm_80, 86, 89 and 90; NVRTC 13 compiles
+  all of them correctly), and whether a kernel does turns on its whole module: the iso term
+  rebuilt in another module compiled clean while its `float32` twin did not, so a rewrite of the
+  term is no fix. `optimization_level` 2 emits no such load; the whole Poisson modules at 2 cost
+  the octree solve 1.16-1.22x and the band path 1.07x, so the two term sums alone take it, in
+  modules of their own (`kernels/reduce.NVRTC12_STRUCT_TERM_OPTIONS`; calls at par,
+  byte-identical on both devices). CI and the benchmarks run the `cu13` build and cannot see a
+  `+cu12` miscompile: after touching a struct-parameter kernel, build `python -m ordito.precompile
+  --no-cpu` under a `+cu12` Warp and grep each PTX entry for `cvta.param` followed by
+  `cvta.to.local`.
 - **MathDx objects live in a cache no toolkit keys** (Warp 1.19, reported on 1.18): `tile_cholesky`, `tile_lower_solve` and `tile_matmul` link objects from `<kernel_cache_dir>/lto`, named by a hash of the call alone, so a `+cu12` and a `cu13` build of one Warp version sharing `~/.cache/warp` poison each other (`nvJitLink error 6 ... may need newer version`, then `CUDA kernel build failed with error code 4294967295` from whatever kernel first loads the module). A kernel that links MathDx lives in a module of its own and is loaded through `_common.load_mathdx_kernel` before its first launch, which clears the cache and retries once with a warning (2026-11-16; verified with garbage `.lto` files: same answers after the rebuild). Turning MathDx off is not the fix: Warp's own tile solvers cost the sparse Cholesky refactor 1.35-1.85x (icospheres 5-7); the dense hole-fill solve is at par (0.92-1.08x).
 - A launch's `block_dim` is a compile-time parameter of the module launched (`Module.load(device, block_dim)`, with matching `__launch_bounds__`): a kernel launched at a second width builds its whole module again, and one of its kernels may not build at that width (`kernels/neighbors` at 128 failed). A kernel launched at its own width lives in its own module (`module="unique"`; `kernels/validation.closed_signed_volume`, `kernels/neighbors.query_nearest_via_bvh`).
 - Warp 1.19 vectorizes CPU kernels (loop and SLP, GH-1954 / GH-1994), so a cold CPU build costs 1.74x: all 63 `ordito.kernels` modules through `wp.force_load(device="cpu")` into an empty cache took 113 s on 1.18 and 194-201 s on 1.19 (cache 34 -> 39 MB, 2026-11-03). A fresh CPU environment or a CI job without a warm cache pays it. The switch is the `cpu_compiler_flags` module option or `wp.config.cpu_compiler_flags` (default `-march=native`; append `-fno-slp-vectorize`), which also changes the module hash. It is per module, never per kernel. What it buys at run time: §14.

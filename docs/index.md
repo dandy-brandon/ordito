@@ -83,7 +83,7 @@ and falls back to CPU otherwise, with the same code.
     uv add ordito
     ```
 
-Requires Python ≥ 3.11 and `warp-lang` ≥ 1.18. A CUDA-capable GPU is recommended but not required.
+Requires Python ≥ 3.11 and `warp-lang` ≥ 1.19. A CUDA-capable GPU is recommended but not required.
 Mesh file I/O via [meshio](https://github.com/nschloe/meshio) is an optional extra:
 `pip install "ordito[io]"`.
 

@@ -20,7 +20,7 @@ description: >-
     uv add ordito
     ```
 
-Requires Python ≥ 3.11 and `warp-lang` ≥ 1.18. A CUDA-capable GPU is recommended but not required —
+Requires Python ≥ 3.11 and `warp-lang` ≥ 1.19. A CUDA-capable GPU is recommended but not required —
 every function also runs on Warp's CPU backend, with the same code. Warp's PyPI wheels are
 built with CUDA 13, so the GPU path needs an NVIDIA R580-series or newer driver and a Turing
 (`sm_75`) or newer GPU; Warp publishes CUDA 12 wheels (`+cu12`) on its GitHub releases for older

@@ -563,8 +563,12 @@ def panel_front_product(
     column_base = front_index(base, m64, column, first)
     total = wp.float64(0.0)
     for q1 in range(PANEL):
-        if first + wp.int32(q1) < last:
-            total += fronts[row_base + wp.int64(q1)] * fronts[column_base + wp.int64(q1)]
+        # Widened from a variable, never from ``q1`` itself: a cast of the unrolled constant to
+        # another type rewrites its variable in place, so the bound test above would read it
+        # unset (see ``kernels/algorithms/poisson_octree.cell_segments``).
+        q = wp.int32(q1)
+        if first + q < last:
+            total += fronts[row_base + wp.int64(q)] * fronts[column_base + wp.int64(q)]
     return total
 
 
@@ -586,8 +590,10 @@ def panel_block_product(
     column_base = block + wp.int64(column) * m64 + wp.int64(first)
     total = wp.float64(0.0)
     for q2 in range(PANEL):
-        if first + wp.int32(q2) < last:
-            total += fronts[row_base + wp.int64(q2)] * blocks[column_base + wp.int64(q2)]
+        # Widened from a variable, as in ``panel_front_product``.
+        q = wp.int32(q2)
+        if first + q < last:
+            total += fronts[row_base + wp.int64(q)] * blocks[column_base + wp.int64(q)]
     return total
 
 

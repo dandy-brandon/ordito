@@ -90,7 +90,7 @@ from ordito.kernels.reconstruction import (
     poisson_lerp_corners,
     poisson_restrict_weight,
 )
-from ordito.kernels.reduce import GroupSumPass, term_sum_1d
+from ordito.kernels.reduce import NVRTC12_STRUCT_TERM_OPTIONS, GroupSumPass, term_sum_1d
 from ordito.kernels.scatter import ARRIVAL_POOL_UNIFORM, scatter_add, scatter_add_vector
 
 wp.set_module_options({"enable_backward": False})
@@ -2409,7 +2409,11 @@ def iso_sample_term(local: wp.int32, offset: wp.int32, terms: IsoSampleTerms) ->
 
 
 ISO_SAMPLE_SUM = term_sum_1d(
-    iso_sample_term, IsoSampleTerms, "poisson_octree_iso_sum", dtype=wp.float64
+    iso_sample_term,
+    IsoSampleTerms,
+    "poisson_octree_iso_sum",
+    dtype=wp.float64,
+    module_options=NVRTC12_STRUCT_TERM_OPTIONS,
 )
 
 
@@ -3378,7 +3382,10 @@ def cell_segments(
             f = wp.int32(side)
             flip = 1 - table[EXTRACTION_FACE_ORIENTED + f]
             if refined_cell(flags, cells, depth, full_depth, d, face_across(c, f)):
-                prefix = (wp.uint64(flat) << wp.uint64(35)) | (wp.uint64(side) << wp.uint64(32))
+                # ``f``, not ``side``: a cast of the unrolled constant to another type rewrites
+                # its variable where the cast stands, so ``f`` above would read it unset (Warp
+                # 1.19; release builds happened to fold it to the right side, -O0 read garbage).
+                prefix = (wp.uint64(flat) << wp.uint64(35)) | (wp.uint64(f) << wp.uint64(32))
                 r = binary_search_index_left(borrowed_keys, prefix)
                 while r < borrowed_keys.shape[0] and (borrowed_keys[r] >> wp.uint64(32)) == (
                     prefix >> wp.uint64(32)
