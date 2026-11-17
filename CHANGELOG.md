@@ -22,6 +22,25 @@ from the one matching its tag — so prose sections do not belong between them.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-17
+
+### Fixed
+
+- `reconstruction.screened_poisson` (`method="octree"`, and `method="adaptive"` with a band) no
+  longer fails with CUDA error 700 on Blackwell GPUs of compute capability 12.0 (RTX 50 series,
+  RTX PRO 6000) under Warp's CUDA 12 build (`warp-lang` `+cu12`), whose compiler mis-builds the
+  iso-value sum for that architecture. Other GPUs, and Warp's CUDA 13 build, were not affected.
+- `sparse_cholesky` (and the dense hole-fill solve) no longer fails to build its kernels when a
+  CUDA 12 and a CUDA 13 build of Warp share one kernel cache: it clears the stale linked objects
+  and rebuilds once, with a warning.
+- Three kernels read a value before setting it (an unrolled loop index, a module constant):
+  release builds happened to give the right answer, debug builds (`wp.config.mode = "debug"`)
+  did not — `screened_poisson(method="octree")` read out of bounds there, and the sparse Cholesky
+  panel updates and exact group sums read garbage bounds. Results of release builds are unchanged.
+- The `warp-lang` requirement is now `>=1.19`. 0.3.0 declared `>=1.18` but uses Warp 1.19
+  features and does not build on 1.18; this corrects the metadata rather than dropping a
+  supported version.
+
 ## [0.3.0] - 2026-11-16
 
 ### Added
@@ -202,7 +221,8 @@ The first public release.
 - Runs on CUDA when available and on Warp's CPU backend otherwise; see
   [Platform support](https://lucagrementieri.github.io/ordito/getting-started/#platform-support).
 
-[Unreleased]: https://github.com/lucagrementieri/ordito/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/lucagrementieri/ordito/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/lucagrementieri/ordito/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/lucagrementieri/ordito/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/lucagrementieri/ordito/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/lucagrementieri/ordito/releases/tag/v0.1.0
