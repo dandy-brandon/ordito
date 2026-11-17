@@ -650,12 +650,14 @@ def test_a_lazy_import_keeps_no_frame_of_its_caller() -> None:
     """
     A submodule first touched inside a call leaves none of that call's frames behind.
 
-    Not a library comparison: a property of ordito's import path. Warp's ``@wp.func`` keeps its own
-    frame in a local, a cycle only the garbage collector breaks, and a frame holds its callers:
-    imported in place, ``od.edges``'s decorations kept the calling function's frame, and with it
-    every array it had bound (26.9 MiB after an octree reconstruction), until a full collection.
+    Not a library comparison: a property of ordito's import path. Before Warp 1.19
+    (NVIDIA/warp#2068) the ``@wp.func`` decorator kept its own frame in a local, a cycle only the
+    garbage collector breaks, and a frame holds its callers: ``od.edges``'s decorations kept the
+    calling function's frame, and with it every array it had bound (26.9 MiB after an octree
+    reconstruction), until a full collection. Warp 1.19, ordito's floor, frees the frame, so
+    ``ordito.__getattr__`` imports in place; this guards that against a Warp regression.
     Subprocessed, with the collector off, so the touch is the first and nothing collects the cycle.
-    Mutation probe: importing in place instead of on the helper thread leaves the frame (1, not 0).
+    Mutation probe: on the previous floor's Warp the same probe counts 1, not 0.
     """
     probe = textwrap.dedent(
         """

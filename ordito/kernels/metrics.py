@@ -245,17 +245,10 @@ def chamfer_nn_term_sliced(
     [`chamfer_nn_term_tiled`][ordito.kernels.metrics.chamfer_nn_term_tiled] is not; it gives up
     the block shuffle-reduce and is measurably slower on CUDA, which is why both exist.
 
-    A slice that owns no element returns before its loop. Through Warp 1.18 the backward pass of
-    a dynamic ``range(start, end, step)`` walked ``iter_reverse`` of it, which for an *empty* range
-    whose ``end - start - 1`` truncates to zero against ``step`` was not empty but one iteration at
-    ``start`` -- past the end of ``x`` -- so an empty slice read ``x`` and ``nearest`` out of bounds
-    and scattered a gradient through them. Warp 1.19 fixed that adjoint (NVIDIA/warp GH-2046); the
-    guard stays while the supported floor is older. ``slice_count`` never launches more slices than
-    points, so no public call reached it either way.
+    A slice that owns no element walks an empty loop and commits zero, in both passes: the
+    adjoint of an empty dynamic ``range`` is empty since Warp 1.19 (NVIDIA/warp GH-2046).
     """
     j = wp.int32(wp.tid())
-    if j >= x.shape[0]:
-        return
     total = wp.float32(0.0)
     for idx in range(j, x.shape[0], n_slices):
         total = total + point_pair_term(x[idx], y[nearest[idx]], scale, squared)
@@ -372,15 +365,10 @@ def gather_by_sorted_key(
     so thread ``v`` writes every slot that reads ``values[v]``, in ascending slot order. The adjoint
     is then ``values.grad[v]`` summed over those slots on that one thread, in a fixed order, where
     the adjoint of a plain ``values[index[s]]`` read adds into it from every slot's thread.
-
-    An entry no slot reads returns before its loop: the adjoint of an empty dynamic ``range`` runs
-    one iteration at its start, which would scatter a slot's gradient into this entry.
     """
     v = wp.int32(wp.tid())
     start = binary_search_index_left(sorted_keys, v)
     end = binary_search_index_left(sorted_keys, v + 1)
-    if start == end:
-        return
     value = values[v]
     for s in range(start, end):
         out_gathered[order[s]] = value

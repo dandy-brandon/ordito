@@ -22,11 +22,7 @@ import would defeat the whole point of this module.
 
 from __future__ import annotations
 
-import concurrent.futures
 import importlib
-import sys
-import threading
-from types import ModuleType
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -200,43 +196,15 @@ def __getattr__(name: str) -> object:
             # an exception from an attribute every packaging tool probes.
             value = "0.0.0+unknown"
     elif name == "Trimesh":
-        value = _import_submodule("ordito.mesh").Trimesh
+        value = importlib.import_module("ordito.mesh").Trimesh
     elif name in _CONFIG_NAMES:
-        value = getattr(_import_submodule("ordito.config"), name)
+        value = getattr(importlib.import_module("ordito.config"), name)
     elif name in _LAZY_SUBMODULES:
-        value = _import_submodule(f"ordito.{name}")
+        value = importlib.import_module(f"ordito.{name}")
     else:
         raise AttributeError(f"module 'ordito' has no attribute {name!r}")
     globals()[name] = value
     return value
-
-
-def _import_submodule(qualified: str) -> ModuleType:
-    """
-    Import ``qualified`` on a helper thread, so its frames do not reach the caller's.
-
-    Before Warp 1.19 (NVIDIA/warp#2068), the ``@wp.func`` decorator kept its own frame in a local,
-    a cycle only the garbage collector breaks, and every frame holds its callers through
-    ``f_back``: imported from inside a call (the first ``od.<module>`` an ordito function touches),
-    the module's thousand-odd decorations kept that call's frame, and every array it had bound,
-    outputs included, until a full collection (26.9 MiB after a depth-9 octree reconstruction).
-    Warp 1.19 frees the frame without a collection; the helper thread stays while the supported
-    floor is older. On a helper thread the chain ends at the thread's start; an import error is
-    raised again on the caller's thread. A
-    touch from the helper thread, or while an ordito module is still executing its own import
-    (which may be what ``qualified`` imports, and whose lock this thread holds), imports in place.
-    """
-    if threading.current_thread().name.startswith(_IMPORT_THREAD) or any(
-        getattr(getattr(module, "__spec__", None), "_initializing", False)
-        for key, module in list(sys.modules.items())
-        if key.startswith("ordito.")
-    ):
-        return importlib.import_module(qualified)
-    with concurrent.futures.ThreadPoolExecutor(1, thread_name_prefix=_IMPORT_THREAD) as pool:
-        return pool.submit(importlib.import_module, qualified).result()
-
-
-_IMPORT_THREAD = "ordito-lazy-import"
 
 
 def __dir__() -> list[str]:

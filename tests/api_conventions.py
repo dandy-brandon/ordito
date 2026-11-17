@@ -399,10 +399,6 @@ _WARP_VERSION_ALLOWLIST: dict[tuple[str, str], str] = {
         "the ball-against-cube re-timing of the mean-curvature measure was taken on 1.18 and "
         "not re-run"
     ),
-    ("kernels.metrics", "1.18"): (
-        "deliberate history: the last version whose dynamic-``range`` adjoint ran one spurious "
-        "iteration on an empty strided range (fixed in 1.19, NVIDIA/warp GH-2046)"
-    ),
     ("kernels.neighbors", "1.18"): (
         "measurement stamp and history: 1.18's traversal rewrite slowed the sphere walk, and "
         "the sphere-against-box verdict through the public calls was re-taken on 1.18 and not "
