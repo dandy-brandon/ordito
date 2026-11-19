@@ -4056,6 +4056,23 @@
    "readback": 1
   }
  },
+ "benchmarks/test_mesh.py::test_attributes[sphere_small-ordito-cpu-submesh]": {
+  "counts": {
+   "launch": 8,
+   "alloc": 10,
+   "readback": 2,
+   "scan": 2
+  }
+ },
+ "benchmarks/test_mesh.py::test_attributes[sphere_small-ordito-cpu-with_attributes]": {
+  "counts": {}
+ },
+ "benchmarks/test_mesh.py::test_attributes[sphere_small-ordito-cpu-with_edit]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 3
+  }
+ },
  "benchmarks/test_mesh.py::test_boundary_loops[holes_many-ordito-cpu-cold]": {
   "counts": {
    "launch": 6,
@@ -7098,6 +7115,13 @@
    "launch": 12,
    "alloc": 5,
    "sort": 1
+  }
+ },
+ "benchmarks/test_smoothing.py::test_filter_taubin_region[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 6,
+   "scan": 1
   }
  },
  "benchmarks/test_smoothing.py::test_filter_two_step[saddle-ordito-cpu]": {

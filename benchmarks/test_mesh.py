@@ -336,6 +336,48 @@ def test_from_warp_mesh(bench_case: BenchCase) -> None:
     assert mesh.n_faces == bench_case.n_faces
 
 
+@pytest.mark.benchmark(group="mesh_attributes")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("mode", ["with_attributes", "submesh", "with_edit"])
+def test_attributes(bench_case: BenchCase, mode: str) -> None:
+    """
+    What a mesh's attributes cost: setting them, and carrying them through a selection or an edit.
+
+    Two vertex attributes (an ``int32`` label and a ``vec3`` field) and one face attribute ride on
+    the mesh. ``with_attributes`` is host bookkeeping over a shared cache; ``submesh`` keeps every
+    other face and carries the three through its provenance (read against ``selection``'s
+    ``submesh_from_face_mask`` row, the difference is the carry); ``with_edit`` carries them through
+    a precomputed subdivision's provenance, a gather a label and an operator product a float field.
+    ordito-only, as ``mesh_invalidation`` is: trimesh's ``submesh`` drops ``vertex_attributes``,
+    and no reference carries a field through an edit's interpolation weights.
+    """
+    skip_larger_than(bench_case, "happy_buddha")
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    device = vertices.device
+    n_faces = faces.size // 3
+    mesh = od.Trimesh(
+        vertices,
+        faces,
+        vertex_attributes={
+            "label": od.array.arange(vertices.size, device=device),
+            "field": vertices,
+        },
+        face_attributes={"face_id": od.array.arange(n_faces, device=device)},
+    )
+    if mode == "with_attributes":
+        mask = wp.ones(vertices.size, dtype=wp.bool, device=device)
+        result = bench_case.run(lambda: mesh.with_attributes(vertex_attributes={"mask": mask}))
+    elif mode == "submesh":
+        keep_np = np.zeros(n_faces, dtype=bool)
+        keep_np[::2] = True
+        keep = wp.array(keep_np, dtype=wp.bool, device=device)
+        result = bench_case.run(lambda: mesh.submesh(keep))
+    else:
+        edit = od.remesh.subdivide(vertices, faces, return_provenance=True)
+        result = bench_case.run(lambda: mesh.with_edit(*edit))
+    assert set(result.vertex_attributes) >= {"label", "field"}
+
+
 @pytest.mark.benchmark(group="mesh_traced_mesh")
 @pytest.mark.benchlibs("ordito")
 @pytest.mark.parametrize("warm", [False, True], ids=["cold", "warm"])

@@ -4461,6 +4461,24 @@
    "d2h": 1
   }
  },
+ "benchmarks/test_mesh.py::test_attributes[sphere_small-ordito-cuda-submesh]": {
+  "counts": {
+   "launch": 8,
+   "alloc": 10,
+   "memset": 1,
+   "d2h": 2,
+   "scan": 2
+  }
+ },
+ "benchmarks/test_mesh.py::test_attributes[sphere_small-ordito-cuda-with_attributes]": {
+  "counts": {}
+ },
+ "benchmarks/test_mesh.py::test_attributes[sphere_small-ordito-cuda-with_edit]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 3
+  }
+ },
  "benchmarks/test_mesh.py::test_boundary_loops[holes_many-ordito-cuda-cold]": {
   "counts": {
    "launch": 8,
@@ -7802,6 +7820,14 @@
    "alloc": 5,
    "scan": 1,
    "sort": 1
+  }
+ },
+ "benchmarks/test_smoothing.py::test_filter_taubin_region[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 13,
+   "alloc": 6,
+   "memset": 1,
+   "scan": 1
   }
  },
  "benchmarks/test_smoothing.py::test_filter_two_step[saddle-ordito-cuda]": {

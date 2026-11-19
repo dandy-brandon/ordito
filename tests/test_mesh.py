@@ -77,6 +77,53 @@ _TRIMESH_GUARD_CASES: list[
         ValueError,
         "vertex count",
     ),
+    (
+        "vertex-attribute-wrong-length",
+        lambda mesh: mesh.with_attributes(
+            vertex_attributes={"label": od.array.arange(mesh.n_faces, device=mesh.device)}
+        ),
+        ValueError,
+        r"must have shape",
+    ),
+    (
+        "face-attribute-unsupported-dtype",
+        lambda mesh: mesh.with_attributes(
+            face_attributes={"frame": wp.zeros(mesh.n_faces, dtype=wp.mat33, device=mesh.device)}
+        ),
+        TypeError,
+        "no provenance carries",
+    ),
+    (
+        "vertex-attribute-not-an-array",
+        lambda mesh: od.Trimesh(
+            mesh.vertices,
+            mesh.faces,
+            vertex_attributes=cast("Any", {"label": np.zeros(mesh.n_vertices, dtype=np.int32)}),
+        ),
+        TypeError,
+        "must be a wp.array",
+    ),
+    (
+        "with-edit-of-another-mesh",
+        lambda mesh: mesh.with_edit(
+            mesh.vertices, mesh.faces, od.interpolation.Provenance.identity(3, 1, mesh.device)
+        ),
+        ValueError,
+        "describes an edit of a mesh",
+    ),
+    (
+        "add-attribute-dtypes-differ",
+        lambda mesh: (
+            mesh.with_attributes(
+                vertex_attributes={"tag": wp.zeros(mesh.n_vertices, wp.int32, device=mesh.device)}
+            )
+            + mesh.with_attributes(
+                vertex_attributes={"tag": wp.zeros(mesh.n_vertices, wp.bool, device=mesh.device)}
+            )
+        ),
+        TypeError,
+        "on one mesh and",
+    ),
 ]
 
 
@@ -911,6 +958,174 @@ def test_with_faces_starts_with_empty_cache(sphere_irregular: tuple[tm.Trimesh, 
     new_mesh = mesh.with_faces(wp.clone(mesh.faces))
     assert new_mesh._cache == {}
     assert np.array_equal(new_mesh.edges.numpy(), mesh.edges.numpy())
+
+
+# ---------------------------------------------------------------------------
+# attributes
+# ---------------------------------------------------------------------------
+
+
+def _labelled(mesh_wp: wp.Mesh) -> od.Trimesh:
+    """
+    Wrap ``mesh_wp`` with attributes that name their own sources.
+
+    ``label`` is each vertex's index and ``position`` its position (a float field, interpolated
+    where an edit interpolates); ``face_id`` is each face's index. After any edit, the input's
+    buffers indexed by the carried labels must reproduce the output, which is the oracle.
+    """
+    device = mesh_wp.device
+    return od.Trimesh(
+        mesh_wp.points,
+        mesh_wp.indices,
+        vertex_attributes={
+            "label": od.array.arange(mesh_wp.points.size, device=device),
+            "position": mesh_wp.points,
+        },
+        face_attributes={"face_id": od.array.arange(mesh_wp.indices.size // 3, device=device)},
+    )
+
+
+def _assert_labels_name_sources(mesh: od.Trimesh, carried: od.Trimesh) -> None:
+    """Assert ``carried``'s labels name, in ``mesh``, the vertices and faces it holds."""
+    label_np = carried.vertex_attributes["label"].numpy()
+    face_id_np = carried.face_attributes["face_id"].numpy()
+    assert np.array_equal(mesh.vertices.numpy()[label_np], carried.vertices.numpy())
+    assert np.array_equal(
+        mesh.faces.numpy().reshape(-1, 3)[face_id_np],
+        label_np[carried.faces.numpy().reshape(-1, 3)],
+    )
+    assert np.array_equal(carried.vertex_attributes["position"].numpy(), carried.vertices.numpy())
+
+
+@pytest.mark.parametrize("selector", ["mask", "index"])
+def test_submesh_carries_attributes(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], selector: str
+) -> None:
+    """
+    Not a library comparison: trimesh's ``submesh`` drops ``vertex_attributes``.
+
+    Each kept vertex and face keeps its own attribute values, so the source labels index the input
+    buffers onto the output's; a shuffled carry fails the face assert, a dropped one the key test.
+    """
+    _mesh_tm, mesh_wp = sphere_irregular
+    mesh = _labelled(mesh_wp)
+    keep_np = np.zeros(mesh.n_faces, dtype=bool)
+    keep_np[::3] = True
+    selection = (
+        wp.array(keep_np, dtype=wp.bool, device=mesh.device)
+        if selector == "mask"
+        else wp.array(np.flatnonzero(keep_np).astype(np.int32), dtype=wp.int32, device=mesh.device)
+    )
+
+    piece = mesh.submesh(selection)
+    assert piece.n_faces == keep_np.sum() < mesh.n_faces
+    assert np.array_equal(piece.face_attributes["face_id"].numpy(), np.flatnonzero(keep_np))
+    _assert_labels_name_sources(mesh, piece)
+
+
+def test_split_and_add_carry_attributes(three_spheres: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Not a library comparison: each body keeps its share of the attributes, and ``+`` joins them.
+
+    The bodies' labels together cover every input vertex once; rejoined, the attributes are the
+    bodies' in order and still name their sources. A key only one operand carries is dropped.
+    """
+    _mesh_tm, mesh_wp = three_spheres
+    mesh = _labelled(mesh_wp)
+
+    bodies = mesh.split()
+    assert len(bodies) == 3
+    for body in bodies:
+        _assert_labels_name_sources(mesh, body)
+    labels_np = np.concatenate([body.vertex_attributes["label"].numpy() for body in bodies])
+    assert np.array_equal(np.sort(labels_np), np.arange(mesh.n_vertices))
+
+    rejoined = bodies[0] + bodies[1] + bodies[2]
+    _assert_labels_name_sources(mesh, rejoined)
+    unlabelled = bodies[0].with_attributes(face_attributes={"face_id": None})
+    assert set((unlabelled + bodies[1]).face_attributes) == set()
+    assert set((unlabelled + bodies[1]).vertex_attributes) == {"label", "position"}
+
+
+def test_with_edit_carries_attributes_through_a_subdivision(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a library comparison: the attributes follow the edit's ``Provenance``.
+
+    A float attribute is interpolated with the subdivision's own weights, so the carried positions
+    are the output vertices (to rounding); a label is copied from each new vertex's representative,
+    so the original vertices keep theirs; every child face keeps its parent's id.
+    """
+    _mesh_tm, mesh_wp = sphere_irregular
+    mesh = _labelled(mesh_wp)
+
+    finer = mesh.with_edit(*od.remesh.subdivide(mesh.vertices, mesh.faces, return_provenance=True))
+    assert finer.n_faces == 4 * mesh.n_faces
+    assert np.allclose(
+        finer.vertex_attributes["position"].numpy(), finer.vertices.numpy(), rtol=1e-5, atol=1e-6
+    )
+    labels_np = finer.vertex_attributes["label"].numpy()
+    assert np.array_equal(labels_np[: mesh.n_vertices], np.arange(mesh.n_vertices))
+    assert np.array_equal(
+        np.bincount(finer.face_attributes["face_id"].numpy()), np.full(mesh.n_faces, 4)
+    )
+
+
+def test_attributes_ride_along_unchanged(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Not a parity assert: the methods that keep the numbering hand the attributes on as they are.
+
+    ``transform``, ``invert`` and ``with_vertices`` keep both tables (the same arrays);
+    ``with_faces`` keeps the vertex table and drops the face one; ``copy`` copies both.
+    ``with_attributes`` sets and removes entries and shares the cache, but not the solvers.
+    """
+    _mesh_tm, mesh_wp = sphere_irregular
+    mesh = _labelled(mesh_wp)
+    label = mesh.vertex_attributes["label"]
+    face_id = mesh.face_attributes["face_id"]
+
+    for derived in (
+        mesh.transform(od.transform.translation_matrix((1.0, 0.0, 0.0))),
+        mesh.invert(),
+        mesh.with_vertices(mesh.vertices),
+    ):
+        assert derived.vertex_attributes["label"] is label
+        assert derived.face_attributes["face_id"] is face_id
+    refaced = mesh.with_faces(mesh.faces)
+    assert refaced.vertex_attributes["label"] is label
+    assert len(refaced.face_attributes) == 0
+
+    duplicate = mesh.copy()
+    assert duplicate.vertex_attributes["label"].ptr != label.ptr
+    assert np.array_equal(duplicate.vertex_attributes["label"].numpy(), label.numpy())
+
+    normals = mesh.face_normals
+    _ = mesh.heat_solver()
+    updated = mesh.with_attributes(
+        vertex_attributes={"label": None, "mask": wp.ones(mesh.n_vertices, wp.bool, mesh.device)}
+    )
+    assert set(updated.vertex_attributes) == {"position", "mask"}
+    assert updated.face_normals is normals
+    assert "_heat_solvers" not in updated._cache
+    with pytest.raises(TypeError):
+        cast("dict[str, object]", updated.vertex_attributes)["label"] = label
+
+
+def test_repr_lists_attributes_and_cache(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """Not a parity assert: ``repr`` names the sizes, device, attributes and cached values."""
+    _mesh_tm, mesh_wp = sphere_irregular
+    mesh = _labelled(mesh_wp)
+    _ = mesh.edges
+
+    lines = repr(mesh).splitlines()
+    assert lines[0] == f"Trimesh({mesh.n_vertices} vertices, {mesh.n_faces} faces, {mesh.device})"
+    assert [line.strip() for line in lines[1:]] == [
+        "vertex attribute 'label': int32",
+        "vertex attribute 'position': vec3f",
+        "face attribute 'face_id': int32",
+        "cached: edges",
+    ]
 
 
 def test_vertex_face_adjacency_cached_off_is_rebuilt_ascending_once_on(

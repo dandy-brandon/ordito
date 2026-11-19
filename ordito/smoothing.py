@@ -25,7 +25,7 @@ member fix a failure the filters above cannot see:
 rescaling it away at the end, [`relax_approx`][ordito.smoothing.relax_approx] fits a plane or a
 quadric to a whole geodesic neighbourhood rather than averaging a 1-ring, and
 [`filter_spikes`][ordito.smoothing.filter_spikes] moves only the vertices that fail an angle test.
-The first three take a vertex ``region`` and a ``max_displacement`` bound, so a relaxation can be
+The first three take a vertex ``mask`` and a ``max_displacement`` bound, so a relaxation can be
 confined to where it is wanted and kept within a tolerance of the surface it started from;
 ``filter_spikes`` needs neither, because the set it touches is the answer to its own test.
 [`smooth_region_boundary`][ordito.smoothing.smooth_region_boundary] completes the region trio by
@@ -200,6 +200,8 @@ def filter_laplacian(
     method: Literal["jacobi", "trimesh", "pyvista"] = "jacobi",
     edge_angle: float = 15.0,
     rim_smoothing: bool = True,
+    mask: wp.array[wp.bool] | None = None,
+    weights: wp.array[wp.float32] | None = None,
 ) -> wp.array[wp.vec3]:
     """
     Laplacian mesh smoothing (Vollmer et al.; Desbrun et al. implicit fairing).
@@ -264,6 +266,15 @@ def filter_laplacian(
     rim_smoothing
         Under ``method="pyvista"``, slide rim vertices along the rim; when off they stay fixed
         (VTK's ``boundary_smoothing``). Unread otherwise.
+    mask
+        ``(n_vertices,)`` the vertices to smooth: only those it marks move, and a moving vertex
+        next to an unmarked one sees it where it is. ``None`` (default) smooths every vertex.
+    weights
+        ``(n_vertices,)`` each vertex's share of its step, clamped to ``[0, 1]``: 0 holds it in
+        place, 1 moves it as unweighted smoothing would. The graded form of ``mask``; pass at most
+        one of the two. Either needs ``volume_constraint=False``, since the rescale moves every
+        vertex, and is not taken under ``method="pyvista"``. On the implicit path a held vertex
+        holds to the solve's tolerance.
 
     Returns
     -------
@@ -273,11 +284,14 @@ def filter_laplacian(
     Raises
     ------
     ValueError
-        If ``method`` is not ``"jacobi"``, ``"trimesh"`` or ``"pyvista"``, or under
-        ``method="pyvista"`` if ``implicit_time_integration`` is set or ``laplacian_operator`` is
-        given.
+        If ``method`` is not ``"jacobi"``, ``"trimesh"`` or ``"pyvista"``, under
+        ``method="pyvista"`` if ``implicit_time_integration`` is set or ``laplacian_operator``,
+        ``mask`` or ``weights`` is given, if ``mask`` or ``weights`` is given with
+        ``volume_constraint``, if both are given, or if either does not have one entry per vertex.
+    TypeError
+        If ``mask`` is not a ``wp.bool`` array or ``weights`` not a ``wp.float32`` one.
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces``, ``mask`` and ``weights`` are not all on one device.
 
     See Also
     --------
@@ -315,8 +329,25 @@ def filter_laplacian(
     )
     print(od.measures.volume(sweep, faces) < od.measures.volume(jacobi, faces))  # True
     ```
+
+    A mask smooths only the vertices it marks; the rest do not move:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    top = wp.array(vertices.numpy()[:, 2] > 0.5, dtype=wp.bool)
+    smoothed = od.smoothing.filter_laplacian(
+        vertices, faces, volume_constraint=False, mask=top
+    )
+    moved = np.linalg.norm(smoothed.numpy() - vertices.numpy(), axis=1) > 0.0
+    print(bool(np.all(moved <= top.numpy())), bool(moved.any()))  # True True
+    ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(vertices=vertices, faces=faces, mask=mask, weights=weights)
     if method not in ("jacobi", "trimesh", "pyvista"):
         raise ValueError(f"method must be 'jacobi', 'trimesh' or 'pyvista', got {method!r}")
     if method == "pyvista" and implicit_time_integration:
@@ -324,6 +355,16 @@ def filter_laplacian(
     if method == "pyvista" and laplacian_operator is not None:
         raise ValueError(
             "method='pyvista' builds its own neighbours: laplacian_operator must be None"
+        )
+    region = _check_region(mask, weights, vertices.size)
+    if region is not None and method == "pyvista":
+        raise ValueError(
+            "method='pyvista' builds its own neighbours: mask and weights must be None"
+        )
+    if region is not None and volume_constraint:
+        raise ValueError(
+            "mask and weights hold vertices in place, which the volume constraint's rescale of "
+            "the whole mesh would move: pass volume_constraint=False"
         )
     # This six-line prologue is shared by five of the filters (here, ``filter_humphrey``,
     # ``filter_taubin``, ``filter_neighborhood_average`` and ``filter_mut_dif_laplacian``), but a
@@ -341,7 +382,7 @@ def filter_laplacian(
             vertices, faces, lamb, iterations, volume_constraint, edge_angle, rim_smoothing
         )
 
-    operator = _resolved_operator(vertices, faces, laplacian_operator)
+    operator = _resolved_operator(vertices, faces, laplacian_operator, region=region)
     coeff = wp.float64(lamb)
     if not implicit_time_integration and not volume_constraint:
         # Explicit passes with nothing between them: the first reads the ``float32`` input and the
@@ -845,6 +886,8 @@ def filter_humphrey(
     laplacian_operator: odt.BsrMatrix[wp.float32] | None = None,
     *,
     method: Literal["vollmer", "trimesh", "meshlab"] = "vollmer",
+    mask: wp.array[wp.bool] | None = None,
+    weights: wp.array[wp.float32] | None = None,
 ) -> wp.array[wp.vec3]:
     """
     Laplacian smoothing with Humphrey (HC) filtering (Vollmer et al.).
@@ -890,6 +933,13 @@ def filter_humphrey(
         ``"vollmer"`` is the default because it is the update Vollmer et al. derive, whose second
         step pushes each vertex back against the shrinkage of the first; MeshLab's adds the
         neighbours' mean correction where the derivation subtracts it.
+    mask
+        ``(n_vertices,)`` the vertices to smooth: only those it marks move, and a moving vertex
+        next to an unmarked one sees it where it is. ``None`` (default) smooths every vertex.
+    weights
+        ``(n_vertices,)`` each vertex's share of its step, clamped to ``[0, 1]``: 0 holds it in
+        place, 1 moves it as unweighted smoothing would. The graded form of ``mask``; pass at most
+        one of the two. A weight scales both the smoothing step and the push back.
 
     Returns
     -------
@@ -899,9 +949,12 @@ def filter_humphrey(
     Raises
     ------
     ValueError
-        If ``method`` is not ``"vollmer"``, ``"trimesh"`` or ``"meshlab"``.
+        If ``method`` is not ``"vollmer"``, ``"trimesh"`` or ``"meshlab"``, if ``mask`` and
+        ``weights`` are both given, or if either does not have one entry per vertex.
+    TypeError
+        If ``mask`` is not a ``wp.bool`` array or ``weights`` not a ``wp.float32`` one.
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces``, ``mask`` and ``weights`` are not all on one device.
 
     See Also
     --------
@@ -921,16 +974,19 @@ def filter_humphrey(
     print(od.measures.volume(humphrey, faces) > od.measures.volume(laplacian, faces))  # True
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(vertices=vertices, faces=faces, mask=mask, weights=weights)
     if method not in ("vollmer", "trimesh", "meshlab"):
         raise ValueError(f"method must be 'vollmer', 'trimesh' or 'meshlab', got {method!r}")
+    region = _check_region(mask, weights, vertices.size)
     device = vertices.device
     n = vertices.size
     if n == 0 or iterations == 0:
         return _launch.clone(vertices)
 
     meshlab = method == "meshlab"
-    operator = _resolved_operator(vertices, faces, laplacian_operator, symmetric=meshlab)
+    operator = _resolved_operator(
+        vertices, faces, laplacian_operator, symmetric=meshlab, region=region
+    )
     # ``L.v`` and ``b``, then (CPU, below) the passes' two ``float64`` buffers: one allocation.
     serial = iterations >= 2 and wp.get_device(device).is_cpu
     lv, b, *scratch = _launch.carve(
@@ -1228,7 +1284,7 @@ def equalize_triangle_areas(
     iterations: int = 1,
     force: float = 0.5,
     no_shrinkage: bool = False,
-    region: wp.array[wp.bool] | None = None,
+    mask: wp.array[wp.bool] | None = None,
     max_displacement: float | None = None,
     *,
     vertex_faces: tuple[wp.array[wp.int32], wp.array[wp.int32]] | None = None,
@@ -1269,7 +1325,7 @@ def equalize_triangle_areas(
         across the surface instead of sinking into it. The unconstrained minimum of *squared* area
         pulls the whole 1-ring inward, so leave this on when the shape matters and off when only
         the triangle quality does.
-    region
+    mask
         ``(n_vertices,)`` mask of the vertices allowed to move. ``None`` moves every interior
         vertex. Vertices outside it stay exactly where they are, and are still read as neighbours;
         boundary vertices stay put whether or not it includes them.
@@ -1293,10 +1349,10 @@ def equalize_triangle_areas(
     Raises
     ------
     ValueError
-        If ``iterations`` is negative, if ``max_displacement`` is negative, or if ``region`` is not
+        If ``iterations`` is negative, if ``max_displacement`` is negative, or if ``mask`` is not
         a length-``n_vertices`` ``wp.bool`` array.
     RuntimeError
-        If ``vertices``, ``faces``, ``region`` and ``vertex_faces`` are not all on one device.
+        If ``vertices``, ``faces``, ``mask`` and ``vertex_faces`` are not all on one device.
 
     See Also
     --------
@@ -1335,10 +1391,10 @@ def equalize_triangle_areas(
     print(f"{areas.numpy().std():.3f}")  # 0.000
     ```
     """
-    require_same_device(vertices=vertices, faces=faces, region=region, vertex_faces=vertex_faces)
+    require_same_device(vertices=vertices, faces=faces, mask=mask, vertex_faces=vertex_faces)
     device = vertices.device
     n_vertices = vertices.size
-    active, limit = _relaxation_state(vertices, iterations, region, max_displacement)
+    active, limit = _relaxation_state(vertices, iterations, mask, max_displacement)
     if not active:
         return _launch.clone(vertices)
 
@@ -1347,7 +1403,7 @@ def equalize_triangle_areas(
         if vertex_faces is not None
         else od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
     )
-    region = _without_boundary_vertices(vertices, faces, region, (vf_indices, offsets))
+    mask = _without_boundary_vertices(vertices, faces, mask, (vf_indices, offsets))
 
     def equalize_pass(src: wp.array[wp.vec3], dst: wp.array[wp.vec3]) -> None:
         _launch.launch(
@@ -1358,7 +1414,7 @@ def equalize_triangle_areas(
                 faces,
                 offsets,
                 vf_indices,
-                region,
+                mask,
                 vertices,
                 wp.float32(force),
                 no_shrinkage,
@@ -1376,7 +1432,7 @@ def equalize_triangle_areas(
                 faces,
                 offsets,
                 vf_indices,
-                region,
+                mask,
                 vertices,
                 wp.float32(force),
                 no_shrinkage,
@@ -1430,7 +1486,7 @@ def relax_keep_volume(
     faces: wp.array[wp.int32],
     iterations: int = 1,
     force: float = 0.5,
-    region: wp.array[wp.bool] | None = None,
+    mask: wp.array[wp.bool] | None = None,
     max_displacement: float | None = None,
     *,
     unique_edges: odt.Array2dInt32 | None = None,
@@ -1461,11 +1517,11 @@ def relax_keep_volume(
         Number of passes. ``0`` returns a copy.
     force
         Fraction of the way to the 1-ring average each pass moves before the correction.
-    region
+    mask
         ``(n_vertices,)`` mask of the vertices allowed to move. ``None`` moves every one.
-        A neighbour outside the region contributes its position to the average but no displacement
-        to the correction, so a vertex on the region's edge is corrected by less than an interior
-        one -- which is what stops the region from tearing away from the rest.
+        A neighbour outside the mask contributes its position to the average but no displacement
+        to the correction, so a vertex on the masked area's edge is corrected by less than an
+        interior one -- which is what stops that area from tearing away from the rest.
     max_displacement
         Clamp every vertex into a ball of this radius around its **input** position, applied after
         each pass. ``None`` leaves the relaxation unbounded.
@@ -1482,10 +1538,10 @@ def relax_keep_volume(
     Raises
     ------
     ValueError
-        If ``iterations`` is negative, if ``max_displacement`` is negative, or if ``region`` is not
+        If ``iterations`` is negative, if ``max_displacement`` is negative, or if ``mask`` is not
         a length-``n_vertices`` ``wp.bool`` array.
     RuntimeError
-        If ``vertices``, ``faces``, ``region`` and ``unique_edges`` are not all on one device.
+        If ``vertices``, ``faces``, ``mask`` and ``unique_edges`` are not all on one device.
 
     See Also
     --------
@@ -1515,10 +1571,10 @@ def relax_keep_volume(
     print(abs(ratio - 1.0) < 0.01)  # True
     ```
     """
-    require_same_device(vertices=vertices, faces=faces, region=region, unique_edges=unique_edges)
+    require_same_device(vertices=vertices, faces=faces, mask=mask, unique_edges=unique_edges)
     device = vertices.device
     n_vertices = vertices.size
-    active, limit = _relaxation_state(vertices, iterations, region, max_displacement)
+    active, limit = _relaxation_state(vertices, iterations, mask, max_displacement)
     if not active:
         return _launch.clone(vertices)
 
@@ -1535,13 +1591,13 @@ def relax_keep_volume(
         _launch.launch(
             kernel_smoothing.ring_push_forces,
             dim=n_vertices,
-            inputs=[src, offsets, columns, region, wp.float32(force), push],
+            inputs=[src, offsets, columns, mask, wp.float32(force), push],
             device=device,
         )
         _launch.launch(
             kernel_smoothing.apply_push_keeping_volume,
             dim=n_vertices,
-            inputs=[src, offsets, columns, region, push, vertices, limit, dst],
+            inputs=[src, offsets, columns, mask, push, vertices, limit, dst],
             device=device,
         )
 
@@ -1549,7 +1605,7 @@ def relax_keep_volume(
         _launch.launch(
             kernel_smoothing.relax_keeping_volume_serial,
             dim=1,
-            inputs=[offsets, columns, region, vertices, wp.float32(force), limit, iterations],
+            inputs=[offsets, columns, mask, vertices, wp.float32(force), limit, iterations],
             outputs=[push, first, second],
             device=device,
         )
@@ -1564,7 +1620,7 @@ def relax_approx(
     iterations: int = 1,
     force: float = 0.5,
     fit: Literal["planar", "quadric"] = "planar",
-    region: wp.array[wp.bool] | None = None,
+    mask: wp.array[wp.bool] | None = None,
     max_displacement: float | None = None,
     method: Literal["geodesic_ball", "meshlib"] = "geodesic_ball",
 ) -> wp.array[wp.vec3]:
@@ -1609,7 +1665,7 @@ def relax_approx(
     fit
         ``"planar"`` for a least-squares plane, ``"quadric"`` for a 6-coefficient quadric graph over
         it.
-    region
+    mask
         ``(n_vertices,)`` mask of the vertices allowed to move. ``None`` moves every one.
         Vertices outside it still populate their neighbours' balls.
     max_displacement
@@ -1638,9 +1694,9 @@ def relax_approx(
     ValueError
         If ``iterations`` is negative, if ``dilate_radius`` is not positive, if
         ``max_displacement`` is negative, if ``fit`` or ``method`` is not one of its two
-        names, or if ``region`` is not a length-``n_vertices`` ``wp.bool`` array.
+        names, or if ``mask`` is not a length-``n_vertices`` ``wp.bool`` array.
     RuntimeError
-        If ``vertices``, ``faces`` and ``region`` are not all on one device.
+        If ``vertices``, ``faces`` and ``mask`` are not all on one device.
 
     See Also
     --------
@@ -1678,7 +1734,7 @@ def relax_approx(
     print(along_edges.numpy()[:, 2].std() < 0.5 * noisy.numpy()[:, 2].std())  # True
     ```
     """
-    require_same_device(vertices=vertices, faces=faces, region=region)
+    require_same_device(vertices=vertices, faces=faces, mask=mask)
     if fit not in ("planar", "quadric"):
         raise ValueError(f"fit must be 'planar' or 'quadric', got {fit!r}")
     if method not in ("geodesic_ball", "meshlib"):
@@ -1687,7 +1743,7 @@ def relax_approx(
         raise ValueError(f"dilate_radius must be positive, got {dilate_radius}")
     device = vertices.device
     n_vertices = vertices.size
-    active, limit = _relaxation_state(vertices, iterations, region, max_displacement)
+    active, limit = _relaxation_state(vertices, iterations, mask, max_displacement)
     if not active:
         return _launch.clone(vertices)
 
@@ -1721,7 +1777,7 @@ def relax_approx(
                 neighbor_offsets,
                 row_stride,
                 wp.int32(start),
-                region,
+                mask,
                 vertices,
                 wp.float32(force),
                 fit == "quadric",
@@ -1766,14 +1822,14 @@ def relax_approx(
 def _relaxation_state(
     vertices: wp.array[wp.vec3],
     iterations: int,
-    region: wp.array[wp.bool] | None,
+    mask: wp.array[wp.bool] | None,
     max_displacement: float | None,
 ) -> tuple[bool, wp.float32]:
     """
     Validate the axes the relaxation family shares.
 
     Returns ``(False, ...)`` when there is nothing to do, so each caller's early return is one line.
-    The kernels read a ``None`` region as every vertex (``kernels/smoothing.in_region``), so no
+    The kernels read a ``None`` mask as every vertex (``kernels/smoothing.in_region``), so no
     all-``True`` mask is materialized.
     The displacement limit is carried as a ``float32`` with **negative meaning unbounded**, which is
     how ``None`` crosses into a kernel without a second launch path.
@@ -1784,15 +1840,15 @@ def _relaxation_state(
         raise ValueError(f"max_displacement must be non-negative, got {max_displacement}")
     n_vertices = vertices.size
     limit = wp.float32(-1.0 if max_displacement is None else max_displacement)
-    # Validate before the do-nothing early return, so a malformed ``region`` raises whatever
+    # Validate before the do-nothing early return, so a malformed ``mask`` raises whatever
     # ``iterations`` happens to be -- ``smooth_region_boundary`` orders it this way too, and a
     # validation a caller can switch off by asking for zero passes is not one.
-    if region is not None and (
-        len(region.shape) != 1 or region.size != n_vertices or region.dtype is not wp.bool
+    if mask is not None and (
+        len(mask.shape) != 1 or mask.size != n_vertices or mask.dtype is not wp.bool
     ):
         raise ValueError(
-            f"region must be a length-{n_vertices} wp.bool array, got shape {tuple(region.shape)} "
-            f"of {region.dtype}"
+            f"mask must be a length-{n_vertices} wp.bool array, got shape {tuple(mask.shape)} "
+            f"of {mask.dtype}"
         )
     return n_vertices > 0 and iterations > 0, limit
 
@@ -1806,6 +1862,8 @@ def filter_taubin(
     laplacian_operator: odt.BsrMatrix[wp.float32] | None = None,
     *,
     recompute: bool = False,
+    mask: wp.array[wp.bool] | None = None,
+    weights: wp.array[wp.float32] | None = None,
 ) -> wp.array[wp.vec3]:
     """
     Taubin lambda/nu mesh smoothing (Vollmer et al.).
@@ -1834,6 +1892,13 @@ def filter_taubin(
         Reassemble the inverse-distance operator from the *current* positions before every pass,
         instead of applying one operator throughout. Off by default; see the ``Notes`` — it is a
         different filter and markedly more expensive per pass.
+    mask
+        ``(n_vertices,)`` the vertices to smooth: only those it marks move, and a moving vertex
+        next to an unmarked one sees it where it is. ``None`` (default) smooths every vertex.
+    weights
+        ``(n_vertices,)`` each vertex's share of its step, clamped to ``[0, 1]``: 0 holds it in
+        place, 1 moves it as unweighted smoothing would. The graded form of ``mask``; pass at most
+        one of the two. A weight scales both the shrinking and the inflating step.
 
     Returns
     -------
@@ -1843,9 +1908,12 @@ def filter_taubin(
     Raises
     ------
     ValueError
-        If ``recompute`` is set together with ``laplacian_operator``, which would be ignored.
+        If ``recompute`` is set together with ``laplacian_operator``, which would be ignored, if
+        ``mask`` and ``weights`` are both given, or if either does not have one entry per vertex.
+    TypeError
+        If ``mask`` is not a ``wp.bool`` array or ``weights`` not a ``wp.float32`` one.
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces``, ``mask`` and ``weights`` are not all on one device.
 
     See Also
     --------
@@ -1889,14 +1957,21 @@ def filter_taubin(
     print(abs(od.measures.volume(taubin, faces) / volume - 1) < 0.01)  # True
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(vertices=vertices, faces=faces, mask=mask, weights=weights)
     if recompute and laplacian_operator is not None:
         raise ValueError("recompute rebuilds the operator each pass; do not also pass one")
+    region = _check_region(mask, weights, vertices.size)
     n = vertices.size
     if n == 0 or iterations == 0:
         return _launch.clone(vertices)
 
-    operator = None if recompute else _resolved_operator(vertices, faces, laplacian_operator)
+    operator = (
+        None
+        if recompute
+        else _resolved_operator(vertices, faces, laplacian_operator, region=region)
+    )
+    # The recomputed rows are formed inside the pass, so the region's weights scale its step there.
+    step_weights = _region_weights(region) if recompute and region is not None else None
     # The recompute path reassembles the operator every pass from *moved* positions, but over
     # connectivity that never changes -- so its sparsity is built once here and every pass only
     # writes the weights.
@@ -1925,6 +2000,7 @@ def filter_taubin(
                     src,
                     wp.int32(0),
                     wp.int32(1),
+                    step_weights,
                     wp.float64(coeff),
                 ],
                 outputs=[dst],
@@ -2182,6 +2258,9 @@ def filter_neighborhood_average(
     faces: wp.array[wp.int32],
     iterations: int = 10,
     laplacian_operator: odt.BsrMatrix[wp.float32] | None = None,
+    *,
+    mask: wp.array[wp.bool] | None = None,
+    weights: wp.array[wp.float32] | None = None,
 ) -> wp.array[wp.vec3]:
     """
     Uniform neighborhood-average smoothing over the closed 1-ring.
@@ -2206,6 +2285,13 @@ def filter_neighborhood_average(
     laplacian_operator
         ``(n_vertices, n_vertices)`` optional precomputed row-stochastic operator (see
         [`laplacian`][ordito.laplacian.laplacian]). Autogenerated (uniform weights) when ``None``.
+    mask
+        ``(n_vertices,)`` the vertices to smooth: only those it marks move, and a moving vertex
+        next to an unmarked one sees it where it is. ``None`` (default) smooths every vertex.
+    weights
+        ``(n_vertices,)`` each vertex's share of its step, clamped to ``[0, 1]``: 0 holds it in
+        place, 1 moves it as unweighted smoothing would. The graded form of ``mask``; pass at most
+        one of the two. A weight moves a vertex that share of the way to its average.
 
     Returns
     -------
@@ -2214,8 +2300,12 @@ def filter_neighborhood_average(
 
     Raises
     ------
+    ValueError
+        If ``mask`` and ``weights`` are both given, or either does not have one entry per vertex.
+    TypeError
+        If ``mask`` is not a ``wp.bool`` array or ``weights`` not a ``wp.float32`` one.
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces``, ``mask`` and ``weights`` are not all on one device.
 
     See Also
     --------
@@ -2239,7 +2329,8 @@ def filter_neighborhood_average(
     print(np.linalg.norm(smoothed.numpy(), axis=1).std() < 0.5 * noise.std())  # True
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(vertices=vertices, faces=faces, mask=mask, weights=weights)
+    region = _check_region(mask, weights, vertices.size)
     device = vertices.device
     n = vertices.size
     if n == 0 or iterations == 0:
@@ -2247,7 +2338,19 @@ def filter_neighborhood_average(
 
     # Symmetric adjacency (undirected 1-ring) so boundary vertices average over all their
     # neighbors, matching Open3D's ``adjacency_list``; the directed default is asymmetric there.
-    operator = _resolved_operator(vertices, faces, laplacian_operator, symmetric=True)
+    operator = _resolved_operator(
+        vertices, faces, laplacian_operator, symmetric=True, region=region, closed_ring=True
+    )
+    if region is not None:
+        # The localized operator holds the closed-ring average as a blend (``closed_ring``), so a
+        # pass is the plain diffusion step at a coefficient of one.
+        unit = wp.float64(1.0)
+        return _vec3_passes(
+            vertices,
+            iterations,
+            lambda _index, src, dst: _diffuse_pass(operator, unit, src, dst),
+            serial=_SerialPasses(kernel_smoothing.PASS_DIFFUSE, operator, 1.0, 1.0),
+        )
 
     def average_pass(_index: int, src: _Positions, dst: _Positions) -> None:
         # The kernel reads its own degree off the CSR row it is already walking:
@@ -4523,6 +4626,9 @@ def filter_scalar_laplacian(
     lamb: float = 0.5,
     iterations: int = 10,
     laplacian_operator: odt.BsrMatrix[wp.float32] | None = None,
+    *,
+    mask: wp.array[wp.bool] | None = None,
+    weights: wp.array[wp.float32] | None = None,
 ) -> wp.array[wp.float32]:
     """
     Diffuse a per-vertex scalar field through the 1-ring averaging operator.
@@ -4572,6 +4678,12 @@ def filter_scalar_laplacian(
         mesh and differ on a boundary vertex, where the directed adjacency is missing some of its
         neighbours; for a scalar field the symmetric ring is both the defensible choice and the one
         MeshLab makes.
+    mask
+        ``(n_vertices,)`` the values to smooth: only those it marks change, and a changing value
+        next to an unmarked one diffuses against it. ``None`` (default) smooths every value.
+    weights
+        ``(n_vertices,)`` each value's share of its step, clamped to ``[0, 1]``: 0 keeps it, 1 moves
+        it as unweighted smoothing would. The graded form of ``mask``; pass at most one of the two.
 
     Returns
     -------
@@ -4581,9 +4693,13 @@ def filter_scalar_laplacian(
     Raises
     ------
     ValueError
-        If ``values`` is not length ``n_vertices``.
+        If ``values``, ``mask`` or ``weights`` is not length ``n_vertices``, or ``mask`` and
+        ``weights`` are both given.
+    TypeError
+        If ``mask`` is not a ``wp.bool`` array or ``weights`` not a ``wp.float32`` one.
     RuntimeError
-        If ``values``, ``vertices`` and ``faces`` are not all on one device.
+        If ``values``, ``vertices``, ``faces``, ``mask`` and ``weights`` are not all on one
+        device.
 
     See Also
     --------
@@ -4609,18 +4725,21 @@ def filter_scalar_laplacian(
     print(f"{smoothed.numpy().sum():.4f}")  # 1.0000
     ```
     """
-    require_same_device(values=values, vertices=vertices, faces=faces)
+    require_same_device(values=values, vertices=vertices, faces=faces, mask=mask, weights=weights)
     device = values.device
     n = vertices.size
     if values.size != n:
         raise ValueError(
             f"values must have one entry per vertex, got {values.size} for {n} vertices"
         )
+    region = _check_region(mask, weights, n)
 
     if n == 0 or iterations <= 0:
         return _launch.clone(values)
 
-    operator = _resolved_operator(vertices, faces, laplacian_operator, symmetric=True)
+    operator = _resolved_operator(
+        vertices, faces, laplacian_operator, symmetric=True, region=region
+    )
     coeff = wp.float32(lamb)
     # The first pass reads ``values`` itself, so the input is never copied: the passes ping-pong two
     # buffers of this call, the second only when there is a second pass.
@@ -5693,6 +5812,8 @@ def _resolved_operator(
     laplacian_operator: odt.BsrMatrix[wp.float32] | None,
     *,
     symmetric: bool = False,
+    region: wp.array[wp.bool] | wp.array[wp.float32] | None = None,
+    closed_ring: bool = False,
 ) -> odt.BsrMatrix[wp.float32]:
     """
     Return the caller's row-stochastic operator, or the uniform-weight default built here.
@@ -5713,15 +5834,101 @@ def _resolved_operator(
         neighbours Open3D's ``adjacency_list`` and MeshLab's face loops give a boundary vertex
         ([`filter_neighborhood_average`][ordito.smoothing.filter_neighborhood_average],
         [`filter_humphrey`][ordito.smoothing.filter_humphrey]'s ``method="meshlab"``).
+    region
+        A filter's ``mask`` or ``weights`` (``_check_region``), localizing the operator through
+        ``_region_operator``; ``None`` returns the operator itself.
+    closed_ring
+        Blend the region into the closed-ring average instead of the operator (the
+        ``filter_neighborhood_average`` form, see ``kernels/smoothing.region_operator_rows``).
 
     Returns
     -------
     warp.sparse.BsrMatrix
         The operator to diffuse through.
     """
-    if laplacian_operator is not None:
-        return laplacian_operator
-    return laplacian.laplacian(vertices, faces, symmetric=symmetric)
+    operator = (
+        laplacian_operator
+        if laplacian_operator is not None
+        else laplacian.laplacian(vertices, faces, symmetric=symmetric)
+    )
+    if region is None:
+        return operator
+    return _region_operator(operator, _region_weights(region), closed_ring=closed_ring)
+
+
+def _region_operator(
+    operator: odt.BsrMatrix[wp.float32], weights: wp.array[wp.float32], *, closed_ring: bool
+) -> odt.BsrMatrix[wp.float32]:
+    """
+    Localize ``operator`` to per-vertex ``weights``: ``diag(w) L + diag(1 - w)``.
+
+    An explicit pass through the result moves each vertex ``w`` of its step and a weight-0 row is
+    the identity's, so every filter path that applies the operator (explicit, implicit, the CPU's
+    serial passes) holds a weight-0 vertex in place. The diagonal is inserted where a row lacks
+    it; the buffers are sized at the operator's capacity plus a row each, so no count is read
+    back (the matrix's ``nnz`` is the asynchronous ``offsets[-1]``, ``bsr_from_csr``).
+    """
+    n = int(operator.nrow)
+    device = operator.values.device
+    offsets, counts = offsets_buffer(n, device)
+    _launch.launch(
+        kernel_smoothing.region_operator_counts,
+        dim=n,
+        inputs=[operator.offsets, operator.columns],
+        outputs=[counts],
+        device=device,
+    )
+    _launch.array_scan(counts, out_array=counts, inclusive=True)
+    capacity = operator.columns.size + n
+    columns = _launch.empty(capacity, dtype=wp.int32, device=device)
+    values = _launch.empty(capacity, dtype=wp.float32, device=device)
+    _launch.launch(
+        kernel_smoothing.region_operator_rows,
+        dim=n,
+        inputs=[
+            operator.offsets,
+            operator.columns,
+            operator.values,
+            weights,
+            wp.int32(1 if closed_ring else 0),
+            offsets,
+        ],
+        outputs=[columns, values],
+        device=device,
+    )
+    return od.array.bsr_from_csr(n, int(operator.ncol), offsets, columns, values)
+
+
+def _region_weights(region: wp.array[wp.bool] | wp.array[wp.float32]) -> wp.array[wp.float32]:
+    """Convert a filter's ``region`` to ``wp.float32`` weights in ``[0, 1]`` (a mask to 0 and 1)."""
+    weights = _launch.empty(region.size, dtype=wp.float32, device=region.device)
+    _launch.map(kernel_smoothing.region_step_weight, region, out=weights)
+    return weights
+
+
+def _check_region(
+    mask: odt.ArrayNd | None, weights: odt.ArrayNd | None, n: int
+) -> wp.array[wp.bool] | wp.array[wp.float32] | None:
+    """
+    Return the region a filter's ``mask`` or ``weights`` names, raising on a malformed one.
+
+    At most one of the two may be given; ``mask`` must be ``wp.bool`` and ``weights``
+    ``wp.float32``, each one entry per vertex. ``None`` when neither is given.
+    """
+    if mask is not None and weights is not None:
+        raise ValueError("pass mask or weights, not both")
+    for name, values, dtype in (("mask", mask, wp.bool), ("weights", weights, wp.float32)):
+        if values is None:
+            continue
+        if values.dtype is not dtype:
+            raise TypeError(f"{name} must be a {dtype.__name__} array, got {values.dtype}")
+        if values.ndim != 1 or values.size != n:
+            raise ValueError(
+                f"{name} must have one entry per vertex, got shape {tuple(values.shape)} for {n} "
+                "vertices"
+            )
+    region = mask if mask is not None else weights
+    return cast("wp.array[wp.bool] | wp.array[wp.float32] | None", region)
 
 
 # A filter's positions on either side of the ``float32`` / ``float64`` seam.

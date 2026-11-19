@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 import math
 import weakref
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from types import MappingProxyType
 from typing import Generic, Literal, NoReturn, TypeVar, cast, overload
 
 import warp as wp
@@ -13,7 +14,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import read_scalar, require_nonempty_mesh
+from ordito._common import read_scalar, require_nonempty_mesh, require_same_device
 from ordito.config import is_deterministic
 from ordito.kernels import mesh as kernel_mesh
 from ordito.kernels import repair as kernel_repair
@@ -33,6 +34,8 @@ _TRACED_MESH_FIXED_RAYS = 8_000_000
 _TRACED_MESH_RAYS_PER_FACE = 160
 # The normal matrix ``Trimesh.transform``'s launch receives when it carries no direction (unread).
 _ZERO_MAT33 = wp.mat33()
+# The attribute table of a `Trimesh` given none, shared: it is read-only.
+_NO_ATTRIBUTES: Mapping[str, odt.ArrayNd] = MappingProxyType({})
 
 # Cached quantities that depend only on `faces` (topology), not on vertex positions. A
 # functional update that keeps the same faces and the same vertex count (`with_vertices`)
@@ -356,6 +359,16 @@ class Trimesh:
     [`with_faces`][ordito.mesh.Trimesh.with_faces], which return a new `Trimesh` and carry forward
     whichever cached values are still valid.
 
+    A mesh also carries named per-vertex and per-face **attributes** -- a label, a colour, a UV, a
+    scalar field, any array of one entry per vertex or per face -- in
+    [`vertex_attributes`][ordito.mesh.Trimesh.vertex_attributes] and
+    [`face_attributes`][ordito.mesh.Trimesh.face_attributes]. They are data the mesh holds, not
+    quantities it derives, and they follow it: every method returning a new mesh carries them
+    (through the edit's [`Provenance`][ordito.interpolation.Provenance] where the numbering
+    changes), [`with_attributes`][ordito.mesh.Trimesh.with_attributes] sets or removes them, and
+    [`with_edit`][ordito.mesh.Trimesh.with_edit] carries them through any free function called with
+    ``return_provenance=True``.
+
     Scalar-valued properties (`area`, `centroid`, `bounds`, `enclosing_diagonal`,
     `mean_edge_length`, `euler_characteristic`, and every `is_*` predicate) synchronize from device
     to host on first access; the synchronized Python value is then cached like any other.
@@ -376,6 +389,14 @@ class Trimesh:
         ``(n_vertices,)`` mesh vertex positions.
     faces
         ``(3 * n_faces,)`` or ``(n_faces, 3)`` triangle indices (flattened on construction).
+    vertex_attributes
+        Named ``(n_vertices,)`` arrays, one entry per vertex, of a dtype a
+        [`Provenance`][ordito.interpolation.Provenance] carries: ``wp.bool``, ``wp.uint8``,
+        ``wp.int32``, ``wp.int64``, ``wp.float32``, ``wp.float64``, or a ``wp.vec2`` / ``vec3`` /
+        ``vec4`` / ``vec2d`` / ``vec3d`` / ``vec2i`` / ``vec3i`` or four-byte colour vector. Held,
+        not copied (a non-contiguous view is made contiguous).
+    face_attributes
+        Named ``(n_faces,)`` arrays, one entry per face, of the same dtypes.
     initial_cache
         Optional pre-populated cache entries, keyed by property name. Used by
         [`from_warp_mesh`][ordito.mesh.Trimesh.from_warp_mesh] to seed `warp_mesh` without
@@ -386,11 +407,15 @@ class Trimesh:
     Raises
     ------
     TypeError
-        If ``vertices`` is not a rank-1 ``wp.vec3`` array, or ``faces`` is not rank-1 or
-        rank-2 ``wp.int32`` after flattening.
+        If ``vertices`` is not a rank-1 ``wp.vec3`` array, ``faces`` is not rank-1 or
+        rank-2 ``wp.int32`` after flattening, or an attribute is not a ``wp.array`` of a dtype
+        listed above under a string name.
     ValueError
-        If a rank-2 ``faces`` array does not have shape ``(n_faces, 3)``, or the flattened
-        face buffer's size is not a multiple of 3.
+        If a rank-2 ``faces`` array does not have shape ``(n_faces, 3)``, the flattened
+        face buffer's size is not a multiple of 3, or an attribute does not have one entry per
+        vertex or face.
+    RuntimeError
+        If an attribute is not on the device of ``vertices``.
 
     See Also
     --------
@@ -414,17 +439,40 @@ class Trimesh:
     points = wp.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]], dtype=wp.vec3)
     print(mesh.contains(points).numpy())  # [ True False]
     ```
+
+    Attributes ride along: a submesh keeps the labels of the vertices and faces it keeps:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    labels = od.array.arange(8, device=vertices.device)
+    mesh = od.Trimesh(vertices, faces, vertex_attributes={"label": labels})
+    piece = mesh.submesh(wp.array([0, 1], dtype=wp.int32))
+    print(sorted(piece.vertex_attributes), piece.vertex_attributes["label"].shape)  # ['label'] (4,)
+    ```
     """
 
     # ``__weakref__``: a ``HeatSolver`` kept in the cache refers back to its mesh weakly, so the two
     # are no reference cycle and the mesh's device memory goes when the mesh does.
-    __slots__ = ("__weakref__", "_cache", "_faces", "_vertices")
+    __slots__ = (
+        "__weakref__",
+        "_cache",
+        "_face_attributes",
+        "_faces",
+        "_vertex_attributes",
+        "_vertices",
+    )
 
     def __init__(
         self,
         vertices: wp.array[wp.vec3],
         faces: wp.array[wp.int32],
         *,
+        vertex_attributes: Mapping[str, odt.ArrayNd] | None = None,
+        face_attributes: Mapping[str, odt.ArrayNd] | None = None,
         initial_cache: dict[str, object] | None = None,
     ) -> None:
         """Construct a `Trimesh` from a vertex buffer and a face index buffer."""
@@ -440,6 +488,12 @@ class Trimesh:
         self._vertices = vertices.contiguous()
         self._faces = faces.contiguous()
         self._cache: dict[str, object] = dict(initial_cache) if initial_cache is not None else {}
+        self._vertex_attributes = _attribute_table(
+            vertex_attributes, self.n_vertices, "vertex", self._vertices
+        )
+        self._face_attributes = _attribute_table(
+            face_attributes, self.n_faces, "face", self._vertices
+        )
 
     @classmethod
     def from_warp_mesh(cls, mesh: wp.Mesh) -> Trimesh:
@@ -498,6 +552,48 @@ class Trimesh:
     def device(self) -> wp.Device:
         """Warp device holding `vertices` and `faces`."""
         return cast("wp.Device", self._vertices.device)
+
+    @property
+    def vertex_attributes(self) -> Mapping[str, odt.ArrayNd]:
+        """
+        Named ``(n_vertices,)`` per-vertex arrays the mesh carries, read-only.
+
+        Set and removed with [`with_attributes`][ordito.mesh.Trimesh.with_attributes]; carried by
+        every method returning a new mesh. An empty mapping when the mesh has none.
+
+        Examples
+        --------
+        ```python
+        import ordito as od
+
+        vertices, faces = od.creation.box()
+        heights = od.array.arange(8, device=vertices.device)
+        mesh = od.Trimesh(vertices, faces, vertex_attributes={"height": heights})
+        print(list(mesh.vertex_attributes), mesh.vertex_attributes["height"] is heights)
+        # ['height'] True
+        ```
+        """
+        return self._vertex_attributes
+
+    @property
+    def face_attributes(self) -> Mapping[str, odt.ArrayNd]:
+        """
+        Named ``(n_faces,)`` per-face arrays the mesh carries, read-only.
+
+        Set and removed with [`with_attributes`][ordito.mesh.Trimesh.with_attributes]; carried by
+        every method returning a new mesh. An empty mapping when the mesh has none.
+
+        Examples
+        --------
+        ```python
+        import ordito as od
+
+        vertices, faces = od.creation.box()
+        mesh = od.Trimesh(vertices, faces)
+        print(len(mesh.face_attributes))  # 0
+        ```
+        """
+        return self._face_attributes
 
     @_CachedProperty
     def warp_mesh(self) -> wp.Mesh:
@@ -2299,7 +2395,7 @@ class Trimesh:
         survived = {key: value for key, value in self._cache.items() if key in carry}
         new_vertices, new_faces = self._carry_directions(kind, matrix_host, reverse, survived)
         self._carry_box(kind, matrix_host, survived)
-        return Trimesh(new_vertices, new_faces, initial_cache=survived)
+        return self._derived(new_vertices, new_faces, survived)
 
     def _carry_directions(
         self, kind: str, matrix: wp.mat44, reverse: bool, survived: dict[str, object]
@@ -2553,9 +2649,7 @@ class Trimesh:
                 survived["face_normals"] = outputs[0]
             if vertex_normals is not None:
                 survived["vertex_normals"] = outputs[1]
-        return Trimesh(
-            self._vertices, od.repair.reverse_winding(self._faces), initial_cache=survived
-        )
+        return self._derived(self._vertices, od.repair.reverse_winding(self._faces), survived)
 
     def with_vertices(self, new_vertices: wp.array[wp.vec3]) -> Trimesh:
         """
@@ -2603,7 +2697,7 @@ class Trimesh:
                 f"got {new_vertices.size}"
             )
         survived = {key: value for key, value in self._cache.items() if key in _WITH_VERTICES_CARRY}
-        return Trimesh(new_vertices, self._faces, initial_cache=survived)
+        return self._derived(new_vertices, self._faces, survived)
 
     def with_faces(self, new_faces: wp.array[wp.int32]) -> Trimesh:
         """
@@ -2617,7 +2711,10 @@ class Trimesh:
         Returns
         -------
         Trimesh
-            New instance sharing `vertices` with an empty cache.
+            New instance sharing `vertices` and the
+            [`vertex_attributes`][ordito.mesh.Trimesh.vertex_attributes], with an empty cache and
+            no face attributes: nothing relates the new faces to the old ones. Use
+            [`with_edit`][ordito.mesh.Trimesh.with_edit] when an edit reports where they came from.
 
         Examples
         --------
@@ -2631,7 +2728,162 @@ class Trimesh:
         print(front.n_vertices, front.n_faces, len(front.boundary_loops))  # 8 2 1
         ```
         """
-        return Trimesh(self._vertices, new_faces)
+        return Trimesh(self._vertices, new_faces, vertex_attributes=self._vertex_attributes)
+
+    def with_attributes(
+        self,
+        *,
+        vertex_attributes: Mapping[str, odt.ArrayNd | None] | None = None,
+        face_attributes: Mapping[str, odt.ArrayNd | None] | None = None,
+    ) -> Trimesh:
+        """
+        Return a new `Trimesh` with attributes set or removed, sharing the whole cache.
+
+        Each entry of ``vertex_attributes`` / ``face_attributes`` sets the attribute of its name,
+        and an entry whose value is ``None`` removes it; attributes not named are kept. The
+        geometry and every cached value are shared with this mesh, since no attribute changes
+        either.
+
+        Parameters
+        ----------
+        vertex_attributes
+            Named ``(n_vertices,)`` arrays to set, or ``None`` values to remove.
+        face_attributes
+            Named ``(n_faces,)`` arrays to set, or ``None`` values to remove.
+
+        Returns
+        -------
+        Trimesh
+            New instance on the same buffers and cache, with the updated attributes.
+
+        Raises
+        ------
+        TypeError
+            If a value is not a ``wp.array`` of a dtype the constructor accepts.
+        ValueError
+            If a value does not have one entry per vertex or face.
+        RuntimeError
+            If a value is not on the mesh's device.
+
+        See Also
+        --------
+        [`vertex_attributes`][ordito.mesh.Trimesh.vertex_attributes]
+        [`face_attributes`][ordito.mesh.Trimesh.face_attributes]
+
+        Examples
+        --------
+        ```python
+        import ordito as od
+
+        mesh = od.Trimesh(*od.creation.box())
+        ids = od.array.arange(12, device=mesh.device)
+        labelled = mesh.with_attributes(face_attributes={"id": ids})
+        print(list(labelled.face_attributes), labelled.face_normals is mesh.face_normals)
+        # ['id'] True
+        cleared = labelled.with_attributes(face_attributes={"id": None})
+        print(len(cleared.face_attributes))  # 0
+        ```
+        """
+        # Private entries (``_heat_solvers``, ``_fixed_vertex_solver``) hold solvers that refer back
+        # to this very mesh, so they stay with it; every public cached value is shared.
+        survived = {key: value for key, value in self._cache.items() if not key.startswith("_")}
+        return Trimesh(
+            self._vertices,
+            self._faces,
+            vertex_attributes=_updated_attributes(self._vertex_attributes, vertex_attributes),
+            face_attributes=_updated_attributes(self._face_attributes, face_attributes),
+            initial_cache=survived,
+        )
+
+    def with_edit(
+        self,
+        vertices: wp.array[wp.vec3],
+        faces: wp.array[wp.int32],
+        provenance: od.interpolation.Provenance,
+    ) -> Trimesh:
+        """
+        Return the output of an edit of this mesh as a `Trimesh`, its attributes carried through.
+
+        Every free function that rebuilds a mesh's connectivity takes ``return_provenance=True``
+        and returns the new ``(vertices, faces)`` with a
+        [`Provenance`][ordito.interpolation.Provenance]; this wraps them and carries every
+        attribute across. A float attribute (``wp.float32``, ``wp.vec2``, ``wp.vec3``,
+        ``wp.vec4``) is interpolated with the weights the edit formed its new vertices with, so a
+        midpoint takes the mean of its edge's values; every other one (a label, a mask, a
+        ``float64`` field) and every face attribute is copied from its source. An element with no
+        source (a face filling a hole) reads zero. An interpolated direction is not renormalized.
+
+        Parameters
+        ----------
+        vertices
+            ``(n_out_vertices,)`` the edit's output vertex positions.
+        faces
+            ``(3 * n_out_faces,)`` or ``(n_out_faces, 3)`` the edit's output triangle indices.
+        provenance
+            The edit's provenance from this mesh to that output.
+
+        Returns
+        -------
+        Trimesh
+            New instance on ``vertices`` and ``faces`` with an empty cache and the carried
+            attributes.
+
+        Raises
+        ------
+        ValueError
+            If ``provenance`` does not describe an edit of a mesh of this one's vertex and face
+            counts, or does not name one source per output vertex and face.
+        RuntimeError
+            If ``vertices``, ``faces`` and the mesh are not all on one device.
+
+        See Also
+        --------
+        [`ordito.interpolation.Provenance`][]
+        [`with_faces`][ordito.mesh.Trimesh.with_faces]
+
+        Examples
+        --------
+        Vertex labels through a subdivision, which keeps the original vertices first:
+
+        ```python
+        import ordito as od
+
+        vertices, faces = od.creation.box()
+        labels = od.array.arange(8, device=vertices.device)
+        mesh = od.Trimesh(vertices, faces, vertex_attributes={"label": labels})
+        finer = mesh.with_edit(*od.remesh.subdivide(vertices, faces, return_provenance=True))
+        print(finer.n_vertices, finer.vertex_attributes["label"].numpy()[:8].tolist())
+        # 26 [0, 1, 2, 3, 4, 5, 6, 7]
+        ```
+        """
+        require_same_device(vertices=vertices, faces=faces, mesh=self._vertices)
+        if provenance.n_vertices != self.n_vertices or provenance.n_faces != self.n_faces:
+            raise ValueError(
+                f"provenance describes an edit of a mesh of {provenance.n_vertices} vertices and "
+                f"{provenance.n_faces} faces, this one has {self.n_vertices} and {self.n_faces}"
+            )
+        n_out_faces = faces.size // 3
+        if (
+            provenance.vertex_index.size != vertices.size
+            or provenance.face_index.size != n_out_faces
+        ):
+            raise ValueError(
+                f"provenance names {provenance.vertex_index.size} vertices and "
+                f"{provenance.face_index.size} faces, the output has {vertices.size} and "
+                f"{n_out_faces}"
+            )
+        return Trimesh(
+            vertices,
+            faces,
+            vertex_attributes={
+                name: provenance.vertex_values(values)
+                for name, values in self._vertex_attributes.items()
+            },
+            face_attributes={
+                name: provenance.face_values(values)
+                for name, values in self._face_attributes.items()
+            },
+        )
 
     def submesh(self, faces: wp.array[wp.int32] | wp.array[wp.bool]) -> Trimesh:
         """
@@ -2648,6 +2900,7 @@ class Trimesh:
         Trimesh
             Compact submesh with an empty cache. No cached value is carried: the vertex numbering
             changes, so every index-valued quantity on this mesh names different vertices there.
+            The attributes of the kept vertices and faces are.
 
         Raises
         ------
@@ -2675,17 +2928,34 @@ class Trimesh:
         print(piece.n_vertices, piece.n_faces)  # 4 2
         ```
         """
+        if faces.dtype is not wp.bool and faces.dtype is not wp.int32:
+            raise TypeError(f"submesh needs a wp.int32 or wp.bool array, got {faces.dtype}")
+        if not self._vertex_attributes and not self._face_attributes:
+            # With nothing to carry, the selection reports no provenance and issues no more.
+            if faces.dtype is wp.bool:
+                parts = od.selection.submesh_from_face_mask(
+                    self._vertices, self._faces, cast("wp.array[wp.bool]", faces)
+                )
+            else:
+                parts = od.selection.submesh_from_face_indices(
+                    self._vertices, self._faces, cast("wp.array[wp.int32]", faces)
+                )
+            return Trimesh(*parts)
         if faces.dtype is wp.bool:
-            parts = od.selection.submesh_from_face_mask(
-                self._vertices, self._faces, cast("wp.array[wp.bool]", faces)
-            )
-        elif faces.dtype is wp.int32:
-            parts = od.selection.submesh_from_face_indices(
-                self._vertices, self._faces, cast("wp.array[wp.int32]", faces)
+            edit = od.selection.submesh_from_face_mask(
+                self._vertices,
+                self._faces,
+                cast("wp.array[wp.bool]", faces),
+                return_provenance=True,
             )
         else:
-            raise TypeError(f"submesh needs a wp.int32 or wp.bool array, got {faces.dtype}")
-        return Trimesh(*parts)
+            edit = od.selection.submesh_from_face_indices(
+                self._vertices,
+                self._faces,
+                cast("wp.array[wp.int32]", faces),
+                return_provenance=True,
+            )
+        return self.with_edit(*edit)
 
     def split(self, *, copy: bool = False) -> list[Trimesh]:
         """
@@ -2701,8 +2971,8 @@ class Trimesh:
         Returns
         -------
         list[Trimesh]
-            One mesh per body, each with vertices reindexed from zero and an empty cache. The
-            count is [`body_count`][ordito.mesh.Trimesh.body_count].
+            One mesh per body, each with vertices reindexed from zero, an empty cache and its
+            share of the attributes. The count is [`body_count`][ordito.mesh.Trimesh.body_count].
 
         See Also
         --------
@@ -2724,21 +2994,30 @@ class Trimesh:
         """
         # The labels are this mesh's own cached property, so a mesh that has counted its bodies
         # splits without labelling them again, and one that has not keeps them for later.
+        labels = self.face_connected_component_labels
+        if not self._vertex_attributes and not self._face_attributes:
+            return [
+                Trimesh(vertices, faces)
+                for vertices, faces in od.combine.split(
+                    self._vertices, self._faces, copy=copy, labels=labels
+                )
+            ]
         return [
-            Trimesh(vertices, faces)
-            for vertices, faces in od.combine.split(
-                self._vertices, self._faces, copy=copy, labels=self.face_connected_component_labels
+            self.with_edit(vertices, faces, provenance)
+            for vertices, faces, provenance in od.combine.split(
+                self._vertices, self._faces, copy=copy, labels=labels, return_provenance=True
             )
         ]
 
     def copy(self) -> Trimesh:
         """
-        Return a `Trimesh` on independent copies of `vertices` and `faces`, with an empty cache.
+        Return a `Trimesh` on independent copies of its buffers, with an empty cache.
 
         Returns
         -------
         Trimesh
-            New instance sharing nothing with this one.
+            New instance sharing nothing with this one: `vertices`, `faces` and every attribute
+            are copied.
 
         Notes
         -----
@@ -2763,7 +3042,16 @@ class Trimesh:
         print(duplicate.vertices is mesh.vertices, duplicate.n_faces)  # False 12
         ```
         """
-        return Trimesh(_launch.clone(self._vertices), _launch.clone(self._faces))
+        return Trimesh(
+            _launch.clone(self._vertices),
+            _launch.clone(self._faces),
+            vertex_attributes={
+                name: _launch.clone(values) for name, values in self._vertex_attributes.items()
+            },
+            face_attributes={
+                name: _launch.clone(values) for name, values in self._face_attributes.items()
+            },
+        )
 
     def __add__(self, other: Trimesh) -> Trimesh:
         """
@@ -2779,7 +3067,15 @@ class Trimesh:
         Trimesh
             Combined mesh with an empty cache. Vertices are **not** merged, so a shared surface
             stays two coincident sheets -- [`ordito.repair.remove_duplicated_vertices`][] is the
-            weld.
+            weld. An attribute both meshes carry is concatenated; one only a single mesh carries is
+            dropped, having no values on the other's elements.
+
+        Raises
+        ------
+        TypeError
+            If an attribute both meshes carry has a different dtype on each.
+        RuntimeError
+            If the two meshes are not on one device.
 
         See Also
         --------
@@ -2798,8 +3094,69 @@ class Trimesh:
         print(combined.n_vertices, combined.n_faces, combined.body_count)  # 12 16 2
         ```
         """
+        vertices, faces = od.combine.concatenate(
+            [(self._vertices, self._faces), (other.vertices, other.faces)]
+        )
         return Trimesh(
-            *od.combine.concatenate([(self._vertices, self._faces), (other.vertices, other.faces)])
+            vertices,
+            faces,
+            vertex_attributes=_joined_attributes(
+                self._vertex_attributes, other.vertex_attributes, "vertex"
+            ),
+            face_attributes=_joined_attributes(
+                self._face_attributes, other.face_attributes, "face"
+            ),
+        )
+
+    def __repr__(self) -> str:
+        """
+        Describe the mesh: its sizes and device, its attributes, and the values it has cached.
+
+        Returns
+        -------
+        str
+            A first line ``Trimesh(<n> vertices, <m> faces, <device>)``, then one indented line per
+            vertex and face attribute with its dtype, then the names of the cached values.
+
+        Examples
+        --------
+        ```python
+        import ordito as od
+
+        vertices, faces = od.creation.box()
+        labels = od.array.arange(8, device=vertices.device)
+        mesh = od.Trimesh(vertices, faces, vertex_attributes={"label": labels})
+        _ = mesh.area
+        lines = repr(mesh).splitlines()
+        print(lines[0].split(",")[:2])  # ['Trimesh(8 vertices', ' 12 faces']
+        print(lines[1].strip())  # vertex attribute 'label': int32
+        print(lines[2].strip())  # cached: area, face_areas, face_normals
+        ```
+        """
+        lines = [f"Trimesh({self.n_vertices} vertices, {self.n_faces} faces, {self.device})"]
+        for element, table in (
+            ("vertex", self._vertex_attributes),
+            ("face", self._face_attributes),
+        ):
+            lines.extend(
+                f"    {element} attribute {name!r}: {_dtype_name(values.dtype)}"
+                for name, values in table.items()
+            )
+        cached = sorted(key for key in self._cache if not key.startswith("_"))
+        if cached:
+            lines.append(f"    cached: {', '.join(cached)}")
+        return "\n".join(lines)
+
+    def _derived(
+        self, vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], cache: dict[str, object]
+    ) -> Trimesh:
+        """Build a mesh on ``vertices`` and ``faces`` with ``cache`` and these attributes."""
+        return Trimesh(
+            vertices,
+            faces,
+            vertex_attributes=self._vertex_attributes,
+            face_attributes=self._face_attributes,
+            initial_cache=cache,
         )
 
     def release_factorizations(self) -> None:
@@ -2865,6 +3222,83 @@ class Trimesh:
         ```
         """
         self._cache.clear()
+
+
+def _attribute_table(
+    attributes: Mapping[str, odt.ArrayNd] | None,
+    count: int,
+    element: str,
+    vertices: wp.array[wp.vec3],
+) -> Mapping[str, odt.ArrayNd]:
+    """
+    Validate a `Trimesh` attribute mapping and return it as a read-only table.
+
+    Each value must be a rank-1 ``wp.array`` of ``count`` entries on the device of ``vertices``, of
+    a dtype a ``Provenance`` carries (so every method can carry it), under a string name.
+    """
+    if not attributes:
+        return _NO_ATTRIBUTES
+    # Local: the dtype list lives with the gather kernels, which a mesh with no attributes never
+    # needs to import.
+    from ordito.kernels import interpolation as kernel_interpolation
+
+    table: dict[str, odt.ArrayNd] = {}
+    for name, values in attributes.items():
+        if not isinstance(name, str):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise TypeError(f"{element} attribute names must be strings, got {name!r}")
+        if not isinstance(values, wp.array):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise TypeError(
+                f"{element} attribute {name!r} must be a wp.array, got {type(values).__name__}"
+            )
+        if values.dtype not in kernel_interpolation.ATTRIBUTE_DTYPES:
+            raise TypeError(
+                f"{element} attribute {name!r} has dtype {_dtype_name(values.dtype)}, which no "
+                "provenance carries"
+            )
+        if values.ndim != 1 or values.size != count:
+            raise ValueError(
+                f"{element} attribute {name!r} must have shape ({count},), got "
+                f"{tuple(values.shape)}"
+            )
+        require_same_device(vertices=vertices, **{f"{element} attribute {name!r}": values})
+        table[name] = values.contiguous()
+    return MappingProxyType(table)
+
+
+def _updated_attributes(
+    table: Mapping[str, odt.ArrayNd], updates: Mapping[str, odt.ArrayNd | None] | None
+) -> dict[str, odt.ArrayNd]:
+    """``table`` with ``updates`` applied: a value sets its name, ``None`` removes it."""
+    merged = dict(table)
+    for name, values in (updates or {}).items():
+        if values is None:
+            merged.pop(name, None)
+        else:
+            merged[name] = values
+    return merged
+
+
+def _joined_attributes(
+    first: Mapping[str, odt.ArrayNd], second: Mapping[str, odt.ArrayNd], element: str
+) -> dict[str, odt.ArrayNd]:
+    """Concatenate the attributes both tables hold, in order (``Trimesh.__add__``)."""
+    joined: dict[str, odt.ArrayNd] = {}
+    for name, values in first.items():
+        other = second.get(name)
+        if other is None:
+            continue
+        if other.dtype != values.dtype:
+            raise TypeError(
+                f"{element} attribute {name!r} is {_dtype_name(values.dtype)} on one mesh and "
+                f"{_dtype_name(other.dtype)} on the other"
+            )
+        joined[name] = od.array.concatenate([values, other])
+    return joined
+
+
+def _dtype_name(dtype: object) -> str:
+    """Name a Warp dtype briefly (``int32``, ``vec3f``, ``bool``), for messages and ``repr``."""
+    return "bool" if dtype is wp.bool else wp.types.type_repr(dtype)
 
 
 def mesh_arguments(

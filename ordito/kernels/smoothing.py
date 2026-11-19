@@ -1606,6 +1606,7 @@ def umbrella_diffuse_pass(
     positions: wp.array[Any],
     equal_weight: wp.int32,
     symmetric: wp.int32,
+    weights: wp.array[wp.float32],
     coeff: wp.float64,
     out_next: wp.array[Any],
 ) -> None:
@@ -1621,10 +1622,16 @@ def umbrella_diffuse_pass(
     # the step's gathers issued before its masked entries), as ``laplacian.operator_row`` takes
     # past L2. Calls new/old: dragon 1.00x, bunny 0.97-0.98x, ``sphere_small`` / ``sphere_med``
     # par; each entry's length and division, not its gather, bound the walk.
+    #
+    # ``weights``, when not empty, scales vertex ``i``'s step by its clamped ``region_step_weight``
+    # (``smoothing._region_weights``): a localized pass, a weight-0 vertex left exactly in place.
     i = wp.int32(wp.tid())
     start = offsets[i]
     end = offsets[i + 1]
     center = wp.vec3d(positions[i])
+    step = coeff
+    if weights.shape[0] > 0:
+        step = coeff * wp.float64(weights[i])
     lv = center
     if end > start:
         here = wp.vec3(positions[i])
@@ -1641,7 +1648,7 @@ def umbrella_diffuse_pass(
             if total > wp.float32(0.0):
                 value = value / total
             lv += wp.float64(value) * wp.vec3d(positions[c])
-    out_next[i] = out_next.dtype(wp.lerp(center, lv, coeff))
+    out_next[i] = out_next.dtype(wp.lerp(center, lv, step))
 
 
 @wp.kernel
@@ -1660,6 +1667,89 @@ def neighborhood_average_pass(
         PASS_NEIGHBORHOOD_AVERAGE, i, offsets, columns, values, positions, wp.float64(0.0),
         out_next,
     )  # fmt: skip
+
+
+# Localized smoothing (a filter's ``mask`` or ``weights``): each vertex ``i`` takes the share
+# ``w_i`` of its step, through the operator ``diag(s) L + diag(1 - s)``
+# (``smoothing._region_operator``), with ``s_i = w_i`` -- so an explicit pass ``v + c (L_w v - v)``
+# is ``v + c w_i (L v - v)``, a weight-0 row is the identity's and its vertex stays exactly where it
+# is, on every path a filter takes through its operator (explicit, implicit, the CPU's serial
+# passes). The closed-ring average ``(v + d L v) / (d + 1)`` of a degree-``d`` row is the same blend
+# at ``s_i = w_i d / (d + 1)`` with the step ``c = 1``. An empty row (an unreferenced vertex) keeps
+# ``s_i = 0``: it stays put, as the unweighted passes leave it. The rows keep their order and the
+# diagonal is inserted before the first larger column (added to an existing one), so a sorted row
+# stays sorted.
+
+
+@wp.func
+def region_step_weight(value: Any) -> wp.float32:
+    # A localized smoothing's per-vertex weight: a ``mask`` entry as 0 or 1, a ``weights`` entry
+    # clamped to [0, 1].
+    return wp.clamp(wp.float32(value), wp.float32(0.0), wp.float32(1.0))
+
+
+@wp.func
+def row_diagonal_count(
+    columns: wp.array[wp.int32], start: wp.int32, end: wp.int32, i: wp.int32
+) -> wp.int32:
+    # 1 when the row ``columns[start:end]`` of row ``i`` stores its diagonal, else 0.
+    found = wp.int32(0)
+    for k in range(start, end):
+        if columns[k] == i:
+            found = wp.int32(1)
+    return found
+
+
+@wp.kernel
+def region_operator_counts(
+    offsets: wp.array[wp.int32], columns: wp.array[wp.int32], out_counts: wp.array[wp.int32]
+) -> None:
+    # Row ``i``'s entry count in the localized operator: its own, plus a diagonal it lacks.
+    i = wp.int32(wp.tid())
+    start = offsets[i]
+    end = offsets[i + 1]
+    out_counts[i] = end - start + wp.int32(1) - row_diagonal_count(columns, start, end, i)
+
+
+@wp.kernel
+def region_operator_rows(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float32],
+    weights: wp.array[wp.float32],
+    closed_ring: wp.int32,
+    region_offsets: wp.array[wp.int32],
+    out_columns: wp.array[wp.int32],
+    out_values: wp.array[wp.float32],
+) -> None:
+    # Row ``i`` of ``diag(s) L + diag(1 - s)`` (see above), written from ``region_offsets[i]``.
+    i = wp.int32(wp.tid())
+    start = offsets[i]
+    end = offsets[i + 1]
+    degree = end - start
+    share = weights[i]
+    if closed_ring != 0:
+        share = share * wp.float32(degree) / (wp.float32(degree) + wp.float32(1.0))
+    share = wp.where(degree > 0, share, wp.float32(0.0))
+    rest = wp.float32(1.0) - share
+    slot = region_offsets[i]
+    pending = wp.int32(1) - row_diagonal_count(columns, start, end, i)
+    for k in range(start, end):
+        c = columns[k]
+        if pending != 0 and c > i:
+            out_columns[slot] = i
+            out_values[slot] = rest
+            slot += 1
+            pending = wp.int32(0)
+        value = share * values[k]
+        if c == i:
+            value = value + rest
+        out_columns[slot] = c
+        out_values[slot] = value
+        slot += 1
+    if pending != 0:
+        out_columns[slot] = i
+        out_values[slot] = rest
 
 
 @wp.kernel
@@ -4703,6 +4793,7 @@ def _register_overloads() -> None:
                 wp.array[src],
                 wp.int32,
                 wp.int32,
+                wp.array[wp.float32],
                 wp.float64,
                 wp.array[dst],
             ]
@@ -4776,6 +4867,20 @@ def _declare_block_dims() -> None:
 
 
 _declare_block_dims()
+
+
+def _declare_map_kernels() -> None:
+    """Declare at import the ``wp.map`` signatures of ops reached at more than one signature."""
+    dense = map_probe
+    declare_map_signatures(
+        [
+            (region_step_weight, (dense(wp.bool),), wp.float32),
+            (region_step_weight, (dense(wp.float32),), wp.float32),
+        ]
+    )
+
+
+_declare_map_kernels()
 
 
 @declare_lazy_kernels

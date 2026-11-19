@@ -1191,16 +1191,14 @@ def test_equalize_triangle_areas_respects_its_region_and_bound(device: str) -> N
     region_np = positions_np[:, 2] > 0.0
     region_wp = wp.array(region_np, dtype=wp.bool, device=device)
     assert 0 < int(region_np.sum()) < n_vertices  # non-vacuity: a real partition
-    partial_wp = od.smoothing.equalize_triangle_areas(
-        vertices_wp, faces_wp, 3, 0.5, region=region_wp
-    )
+    partial_wp = od.smoothing.equalize_triangle_areas(vertices_wp, faces_wp, 3, 0.5, mask=region_wp)
     assert np.array_equal(partial_wp.numpy()[~region_np], positions_np[~region_np])
     assert not np.array_equal(partial_wp.numpy()[region_np], positions_np[region_np])
 
     all_true_wp = wp.full(n_vertices, True, dtype=wp.bool, device=device)
     assert np.array_equal(
         od.smoothing.equalize_triangle_areas(
-            vertices_wp, faces_wp, 3, 0.5, region=all_true_wp
+            vertices_wp, faces_wp, 3, 0.5, mask=all_true_wp
         ).numpy(),
         unbounded_wp.numpy(),
     )
@@ -1209,9 +1207,9 @@ def test_equalize_triangle_areas_respects_its_region_and_bound(device: str) -> N
     )
     with pytest.raises(ValueError, match="iterations must be non-negative"):
         od.smoothing.equalize_triangle_areas(vertices_wp, faces_wp, -1)
-    with pytest.raises(ValueError, match="region must be a length-"):
+    with pytest.raises(ValueError, match="mask must be a length-"):
         od.smoothing.equalize_triangle_areas(
-            vertices_wp, faces_wp, 1, region=wp.zeros(3, dtype=wp.bool, device=device)
+            vertices_wp, faces_wp, 1, mask=wp.zeros(3, dtype=wp.bool, device=device)
         )
 
 
@@ -1577,7 +1575,7 @@ def test_relax_approx_fits_streamed_balls_as_packed_ones(
             radius,
             iterations,
             fit="quadric",
-            region=region_wp,
+            mask=region_wp,
             max_displacement=0.5 * radius,
         ),
     ]
@@ -1704,7 +1702,7 @@ def test_relax_approx_meshlib_streams_its_balls(
             radius,
             3,
             fit="quadric",
-            region=region_wp,
+            mask=region_wp,
             max_displacement=0.5 * radius,
             method="meshlib",
         ).numpy()
@@ -1996,6 +1994,299 @@ def test_filter_neighborhood_average(request: pytest.FixtureRequest, mesh_name: 
     mesh_o3d = trimesh_to_open3d(mesh_tm).filter_smooth_simple(number_of_iterations=iterations)
 
     assert np.allclose(smoothed_wp.numpy(), np.asarray(mesh_o3d.vertices), rtol=1e-5, atol=1e-5)
+
+
+# --- Localized smoothing: a filter's ``mask`` and ``weights`` ------------------------------
+
+
+def _region_split(mesh_tm: tm.Trimesh) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Return a face selection and the vertices strictly inside it, as MeshLab's selection reads.
+
+    The faces whose three corners lie above the mesh's centre of mass are selected; MeshLab's
+    ``selected=True`` coordinate filters then move only the vertices every face around which is
+    selected (a vertex on the selection's rim stays put), which is the ``mask`` passed to ordito.
+    """
+    above_np = mesh_tm.vertices[:, 2] > mesh_tm.center_mass[2]
+    face_mask_np = above_np[mesh_tm.faces].all(axis=1)
+    incident_np = np.bincount(mesh_tm.faces.ravel(), minlength=len(mesh_tm.vertices))
+    selected_np = np.bincount(mesh_tm.faces[face_mask_np].ravel(), minlength=len(mesh_tm.vertices))
+    return face_mask_np, (incident_np == selected_np) & (incident_np > 0)
+
+
+@pytest.mark.parametrize("filter_name", ["laplacian", "taubin"])
+@pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parity("filter_laplacian_integration", "pymeshlab")
+@pytest.mark.parity("filter_taubin", "pymeshlab")
+def test_region_matches_pymeshlab_selection(
+    request: pytest.FixtureRequest, mesh_name: str, filter_name: str
+) -> None:
+    """
+    Class B: a ``mask`` against MeshLab's ``selected=True``, through its selection rule.
+
+    The named transform is the selection: MeshLab selects *faces* and moves only the vertices all
+    of whose faces are selected (``_region_split``; probed on a noisy icosphere, where the vertex
+    selection alone moved every vertex and the corners of the selected faces were too many by 44
+    rim vertices). Each filter is configured as its unselected comparison above:
+    ``apply_coord_laplacian_smoothing`` through ``face_weighted_laplacian`` at ``lamb=1``,
+    ``apply_coord_taubin_smoothing`` at twice the pass count, with MeshLab's rim umbrella on an
+    open mesh. The weighted operator is applied to a supplied operator here, which the default
+    one never exercises. Measured 5.7e-08 for Taubin on the icosphere, both devices.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    face_mask_np, region_np = _region_split(mesh_tm)
+    assert 0 < region_np.sum() < len(region_np)  # non-vacuity: both answers occur
+
+    # MeshLab's face condition reads vertex scalars, so the face mask goes in through them.
+    meshset_pml = trimesh_to_pymeshlab(
+        mesh_tm, scalars=(mesh_tm.vertices[:, 2] > mesh_tm.center_mass[2]).astype(np.float64)
+    )
+    meshset_pml.compute_selection_by_condition_per_face(
+        condselect="(q0 > 0) && (q1 > 0) && (q2 > 0)"
+    )
+    assert np.array_equal(meshset_pml.current_mesh().face_selection_array(), face_mask_np)
+    if filter_name == "laplacian":
+        meshset_pml.apply_coord_laplacian_smoothing(
+            stepsmoothnum=3, cotangentweight=False, boundary=True, selected=True
+        )
+    else:
+        meshset_pml.apply_coord_taubin_smoothing(
+            lambda_=0.5, mu=-0.53, stepsmoothnum=2, selected=True
+        )
+    smoothed_pml = meshset_pml.current_mesh().vertex_matrix()
+    moved_pml = np.linalg.norm(smoothed_pml - mesh_tm.vertices, axis=1)
+    assert moved_pml[region_np].max() > 1e-3
+    assert moved_pml[~region_np].max() == 0.0
+
+    region_wp = wp.array(region_np, dtype=wp.bool, device=mesh_wp.device)
+    if filter_name == "laplacian":
+        smoothed_wp = od.smoothing.filter_laplacian(
+            mesh_wp.points,
+            mesh_wp.indices,
+            lamb=1.0,
+            iterations=3,
+            volume_constraint=False,
+            laplacian_operator=od.laplacian.face_weighted_laplacian(
+                mesh_wp.points, mesh_wp.indices
+            ),
+            mask=region_wp,
+        )
+    else:
+        operator = (
+            None if mesh_tm.is_watertight else _meshlab_taubin_umbrella(mesh_tm, mesh_wp.device)
+        )
+        smoothed_wp = od.smoothing.filter_taubin(
+            mesh_wp.points,
+            mesh_wp.indices,
+            lamb=0.5,
+            nu=0.53,
+            iterations=4,
+            laplacian_operator=operator,
+            mask=region_wp,
+        )
+    assert np.allclose(smoothed_wp.numpy(), smoothed_pml, rtol=1e-5, atol=1e-5)
+
+
+# (id, filter of ``(vertices, faces, mask= | weights=)``, how close an unselected vertex stays):
+# every path a ``mask`` or ``weights`` takes, the explicit ones exact.
+_REGION_FILTERS: list[tuple[str, Callable[..., wp.array[wp.vec3]], float]] = [
+    (
+        "laplacian",
+        lambda v, f, **region: od.smoothing.filter_laplacian(
+            v, f, volume_constraint=False, **region
+        ),
+        0.0,
+    ),
+    (
+        "laplacian-implicit",
+        lambda v, f, **region: od.smoothing.filter_laplacian(
+            v, f, volume_constraint=False, implicit_time_integration=True, **region
+        ),
+        1e-6,
+    ),
+    (
+        "laplacian-implicit-bicgstab",
+        lambda v, f, **region: od.smoothing.filter_laplacian(
+            v,
+            f,
+            lamb=1e4,
+            iterations=2,
+            volume_constraint=False,
+            implicit_time_integration=True,
+            **region,
+        ),
+        1e-5,
+    ),
+    ("humphrey", lambda v, f, **region: od.smoothing.filter_humphrey(v, f, **region), 0.0),
+    (
+        "humphrey-meshlab",
+        lambda v, f, **region: od.smoothing.filter_humphrey(v, f, method="meshlab", **region),
+        0.0,
+    ),
+    ("taubin", lambda v, f, **region: od.smoothing.filter_taubin(v, f, **region), 0.0),
+    (
+        "taubin-recompute",
+        lambda v, f, **region: od.smoothing.filter_taubin(v, f, recompute=True, **region),
+        0.0,
+    ),
+    (
+        "neighborhood-average",
+        lambda v, f, **region: od.smoothing.filter_neighborhood_average(v, f, **region),
+        0.0,
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("smooth", "tolerance"),
+    [case[1:] for case in _REGION_FILTERS],
+    ids=[case[0] for case in _REGION_FILTERS],
+)
+@pytest.mark.parametrize("mesh_name", MESHES)
+def test_region_holds_unselected_vertices(
+    request: pytest.FixtureRequest,
+    mesh_name: str,
+    smooth: Callable[..., wp.array[wp.vec3]],
+    tolerance: float,
+) -> None:
+    """
+    Not a parity assert: on every path a filter takes, a vertex outside its ``mask`` stays put.
+
+    The explicit paths hold it exactly (its row of the localized operator is the identity's); the
+    implicit ones to their solve's tolerance, the fixed-point steps to rounding and BiCGSTAB (the
+    path a huge ``lamb`` takes) to its residual. ``weights`` of all ones are the unlocalized filter,
+    which pins the other half: a selected vertex moves as it would without one.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    _, region_np = _region_split(mesh_tm)
+    device = mesh_wp.device
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+
+    smoothed_np = smooth(
+        vertices, faces, mask=wp.array(region_np, dtype=wp.bool, device=device)
+    ).numpy()
+    moved_np = np.linalg.norm(smoothed_np - mesh_tm.vertices, axis=1)
+    assert moved_np[~region_np].max() <= tolerance
+    assert moved_np[region_np].max() > 1e-3
+
+    ones = wp.ones(vertices.size, dtype=wp.float32, device=device)
+    assert np.allclose(
+        smooth(vertices, faces, weights=ones).numpy(),
+        smooth(vertices, faces).numpy(),
+        rtol=1e-5,
+        atol=max(tolerance, 1e-6),
+    )
+
+
+def test_region_weights_scale_each_step(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Not a library comparison: no reference weights a Laplacian step per vertex.
+
+    One explicit pass moves each vertex its clamped weight's share of the unlocalized step,
+    ``v + clamp(w, 0, 1) (L v - v)``; weights outside ``[0, 1]`` are part of the draw, so a missed
+    clamp would move those vertices by more than their full step or backwards.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+    rng = np.random.default_rng(3)
+    weights_np = rng.uniform(-0.5, 1.5, len(mesh_tm.vertices)).astype(np.float32)
+    weights_wp = wp.array(weights_np, dtype=wp.float32, device=mesh_wp.device)
+
+    full_np = od.smoothing.filter_laplacian(
+        vertices, faces, iterations=1, volume_constraint=False
+    ).numpy()
+    weighted_np = od.smoothing.filter_laplacian(
+        vertices, faces, iterations=1, volume_constraint=False, weights=weights_wp
+    ).numpy()
+    share_np = np.clip(weights_np, 0.0, 1.0)[:, None]
+    expected_np = mesh_tm.vertices + share_np * (full_np - mesh_tm.vertices)
+    assert np.allclose(weighted_np, expected_np, rtol=1e-5, atol=1e-6)
+
+
+def test_filter_scalar_laplacian_region_keeps_unselected_values(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """Not a parity assert: a scalar field's values outside the mask are kept exactly."""
+    mesh_tm, mesh_wp = sphere_irregular
+    _, region_np = _region_split(mesh_tm)
+    values_np = mesh_tm.vertices[:, 0].astype(np.float32)
+    values_wp = wp.array(values_np, dtype=wp.float32, device=mesh_wp.device)
+    region_wp = wp.array(region_np, dtype=wp.bool, device=mesh_wp.device)
+
+    smoothed_np = od.smoothing.filter_scalar_laplacian(
+        values_wp, mesh_wp.points, mesh_wp.indices, mask=region_wp
+    ).numpy()
+    assert np.array_equal(smoothed_np[~region_np], values_np[~region_np])
+    assert np.abs(smoothed_np[region_np] - values_np[region_np]).max() > 1e-3
+
+
+# (id, call, error, match): each documented ``mask`` / ``weights`` guard.
+_REGION_GUARD_CASES: list[tuple[str, Callable[..., object], type[Exception], str]] = [
+    (
+        "int32-mask",
+        lambda v, f: od.smoothing.filter_taubin(
+            v, f, mask=wp.zeros(v.size, dtype=wp.int32, device=v.device)
+        ),
+        TypeError,
+        "mask must be a bool array",
+    ),
+    (
+        "short-weights",
+        lambda v, f: od.smoothing.filter_humphrey(
+            v, f, weights=wp.zeros(v.size - 1, dtype=wp.float32, device=v.device)
+        ),
+        ValueError,
+        "one entry per vertex",
+    ),
+    (
+        "volume-constraint",
+        lambda v, f: od.smoothing.filter_laplacian(
+            v, f, mask=wp.zeros(v.size, dtype=wp.bool, device=v.device)
+        ),
+        ValueError,
+        "volume_constraint=False",
+    ),
+    (
+        "pyvista",
+        lambda v, f: od.smoothing.filter_laplacian(
+            v,
+            f,
+            volume_constraint=False,
+            method="pyvista",
+            weights=wp.ones(v.size, dtype=wp.float32, device=v.device),
+        ),
+        ValueError,
+        "mask and weights must be None",
+    ),
+    (
+        "mask-and-weights",
+        lambda v, f: od.smoothing.filter_neighborhood_average(
+            v,
+            f,
+            mask=wp.zeros(v.size, dtype=wp.bool, device=v.device),
+            weights=wp.ones(v.size, dtype=wp.float32, device=v.device),
+        ),
+        ValueError,
+        "not both",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("call", "error", "match"),
+    [case[1:] for case in _REGION_GUARD_CASES],
+    ids=[case[0] for case in _REGION_GUARD_CASES],
+)
+def test_region_rejects_invalid_arguments(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+    call: Callable[..., object],
+    error: type[Exception],
+    match: str,
+) -> None:
+    """Not a parity assert: each documented ``mask`` / ``weights`` guard raises before any work."""
+    _mesh_tm, mesh_wp = sphere_irregular
+    with pytest.raises(error, match=match):
+        call(mesh_wp.points, mesh_wp.indices)
 
 
 @pytest.mark.parametrize(

@@ -355,6 +355,32 @@ def test_filter_taubin(bench_case: BenchCase) -> None:
         assert bench_case.run(run).vertices.shape == vertices.shape
 
 
+@pytest.mark.benchmark(group="filter_taubin_region")
+@pytest.mark.benchlibs("ordito")
+def test_filter_taubin_region(bench_case: BenchCase) -> None:
+    """
+    ``filter_taubin`` localized by a ``mask``: the vertices above the median height.
+
+    Read against ``filter_taubin``'s ordito row on the same operator: the difference is the
+    localization, two launches, a scan and a map building ``diag(w) L + diag(1 - w)`` once per call,
+    and the passes then run unchanged over one more entry a row. ordito-only: MeshLab's
+    ``selected=True`` is the tested reference
+    (``tests/test_smoothing.py::test_region_matches_pymeshlab_selection``), but it takes a face
+    selection it must be handed inside each round, so its time would price the selection filter.
+    """
+    skip_larger_than(bench_case, "dragon")
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    heights_np = bench_case.vertices_np[:, 2]
+    mask = wp.array(heights_np > np.median(heights_np), dtype=wp.bool, device=vertices.device)
+    operator = _laplacian_operator(bench_case)
+    result = bench_case.run(
+        lambda: od.smoothing.filter_taubin(
+            vertices, faces, iterations=_ITERATIONS, laplacian_operator=operator, mask=mask
+        )
+    )
+    assert result.shape == vertices.shape
+
+
 @pytest.mark.benchmark(group="filter_taubin_recompute")
 @pytest.mark.benchlibs("ordito")
 def test_filter_taubin_recompute(bench_case: BenchCase) -> None:
