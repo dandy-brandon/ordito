@@ -5298,6 +5298,12 @@
    "alloc": 2
   }
  },
+ "benchmarks/test_polyline.py::test_resample_closed_polyline_catmull_rom[saddle_small-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
  "benchmarks/test_polyline.py::test_simplify_polyline[saddle_small-ordito-cpu-0.001]": {
   "counts": {
    "launch": 1,
@@ -5401,6 +5407,13 @@
   "counts": {
    "launch": 2,
    "alloc": 2,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_upsample_count_polyline[saddle_small-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1,
    "readback": 1
   }
  },

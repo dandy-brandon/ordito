@@ -40,6 +40,7 @@ from ordito.kernels.reduce import (
     block_running_sum,
     block_sum,
     commit_block_sum,
+    commit_block_total,
     last_ticket,
     store_block_sum,
     store_block_total,
@@ -247,6 +248,17 @@ def distance_to_first_point(
     out_distances[tid] = wp.length(points[tid] - polyline[0])
 
 
+# A segment's sample count is formed in ``int64`` and capped here, above any count an array can
+# hold: ``2 ** 32`` pieces a segment, so the sum over the ``int32``-many segments of a polyline
+# stays below ``2 ** 63``. The ``float32`` twin is the cap the floored quotient is compared with
+# before its cast (a cast of a quotient past the integer range is undefined: the CPU read it as
+# ``INT_MIN``, which ``max(..., 1)`` turned into one piece, and CUDA saturated it, wrapping the
+# scan negative). ``INT32_LIMIT`` is the largest count the ``int32`` steps and offsets store.
+SEGMENT_STEP_CAP = wp.int64(4294967296)
+SEGMENT_STEP_CAP_FLOAT = wp.float32(4294967296.0)
+INT32_LIMIT = wp.int64(2147483647)
+
+
 @wp.func
 def segment_steps(
     polyline: wp.array[wp.vec3],
@@ -254,26 +266,41 @@ def segment_steps(
     wrap_open: wp.int32,
     bisect: wp.int32,
     i: wp.int32,
-) -> wp.int32:
+) -> wp.int64:
     # Samples segment ``i`` is split into, over ``n - 1`` segments, or ``n`` for ``closed=True``.
     # Slot ``n - 1`` is then the closing segment when ``closing_segment_flag`` adds one, and a zero
     # count when the input already repeats its first point: a segment with no samples, which the
     # offsets search in ``segment_parameter`` never selects, so the output is the
     # ``n - 1``-segment one. That is what lets the host size the launch without asking whether
-    # the ends coincide. Shared by ``segment_step_counts`` and ``segment_step_offsets_block``.
+    # the ends coincide. At most ``SEGMENT_STEP_CAP``; a NaN length takes one piece, as a
+    # zero-length segment does. Shared by ``segment_step_counts``, ``segment_step_offsets_block``
+    # and ``polyline_upsample_count``.
     n = polyline.shape[0]
     if i == n - 1 and closing_segment_flag(polyline, wrap_open) == 0:
-        return wp.int32(0)
+        return wp.int64(0)
     length = wp.length(polyline[loop_point(i + 1, n)] - polyline[i])
     if bisect == 0:
-        return wp.max(wp.int32(wp.floor(length / step_size)), wp.int32(1))
+        quotient = wp.floor(length / step_size)
+        if quotient >= SEGMENT_STEP_CAP_FLOAT:
+            return SEGMENT_STEP_CAP
+        if quotient >= wp.float32(1.0):
+            return wp.int64(quotient)
+        return wp.int64(1)
     # Halve every piece until it is no longer than the step: the smallest power of two whose
     # pieces fit, tested on the piece length itself so a segment exactly ``2 ** k`` steps long
-    # stops at ``2 ** k``. The cap keeps the count an ``int32``.
-    pieces = wp.int32(1)
-    while length > step_size * wp.float32(pieces) and pieces < (1 << 30):
-        pieces = pieces * 2
+    # stops at ``2 ** k``.
+    pieces = wp.int64(1)
+    while length > step_size * wp.float32(pieces) and pieces < SEGMENT_STEP_CAP:
+        pieces = pieces * wp.int64(2)
     return pieces
+
+
+@wp.func
+def stored_step_count(count: wp.int64) -> wp.int32:
+    # A count as the ``int32`` steps and offsets store it, or ``-1`` past ``INT32_LIMIT``: a count
+    # that cannot be represented written negative, which ``array.flag_wrapped_scan`` and
+    # ``segment_step_offsets_block`` flag as they do a wrapped scan.
+    return wp.where(count > INT32_LIMIT, wp.int32(-1), wp.int32(count))
 
 
 @wp.kernel
@@ -283,11 +310,15 @@ def segment_step_counts(
     wrap_open: wp.int32,
     bisect: wp.int32,
     out_steps: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
 ) -> None:
-    # ``segment_steps`` of every segment, for a device-wide scan into the offsets; a short
-    # polyline takes ``segment_step_offsets_block`` instead.
+    # ``segment_steps`` of every segment, into the steps the gather reads and into the counts slot
+    # of the offsets ``_common.scan_count_checked`` scans; a short polyline takes
+    # ``segment_step_offsets_block`` instead.
     i = wp.int32(wp.tid())
-    out_steps[i] = segment_steps(polyline, step_size, wrap_open, bisect, i)
+    steps = stored_step_count(segment_steps(polyline, step_size, wrap_open, bisect, i))
+    out_steps[i] = steps
+    out_counts[i] = steps
 
 
 @wp.kernel
@@ -302,21 +333,51 @@ def segment_step_offsets_block(
     # ``segment_step_counts`` and the scan of its counts as one block, for a short polyline: each
     # segment's count, and the ``n_segments + 1`` offsets (a leading zero, then the inclusive scan)
     # by ``arc_length_table_block``'s carried chunk scan (``reduce.block_running_sum``). An integer
-    # sum is exact, so the offsets equal the device-wide scan's.
+    # sum is exact, so the offsets equal the device-wide scan's. ``out_offsets`` holds one slot
+    # more, set when the output would pass ``INT32_LIMIT`` points: a count stored negative
+    # (``stored_step_count``), or a negative partial sum, which the first wrapped one of counts no
+    # larger than ``INT32_LIMIT`` always is (``array.flag_wrapped_scan``'s test, needing no
+    # neighbour here). Warp's tile scan takes no ``int64``, so the scan stays ``int32``.
     _block, lane = wp.tid()
     n_segments = out_steps.shape[0]
     if lane == 0:
         out_offsets[0] = wp.int32(0)
+        out_offsets[n_segments + 1] = wp.int32(0)
     carry = wp.int32(0)
     for start in range(0, n_segments, wp.block_dim()):
         i = start + lane
         steps = wp.int32(0)
         if i < n_segments:
-            steps = segment_steps(polyline, step_size, wrap_open, bisect, i)
+            steps = stored_step_count(segment_steps(polyline, step_size, wrap_open, bisect, i))
             out_steps[i] = steps
         running, carry = block_running_sum(steps, carry)
         if i < n_segments:
             out_offsets[i + 1] = running
+            if steps < 0 or running < 0:
+                out_offsets[n_segments + 1] = wp.int32(1)
+
+
+@wp.kernel
+def polyline_upsample_count(
+    polyline: wp.array[wp.vec3],
+    step_size: wp.float32,
+    wrap_open: wp.int32,
+    bisect: wp.int32,
+    out_total: wp.array[wp.int64],
+) -> None:
+    # The sum of ``segment_steps`` over every segment, lane-strided into ``out_total[0]`` (zeroed by
+    # the caller), one integer atomic a block: exact and order-free, so it needs no deterministic
+    # form. ``wrap_open`` adds the closing segment's slot, as in ``_upsample``.
+    chunk, lane = wp.tid()
+    n = polyline.shape[0]
+    n_segments = wp.where(wrap_open != 0, n, n - 1)
+    offset, count = block_chunk_1d(n_segments, chunk)
+    if count <= 0:
+        return
+    local = wp.int64(0)
+    for k in range(lane, count, wp.block_dim()):
+        local += segment_steps(polyline, step_size, wrap_open, bisect, offset + k)
+    commit_block_total(lane, local, out_total, 0)
 
 
 @wp.func
@@ -504,9 +565,201 @@ def arc_table_segment(polyline: wp.array[wp.vec3], wrap_open: wp.int32, i: wp.in
     return length
 
 
+# Five-point Gauss-Legendre rule on ``[-1, 1]`` (the centre node and the two symmetric pairs),
+# applied on ``HERMITE_ARC_PIECES`` equal pieces of a span's parameter range by
+# ``hermite_arc_length``. A Catmull-Rom span's speed is the square root of a quartic, smooth
+# wherever the span does not stop, so the composite rule is exact to ``float32`` on every span the
+# tests draw, and needs no table of the curve.
+GAUSS_NODE_1 = wp.float32(0.5384693101056831)
+GAUSS_NODE_2 = wp.float32(0.906179845938664)
+GAUSS_WEIGHT_0 = wp.float32(0.5688888888888889)
+GAUSS_WEIGHT_1 = wp.float32(0.4786286704993665)
+GAUSS_WEIGHT_2 = wp.float32(0.2369268850561891)
+HERMITE_ARC_PIECES = 4
+# Safeguarded Newton steps ``hermite_parameter_at`` takes at most, and the residual, as a fraction
+# of the span's length, at which it stops early: ``2 ** -20``, past what the ``float32`` table
+# resolves.
+HERMITE_NEWTON_STEPS = wp.int32(12)
+HERMITE_NEWTON_TOLERANCE = wp.float32(9.5367431640625e-07)
+
+# ``polyline_resample``'s ``interpolation`` selector, read by the arc-length table kernels
+# (``arc_table_span``) and ``resample_interp``: chords between the points, or the centripetal
+# Catmull-Rom curve through them.
+INTERPOLATION_LINEAR = wp.int32(0)
+INTERPOLATION_CATMULL_ROM = wp.int32(1)
+
+
+@wp.func
+def hermite_point(
+    start: wp.vec3, end: wp.vec3, start_tangent: wp.vec3, end_tangent: wp.vec3, t: wp.float32
+) -> wp.vec3:
+    # The cubic Hermite span from ``start`` to ``end`` with the given end tangents, at ``t``.
+    t2 = t * t
+    t3 = t2 * t
+    return (
+        (wp.float32(2.0) * t3 - wp.float32(3.0) * t2 + wp.float32(1.0)) * start
+        + (t3 - wp.float32(2.0) * t2 + t) * start_tangent
+        + (wp.float32(3.0) * t2 - wp.float32(2.0) * t3) * end
+        + (t3 - t2) * end_tangent
+    )
+
+
+@wp.func
+def hermite_speed(
+    start: wp.vec3, end: wp.vec3, start_tangent: wp.vec3, end_tangent: wp.vec3, t: wp.float32
+) -> wp.float32:
+    # ``|d hermite_point / dt|`` at ``t``.
+    t2 = t * t
+    chord = wp.float32(6.0) * (t - t2)
+    return wp.length(
+        chord * (end - start)
+        + (wp.float32(3.0) * t2 - wp.float32(4.0) * t + wp.float32(1.0)) * start_tangent
+        + (wp.float32(3.0) * t2 - wp.float32(2.0) * t) * end_tangent
+    )
+
+
+@wp.func
+def hermite_arc_length(
+    start: wp.vec3, end: wp.vec3, start_tangent: wp.vec3, end_tangent: wp.vec3, t: wp.float32
+) -> wp.float32:
+    # Arc length of the Hermite span over ``[0, t]``: the composite five-point Gauss-Legendre rule
+    # on ``HERMITE_ARC_PIECES`` equal pieces. The piece bounds advance as a running sum, not as a
+    # cast of the unrolled loop index (CLAUDE.md §1.6).
+    half = t / wp.float32(2 * HERMITE_ARC_PIECES)
+    middle = half
+    total = wp.float32(0.0)
+    for _piece in range(HERMITE_ARC_PIECES):
+        offset1 = half * GAUSS_NODE_1
+        offset2 = half * GAUSS_NODE_2
+        total += (
+            GAUSS_WEIGHT_0 * hermite_speed(start, end, start_tangent, end_tangent, middle)
+            + GAUSS_WEIGHT_1
+            * (
+                hermite_speed(start, end, start_tangent, end_tangent, middle - offset1)
+                + hermite_speed(start, end, start_tangent, end_tangent, middle + offset1)
+            )
+            + GAUSS_WEIGHT_2
+            * (
+                hermite_speed(start, end, start_tangent, end_tangent, middle - offset2)
+                + hermite_speed(start, end, start_tangent, end_tangent, middle + offset2)
+            )
+        )
+        middle = middle + wp.float32(2.0) * half
+    return total * half
+
+
+@wp.func
+def hermite_parameter_at(
+    start: wp.vec3,
+    end: wp.vec3,
+    start_tangent: wp.vec3,
+    end_tangent: wp.vec3,
+    target: wp.float32,
+    span_length: wp.float32,
+) -> wp.float32:
+    # The parameter at which the span's arc length from ``start`` reaches ``target``, of a span
+    # ``span_length`` long (positive): Newton's method on ``hermite_arc_length``, its step kept
+    # inside a bracket that every evaluation narrows and replaced by the bracket's midpoint when it
+    # leaves it or the span stops (zero speed), so it converges on any span. A ``while`` loop, so
+    # the twenty-speed quadrature is not unrolled once a step.
+    lower = wp.float32(0.0)
+    upper = wp.float32(1.0)
+    t = wp.clamp(target / span_length, wp.float32(0.0), wp.float32(1.0))
+    tolerance = HERMITE_NEWTON_TOLERANCE * span_length
+    step = wp.int32(0)
+    while step < HERMITE_NEWTON_STEPS:
+        excess = hermite_arc_length(start, end, start_tangent, end_tangent, t) - target
+        if wp.abs(excess) <= tolerance:
+            break
+        if excess > wp.float32(0.0):
+            upper = t
+        else:
+            lower = t
+        speed = hermite_speed(start, end, start_tangent, end_tangent, t)
+        candidate = wp.float32(0.5) * (lower + upper)
+        if speed > wp.float32(0.0):
+            newton = t - excess / speed
+            if newton > lower and newton < upper:
+                candidate = newton
+        t = candidate
+        step += 1
+    return t
+
+
+@wp.func
+def catmull_rom_span(
+    polyline: wp.array[wp.vec3], wrap_open: wp.int32, i: wp.int32
+) -> tuple[wp.vec3, wp.vec3, wp.vec3, wp.vec3]:
+    # Span ``i`` of the centripetal Catmull-Rom curve through the polyline, in Hermite form:
+    # ``(start, end, start tangent, end tangent)``, three.js's ``CatmullRomCurve3`` with
+    # ``"centripetal"`` knots. A closed curve runs through the ``m`` distinct points of the loop (a
+    # repeated first point is dropped, ``seam_repeats_first``) and its neighbours wrap; an open
+    # one takes the end neighbours mirrored through the end points, as three.js does. The knot
+    # interval of two points is the square root of their distance. Where three.js substitutes a unit
+    # interval for an interval under ``1e-4`` (an absolute length, so it depends on the units), only
+    # an exactly repeated point is degenerate here: its interval is zero and nothing else divides
+    # by zero. A zero-length span is that point with zero tangents (three.js gives it unit knots and
+    # a small loop), and a repeated neighbour takes the span's own interval, as in three.js.
+    n = polyline.shape[0]
+    start = polyline[i]
+    end = start
+    previous = start
+    following = start
+    if wrap_open != 0:
+        m = n - seam_repeats_first(polyline, wrap_open)
+        end = polyline[(i + 1) % m]
+        previous = polyline[(i + m - 1) % m]
+        following = polyline[(i + 2) % m]
+    else:
+        end = polyline[i + 1]
+        previous = wp.where(i > 0, polyline[wp.max(i - 1, 0)], wp.float32(2.0) * start - end)
+        following = wp.where(
+            i + 2 < n, polyline[wp.min(i + 2, n - 1)], wp.float32(2.0) * end - start
+        )
+    interval = wp.sqrt(wp.length(end - start))
+    if interval == wp.float32(0.0):
+        return start, end, wp.vec3(), wp.vec3()
+    before = wp.sqrt(wp.length(start - previous))
+    after = wp.sqrt(wp.length(following - end))
+    before = wp.where(before == wp.float32(0.0), interval, before)
+    after = wp.where(after == wp.float32(0.0), interval, after)
+    start_tangent = (
+        (start - previous) / before
+        - (end - previous) / (before + interval)
+        + (end - start) / interval
+    ) * interval
+    end_tangent = (
+        (end - start) / interval
+        - (following - start) / (interval + after)
+        + (following - end) / after
+    ) * interval
+    return start, end, start_tangent, end_tangent
+
+
+@wp.func
+def arc_table_span(
+    polyline: wp.array[wp.vec3], wrap_open: wp.int32, interpolation: wp.int32, i: wp.int32
+) -> wp.float32:
+    # Entry ``i`` of an arc-length table under ``interpolation``: ``arc_table_segment``'s chord, or
+    # the Catmull-Rom span's arc length (``catmull_rom_span``), with the table's slots: ``n - 1``
+    # spans open, ``n`` closed, and a zero in the closing slot when the input repeats its first
+    # point (``seam_repeats_first``).
+    if interpolation == INTERPOLATION_LINEAR:
+        return arc_table_segment(polyline, wrap_open, i)
+    n = polyline.shape[0]
+    n_spans = wp.where(wrap_open != 0, n - seam_repeats_first(polyline, wrap_open), n - 1)
+    if i >= n_spans:
+        return wp.float32(0.0)
+    start, end, start_tangent, end_tangent = catmull_rom_span(polyline, wrap_open, i)
+    return hermite_arc_length(start, end, start_tangent, end_tangent, wp.float32(1.0))
+
+
 @wp.kernel
 def arc_segment_lengths(
-    polyline: wp.array[wp.vec3], wrap_open: wp.int32, out_cumulative: wp.array[wp.float32]
+    polyline: wp.array[wp.vec3],
+    wrap_open: wp.int32,
+    interpolation: wp.int32,
+    out_cumulative: wp.array[wp.float32],
 ) -> None:
     # Segment lengths for an arc-length table, launched over ``n - 1`` segments or ``n`` for
     # ``closed=True``. The closing slot ``n - 1`` holds the segment back to the first point when
@@ -522,15 +775,18 @@ def arc_segment_lengths(
     i = wp.int32(wp.tid())
     if i == 0:
         out_cumulative[0] = wp.float32(0.0)
-    out_cumulative[i + 1] = arc_table_segment(polyline, wrap_open, i)
+    out_cumulative[i + 1] = arc_table_span(polyline, wrap_open, interpolation, i)
 
 
 @wp.kernel
 def arc_length_table_block(
-    polyline: wp.array[wp.vec3], wrap_open: wp.int32, out_cumulative: wp.array[wp.float32]
+    polyline: wp.array[wp.vec3],
+    wrap_open: wp.int32,
+    interpolation: wp.int32,
+    out_cumulative: wp.array[wp.float32],
 ) -> None:
     # ``arc_segment_lengths`` and the scan of its table as one block, for a short polyline: the
-    # same segments (``arc_table_segment``), summed a block-wide chunk at a time with the running
+    # same segments (``arc_table_span``), summed a block-wide chunk at a time with the running
     # sum carried across chunks (``reduce.block_running_sum``), so the table is written whole in
     # one launch. The two forms differ in the scan's summation order alone; both are fixed. On the
     # CPU device the block is one lane, which sums in index order as the scan does.
@@ -543,7 +799,7 @@ def arc_length_table_block(
         i = start + lane
         length = wp.float32(0.0)
         if i < n_segments:
-            length = arc_table_segment(polyline, wrap_open, i)
+            length = arc_table_span(polyline, wrap_open, interpolation, i)
         running, carry = block_running_sum(length, carry)
         if i < n_segments:
             out_cumulative[i + 1] = running
@@ -1080,10 +1336,15 @@ def resample_interp(
     cumulative_lengths: wp.array[wp.float32],
     num_points: wp.int32,
     wrap_open: wp.int32,
+    interpolation: wp.int32,
     out_points: wp.array[wp.vec3],
 ) -> None:
-    # Linear interpolation at evenly spaced arc lengths, mimicking numpy.interp:
-    # constant (clamped) extrapolation at the endpoints.
+    # Interpolation at evenly spaced arc lengths, mimicking numpy.interp: constant (clamped)
+    # extrapolation at the endpoints. Under ``INTERPOLATION_LINEAR`` a point is a lerp along the
+    # chord the search found; under ``INTERPOLATION_CATMULL_ROM`` the table holds the curve's span
+    # lengths (``arc_table_span``), and the point is the span evaluated at the parameter where its
+    # arc length reaches the target (``hermite_parameter_at``), so it lies on the curve. The two
+    # share the target, the search and the end points; the selector is uniform across the launch.
     #
     # ``num_points`` is the *spacing* count: ``closed=True`` launches ``num_points`` threads at a
     # spacing of ``num_points + 1`` samples, so its seam sample is never computed rather than
@@ -1106,10 +1367,24 @@ def resample_interp(
         out_points[j] = polyline[loop_point(n_table - 1, n)]
     else:
         denominator = cumulative_lengths[hi] - cumulative_lengths[hi - 1]
-        t = wp.float32(0.0)
-        if denominator > 0.0:
-            t = (x - cumulative_lengths[hi - 1]) / denominator
-        out_points[j] = wp.lerp(polyline[hi - 1], polyline[loop_point(hi, n)], t)
+        if interpolation == INTERPOLATION_LINEAR:
+            t = wp.float32(0.0)
+            if denominator > 0.0:
+                t = (x - cumulative_lengths[hi - 1]) / denominator
+            out_points[j] = wp.lerp(polyline[hi - 1], polyline[loop_point(hi, n)], t)
+        else:
+            start, end, start_tangent, end_tangent = catmull_rom_span(polyline, wrap_open, hi - 1)
+            t = wp.float32(0.0)
+            if denominator > 0.0:
+                t = hermite_parameter_at(
+                    start,
+                    end,
+                    start_tangent,
+                    end_tangent,
+                    x - cumulative_lengths[hi - 1],
+                    denominator,
+                )
+            out_points[j] = hermite_point(start, end, start_tangent, end_tangent, t)
 
 
 @wp.func

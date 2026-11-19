@@ -513,6 +513,22 @@ def test_smooth_upsample_polyline(bench_case: BenchCase) -> None:
     assert dense.size >= polyline.size
 
 
+@pytest.mark.benchmark(group="polyline_upsample_count")
+@pytest.mark.benchaxis("polyline")
+@pytest.mark.benchlibs("ordito")
+def test_upsample_count_polyline(bench_case: BenchCase) -> None:
+    """
+    ``polyline_upsample_count`` at the upsample rows' step: one lane-strided count and a readback.
+
+    ordito-only: no library counts an upsample without performing it, and the test pins the count
+    to ``polyline_upsample``'s own output size.
+    """
+    step = _UPSAMPLE_FRACTION * _segment_scale(bench_case)[0]
+    polyline = _polyline_wp(bench_case)
+    count = bench_case.run(lambda: od.polyline.polyline_upsample_count(polyline, step))
+    assert count >= polyline.size
+
+
 @pytest.mark.benchmark(group="polyline_downsample")
 @pytest.mark.benchaxis("polyline")
 @pytest.mark.benchlibs("ordito", "meshlib")
@@ -715,6 +731,28 @@ def test_resample_closed_polyline(bench_case: BenchCase) -> None:
     polyline = _polyline_wp(bench_case)
     n_points = polyline.size
     ring = bench_case.run(lambda: od.polyline.polyline_resample(polyline, n_points, closed=True))
+    assert ring.size == n_points
+
+
+@pytest.mark.benchmark(group="polyline_resample_closed_catmull_rom")
+@pytest.mark.benchaxis("polyline")
+@pytest.mark.benchlibs("ordito")
+def test_resample_closed_polyline_catmull_rom(bench_case: BenchCase) -> None:
+    """
+    ``polyline_resample(closed=True, interpolation="catmull_rom")`` to the input's point count.
+
+    The row above's launches, with each span's length a quadrature of the curve's speed and each
+    point a Newton solve on it, so the pair prices the curve. ordito-only: no reference library
+    builds the centripetal Catmull-Rom curve (``tests/test_polyline.py`` checks it against a NumPy
+    evaluation).
+    """
+    polyline = _polyline_wp(bench_case)
+    n_points = polyline.size
+    ring = bench_case.run(
+        lambda: od.polyline.polyline_resample(
+            polyline, n_points, closed=True, interpolation="catmull_rom"
+        )
+    )
     assert ring.size == n_points
 
 

@@ -14,13 +14,13 @@ rather than a polyline, so the token there would be wrong rather than redundant.
 prefix alone would lose "from what"; it is spelled to match
 [`points.point_plane_distance`][ordito.points.point_plane_distance].
 
-**The ``closed=`` convention.** Ten of these functions -- length, centroid, radius, angles,
-point-to-curve distance, and the five resampling operations -- take a keyword-only
-``closed: bool = False``. Passing ``closed=True`` appends the closing edge back to the first point
-if it is absent ([`polyline_close`][ordito.polyline.polyline_close]) and then does the open
-computation on that, so the seam is treated like any other segment. Three of the ten additionally
-drop the duplicated seam point on the way out, so their result is a clean cyclic ring with one entry
-per *original* point rather than one extra:
+**The ``closed=`` convention.** Eleven of these functions -- length, centroid, radius, angles,
+point-to-curve distance, the five resampling operations and the upsample count -- take a
+keyword-only ``closed: bool = False``. Passing ``closed=True`` appends the closing edge back to the
+first point if it is absent ([`polyline_close`][ordito.polyline.polyline_close]) and then does the
+open computation on that, so the seam is treated like any other segment. Three of the eleven
+additionally drop the duplicated seam point on the way out, so their result is a clean cyclic ring
+with one entry per *original* point rather than one extra:
 [`polyline_resample`][ordito.polyline.polyline_resample],
 [`polyline_angles`][ordito.polyline.polyline_angles] and
 [`polyline_smooth_upsample`][ordito.polyline.polyline_smooth_upsample].
@@ -51,6 +51,7 @@ from ordito._common import (
     require_same_device,
     run_device_loop,
     scan_count,
+    scan_count_checked,
 )
 from ordito.config import is_deterministic
 from ordito.constants import TILE_1D
@@ -87,6 +88,18 @@ _ARC_TABLE_ONE_BLOCK_SEGMENTS = 4_096
 # block at every length: 0.90-0.98x to 2 048 segments, at par past it.
 _STEP_OFFSETS_ONE_BLOCK_SEGMENTS = 2_048
 
+# The error an upsample raises when its output would pass the ``int32`` point indices.
+_UPSAMPLE_OVERFLOW = (
+    "the upsampled polyline would have more points than int32 indices address; check the count "
+    "with polyline_upsample_count or use a larger step_size"
+)
+
+
+# ``polyline_resample``'s ``interpolation`` names and the kernels' selector values.
+_INTERPOLATIONS: dict[str, wp.int32] = {
+    "linear": kernel_polyline.INTERPOLATION_LINEAR,
+    "catmull_rom": kernel_polyline.INTERPOLATION_CATMULL_ROM,
+}
 
 # ``polyline_radius``'s folded reductions: the kernel's selector and the result slot's seed.
 _RADIUS_REDUCTIONS: dict[str, tuple[wp.int32, float]] = {
@@ -558,7 +571,7 @@ def polyline_upsample(
     polyline
         ``(n,)`` polyline vertices.
     step_size
-        Target spacing between consecutive output points.
+        Target spacing between consecutive output points. Must be positive and finite.
     closed
         When ``True``, treat the polyline as a loop: the closing edge back to the first point is
         added if absent (see [`polyline_close`][ordito.polyline.polyline_close]), and the
@@ -577,10 +590,13 @@ def polyline_upsample(
     Raises
     ------
     ValueError
-        If ``method`` is not ``"floor"`` or ``"bisect"``.
+        If ``method`` is not ``"floor"`` or ``"bisect"``, ``step_size`` is not positive and
+        finite, or the output would have more points than ``int32`` indices address.
 
     See Also
     --------
+    [`polyline_upsample_count`][ordito.polyline.polyline_upsample_count]
+        The output size, counted without upsampling.
     [`polyline_smooth_upsample`][ordito.polyline.polyline_smooth_upsample]
         The same subdivision with the new points placed on a fitted arc instead of the chord.
     [`polyline_downsample`][ordito.polyline.polyline_downsample]
@@ -612,6 +628,93 @@ def polyline_upsample(
     )
 
 
+def polyline_upsample_count(
+    polyline: wp.array[wp.vec3],
+    step_size: float,
+    *,
+    closed: bool = False,
+    method: Literal["floor", "bisect"] = "floor",
+) -> int:
+    """
+    Count the points [`polyline_upsample`][ordito.polyline.polyline_upsample] would return.
+
+    The same per-segment piece counts, summed in 64-bit integers without allocating the points, so
+    a caller can check an output size against a budget before upsampling. A step much smaller than
+    the segments gives a count past what a Warp array can index, where ``polyline_upsample`` raises;
+    this returns it. ``method="floor"`` also counts the points of
+    [`polyline_smooth_upsample`][ordito.polyline.polyline_smooth_upsample] at the same ``closed``.
+
+    Parameters
+    ----------
+    polyline
+        ``(n,)`` polyline vertices.
+    step_size
+        Target spacing between consecutive output points. Must be positive and finite.
+    closed
+        Count the loop's points, as ``polyline_upsample(..., closed=True)`` emits them.
+    method
+        The piece-count rule, ``"floor"`` or ``"bisect"``, as in ``polyline_upsample``.
+
+    Returns
+    -------
+    int
+        The output point count; ``n`` for fewer than two points. A segment is counted at no more
+        than ``2 ** 32`` pieces, so a count from ``2 ** 32`` up is a lower bound, already past
+        any array.
+
+    Raises
+    ------
+    ValueError
+        If ``method`` is not ``"floor"`` or ``"bisect"``, or ``step_size`` is not positive and
+        finite.
+
+    See Also
+    --------
+    [`polyline_upsample`][ordito.polyline.polyline_upsample]
+
+    Examples
+    --------
+    A step a billion times finer than the unit square's sides counts four billion points, more
+    than an upsample can return:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    square = wp.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3
+    )
+    print(od.polyline.polyline_upsample_count(square, 0.25, closed=True))  # 16
+    print(od.polyline.polyline_upsample_count(square, 1e-9, closed=True) > 2**31)  # True
+    ```
+    """
+    if method not in ("floor", "bisect"):
+        raise ValueError(f"method must be 'floor' or 'bisect', got {method!r}")
+    _check_upsample_step(step_size)
+    device = polyline.device
+    n_points = polyline.size
+    if n_points < 2:
+        return n_points
+    n_segments = n_points if closed else n_points - 1
+    total = _launch.zeros(1, dtype=wp.int64, device=device)
+    _launch.launch_tiled(
+        kernel_polyline.polyline_upsample_count,
+        dim=kernel_reduce.blocks_1d(n_segments),
+        inputs=[
+            polyline,
+            wp.float32(step_size),
+            wp.int32(closed),
+            wp.int32(method == "bisect"),
+            total,
+        ],
+        block_dim=TILE_1D,
+        device=device,
+    )
+    # Host readback: the count is the function's answer.
+    return int(read_scalar(total))
+
+
 def polyline_smooth_upsample(
     polyline: wp.array[wp.vec3], step_size: float, *, closed: bool = False
 ) -> wp.array[wp.vec3]:
@@ -634,7 +737,7 @@ def polyline_smooth_upsample(
     polyline
         ``(n,)`` polyline vertices.
     step_size
-        Target spacing between consecutive output points.
+        Target spacing between consecutive output points. Must be positive and finite.
     closed
         When ``True``, treat the polyline as a loop: the closing edge back to the first point is
         added if absent (see [`polyline_close`][ordito.polyline.polyline_close]). Every segment
@@ -646,6 +749,13 @@ def polyline_smooth_upsample(
     wp.array[wp.vec3]
         ``(m,)`` curvature-aware upsampled polyline of ``m`` points. The input is returned unchanged
         for fewer than two points.
+
+    Raises
+    ------
+    ValueError
+        If ``step_size`` is not positive and finite, or the output would have more points than
+        ``int32`` indices address (see
+        [`polyline_upsample_count`][ordito.polyline.polyline_upsample_count]).
 
     See Also
     --------
@@ -698,6 +808,7 @@ def _upsample(
     last is the closing one, reached by wrapping the index, or a segment with no samples when the
     input already repeats its first point (``segment_step_counts``) -- so the host never asks.
     """
+    _check_upsample_step(step_size)
     device = polyline.device
     n_points = polyline.size
     if n_points < 2:
@@ -706,25 +817,33 @@ def _upsample(
 
     step_inputs = [polyline, wp.float32(step_size), wp.int32(closed), wp.int32(bisect)]
     if n_segments <= _STEP_OFFSETS_ONE_BLOCK_SEGMENTS or not wp.get_device(device).is_cuda:
-        steps, offsets = _launch.carve(wp.int32, (n_segments, n_segments + 1), device)
+        steps, offsets = _launch.carve(wp.int32, (n_segments, n_segments + 2), device)
         _launch.launch_tiled(
             kernel_polyline.segment_step_offsets_block,
             dim=1,
             inputs=[*step_inputs, steps, offsets],
             device=device,
         )
-        # Sizes the output: the sample count is the offsets' total.
-        total = int(read_scalar(offsets))
+        # Sizes the output: the sample count is the offsets' total, read with its wrap flag.
+        total, wrapped = read_values(offsets, n_segments, 2)
+        if wrapped:
+            raise ValueError(_UPSAMPLE_OVERFLOW)
+        total = int(total)
     else:
         steps = _launch.empty(n_segments, dtype=wp.int32, device=device)
+        offsets = _launch.zeros(n_segments + 2, dtype=wp.int32, device=device)
         _launch.launch(
             kernel_polyline.segment_step_counts,
             dim=n_segments,
-            inputs=[*step_inputs, steps],
+            inputs=[*step_inputs, steps, _launch.view(offsets, 1, n_segments + 1)],
             device=device,
         )
-        offsets, total = od.array.counts_to_offsets(steps)
-
+        try:
+            total = scan_count_checked(offsets, "the upsampled polyline")
+        except ValueError:
+            raise ValueError(_UPSAMPLE_OVERFLOW) from None
+    # The offsets' trailing slot is their wrap flag, not an offset the gather may search.
+    offsets = _launch.view(offsets, 0, n_segments + 1)
     out_points = _launch.empty(total, dtype=wp.vec3, device=device)
     _launch.launch(
         gather_kernel,
@@ -733,6 +852,12 @@ def _upsample(
         device=device,
     )
     return out_points
+
+
+def _check_upsample_step(step_size: float) -> None:
+    """Raise ``ValueError`` unless ``step_size`` is positive and finite."""
+    if not (step_size > 0.0 and math.isfinite(step_size)):
+        raise ValueError(f"step_size must be positive and finite, got {step_size}")
 
 
 def cumulative_arc_length(polyline: wp.array[wp.vec3]) -> wp.array[wp.float32]:
@@ -1094,13 +1219,25 @@ def _gather_kept(
 
 
 def polyline_resample(
-    polyline: wp.array[wp.vec3], num_points: int, *, closed: bool = False
+    polyline: wp.array[wp.vec3],
+    num_points: int,
+    *,
+    closed: bool = False,
+    interpolation: Literal["linear", "catmull_rom"] = "linear",
 ) -> wp.array[wp.vec3]:
     """
     Resample a polyline to a fixed number of points evenly spaced by arc length.
 
-    Points are sampled at ``num_points`` arc lengths evenly spanning ``[0, total_length]`` and
-    linearly interpolated between the bracketing vertices (matching ``numpy.interp`` semantics).
+    Points are sampled at ``num_points`` arc lengths evenly spanning ``[0, total_length]``. With
+    ``interpolation="linear"`` the length is the polyline's own and each point is linearly
+    interpolated between the bracketing vertices (matching ``numpy.interp`` semantics). With
+    ``"catmull_rom"`` the length is that of the centripetal Catmull-Rom curve through the
+    vertices -- the curve three.js's ``CatmullRomCurve3`` draws with ``"centripetal"`` knots --
+    and each point lies on that curve, evaluated exactly at its arc length rather than read off a
+    sampled copy.
+    The curve passes through every vertex, is smooth there, and does not form cusps or loops on
+    unevenly spaced vertices. An open curve takes its end tangents from the end vertices mirrored;
+    a closed one is smooth across the seam.
 
     Parameters
     ----------
@@ -1112,12 +1249,20 @@ def polyline_resample(
         When ``True``, treat the polyline as a loop: the closing edge back to the first point is
         added if absent (see [`polyline_close`][ordito.polyline.polyline_close]). The result has
         ``num_points`` *distinct* points: the duplicated seam is dropped.
+    interpolation
+        ``"linear"`` (default) to place the points on the polyline's segments, or
+        ``"catmull_rom"`` to place them on the centripetal Catmull-Rom curve through its vertices.
 
     Returns
     -------
     wp.array[wp.vec3]
         ``(num_points,)`` resampled polyline. An empty input is returned unchanged; a single
         point is repeated ``num_points`` times.
+
+    Raises
+    ------
+    ValueError
+        If ``interpolation`` is not ``"linear"`` or ``"catmull_rom"``.
 
     See Also
     --------
@@ -1140,7 +1285,26 @@ def polyline_resample(
     print(resampled.shape)  # (7,)
     print(resampled.numpy()[1])  # [0.5 0.  0. ]
     ```
+
+    On the curve through the closed square's corners, every sixteenth of 64 evenly spaced points
+    is a corner, and the curve bulges out of the square between them:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    square = wp.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3
+    )
+    curve = od.polyline.polyline_resample(square, 64, closed=True, interpolation="catmull_rom")
+    print(np.allclose(curve.numpy()[::16], square.numpy(), atol=1e-5))  # True
+    print(bool(curve.numpy()[:, 0].max() > 1.0))  # True
+    ```
     """
+    if interpolation not in ("linear", "catmull_rom"):
+        raise ValueError(f"interpolation must be 'linear' or 'catmull_rom', got {interpolation!r}")
     device = polyline.device
     n = polyline.size
     if n == 0:
@@ -1158,7 +1322,8 @@ def polyline_resample(
     # ``closed`` samples ``num_points + 1`` arc lengths of the loop and computes all but the last,
     # the duplicated seam, so the result has ``num_points`` *distinct* points and is a clean cyclic
     # ring. The closure is decided on the device (``kernels/polyline.resample_interp``).
-    cumulative = _arc_length_table(polyline, closed=closed)
+    selector = _INTERPOLATIONS[interpolation]
+    cumulative = _arc_length_table(polyline, closed=closed, interpolation=selector)
     _launch.launch(
         kernel_polyline.resample_interp,
         dim=num_points,
@@ -1167,6 +1332,7 @@ def polyline_resample(
             cumulative,
             wp.int32(num_points + 1 if closed else num_points),
             wp.int32(closed),
+            selector,
             out_points,
         ],
         device=device,
@@ -1174,9 +1340,17 @@ def polyline_resample(
     return out_points
 
 
-def _arc_length_table(polyline: wp.array[wp.vec3], *, closed: bool) -> wp.array[wp.float32]:
+def _arc_length_table(
+    polyline: wp.array[wp.vec3],
+    *,
+    closed: bool,
+    interpolation: wp.int32 = kernel_polyline.INTERPOLATION_LINEAR,
+) -> wp.array[wp.float32]:
     """
     Cumulative arc length of a polyline of at least two points, ``closed`` over ``n`` segments.
+
+    Under ``kernels/polyline.INTERPOLATION_CATMULL_ROM`` the entries are the Catmull-Rom curve's
+    span lengths instead of the chords (``kernels/polyline.arc_table_span``), in the same slots.
 
     [`cumulative_arc_length`][ordito.polyline.cumulative_arc_length]'s body, and with ``closed``
     the table of the loop without a ``polyline_close`` copy: entry ``n`` is the closing segment's
@@ -1193,14 +1367,14 @@ def _arc_length_table(polyline: wp.array[wp.vec3], *, closed: bool) -> wp.array[
         _launch.launch_tiled(
             kernel_polyline.arc_length_table_block,
             dim=1,
-            inputs=[polyline, wp.int32(closed), cumulative],
+            inputs=[polyline, wp.int32(closed), interpolation, cumulative],
             device=device,
         )
         return cumulative
     _launch.launch(
         kernel_polyline.arc_segment_lengths,
         dim=n_segments,
-        inputs=[polyline, wp.int32(closed), cumulative],
+        inputs=[polyline, wp.int32(closed), interpolation, cumulative],
         device=device,
     )
     lengths = cumulative[1:]

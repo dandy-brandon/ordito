@@ -229,6 +229,86 @@ def _resample_np(pts: np.ndarray, num_points: int) -> np.ndarray:
     return np.stack([np.interp(arc, cumulative, pts[:, k]) for k in range(3)], axis=1)
 
 
+def _catmull_rom_spans_np(
+    pts: np.ndarray, *, closed: bool
+) -> list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
+    """
+    Hermite form ``(start, end, start tangent, end tangent)`` of each centripetal Catmull-Rom span.
+
+    three.js's ``CatmullRomCurve3`` construction in ``float64``: mirrored end neighbours on an open
+    curve, wrapped ones on a closed curve, knot intervals the square root of the distance, and a
+    repeated point's zero interval replaced as ``polyline_resample`` documents.
+    """
+    pts = np.asarray(pts, dtype=np.float64)
+    m = pts.shape[0]
+    spans: list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = []
+    for i in range(m if closed else m - 1):
+        start = pts[i]
+        if closed:
+            end, previous, following = pts[(i + 1) % m], pts[(i - 1) % m], pts[(i + 2) % m]
+        else:
+            end = pts[i + 1]
+            previous = pts[i - 1] if i > 0 else 2.0 * start - end
+            following = pts[i + 2] if i + 2 < m else 2.0 * end - start
+        interval = float(np.linalg.norm(end - start)) ** 0.5
+        if interval == 0.0:
+            spans.append((start, end, np.zeros(3), np.zeros(3)))
+            continue
+        before = float(np.linalg.norm(start - previous)) ** 0.5 or interval
+        after = float(np.linalg.norm(following - end)) ** 0.5 or interval
+        start_tangent = (
+            (start - previous) / before
+            - (end - previous) / (before + interval)
+            + (end - start) / interval
+        ) * interval
+        end_tangent = (
+            (end - start) / interval
+            - (following - start) / (interval + after)
+            + (following - end) / after
+        ) * interval
+        spans.append((start, end, start_tangent, end_tangent))
+    return spans
+
+
+def _hermite_np(
+    span: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray], t: np.ndarray
+) -> np.ndarray:
+    start, end, start_tangent, end_tangent = span
+    t = np.asarray(t, dtype=np.float64)[:, None]
+    return (
+        (2 * t**3 - 3 * t**2 + 1) * start
+        + (t**3 - 2 * t**2 + t) * start_tangent
+        + (3 * t**2 - 2 * t**3) * end
+        + (t**3 - t**2) * end_tangent
+    )
+
+
+def _resample_catmull_rom_np(pts: np.ndarray, num_points: int, *, closed: bool) -> np.ndarray:
+    """
+    ``num_points`` points evenly spaced by arc length along the centripetal Catmull-Rom curve.
+
+    Another route to the same points than ordito's quadrature and Newton solve: each span sampled
+    at 20 000 parameters, the arc length read off the chords of those samples, each target's
+    parameter interpolated in that table, and the span evaluated there. A closed curve spaces
+    ``num_points + 1`` targets and drops the last, the seam, as ``polyline_resample`` does.
+    """
+    spans = _catmull_rom_spans_np(pts, closed=closed)
+    grid = np.linspace(0.0, 1.0, 20_000, endpoint=False)
+    samples = np.concatenate([_hermite_np(span, grid) for span in spans])
+    samples = np.concatenate([samples, _hermite_np(spans[-1], np.ones(1))])
+    parameters = np.concatenate([i + grid for i in range(len(spans))] + [[float(len(spans))]])
+    lengths = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(samples, axis=0), axis=1))])
+    targets = np.linspace(0.0, lengths[-1], num_points + 1 if closed else num_points)
+    target_parameters = np.interp(targets[:num_points], lengths, parameters)
+    span_indices = np.minimum(target_parameters.astype(np.int64), len(spans) - 1)
+    return np.stack(
+        [
+            _hermite_np(spans[k], np.array([u - k]))[0]
+            for u, k in zip(target_parameters, span_indices, strict=True)
+        ]
+    )
+
+
 def _radius_np(
     pts: np.ndarray,
     reduction: str,
@@ -739,6 +819,79 @@ def test_upsample_polyline_counts_at_an_exact_multiple(
     assert upsampled.shape == (pieces,)
 
 
+@pytest.mark.parametrize("method", ["floor", "bisect"])
+@pytest.mark.parametrize(
+    "shape", ["open", "closed", "explicitly-closed", "single-point", "repeated-points"]
+)
+def test_polyline_upsample_count_is_the_upsample_size(
+    device: str, method: Literal["floor", "bisect"], shape: str
+) -> None:
+    """
+    Ordito against ordito: the count equals the size ``polyline_upsample`` returns.
+
+    No library counts an upsample without performing it; the upsample's own output is the oracle,
+    and its points are checked against MeshLib and NumPy above. The shapes reach every branch of
+    the per-segment count: the closing segment added (``closed``), the closing slot counted as no
+    segment (an explicitly closed input), a zero-length segment's one piece, and the early return.
+    """
+    pts_np = _random_open_polyline(53, n=40)
+    closed = shape in ("closed", "explicitly-closed")
+    if shape == "explicitly-closed":
+        pts_np = _closed_from(pts_np)
+    elif shape == "single-point":
+        pts_np = pts_np[:1]
+    elif shape == "repeated-points":
+        pts_np = np.repeat(pts_np, 2, axis=0)
+    polyline_wp = points_to_warp(pts_np, device)
+
+    count = od.polyline.polyline_upsample_count(polyline_wp, 0.1, closed=closed, method=method)
+
+    upsampled_wp = od.polyline.polyline_upsample(polyline_wp, 0.1, closed=closed, method=method)
+    assert count == upsampled_wp.shape[0]
+    # Non-vacuity: the step does split segments, beyond one piece each.
+    if shape != "single-point":
+        assert count > pts_np.shape[0]
+    if method == "floor":
+        smoothed_wp = od.polyline.polyline_smooth_upsample(polyline_wp, 0.1, closed=closed)
+        assert count == smoothed_wp.shape[0]
+
+
+@pytest.mark.parametrize("method", ["floor", "bisect"])
+@pytest.mark.parametrize(
+    ("n_segments", "step"),
+    [
+        pytest.param(1, 2.0**-31, id="one-segment-past-int32"),
+        pytest.param(1, 2.0**-40, id="one-segment-past-the-cap"),
+        pytest.param(2048, 2.0**-21, id="one-block-scan-wraps-to-zero"),
+        pytest.param(4096, 2.0**-20, id="device-scan-wraps-to-zero"),
+    ],
+)
+def test_upsample_past_int32_raises_and_is_counted(
+    device: str, method: Literal["floor", "bisect"], n_segments: int, step: float
+) -> None:
+    """
+    Not a library comparison: an output past ``int32`` raises, and its count is exact in 64 bits.
+
+    Unit segments along ``x`` with power-of-two steps make every count exact under both rules,
+    ``n_segments / step``. Past ``2 ** 31 - 1`` points the upsample used to read a
+    ``float32 -> int32`` cast of the quotient (undefined: one piece a segment on the CPU, a
+    saturated count that wrapped the scan negative on CUDA). The two scanned cases total exactly
+    ``2 ** 32``, which an ``int32`` scan wraps all the way round to ``0``, so a sign test of the
+    total alone passes them; the 2 048-segment case takes the one-block scan and the 4 096-segment
+    one the device-wide scan on CUDA (``_STEP_OFFSETS_ONE_BLOCK_SEGMENTS``). A segment past the
+    ``2 ** 32`` cap counts at the cap.
+    """
+    points_np = np.zeros((n_segments + 1, 3), dtype=np.float32)
+    points_np[:, 0] = np.arange(n_segments + 1)
+    polyline_wp = points_to_warp(points_np, device)
+
+    count = od.polyline.polyline_upsample_count(polyline_wp, step, method=method)
+
+    assert count == n_segments * min(round(1.0 / step), 2**32)
+    with pytest.raises(ValueError, match="more points than int32 indices address"):
+        od.polyline.polyline_upsample(polyline_wp, step, method=method)
+
+
 # --- smooth upsample (curvature-aware, NumPy reference + circle oracle) ---
 
 
@@ -1073,6 +1226,105 @@ def test_resample_empty_polyline_is_returned_unchanged(device: str, closed: bool
     assert od.polyline.polyline_resample(empty_wp, 5, closed=closed).shape == (0,)
 
 
+@pytest.mark.parametrize(
+    ("shape", "closed"),
+    [
+        pytest.param("open", False, id="open"),
+        pytest.param("closed", True, id="closed"),
+        pytest.param("explicitly-closed", True, id="explicitly-closed"),
+        pytest.param("repeated-point", False, id="repeated-point"),
+    ],
+)
+def test_resample_catmull_rom_matches_numpy_curve(device: str, shape: str, closed: bool) -> None:
+    """
+    Not a library comparison: the centripetal Catmull-Rom resample against a NumPy evaluation.
+
+    None of the reference libraries builds this curve (pyvista's ``KochanekSpline`` is the uniform
+    one, sampled evenly in its parameter). The oracle is ``_resample_catmull_rom_np``, the same
+    curve in ``float64`` reached another way (a dense chord table, not quadrature and Newton's
+    method). Measured agreement 3.4e-05-3.8e-05 at the curves' scale of a few units, float32
+    rounding. An explicitly closed input drops its repeated first point (the oracle is handed the
+    loop without it), and a repeated vertex makes a zero-length span and its neighbours'
+    degenerate intervals.
+
+    **Bug class excluded:** a wrong tangent or knot rule, unmirrored open ends, an unwrapped seam,
+    points read off chords rather than the curve, or spacing by parameter instead of arc length.
+    **Mutation probe, measured:** the linear resample of the same input differs from the oracle by
+    0.18-0.21, about 5 000x the measured agreement, asserted below.
+    """
+    pts_np = _random_open_polyline(72)
+    oracle_np = pts_np
+    input_np = pts_np
+    if shape == "explicitly-closed":
+        input_np = _closed_from(pts_np)
+    elif shape == "repeated-point":
+        input_np = np.insert(pts_np, 5, pts_np[5], axis=0)
+        oracle_np = input_np
+    polyline_wp = points_to_warp(input_np, device)
+
+    curve_wp = od.polyline.polyline_resample(
+        polyline_wp, 200, closed=closed, interpolation="catmull_rom"
+    )
+
+    curve_np = _resample_catmull_rom_np(oracle_np, 200, closed=closed)
+    assert np.allclose(curve_wp.numpy(), curve_np, rtol=1e-4, atol=1e-4)
+    linear_wp = od.polyline.polyline_resample(polyline_wp, 200, closed=closed)
+    assert np.abs(linear_wp.numpy() - curve_np).max() > 1e-1
+
+
+def test_resample_catmull_rom_square_meets_its_corners_at_even_spacing(device: str) -> None:
+    """
+    Not a library comparison: the closed curve through a square's corners, an exact oracle.
+
+    The curve has the square's fourfold symmetry, so with a multiple of four points starting at a
+    corner every quarter of them lands on a corner, and the spacing is even along the curve.
+    Chords between points evenly spaced in arc length shorten where the curve bends harder, so
+    they spread by 2.9e-03 of their mean (measured) rather than not at all; the bound is 1e-02.
+    The linear resample's chords are equal too, so what tells the two apart is the bulge: the
+    curve passes outside the square between its corners.
+    """
+    corners_np = np.array([[0, 0, 0], [4, 0, 0], [4, 4, 0], [0, 4, 0]], dtype=np.float32)
+
+    curve_np = od.polyline.polyline_resample(
+        points_to_warp(corners_np, device), 64, closed=True, interpolation="catmull_rom"
+    ).numpy()
+
+    assert np.allclose(curve_np[::16], corners_np, rtol=1e-5, atol=1e-5)
+    chords_np = np.linalg.norm(curve_np - np.roll(curve_np, 1, axis=0), axis=1)
+    assert np.ptp(chords_np) < 1e-2 * chords_np.mean()
+    assert curve_np[:, 0].min() < -0.1
+    assert curve_np[:, 0].max() > 4.1
+
+
+@pytest.mark.parametrize("closed", [False, True])
+def test_resample_catmull_rom_through_two_points_stays_on_their_line(
+    device: str, closed: bool
+) -> None:
+    """
+    Not a library comparison: two points give the straight line between them, evenly spaced.
+
+    Open, the mirrored end neighbours make every tangent the chord, so the curve is the segment at
+    uniform speed and the points are the linear resample's. Closed, the loop runs out along the
+    segment and back, with zero tangents at both ends.
+    """
+    points_np = np.array([[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]], dtype=np.float32)
+    polyline_wp = points_to_warp(points_np, device)
+
+    curve_np = od.polyline.polyline_resample(
+        polyline_wp, 11, closed=closed, interpolation="catmull_rom"
+    ).numpy()
+
+    linear_np = od.polyline.polyline_resample(polyline_wp, 11, closed=closed).numpy()
+    assert np.allclose(curve_np[:, 1:], 0.0, rtol=1e-5, atol=1e-5)
+    if closed:
+        # Out and back: the curve doubles back, so the linear resample's arc lengths are not the
+        # curve's at the turns; the points still sweep the segment and return.
+        assert np.allclose(curve_np[:, 0], curve_np[[0, *range(10, 0, -1)], 0], atol=1e-5)
+        assert curve_np[:, 0].max() <= 4.0 + 1e-5
+    else:
+        assert np.allclose(curve_np, linear_np, rtol=1e-5, atol=1e-5)
+
+
 # --- radius (NumPy reference) ---
 
 
@@ -1255,6 +1507,39 @@ def test_polyline_radius_with_an_explicit_plane_needs_no_fit(
             ),
             "method must be 'floor' or 'bisect'",
             id="upsample-unknown-method",
+        ),
+        pytest.param(
+            lambda device: od.polyline.polyline_resample(
+                points_to_warp(np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]), device),
+                5,
+                interpolation="cubic",  # pyright: ignore[reportArgumentType]
+            ),
+            "interpolation must be 'linear' or 'catmull_rom'",
+            id="resample-unknown-interpolation",
+        ),
+        pytest.param(
+            lambda device: od.polyline.polyline_upsample_count(
+                points_to_warp(np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]), device),
+                0.25,
+                method="ceil",  # pyright: ignore[reportArgumentType]
+            ),
+            "method must be 'floor' or 'bisect'",
+            id="upsample-count-unknown-method",
+        ),
+        *(
+            pytest.param(
+                lambda device, function=function, step=step: function(
+                    points_to_warp(np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]), device), step
+                ),
+                "step_size must be positive and finite",
+                id=f"{name}-step-{step}",
+            )
+            for name, function in [
+                ("upsample", od.polyline.polyline_upsample),
+                ("upsample-count", od.polyline.polyline_upsample_count),
+                ("smooth-upsample", od.polyline.polyline_smooth_upsample),
+            ]
+            for step in [0.0, -0.25, float("nan"), float("inf")]
         ),
     ],
 )
