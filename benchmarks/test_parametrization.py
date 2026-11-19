@@ -324,6 +324,45 @@ def test_arap(bench_case: BenchCase, iterations: int) -> None:
         assert uv_igl.shape[0] == vertices_np.shape[0]
 
 
+@pytest.mark.benchmark(group="low_distortion_parametrization")
+@pytest.mark.benchaxis("patch")
+@pytest.mark.benchlibs("ordito")
+def test_low_distortion_parametrization(bench_case: BenchCase) -> None:
+    """
+    Pin-free free-boundary ARAP chart through a coarse level, at the default cell.
+
+    The cell is five mean edges, the ratio of the dental scan crops the method was written for:
+    ``saddle_small`` (4 624 vertices) is under the 6 000-vertex default and iterates directly,
+    ``saddle`` and ``hemisphere`` take the coarse level and its smoothing passes. No reference
+    library computes this map (libigl's ARAP needs pins and a start), so the row is ordito's only.
+    """
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    uv = bench_case.run(lambda: od.parametrization.low_distortion_parametrization(vertices, faces))
+    assert uv.size == vertices.size
+
+
+@pytest.mark.benchmark(group="low_distortion_disk_parametrization")
+@pytest.mark.benchaxis("patch")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("init", ["harmonic", "tutte", "lscm"])
+def test_low_distortion_disk_parametrization(bench_case: BenchCase, init: str) -> None:
+    """
+    Pin-free free-boundary ARAP chart of a disk from each start, iterated on the full mesh.
+
+    The patch meshes are disks. Every call checks the topology, solves the start and factors the
+    full mesh's proximal system before iterating, all timed. ordito's only row, as above.
+    """
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    uv = bench_case.run(
+        lambda: od.parametrization.low_distortion_disk_parametrization(
+            vertices,
+            faces,
+            init=init,  # pyright: ignore[reportArgumentType]
+        )
+    )
+    assert uv.size == vertices.size
+
+
 @pytest.mark.benchmark(group="lscm")
 @pytest.mark.benchaxis("patch")
 @pytest.mark.benchlibs("ordito", "igl", "pymeshlab")

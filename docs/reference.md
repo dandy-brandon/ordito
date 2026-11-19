@@ -90,7 +90,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | cotangent Laplacian and mass matrix | [`laplacian.cotmatrix`][ordito.laplacian.cotmatrix], [`laplacian.mass_matrix`][ordito.laplacian.mass_matrix] |
 | solve a constrained quadratic (harmonic, biharmonic fields) | [`linalg.min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed] |
 | geodesic distance | [`heat.heat_geodesic`][ordito.heat.heat_geodesic] (approximate, fast), [`heat.fast_marching_distance`][ordito.heat.fast_marching_distance] (first-order front, no solve), [`geodesic_walk.geodesic_path`][ordito.geodesic_walk.geodesic_path] |
-| flatten to the plane (UV parametrization) | [`parametrization`][ordito.parametrization]: [`harmonic`][ordito.parametrization.harmonic], [`lscm`][ordito.parametrization.lscm], [`arap`][ordito.parametrization.arap] |
+| flatten to the plane (UV parametrization) | [`parametrization`][ordito.parametrization]: [`harmonic`][ordito.parametrization.harmonic], [`lscm`][ordito.parametrization.lscm], [`arap`][ordito.parametrization.arap], [`low_distortion_parametrization`][ordito.parametrization.low_distortion_parametrization] (free boundary, no pins, any topology), [`low_distortion_disk_parametrization`][ordito.parametrization.low_distortion_disk_parametrization] (the same for a disk, from a classic map) |
 | bake or sample textures | [`texture`][ordito.texture] |
 | **Arrays** | |
 | NumPy-like `unique`, `sort`, `isin`, `searchsorted`-style helpers | [`grouping`][ordito.grouping], [`array`][ordito.array] |

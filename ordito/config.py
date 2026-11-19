@@ -34,8 +34,8 @@ deterministic either way):
   [`filter_mut_dif_laplacian`][ordito.smoothing.filter_mut_dif_laplacian] sum on the way (exact
   group sums when on);
 - the rotation right-hand side of every local step of
-  [`arap`][ordito.parametrization.arap] (each vertex's edge terms added in ascending face order
-  when on);
+  [`arap`][ordito.parametrization.arap] and the low-distortion charts (each vertex's terms
+  gathered over its adjacency row, ascending when on);
 - the order within each row of
   [`vertex_face_adjacency`][ordito.adjacency.vertex_face_adjacency] (ascending when on);
 - the row order of the ear-clipped faces of

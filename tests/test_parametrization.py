@@ -672,6 +672,724 @@ def test_arap_pattern_changes_no_answer(saddle_graded: tuple[tm.Trimesh, wp.Mesh
     assert np.array_equal(od.parametrization.arap(*arguments, pattern=pattern).numpy(), plain_np)
 
 
+def _sheet(steps: int, half_size: float, height: float) -> tuple[np.ndarray, np.ndarray]:
+    """Return the patch ``z = height * exp(-r^2 / 30)`` over ``[-half_size, half_size]^2``."""
+    axis = np.linspace(-half_size, half_size, steps + 1)
+    x, y = np.meshgrid(axis, axis, indexing="xy")
+    radius_sq = x.ravel() ** 2 + y.ravel() ** 2
+    vertices_np = np.stack((x.ravel(), y.ravel(), height * np.exp(-radius_sq / 30.0)), axis=1)
+    index = np.arange((steps + 1) ** 2).reshape(steps + 1, steps + 1)
+    corner = index[:-1, :-1].ravel()
+    right, up, diagonal = corner + 1, corner + steps + 1, corner + steps + 2
+    faces_np = np.concatenate(
+        (np.stack((corner, right, diagonal), 1), np.stack((corner, diagonal, up), 1))
+    )
+    return vertices_np, faces_np.astype(np.int64)
+
+
+def _random_tilt() -> np.ndarray:
+    """Return a fixed random rotation (or rotoreflection) of space."""
+    return np.linalg.qr(np.random.default_rng(0).normal(size=(3, 3)))[0]
+
+
+def _strains(
+    vertices_np: np.ndarray, faces_np: np.ndarray, uv_np: np.ndarray
+) -> tuple[float, float, np.ndarray]:
+    """Area-weighted mean ``|ln(s1 s2)|`` and ``ln(s1 / s2)``, and each face's signed UV area."""
+    first = vertices_np[faces_np[:, 1]] - vertices_np[faces_np[:, 0]]
+    second = vertices_np[faces_np[:, 2]] - vertices_np[faces_np[:, 0]]
+    areas = 0.5 * np.linalg.norm(np.cross(first, second), axis=1)
+    length = np.linalg.norm(first, axis=1)
+    along, height = (second * first).sum(1) / length, 2 * areas / length
+    a = uv_np[faces_np[:, 1]] - uv_np[faces_np[:, 0]]
+    b = uv_np[faces_np[:, 2]] - uv_np[faces_np[:, 0]]
+    column1 = a / length[:, None]
+    column2 = (b - a * (along / length)[:, None]) / height[:, None]
+    sigma = np.linalg.svd(np.stack((column1, column2), axis=2), compute_uv=False)
+    weights = areas / areas.sum()
+    signed = 0.5 * (a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0])
+    return (
+        float((weights * np.abs(np.log(sigma[:, 0] * sigma[:, 1]))).sum()),
+        float((weights * np.log(sigma[:, 0] / sigma[:, 1])).sum()),
+        signed,
+    )
+
+
+def _edge_lengths(points_np: np.ndarray, faces_np: np.ndarray) -> np.ndarray:
+    """Every face's three side lengths."""
+    corners = points_np[faces_np]
+    return np.linalg.norm(corners - np.roll(corners, -1, axis=1), axis=2)
+
+
+def _low_distortion_np(
+    vertices_np: np.ndarray,
+    faces_np: np.ndarray,
+    device: str,
+    coarse_cell: float,
+    *,
+    iterations: int = 150,
+    single_level_vertices: int = 6_000,
+) -> np.ndarray:
+    """``low_distortion_parametrization`` on a NumPy mesh, read back as ``float64``."""
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    return (
+        od.parametrization.low_distortion_parametrization(
+            vertices_wp,
+            faces_wp,
+            coarse_cell=coarse_cell,
+            iterations=iterations,
+            single_level_vertices=single_level_vertices,
+        )
+        .numpy()
+        .astype(np.float64)
+    )
+
+
+def _coarse_mesh_np(
+    vertices_np: np.ndarray, faces_np: np.ndarray, coarse_cell: float, device: str
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return the coarse mesh as ``(cluster, centroids, coarse_faces)`` NumPy arrays."""
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    points_np = vertices_wp.numpy().astype(np.float64)
+    coarse = od.parametrization._coarse_mesh(  # pyright: ignore[reportPrivateUsage]
+        vertices_wp,
+        faces_wp,
+        tuple(points_np.min(axis=0).tolist()),
+        tuple(points_np.max(axis=0).tolist()),
+        coarse_cell,
+    )
+    assert coarse is not None
+    cluster_wp, centroids_wp, _, coarse_faces_wp = coarse
+    return cluster_wp.numpy(), centroids_wp.numpy(), coarse_faces_wp.numpy().reshape(-1, 3)
+
+
+@pytest.mark.parametrize("steps", [20, 100], ids=["single_level", "two_level"])
+def test_low_distortion_parametrization_lays_a_tilted_flat_sheet_out_undeformed(
+    device: str, steps: int
+):
+    """
+    Not a library comparison: a plane's pin-free element ARAP chart is an exact isometry.
+
+    No library computes a pin-free, free-boundary element ARAP. 441 vertices are iterated
+    directly, 10 201 through the coarse level. A wrong coarse winding, a wrong prolongation or a
+    wrong sign in the stiffness leaves edges stretched or faces folded.
+    The tolerance is the ``float32`` positions' and chart's resolution at the sheet's size.
+    """
+    vertices_np, faces_np = _sheet(steps, 8.0, 0.0)
+    vertices_np = vertices_np @ _random_tilt().T
+
+    uv_np = _low_distortion_np(vertices_np, faces_np, device, 0.6)
+
+    assert np.allclose(
+        _edge_lengths(uv_np, faces_np), _edge_lengths(vertices_np, faces_np), rtol=0, atol=1e-5
+    )
+    assert (_strains(vertices_np, faces_np, uv_np)[2] > 0).all()
+
+
+def test_low_distortion_parametrization_is_close_to_a_converged_single_level_solve(device: str):
+    """
+    Not a library comparison: the two-level chart's distortion is a converged direct solve's.
+
+    No library computes a pin-free element ARAP. The oracle is the same function iterated directly
+    on the full mesh to convergence (a coarse cell of ``1e-6`` sets the stop at ``1e-9``).
+
+    On a curved bump of 12 321 vertices the area and shear distortions agree within 0.002, no face
+    folds, and the area distortion is well below the plane projection's the iterations start
+    from, so the comparison is not met by doing nothing.
+    """
+    vertices_np, faces_np = _sheet(110, 10.0, 6.0)
+    n_vertices = len(vertices_np)
+
+    uv_np = _low_distortion_np(vertices_np, faces_np, device, 0.7)
+    converged_np = _low_distortion_np(
+        vertices_np, faces_np, device, 1e-6, iterations=1000, single_level_vertices=n_vertices
+    )
+    projection_np = _low_distortion_np(
+        vertices_np, faces_np, device, 0.7, iterations=0, single_level_vertices=n_vertices
+    )
+
+    area, shear, signed = _strains(vertices_np, faces_np, uv_np)
+    converged_area, converged_shear, _ = _strains(vertices_np, faces_np, converged_np)
+    assert area == pytest.approx(converged_area, abs=0.002)
+    assert shear == pytest.approx(converged_shear, abs=0.002)
+    assert (signed > 0).all()
+    assert area < 0.7 * _strains(vertices_np, faces_np, projection_np)[0]
+
+
+def test_low_distortion_parametrization_takes_its_layout_from_the_coarse_level(device: str):
+    """
+    Not a library comparison: without the coarse iterations most area distortion stays.
+
+    The smoothing passes alone, from the same projection (``iterations=0``), leave most of
+    the area distortion in.
+    """
+    vertices_np, faces_np = _sheet(110, 10.0, 6.0)
+
+    two_level_np = _low_distortion_np(vertices_np, faces_np, device, 0.7)
+    without_coarse_np = _low_distortion_np(vertices_np, faces_np, device, 0.7, iterations=0)
+
+    two_level_area = _strains(vertices_np, faces_np, two_level_np)[0]
+    assert two_level_area < 0.7 * _strains(vertices_np, faces_np, without_coarse_np)[0]
+
+
+# ``low_distortion_parametrization`` on a fixture: iterated directly (the fixtures are under the
+# 6 000-vertex default), or forced through a coarse level of cells five mean edges wide.
+_TWO_LEVEL_PATHS = [pytest.param(6_000, id="direct"), pytest.param(0, id="two_level")]
+# The fixtures the two-level chart is compared with harmonic + ARAP on: a graded disk, a curved
+# strip, a non-orientable strip and a genus-1 surface with three holes. ``hemisphere`` is left
+# out: five ARAP iterations already converge on its 97 vertices, so the two charts tie.
+_HARMONIC_ARAP_MESHES = ["saddle_graded", "half_torus", "mobius", "torus_irregular_holes"]
+
+
+def _mean_edge_length(vertices_np: np.ndarray, faces_np: np.ndarray) -> float:
+    """Return the mean side length of the faces."""
+    return float(_edge_lengths(vertices_np, faces_np).mean())
+
+
+def _mesh_np(mesh_wp: wp.Mesh) -> tuple[np.ndarray, np.ndarray]:
+    """Return a fixture's ``float64`` vertices and ``(n_faces, 3)`` faces as uploaded."""
+    return mesh_wp.points.numpy().astype(np.float64), mesh_wp.indices.numpy().reshape(-1, 3)
+
+
+def _harmonic_arap_np(mesh_wp: wp.Mesh, iterations: int) -> np.ndarray:
+    """
+    Return the harmonic + ARAP chart: the usual free-boundary refinement two-level ARAP replaces.
+
+    The harmonic map onto the unit circle, scaled to the mesh's area, then ``iterations`` ARAP
+    iterations with one rim vertex pinned, which leaves the boundary, the scale and the rotation
+    free.
+    """
+    boundary_wp, _, uv_init_wp = _harmonic_warm_start(mesh_wp)
+    vertices_np, faces_np = _mesh_np(mesh_wp)
+    uv_np = uv_init_wp.numpy().astype(np.float64)
+    first = uv_np[faces_np[:, 1]] - uv_np[faces_np[:, 0]]
+    second = uv_np[faces_np[:, 2]] - uv_np[faces_np[:, 0]]
+    uv_area = 0.5 * np.abs(first[:, 0] * second[:, 1] - first[:, 1] * second[:, 0]).sum()
+    surface_area = (
+        0.5
+        * np.linalg.norm(
+            np.cross(
+                vertices_np[faces_np[:, 1]] - vertices_np[faces_np[:, 0]],
+                vertices_np[faces_np[:, 2]] - vertices_np[faces_np[:, 0]],
+            ),
+            axis=1,
+        ).sum()
+    )
+    uv_np *= np.sqrt(surface_area / uv_area)
+    device = mesh_wp.device
+    pin_np = boundary_wp.numpy()[:1]
+    return (
+        od.parametrization.arap(
+            mesh_wp.points,
+            mesh_wp.indices,
+            wp.array(pin_np, dtype=wp.int32, device=device),
+            points_to_warp_uv(uv_np[pin_np], device),
+            points_to_warp_uv(uv_np, device),
+            max_iterations=iterations,
+        )
+        .numpy()
+        .astype(np.float64)
+    )
+
+
+@pytest.mark.parametrize("mesh_name", _HARMONIC_ARAP_MESHES)
+def test_low_distortion_parametrization_distorts_less_than_harmonic_and_arap(
+    request: pytest.FixtureRequest, mesh_name: str
+):
+    """
+    Ordito against ordito: the chart distorts less than harmonic + 5 ARAP iterations.
+
+    No library computes a pin-free element ARAP. The baseline is the refinement this method
+    replaces, from ordito's own ``harmonic`` and ``arap`` (``_harmonic_arap_np``). Measured
+    (area / shear, ``exp(.) - 1`` of the area-weighted mean log): ``saddle_graded`` 0.018 / 0.019
+    against 0.019 / 0.021, ``half_torus`` 0.43 / 0.43 against 0.62 / 0.59 (3 flips against 176),
+    ``mobius`` 0.118 / 0.195 against 0.121 / 0.254, ``torus_irregular_holes`` 1.34 / 1.24 against
+    1.44 / 1.33. The plane projection the iterations start from is no control here: on the strips
+    and the torus it folds hundreds of faces, which a mean of absolute log area does not see.
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_np, faces_np = _mesh_np(mesh_wp)
+    cell = 5.0 * _mean_edge_length(vertices_np, faces_np)
+
+    uv_np = (
+        od.parametrization.low_distortion_parametrization(
+            mesh_wp.points, mesh_wp.indices, coarse_cell=cell
+        )
+        .numpy()
+        .astype(np.float64)
+    )
+    baseline_np = _harmonic_arap_np(mesh_wp, 5)
+
+    area, shear, signed = _strains(vertices_np, faces_np, uv_np)
+    baseline_area, baseline_shear, baseline_signed = _strains(vertices_np, faces_np, baseline_np)
+    assert area < baseline_area
+    assert shear < baseline_shear
+    assert (signed <= 0).sum() <= (baseline_signed <= 0).sum()
+
+
+def test_low_distortion_parametrization_distorts_less_than_harmonic_and_arap_when_coarsened(
+    device: str,
+):
+    """
+    Ordito against ordito: on the coarse-level path too, less distortion than harmonic + 5 ARAP.
+
+    A 90 x 90 graded saddle (8 100 vertices, over the 6 000-vertex default) built here. Measured:
+    0.0173 / 0.0191 against 0.0189 / 0.0204 (area / shear), the converged chart 0.0174 / 0.0187.
+    Without its coarse iterations the chart is 0.055 / 0.056, worse than the baseline: the coarse
+    level is what wins.
+    """
+    vertices_np, faces_np = saddle_graded_arrays(90, 3.0)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    mesh_wp = wp.Mesh(points=vertices_wp, indices=faces_wp)
+    vertices_np, faces_np = _mesh_np(mesh_wp)
+    cell = 5.0 * _mean_edge_length(vertices_np, faces_np)
+
+    uv_np = _low_distortion_np(vertices_np, faces_np, device, cell)
+    without_coarse_np = _low_distortion_np(vertices_np, faces_np, device, cell, iterations=0)
+    baseline_np = _harmonic_arap_np(mesh_wp, 5)
+
+    area, shear, signed = _strains(vertices_np, faces_np, uv_np)
+    baseline_area, baseline_shear, _ = _strains(vertices_np, faces_np, baseline_np)
+    assert area < baseline_area
+    assert shear < baseline_shear
+    assert (signed > 0).all()
+    assert _strains(vertices_np, faces_np, without_coarse_np)[0] > baseline_area
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["as_given", "reversed"])
+@pytest.mark.parametrize("single_level_vertices", _TWO_LEVEL_PATHS)
+def test_low_distortion_parametrization_follows_the_face_winding(
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh], reverse: bool, single_level_vertices: int
+):
+    """
+    Not a library comparison: the chart winds counter-clockwise whichever way the faces are given.
+
+    The start is mirrored to the faces' winding, and ARAP never fits a reflection.
+    """
+    _, mesh_wp = saddle_graded
+    vertices_np, faces_np = _mesh_np(mesh_wp)
+    if reverse:
+        faces_np = np.ascontiguousarray(faces_np[:, ::-1])
+
+    uv_np = _low_distortion_np(
+        vertices_np,
+        faces_np,
+        str(mesh_wp.device),
+        5.0 * _mean_edge_length(vertices_np, faces_np),
+        single_level_vertices=single_level_vertices,
+    )
+
+    assert (_strains(vertices_np, faces_np, uv_np)[2] > 0).all()
+
+
+@pytest.mark.parametrize("single_level_vertices", _TWO_LEVEL_PATHS)
+def test_low_distortion_parametrization_ignores_faces_of_no_area(
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh], single_level_vertices: int
+):
+    """
+    Ordito against ordito: faces of no area change nothing.
+
+    Appending a face with a repeated corner and one with all three gives the chart of the mesh
+    without them, on either path. The projection's normal is given: the default, the plane of the
+    longest boundary loop, follows the boundary walk, which the added faces change.
+    """
+    _, mesh_wp = saddle_graded
+    vertices_np, faces_np = _mesh_np(mesh_wp)
+    degenerate_np = np.array([[0, 1, 1], [5, 5, 5]], dtype=np.int64)
+    cell = 5.0 * _mean_edge_length(vertices_np, faces_np)
+
+    charts = []
+    for faces_case_np in (np.concatenate((faces_np, degenerate_np)), faces_np):
+        vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_case_np, mesh_wp.device)
+        charts.append(
+            od.parametrization.low_distortion_parametrization(
+                vertices_wp,
+                faces_wp,
+                coarse_cell=cell,
+                normal=wp.vec3(0.0, 0.0, 1.0),
+                single_level_vertices=single_level_vertices,
+            ).numpy()
+        )
+
+    assert np.allclose(charts[0], charts[1], rtol=0, atol=1e-9)
+
+
+_DISK_STARTS = ["harmonic", "tutte", "lscm"]
+
+
+def _projected_edge_lengths(
+    vertices_np: np.ndarray, faces_np: np.ndarray, normal_np: np.ndarray
+) -> np.ndarray:
+    """Return every face's three side lengths after projecting along the unit normal."""
+    flattened = vertices_np - np.outer(vertices_np @ normal_np, normal_np)
+    return _edge_lengths(flattened, faces_np)
+
+
+@pytest.mark.parametrize("given", [False, True], ids=["longest_loop", "given"])
+def test_low_distortion_parametrization_projects_the_start_onto_the_normal_plane(
+    sphere_irregular_cap: tuple[tm.Trimesh, wp.Mesh], given: bool
+):
+    """
+    Not a library comparison: the start is the projection along ``normal``, or the rim's plane.
+
+    With no iterations and no smoothing the chart is the projection onto the plane of ``normal``
+    (a direction off every axis), so its edges are the edges with their normal component removed.
+    Without ``normal`` it is the plane fitted to the longest boundary loop, here the cap's planar
+    rim, so the same holds with the rim's own normal.
+    """
+    _, mesh_wp = sphere_irregular_cap
+    vertices_np, faces_np = _mesh_np(mesh_wp)
+    if given:
+        normal_np = np.array([0.3, -0.5, 0.8])
+        normal_np /= np.linalg.norm(normal_np)
+    else:
+        loop_np = od.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices).numpy()
+        rim_np = vertices_np[loop_np] - vertices_np[loop_np].mean(axis=0)
+        normal_np = np.linalg.svd(rim_np)[2][2]
+
+    uv_np = (
+        od.parametrization.low_distortion_parametrization(
+            mesh_wp.points,
+            mesh_wp.indices,
+            normal=wp.vec3(*normal_np.tolist()) if given else None,
+            iterations=0,
+            smoothing_passes=0,
+        )
+        .numpy()
+        .astype(np.float64)
+    )
+
+    assert np.allclose(
+        _edge_lengths(uv_np, faces_np),
+        _projected_edge_lengths(vertices_np, faces_np, normal_np),
+        rtol=0,
+        atol=1e-5,
+    )
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["as_given", "reversed"])
+@pytest.mark.parametrize("init", _DISK_STARTS)
+def test_low_distortion_disk_parametrization_scales_its_start_to_the_surface(
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh], init: str, reverse: bool
+):
+    """
+    Not a library comparison: the start comes out in the mesh's units and counter-clockwise.
+
+    With no iterations the chart is the named map scaled by ``sqrt(surface / UV area)`` and
+    mirrored if it winds clockwise: its total UV area is the surface's and its signed area is
+    positive, whichever way the faces are given.
+    """
+    _, mesh_wp = saddle_graded
+    vertices_np, faces_np = _mesh_np(mesh_wp)
+    if reverse:
+        faces_np = np.ascontiguousarray(faces_np[:, ::-1])
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, mesh_wp.device)
+
+    uv_np = (
+        od.parametrization.low_distortion_disk_parametrization(
+            vertices_wp,
+            faces_wp,
+            init=init,  # pyright: ignore[reportArgumentType]
+            iterations=0,
+        )
+        .numpy()
+        .astype(np.float64)
+    )
+
+    first = uv_np[faces_np[:, 1]] - uv_np[faces_np[:, 0]]
+    second = uv_np[faces_np[:, 2]] - uv_np[faces_np[:, 0]]
+    signed = 0.5 * (first[:, 0] * second[:, 1] - first[:, 1] * second[:, 0])
+    surface = 0.5 * np.linalg.norm(
+        np.cross(
+            vertices_np[faces_np[:, 1]] - vertices_np[faces_np[:, 0]],
+            vertices_np[faces_np[:, 2]] - vertices_np[faces_np[:, 0]],
+        ),
+        axis=1,
+    )
+    assert np.abs(signed).sum() == pytest.approx(surface.sum(), rel=1e-4)
+    assert signed.sum() > 0
+
+
+@pytest.mark.parametrize("init", _DISK_STARTS)
+@pytest.mark.parametrize(
+    "mesh_name", ["saddle_graded", "sphere_irregular_cap", "convex_irregular_cap"]
+)
+def test_low_distortion_disk_parametrization_reaches_the_coarse_chart_from_every_start(
+    request: pytest.FixtureRequest, mesh_name: str, init: str
+):
+    """
+    Ordito against ordito: every disk start is iterated to the coarse chart's distortion.
+
+    The starts are other charts (circle-bounded, or conformal and pinned), and the factored
+    iterations take each to the minimum ``low_distortion_parametrization`` reaches, within 0.002
+    in area and shear and with no more inverted faces. Measured spread: 0.0177-0.0179 on
+    ``saddle_graded``, 0.2480-0.2481 on ``sphere_irregular_cap``, 0.1122-0.1128 on
+    ``convex_irregular_cap``.
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_np, faces_np = _mesh_np(mesh_wp)
+
+    disk_np = (
+        od.parametrization.low_distortion_disk_parametrization(
+            mesh_wp.points,
+            mesh_wp.indices,
+            init=init,  # pyright: ignore[reportArgumentType]
+        )
+        .numpy()
+        .astype(np.float64)
+    )
+    coarse_np = (
+        od.parametrization.low_distortion_parametrization(mesh_wp.points, mesh_wp.indices)
+        .numpy()
+        .astype(np.float64)
+    )
+
+    coarse_area, coarse_shear, coarse_signed = _strains(vertices_np, faces_np, coarse_np)
+    area, shear, signed = _strains(vertices_np, faces_np, disk_np)
+    assert area == pytest.approx(coarse_area, abs=0.002)
+    assert shear == pytest.approx(coarse_shear, abs=0.002)
+    assert (signed <= 0).sum() <= (coarse_signed <= 0).sum()
+
+
+@pytest.mark.parametrize("case", ["closed", "several_loops", "mobius", "disk_and_torus"])
+def test_low_distortion_disk_parametrization_refuses_a_mesh_that_is_not_a_disk(
+    request: pytest.FixtureRequest, device: str, case: str
+):
+    """
+    Not a library comparison: each clause of the disk test refuses its own mesh.
+
+    A closed sphere (no loop, Euler characteristic 2), a torus with three holes (three loops), a
+    Mobius strip (one loop but Euler characteristic 0) and a disk beside a closed torus (one loop
+    and Euler characteristic 1, but two components).
+    """
+    if case == "disk_and_torus":
+        disk_np, disk_faces_np = saddle_graded_arrays()
+        torus_tm = tm.creation.torus(major_radius=1.0, minor_radius=0.4)
+        vertices_np = np.concatenate((disk_np, torus_tm.vertices + np.array([5.0, 0.0, 0.0])))
+        faces_np = np.concatenate((disk_faces_np, torus_tm.faces + len(disk_np)))
+        vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    else:
+        fixture = {
+            "closed": "sphere_irregular",
+            "several_loops": "torus_irregular_holes",
+            "mobius": "mobius",
+        }[case]
+        _, mesh_wp = request.getfixturevalue(fixture)
+        vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+
+    with pytest.raises(ValueError, match="needs a disk"):
+        od.parametrization.low_distortion_disk_parametrization(vertices_wp, faces_wp)
+
+
+def test_low_distortion_disk_parametrization_rejects_an_unknown_start(
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
+):
+    """Not a library comparison: ``init`` outside the three starts raises, naming them."""
+    _, mesh_wp = saddle_graded
+
+    with pytest.raises(ValueError, match="init must be one of"):
+        od.parametrization.low_distortion_disk_parametrization(
+            mesh_wp.points,
+            mesh_wp.indices,
+            init="spectral",  # pyright: ignore[reportArgumentType]
+        )
+
+
+def test_low_distortion_parametrization_accepts_a_handle_and_a_separate_piece(device: str):
+    """
+    Not a library comparison: a handle, a hole and a separate piece are all charted.
+
+    A torus with one quad cut out sits next to a separate flat sheet. The sheet, which no face
+    ties to the torus, is held in place by the coarse solve's proximal anchor and comes out
+    isometric.
+    """
+    rings, sides = 96, 64
+    ring, side = np.meshgrid(np.arange(rings), np.arange(sides), indexing="ij")
+    major, minor = 2 * np.pi * ring / rings, 2 * np.pi * side / sides
+    torus_np = np.stack(
+        (
+            (6 + 2 * np.cos(minor)) * np.cos(major),
+            (6 + 2 * np.cos(minor)) * np.sin(major),
+            2 * np.sin(minor),
+        ),
+        axis=2,
+    ).reshape(-1, 3)
+    corner = (ring * sides + side).ravel()
+    right = (((ring + 1) % rings) * sides + side).ravel()
+    up = (ring * sides + (side + 1) % sides).ravel()
+    diagonal = (((ring + 1) % rings) * sides + (side + 1) % sides).ravel()
+    torus_faces_np = np.concatenate(
+        (np.stack((corner, right, diagonal), 1), np.stack((corner, diagonal, up), 1))
+    )
+    torus_faces_np = torus_faces_np[torus_faces_np[:, 0] != 0]
+    sheet_np, sheet_faces_np = _sheet(30, 4.0, 0.0)
+    vertices_np = np.concatenate((torus_np, sheet_np + np.array([20.0, 0.0, 0.0])))
+    sheet_faces_np = sheet_faces_np + len(torus_np)
+    faces_np = np.concatenate((torus_faces_np, sheet_faces_np)).astype(np.int64)
+
+    uv_np = _low_distortion_np(vertices_np, faces_np, device, 0.8)
+
+    assert np.isfinite(uv_np).all()
+    assert np.allclose(
+        _edge_lengths(uv_np, sheet_faces_np),
+        _edge_lengths(vertices_np, sheet_faces_np),
+        rtol=0,
+        atol=1e-4,
+    )
+
+
+def test_low_distortion_parametrization_coarsening_joins_clusters_once_per_triple_and_orientation(
+    device: str,
+):
+    """
+    Not a library comparison: a grid's coarse mesh has the expected clusters and windings.
+
+    A 41 x 41 grid over ``[-4, 4]^2`` at a cell of 1 has a 9 x 9 grid of clusters, and its coarse
+    faces repeat no triple and all wind as the surface does.
+    """
+    vertices_np, faces_np = _sheet(40, 4.0, 0.0)
+
+    cluster_np, centroids_np, coarse_faces_np = _coarse_mesh_np(vertices_np, faces_np, 1.0, device)
+
+    assert cluster_np.shape == (len(vertices_np),)
+    assert len(centroids_np) == int(cluster_np.max()) + 1 == 81
+    assert len(coarse_faces_np) > 0
+    assert len(np.unique(np.sort(coarse_faces_np, axis=1), axis=0)) == len(coarse_faces_np)
+    first = centroids_np[coarse_faces_np[:, 1]] - centroids_np[coarse_faces_np[:, 0]]
+    second = centroids_np[coarse_faces_np[:, 2]] - centroids_np[coarse_faces_np[:, 0]]
+    assert (np.cross(first, second)[:, 2] > 0).all()
+
+
+def test_low_distortion_parametrization_coarse_faces_wind_as_the_surface_whatever_the_grid_cuts(
+    device: str,
+):
+    """
+    Not a library comparison: every coarse face of a tilted plane winds with its normal.
+
+    Three centroids often turn the other way from the face joining them; the coarse face must not.
+    """
+    vertices_np, faces_np = _sheet(100, 8.0, 0.0)
+    tilt = _random_tilt()
+    normal = tilt[:, 2] * np.sign(np.linalg.det(tilt))
+
+    _, centroids_np, coarse_faces_np = _coarse_mesh_np(vertices_np @ tilt.T, faces_np, 0.6, device)
+
+    first = centroids_np[coarse_faces_np[:, 1]] - centroids_np[coarse_faces_np[:, 0]]
+    second = centroids_np[coarse_faces_np[:, 2]] - centroids_np[coarse_faces_np[:, 0]]
+    assert len(coarse_faces_np) > 0
+    assert (np.cross(first, second) @ normal > 0).all()
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("plane_vertices", "wp.vec3 vertices"),
+        ("float_faces", "wp.vec3 vertices"),
+        ("ragged_faces", "wp.vec3 vertices"),
+        ("zero_cell", "coarse_cell"),
+        ("infinite_cell", "coarse_cell"),
+        ("negative_iterations", "iterations"),
+        ("zero_normal", "normal"),
+        ("nan_vertex", "finite"),
+        ("no_positive_face", "positive area"),
+    ],
+)
+def test_low_distortion_parametrization_rejects_malformed_inputs(
+    device: str, case: str, message: str
+):
+    """Not a library comparison: each malformed input raises a ``ValueError`` naming it."""
+    vertices = wp.array(np.eye(3, dtype=np.float32), dtype=wp.vec3, device=device)
+    faces = wp.array([0, 1, 2], dtype=wp.int32, device=device)
+    cell, iterations, normal = 1.0, 150, None
+    if case == "plane_vertices":
+        vertices = wp.zeros(4, dtype=wp.vec2, device=device)
+    elif case == "float_faces":
+        faces = wp.array([0.0, 1.0, 2.0], dtype=wp.float32, device=device)
+    elif case == "ragged_faces":
+        faces = wp.array([0, 1, 2, 0], dtype=wp.int32, device=device)
+    elif case == "zero_cell":
+        cell = 0.0
+    elif case == "infinite_cell":
+        cell = float("inf")
+    elif case == "negative_iterations":
+        iterations = -1
+    elif case == "zero_normal":
+        normal = wp.vec3(0.0, 0.0, 0.0)
+    elif case == "nan_vertex":
+        vertices = wp.array(np.full((3, 3), np.nan, dtype=np.float32), dtype=wp.vec3, device=device)
+    elif case == "no_positive_face":
+        vertices = wp.zeros(3, dtype=wp.vec3, device=device)
+
+    with pytest.raises(ValueError, match=message):
+        od.parametrization.low_distortion_parametrization(
+            vertices, faces, coarse_cell=cell, normal=normal, iterations=iterations
+        )
+
+
+@pytest.mark.parametrize(
+    "chart",
+    [
+        pytest.param(od.parametrization.low_distortion_parametrization, id="any_topology"),
+        pytest.param(od.parametrization.low_distortion_disk_parametrization, id="disk"),
+    ],
+)
+def test_low_distortion_parametrization_on_an_empty_mesh(
+    device: str, chart: Callable[[wp.array[wp.vec3], wp.array[wp.int32]], wp.array[wp.vec2]]
+):
+    """Not a library comparison: no vertices give an empty chart rather than a raise."""
+    uv_wp = chart(warp_empty(0, wp.vec3, device), warp_empty(0, wp.int32, device))
+
+    assert uv_wp.shape == (0,)
+    assert uv_wp.device == wp.get_device(device)
+
+
+def test_low_distortion_parametrization_is_reproducible_when_deterministic(device: str):
+    """
+    Not a parity assert: under the deterministic setting repeated calls agree bit for bit.
+
+    On the two-level path. Off it, the adjacency rows the gathers walk come in arrival order on
+    CUDA; the chart then agrees with the deterministic one to round-off.
+    """
+    vertices_np, faces_np = _sheet(100, 8.0, 2.0)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+
+    uv_np = od.parametrization.low_distortion_parametrization(
+        vertices_wp, faces_wp, coarse_cell=0.6
+    ).numpy()
+    for _ in range(3):
+        assert np.array_equal(
+            od.parametrization.low_distortion_parametrization(
+                vertices_wp, faces_wp, coarse_cell=0.6
+            ).numpy(),
+            uv_np,
+        )
+    with od.config.deterministic(False):
+        arrival_wp = od.parametrization.low_distortion_parametrization(
+            vertices_wp, faces_wp, coarse_cell=0.6
+        )
+    assert np.allclose(arrival_wp.numpy(), uv_np, rtol=0, atol=1e-5)
+
+
+def test_low_distortion_parametrization_cpu_matches_cuda():
+    """
+    Class A: the CPU chart is the CUDA one, on the two-level path.
+
+    They differ only in floating-point contraction and summation order, below the ``float32``
+    chart's resolution.
+    """
+    if not wp.is_cuda_available():
+        pytest.skip("needs both devices to compare them")
+    vertices_np, faces_np = _sheet(110, 10.0, 6.0)
+
+    uv = {
+        device: _low_distortion_np(vertices_np, faces_np, device, 0.7)
+        for device in ("cpu", "cuda:0")
+    }
+
+    assert np.isfinite(uv["cpu"]).all()
+    assert np.allclose(uv["cpu"], uv["cuda:0"], rtol=0, atol=1e-5)
+
+
 @pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular_band"])
 @pytest.mark.parity("lscm", "igl")
 def test_lscm_matches_igl(request: pytest.FixtureRequest, mesh_name: str):

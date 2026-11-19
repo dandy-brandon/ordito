@@ -1,7 +1,7 @@
 """
 Flatten a mesh into the plane: harmonic, Tutte, ARAP and LSCM parametrizations.
 
-Four maps, differing in what they hold fixed and what they minimize. The first three pin the
+Six maps, differing in what they hold fixed and what they minimize. The first three pin the
 boundary and solve for the interior:
 [`harmonic`][ordito.parametrization.harmonic] minimizes Dirichlet energy with cotangent weights,
 [`tutte`][ordito.parametrization.tutte] is the same solve with uniform weights (guaranteeing an
@@ -9,11 +9,17 @@ injective map for a convex boundary), and [`arap`][ordito.parametrization.arap] 
 rotation fits with a global solve to trade conformality for low area distortion.
 [`lscm`][ordito.parametrization.lscm] instead pins only two vertices and lets the boundary find its
 own shape, minimizing conformal rather than Dirichlet energy.
+[`low_distortion_parametrization`][ordito.parametrization.low_distortion_parametrization]
+pins nothing and needs no start: a free-boundary chart of low ARAP distortion in the mesh's own
+units for an open surface of any topology, converged on a coarse mesh;
+[`low_distortion_disk_parametrization`][ordito.parametrization.low_distortion_disk_parametrization]
+is the same chart of a disk, refined from a harmonic, Tutte or LSCM map.
 
 [`map_vertices_to_circle`][ordito.parametrization.map_vertices_to_circle] supplies the boundary
 condition the fixed-boundary three need, and
 [`face_flipped_indices`][ordito.parametrization.face_flipped_indices] is the diagnostic that
-says whether a result is actually injective. Ports of the corresponding ``igl::`` routines.
+says whether a result is actually injective. All but the two low-distortion charts port the
+corresponding ``igl::`` routines.
 
 The fixed-vertex maps (``harmonic``, ``tutte``, ``lscm``) take the mesh as an
 [`ordito.mesh.Trimesh`][ordito.mesh.Trimesh] or as its ``vertices`` and ``faces``. Their solves
@@ -28,6 +34,7 @@ solve with no iteration.
 from __future__ import annotations
 
 import logging
+import math
 import weakref
 from typing import Literal, cast, overload
 
@@ -37,11 +44,11 @@ import ordito as od
 import ordito.linalg as twl
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import read_scalar, require_same_device
-from ordito.config import is_deterministic
+from ordito._common import read_scalar, read_values, require_same_device
+from ordito.constants import TILE_1D
 from ordito.kernels import parametrization as kernel_parametrization
-from ordito.kernels import scatter as kernel_scatter
-from ordito.laplacian import cotmatrix, cotmatrix_entries, graph_laplacian, mass_matrix_entries
+from ordito.kernels import reduce as kernel_reduce
+from ordito.laplacian import cotmatrix, graph_laplacian, mass_matrix_entries
 from ordito.mesh import Trimesh, mesh_arguments
 
 _CG_TOLERANCE = 1e-8
@@ -74,6 +81,24 @@ _ARAP_FACTOR_FROM_ROUNDS_CPU = 16
 # the block at every size, its one lane summing in loop order as the scan does (0.48-0.74x from 64
 # to 65 536 vertices, byte-identical).
 _CIRCLE_ONE_BLOCK_VERTICES = 4_096
+
+# ``low_distortion_parametrization``: the factored iterations stop once one moves no vertex by
+# more than this fraction of ``coarse_cell``; a clustering leaving fewer coarse faces than this is
+# iterated directly; and the factored loop reads its largest move back every this many iterations
+# (the iterations past the settled one are no-ops on the device, so the stop stays exact).
+_TWO_LEVEL_SETTLED = 1e-3
+_TWO_LEVEL_MIN_COARSE_FACES = 16
+_TWO_LEVEL_READ_EVERY = 8
+_TWO_LEVEL_FACE_KEYS = 9
+_TWO_LEVEL_FLAT_FACE = 2e-9
+# The largest grid-cell key and cluster count whose packed keys fit 63 bits: ``n_cells`` keys,
+# and a coarse face's ``n_clusters ** 3``.
+_MAX_PACKED_KEY = (1 << 63) - 1
+_MAX_PACKED_CLUSTERS = (1 << 21) - 1
+# ``low_distortion_disk_parametrization``'s starts, and the default ``coarse_cell`` in mean edge
+# lengths (the disk chart's stop is a thousandth of it too).
+_DISK_STARTS = ("harmonic", "tutte", "lscm")
+_DEFAULT_CELL_EDGES = 5.0
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -348,11 +373,7 @@ def harmonic(
     [`cotmatrix`][ordito.laplacian.cotmatrix] subject to the boundary vertices being pinned to
     ``boundary_uv``. For ``k == 1`` this is the harmonic map (each interior UV is the
     cotangent-weighted average of its neighbors); ``k == 2`` is the biharmonic map, and so on. The
-    interior system is solved with conjugate gradient at ``k == 1``, and at ``k == 2`` on a mesh of
-    fewer than 4 000 vertices; it is factored at once (a sparse Cholesky) at ``k >= 3``, at
-    ``k == 2`` from 4 000 vertices, and on the CPU device at ``k == 1`` from 5 000. An iterative
-    result is verified and replaced by the
-    factorization's when it is not the system's answer (see Notes).
+    interior system is iterated, verified, or factored, as ``solver`` and Notes say.
 
     Parameters
     ----------
@@ -559,13 +580,8 @@ def tutte(
     k
         Laplacian power (``>= 1``). ``k == 1`` is the classic Tutte embedding.
     solver
-        ``"auto"`` (default) solves by conjugate gradient, verified, and factors the system only
-        when the iteration's result fails the check (always at ``k >= 3``, at ``k == 2`` on a mesh
-        of 4 000 vertices or more, and on the CPU device at ``k == 1`` on one of 5 000 or more).
-        ``"direct"`` factors it at once (a sparse Cholesky); given a `Trimesh`, the factorization is
-        kept on it, so every later call fixing the same vertices -- whatever their values -- is a
-        factored solve with no iteration. Pays from about the second such call; a one-shot call is
-        usually faster under ``"auto"``.
+        ``"auto"`` (default) or ``"direct"``, as for
+        [`harmonic`][ordito.parametrization.harmonic].
 
     Returns
     -------
@@ -682,7 +698,6 @@ def arap(
     pattern: od.laplacian.MeshOperatorPattern | None = None,
 ) -> wp.array[wp.vec2]:
     """
-
     As-rigid-as-possible (ARAP) parametrization with fixed vertices.
 
     Minimizes the ARAP energy of the 2D parametrization by local/global alternation, starting from
@@ -699,7 +714,6 @@ def arap(
     [`map_vertices_to_circle`][ordito.parametrization.map_vertices_to_circle]. Inspect the result
     for inverted triangles with
     [`face_flipped_indices`][ordito.parametrization.face_flipped_indices].
-
 
     Parameters
     ----------
@@ -718,13 +732,13 @@ def arap(
     uv_init
         ``(n_vertices,)`` initial UV coordinates (the warm start). Never mutated; the interior
         values seed the first local step and the conjugate-gradient warm start, and the pinned rows
-        are
-        overwritten with ``fixed_uv`` before the first iteration.
+        are overwritten with ``fixed_uv`` before the first iteration.
     max_iterations
         Number of local/global iterations (``>= 1``). libigl defaults to ``10``.
     tolerance
-        Relative residual tolerance of the inner conjugate-gradient solve (``> 0``). See Notes for
-        why the default is looser than the ``1e-8`` the other solvers in this module use.
+        Relative residual tolerance of each global step's solve (``> 0``). Looser than the
+        ``1e-8`` of the single-solve maps: each solve is an inner step of a truncated outer
+        iteration, and solving past that iteration's own error changes nothing.
     pattern
         A ``"cotmatrix"`` [`mesh_operator_pattern`][ordito.laplacian.mesh_operator_pattern] of
         ``faces`` ([`Trimesh.mesh_operator_pattern`][ordito.mesh.Trimesh.mesh_operator_pattern]),
@@ -753,20 +767,18 @@ def arap(
     [`tutte`][ordito.parametrization.tutte]
     [`map_vertices_to_circle`][ordito.parametrization.map_vertices_to_circle]
     [`face_flipped_indices`][ordito.parametrization.face_flipped_indices]
-    [`cotmatrix_entries`][ordito.laplacian.cotmatrix_entries]
+    [`low_distortion_parametrization`][ordito.parametrization.low_distortion_parametrization]
+        The same energy with no pins and no start.
 
     Notes
     -----
-    Uses the *elements* ARAP energy (one rotation per triangle), libigl's default for the flat ``dim
-    = 2`` parametrization case; the covariance scatter is built per corner of the flattened mesh,
-    which is why the ``SPOKES`` / ``SPOKES_AND_RIMS`` (per-vertex) energies do not apply here. The
-    half-cotangent weights ``c_e`` come from
-    [`cotmatrix_entries`][ordito.laplacian.cotmatrix_entries] with no clamping (matching libigl),
-    and the closest 2D rotation is the closed form ``theta = atan2(S10 - S01, S00 + S11)`` of
-    ``igl::fit_rotations_planar``. The cotangent operator and the two conjugate-gradient solves run
-    in float64 for determinism while the UV field is stored ``float32`` between iterations (module
-    convention); the resulting per-iteration drift is well under the pinned-boundary tolerance for
-    the default iteration count.
+    Uses the *elements* ARAP energy (one rotation per triangle), libigl's default for the flat
+    ``dim = 2`` case, with unclamped half-cotangent weights as libigl's. Each face's rotation is the
+    proper rotation nearest its Jacobian -- the rotation ``igl::fit_rotations_planar`` fits to the
+    weighted edge covariance -- and the right-hand side is gathered per vertex, the same vector as
+    libigl's rotated rest edges. The local step shares its code with
+    [`low_distortion_parametrization`][ordito.parametrization.low_distortion_parametrization].
+    Everything between iterations is ``float64``.
 
     The global step's operator is the same at every iteration. When the second iteration's solve
     shows the solves are long -- a graded mesh, or a long schedule on a large one -- the remaining
@@ -774,13 +786,6 @@ def arap(
     refined to ``tolerance``, held until the call returns: device memory of the order of the
     operator's fill-in, within [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET].
     An operator that cannot be factored keeps iterating.
-
-    **Why ``tolerance`` defaults to ``1e-7`` and not ``1e-8``.** Unlike
-    [`harmonic`][ordito.parametrization.harmonic] or [`lscm`][ordito.parametrization.lscm], whose
-    single solve *is* the answer, ARAP's global solves are inner steps of a truncated outer
-    iteration, so solving more accurately than the outer iteration's own truncation error wastes
-    work without changing the result. Pass ``tolerance=1e-8`` for stricter per-iteration solves;
-    going looser risks the inner error exceeding the outer truncation error on large meshes.
 
     Examples
     --------
@@ -833,12 +838,7 @@ def arap(
     )
     n_faces = faces.size // 3
 
-    # Cotangents computed once and reused by both the Laplacian build and the rest-edge flattening;
-    # single native-float64 operator build, so nothing is recast or rebuilt (see cotmatrix docs).
-    cot_entries = cotmatrix_entries(vertices, faces, dtype=wp.float64)
-    laplacian = cotmatrix(
-        vertices, faces, cot_entries=cot_entries, dtype=wp.float64, pattern=pattern
-    )
+    laplacian = cotmatrix(vertices, faces, dtype=wp.float64, pattern=pattern)
 
     # Partition vertices into pinned (fixed) and interior (free), and extract the global-step
     # operator with it: the interior block of Q = -L and the constant boundary term -(-L)_ub bc.
@@ -863,17 +863,8 @@ def arap(
 
     out_uv = _launch.empty(n_vertices, dtype=wp.vec2, device=device)
     if n_interior == 0:
-        # Every vertex pinned: the prescribed positions are the whole answer, no solve. This is the
-        # same shape `min_quad_with_fixed`'s own `n_free == 0` branch returns (an empty `(n_rhs,
-        # n_free)` solution `scatter_solution` never indexes), but composing through it here would
-        # cost more than it shares: `min_quad_with_fixed` re-derives the free partition internally
-        # (arap already has `interior_map`/`n_interior` from its own extraction, needed by the
-        # iterative loop below regardless) and its single-shot solve has no hook for the
-        # warm-started, loop-reused solver state arap's general path builds -- so reaching it would
-        # mean throwing away work already done, not reusing it. The real waste this early return
-        # avoids is upstream of any solve: `rest_edges`/the CG solver state below are built only for
-        # a loop that would immediately do nothing on an empty system, so skipping them here is the
-        # point, not a shortcut around composition.
+        # Every vertex pinned: the prescribed positions are the whole answer, and the loop's
+        # setup would serve no solve.
         empty_sol = _launch.zeros((2, 0), dtype=wp.float64, device=device)
         _launch.launch(
             kernel_parametrization.scatter_solution,
@@ -883,110 +874,51 @@ def arap(
         )
         return out_uv
 
-    # Pre-loop buffers (no allocation inside the loop). ``sol`` (2, n_interior) holds the
-    # warm-started CG solution per column; the same launch seeds it from ``uv_init``'s interior
-    # values. The loop reads the working UV field off ``sol`` and the constraints, so it is
-    # scattered into ``out_uv`` once, after the last step. Every row of ``sol`` is seeded. It
-    # shares one allocation with the global step's right-hand side ``b``, outside the
-    # deterministic setting the zeroed rotation right-hand side (the first local step's), and the
-    # weight-folded rest edges of the isometrically flattened triangles, which the setup launch
-    # writes whole (kernels index them as ``wp.array2d``).
-    deterministic = is_deterministic()
-    n_solve = 2 * n_interior
-    n_rotation = 0 if deterministic else 2 * n_vertices
-    rest_start = 2 * n_solve + n_rotation
-    solve_buffers = (_launch.empty if deterministic else _launch.zeros)(
-        rest_start + 6 * n_faces, dtype=wp.float64, device=device
+    # The loop's buffers, none allocated inside it: each face's gradients and area, the
+    # warm-started solution per column ``sol`` (seeded from ``uv_init``'s free rows by the same
+    # launch) and the global step's right-hand side ``b``, the last two in one allocation.
+    vertex_faces, offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
+    gradients = odt.empty_2d((n_faces, 3), wp.vec2d, device=device)
+    areas = _launch.empty(n_faces, dtype=wp.float64, device=device)
+    solve_buffers = _launch.empty(4 * n_interior, dtype=wp.float64, device=device)
+    sol = odt.as_array2d(
+        _launch.view(solve_buffers, 0, 2 * n_interior).reshape((2, n_interior)), wp.float64
     )
-    rest_edges = (
-        _launch.view(solve_buffers, rest_start, rest_start + 6 * n_faces)
-        .reshape((n_faces, 3, 2))
-        .view(wp.vec2d)
-        if n_faces > 0
-        else _launch.empty((0, 3), dtype=wp.vec2d, device=device)
+    b = odt.as_array2d(
+        _launch.view(solve_buffers, 2 * n_interior, 4 * n_interior).reshape((2, n_interior)),
+        wp.float64,
     )
-    sol = _launch.view(solve_buffers, 0, n_solve).reshape((2, n_interior))
-    # Under the deterministic setting each local step stores its six edge terms a face instead of
-    # adding them in arrival order, and each vertex's are added over one stable sort of the edge
-    # endpoints, in ascending face and edge order. The setup launch writes the endpoints straight
-    # into the sort's buffers; the sort is built once, since the faces do not change.
-    edge_endpoints = edge_slots = None
-    if deterministic:
-        edge_endpoints = _launch.empty(12 * n_faces, dtype=wp.int32, device=device)
-        edge_slots = _launch.empty(12 * n_faces, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_parametrization.arap_setup,
         dim=max(n_faces, n_vertices),
-        inputs=[vertices, faces, cot_entries, fixed_mask, interior_map, uv_init],
-        outputs=[rest_edges, sol, edge_endpoints, edge_slots],
+        inputs=[vertices, faces, fixed_mask, interior_map, uv_init],
+        outputs=[gradients, areas, sol],
         device=device,
     )
-    sorted_endpoints = endpoint_order = edge_terms = rhs_rot_sorted = None
-    rhs_rot_x = rhs_rot_y = None
-    if edge_endpoints is not None and edge_slots is not None:
-        sorted_endpoints, endpoint_order = od.array.sort_and_argsort_in_place(
-            edge_endpoints, edge_slots, end_bit=_launch.key_bits(n_vertices)
-        )
-        edge_terms = odt.empty_2d((n_faces, 6), wp.vec2d, device=device)
-        rhs_rot_sorted = _launch.empty(n_vertices, dtype=wp.vec2d, device=device)
-    else:
-        # Zero for the first local step; ``arap_interior_rhs`` clears them for every later one.
-        rotation_start = 2 * n_solve
-        rhs_rot_x = _launch.view(solve_buffers, rotation_start, rotation_start + n_vertices)
-        rhs_rot_y = _launch.view(
-            solve_buffers, rotation_start + n_vertices, rotation_start + 2 * n_vertices
-        )
-    b = _launch.view(solve_buffers, n_solve, 2 * n_solve).reshape((2, n_interior))
 
-    # One batched CG state for both UV columns, built once outside the loop: its temporaries and
-    # batch layout are reused across iterations, and it reads ``b`` / writes ``sol`` in place, so
-    # the warm start is simply whatever ``sol`` already holds.
+    # One batched CG state for both UV columns, reading ``b`` and warm-started from ``sol``. The
+    # global steps are short warm-started Jacobi-Chebyshev solves of an operator rebuilt per call,
+    # so it factors only once they are found long (``_ARAP_FACTOR_FROM_ROUNDS_CUDA`` / ``_CPU``).
     solver = twl.spd_column_solver(
-        q_uu,
-        odt.as_array2d(b, wp.float64),
-        odt.as_array2d(sol, wp.float64),
-        tol=tolerance,
-        maxiter=10 * n_interior,
-        preconditioner="chebyshev",
-        # The global steps are warm-started Jacobi-Chebyshev solves of an operator rebuilt per
-        # call, mostly too short for a factorization to beat (1.3-3.5x on the patch meshes when
-        # factored at the second step); the loop factors only once they are found long
-        # (``_ARAP_FACTOR_FROM_ROUNDS_CUDA`` / ``_CPU``).
+        q_uu, b, sol, tol=tolerance, maxiter=10 * n_interior, preconditioner="chebyshev",
         factorize=False,
-    )
+    )  # fmt: skip
 
     held = None
     for iteration in range(max_iterations):
-        # Local step: fit per-face rotations to the current solution and scatter the rotation RHS.
+        # The local step and the global step's right-hand side at each free vertex.
         _launch.launch(
-            kernel_parametrization.arap_local_step,
-            dim=n_faces,
-            inputs=[faces, fixed_mask, interior_map, sol, fixed_values_2d, rest_edges],
-            outputs=[rhs_rot_x, rhs_rot_y, edge_terms],
-            device=device,
-        )
-        if rhs_rot_sorted is not None:
-            _launch.launch(
-                kernel_scatter.SUM_SORTED_CORNER_VALUES[wp.vec2d],
-                dim=n_vertices,
-                inputs=[sorted_endpoints, endpoint_order, edge_terms],
-                outputs=[rhs_rot_sorted, None, None],
-                device=device,
-            )
-        # Global step RHS: constant boundary term + rotation term, restricted to interior rows;
-        # clears the rotation RHS for the next local step.
-        _launch.launch(
-            kernel_parametrization.arap_interior_rhs,
+            kernel_parametrization.arap_rhs,
             dim=n_vertices,
-            inputs=[fixed_mask, interior_map, rhs_const, rhs_rot_x, rhs_rot_y, rhs_rot_sorted, b],
+            inputs=[faces, vertex_faces, offsets, gradients, areas, fixed_values_2d, fixed_mask,
+                    interior_map, sol, rhs_const],
+            outputs=[b],
             device=device,
-        )
+        )  # fmt: skip
         # Both UV columns in one batched symmetric-PD solve, warm-started from the previous ``sol``;
         # by a factorization of the operator once the iteration is found long.
         if held is not None:
-            held.solve(
-                odt.as_array2d(b, wp.float64), odt.as_array2d(sol, wp.float64), tol=tolerance
-            )
+            held.solve(b, sol, tol=tolerance)
             continue
         rounds, _, _ = solver()
         if iteration == 1 and iteration + 1 < max_iterations:
@@ -1073,6 +1005,869 @@ def _scatter_constraints(
             device=device,
         )
     return fixed_mask, fixed_values
+
+
+def low_distortion_parametrization(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    coarse_cell: float | None = None,
+    normal: wp.vec3 | None = None,
+    iterations: int = 150,
+    smoothing_passes: int = 3,
+    smoothing_steps: int = 8,
+    single_level_vertices: int = 6_000,
+) -> wp.array[wp.vec2]:
+    """
+    Free-boundary chart of low ARAP distortion in the mesh's own units, for any topology.
+
+    Flattens an open surface -- with handles, several boundary loops, several components -- into a
+    near-isometric chart with a free boundary: no vertex is pinned, no boundary shape is imposed
+    and no initial map is needed. It minimizes the element ARAP energy ``sum_f A_f |J_f - R_f|^2``
+    (one proper rotation per face) in two levels, because a chart's large-scale layout needs dozens
+    of local/global iterations while depending only on the coarse shape:
+
+    1. The vertices are clustered on a grid of cells of side ``coarse_cell``. The clusters' means,
+       joined by every face whose corners fall in three distinct clusters, form a coarse mesh. Each
+       coarse face is wound as the fine face that spans it, so a flat sheet's coarse mesh is flat.
+    2. ARAP is iterated on the coarse mesh from its projection onto the plane of ``normal``. Each
+       global step is proximal, ``(K + epsilon I) U = B + epsilon U_prev``, with ``epsilon`` a
+       millionth of the mean stiffness diagonal: it removes the translations of every piece the
+       clustering disconnects and keeps each where it started, and changes nothing at
+       convergence. The system is factored once.
+    3. Each vertex takes its cluster's UV plus its offset from the cluster's mean, carried by the
+       cluster's area-weighted mean Jacobian; a cluster no coarse face touches borrows the nearest
+       covered cluster's.
+    4. ``smoothing_passes`` ARAP passes on the full mesh repair the fine detail, each global step
+       cut short after ``smoothing_steps`` Jacobi-preconditioned conjugate-gradient steps from the
+       current chart. The full mesh's system is applied face by face, never assembled.
+
+    A mesh of at most ``single_level_vertices`` vertices, or one whose clustering leaves fewer
+    than 16 coarse faces or more clusters than half its vertices, is iterated directly as in
+    step 2, from its own projection.
+    [`low_distortion_disk_parametrization`][ordito.parametrization.low_distortion_disk_parametrization]
+    starts a disk from a harmonic, Tutte or LSCM map instead.
+
+    Parameters
+    ----------
+    vertices
+        ``(n_vertices,)`` mesh vertex positions.
+    faces
+        ``(3 * n_faces,)`` triangle index buffer. Faces of no area are ignored.
+    coarse_cell
+        Side of the grid cells the vertices are clustered on, in the mesh's units: a few times
+        the mesh's edge length, and smaller than the gaps between sheets that must not be welded
+        together (two sheets closer than a cell share clusters, which folds the chart there).
+        ``None`` takes five times the mean edge length
+        ([`mean_edge_length`][ordito.edges.mean_edge_length]). The iterations also stop once one
+        moves no vertex by more than a thousandth of it.
+    normal
+        Normal of the plane the start is projected onto (any length but zero). ``None`` takes the
+        plane fitted to the longest boundary loop, the rim a scan crop or a disk is viewed through,
+        or the vertices' best-fit plane on a mesh with no boundary.
+    iterations
+        ARAP iteration budget on the coarse mesh (or on the mesh itself when it is iterated
+        directly). ``0`` keeps the projection.
+    smoothing_passes
+        ARAP passes on the full mesh after the coarse level.
+    smoothing_steps
+        Conjugate-gradient steps of each smoothing pass.
+    single_level_vertices
+        A mesh of at most this many vertices is iterated directly, without a coarse level.
+
+    Returns
+    -------
+    wp.array[wp.vec2]
+        ``(n_vertices,)`` UV coordinates on ``vertices.device``, in the mesh's units, with the
+        faces mostly counter-clockwise; the rotation is unspecified. A vertex no face uses follows
+        its cluster, or keeps its projection when the mesh is iterated directly. Empty for an
+        empty mesh.
+
+    Raises
+    ------
+    ValueError
+        If ``vertices`` is not ``wp.vec3`` or ``faces`` not ``wp.int32`` with a multiple of three
+        entries, if ``coarse_cell`` is given and not a positive finite number, if ``normal`` is
+        zero or not finite, if ``iterations``, ``smoothing_passes``, ``smoothing_steps`` or
+        ``single_level_vertices`` is negative, if a vertex coordinate is not finite, if no face has
+        a positive area, or if ``coarse_cell`` is so small against the mesh that the grid's cells
+        or clusters cannot be numbered.
+    RuntimeError
+        If ``vertices`` and ``faces`` are not on one device.
+
+    See Also
+    --------
+    [`low_distortion_disk_parametrization`][ordito.parametrization.low_distortion_disk_parametrization]
+    [`arap`][ordito.parametrization.arap]
+        The pinned, warm-started ARAP map.
+    [`lscm`][ordito.parametrization.lscm]
+        A free-boundary conformal map.
+    [`face_flipped_indices`][ordito.parametrization.face_flipped_indices]
+
+    Notes
+    -----
+    The chart approximates a converged full-resolution element ARAP: within a few points of its
+    mean distortion. It is not guaranteed free of inverted faces, and where the grid welds sheets
+    that pass closer than a cell, or squashes a handle, it leaves more of them than a
+    full-resolution solve would.
+
+    The coarse level's sums and its solve run in ``float64``. Under
+    [`is_deterministic`][ordito.config.is_deterministic] the chart repeats bit for bit; otherwise
+    its last bits can move between calls on the CUDA device.
+
+    Examples
+    --------
+    A flat sheet has an exact answer, an isometry, which the chart reproduces:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(41, 41))
+    uv = od.parametrization.low_distortion_parametrization(vertices, faces)
+    corners_np = vertices.numpy()[faces.numpy().reshape(-1, 3)]
+    corners_uv = uv.numpy()[faces.numpy().reshape(-1, 3)]
+    lengths_np = np.linalg.norm(corners_np - np.roll(corners_np, 1, axis=1), axis=2)
+    lengths_uv = np.linalg.norm(corners_uv - np.roll(corners_uv, 1, axis=1), axis=2)
+    print(uv.shape)  # (1681,)
+    print(np.allclose(lengths_uv, lengths_np, atol=1e-5))  # True
+    print(od.parametrization.face_flipped_indices(uv, faces).shape)  # (0,)
+    ```
+    """
+    name = "low_distortion_parametrization"
+    bounds = _low_distortion_bounds(
+        name,
+        vertices,
+        faces,
+        (
+            ("iterations", iterations),
+            ("smoothing_passes", smoothing_passes),
+            ("smoothing_steps", smoothing_steps),
+            ("single_level_vertices", single_level_vertices),
+        ),
+    )
+    if coarse_cell is not None and not (math.isfinite(coarse_cell) and coarse_cell > 0.0):
+        raise ValueError(f"{name} coarse_cell must be positive and finite, got {coarse_cell}")
+    if normal is not None:
+        length = math.sqrt(sum(float(c) ** 2 for c in normal))
+        if not (math.isfinite(length) and length > 0.0):
+            raise ValueError(f"{name} normal must be non-zero and finite, got {normal}")
+    if bounds is None:
+        return _launch.empty(0, dtype=wp.vec2, device=vertices.device)
+    low, high = bounds
+    if coarse_cell is None:
+        coarse_cell = _DEFAULT_CELL_EDGES * od.edges.mean_edge_length(vertices, faces)
+    plane_normal = _projection_normal(vertices, faces, normal)
+
+    settled = _TWO_LEVEL_SETTLED * coarse_cell
+    chart = None
+    if vertices.size > single_level_vertices:
+        chart = _two_level_chart(
+            vertices,
+            faces,
+            low,
+            high,
+            coarse_cell,
+            plane_normal,
+            iterations,
+            settled,
+            smoothing_passes,
+            smoothing_steps,
+        )
+    if chart is None:
+        vertex_faces, offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=vertices.size)
+        chart = _proximal_arap(
+            od.array.astype(vertices, wp.vec3d),
+            vertices,
+            faces,
+            vertex_faces,
+            offsets,
+            iterations,
+            settled,
+            normal=plane_normal,
+        )
+    return _chart_uv(chart)
+
+
+def low_distortion_disk_parametrization(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    init: Literal["harmonic", "tutte", "lscm"] = "harmonic",
+    iterations: int = 150,
+) -> wp.array[wp.vec2]:
+    """
+    Free-boundary chart of low ARAP distortion of a disk, from a harmonic, Tutte or LSCM start.
+
+    The disk counterpart of
+    [`low_distortion_parametrization`][ordito.parametrization.low_distortion_parametrization]:
+    the same pin-free element ARAP energy ``sum_f A_f |J_f - R_f|^2`` and free boundary, started
+    from a classic map of the whole mesh instead of a coarse level, and iterated on the mesh
+    itself, each global step a factored solve, until an iteration moves no vertex by more than
+    ``5e-3`` mean edge lengths. A start's distortion is large-scale, which only whole solves
+    repair.
+
+    The start is [`harmonic`][ordito.parametrization.harmonic] or
+    [`tutte`][ordito.parametrization.tutte] with the boundary loop placed on a circle by
+    [`map_vertices_to_circle`][ordito.parametrization.map_vertices_to_circle], or
+    [`lscm`][ordito.parametrization.lscm] with two vertices half the loop apart pinned; it is
+    scaled to the mesh's area and mirrored if its faces wind clockwise on the whole, since ARAP
+    fits proper rotations and cannot unmirror it.
+
+    Parameters
+    ----------
+    vertices
+        ``(n_vertices,)`` mesh vertex positions.
+    faces
+        ``(3 * n_faces,)`` triangle index buffer of a disk: one connected component with one
+        boundary loop and Euler characteristic 1. Faces of no area are ignored.
+    init
+        The start: ``"harmonic"`` (default), ``"tutte"`` or ``"lscm"``.
+    iterations
+        ARAP iteration budget. ``0`` keeps the scaled start.
+
+    Returns
+    -------
+    wp.array[wp.vec2]
+        ``(n_vertices,)`` UV coordinates on ``vertices.device``, in the mesh's units, with the
+        faces mostly counter-clockwise; the rotation is unspecified. Empty for an empty mesh.
+
+    Raises
+    ------
+    ValueError
+        If ``vertices`` is not ``wp.vec3`` or ``faces`` not ``wp.int32`` with a multiple of three
+        entries, if ``init`` is not one of the three, if ``iterations`` is negative, if a vertex
+        coordinate is not finite, if no face has a positive area, or if the mesh is not a disk.
+    RuntimeError
+        If ``vertices`` and ``faces`` are not on one device.
+
+    See Also
+    --------
+    [`low_distortion_parametrization`][ordito.parametrization.low_distortion_parametrization]
+        Any topology, from a coarse level.
+    [`arap`][ordito.parametrization.arap]
+        The pinned, warm-started ARAP map.
+
+    Notes
+    -----
+    The factored iterations' sums and solves run in ``float64``. Under
+    [`is_deterministic`][ordito.config.is_deterministic] the chart repeats bit for bit; otherwise
+    its last bits can move between calls on the CUDA device.
+
+    Examples
+    --------
+    A curved cap from each start, its edges kept at the surface's mean length:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.sphere_cap(angle=1.0, subdivisions=3)
+    corners = faces.numpy().reshape(-1, 3)
+
+
+    def mean_edge(points: np.ndarray) -> str:
+        triangles = points[corners]
+        lengths = np.linalg.norm(triangles - np.roll(triangles, 1, axis=1), axis=2)
+        return f"{lengths.mean():.3f}"
+
+
+    charts = [
+        od.parametrization.low_distortion_disk_parametrization(vertices, faces, init=init)
+        for init in ("harmonic", "tutte", "lscm")
+    ]
+    print(mean_edge(vertices.numpy()))  # 0.134
+    print([mean_edge(uv.numpy()) for uv in charts])  # ['0.134', '0.134', '0.134']
+    print(od.parametrization.face_flipped_indices(charts[0], faces).shape)  # (0,)
+    ```
+    """
+    name = "low_distortion_disk_parametrization"
+    bounds = _low_distortion_bounds(name, vertices, faces, (("iterations", iterations),))
+    if init not in _DISK_STARTS:
+        raise ValueError(f"{name} init must be one of {_DISK_STARTS}, got {init!r}")
+    if bounds is None:
+        return _launch.empty(0, dtype=wp.vec2, device=vertices.device)
+    loop = _disk_boundary(name, vertices, faces)
+    settled = _TWO_LEVEL_SETTLED * _DEFAULT_CELL_EDGES * od.edges.mean_edge_length(vertices, faces)
+    vertex_faces, offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=vertices.size)
+    chart = _proximal_arap(
+        od.array.astype(vertices, wp.vec3d),
+        vertices,
+        faces,
+        vertex_faces,
+        offsets,
+        iterations,
+        settled,
+        start=_start_chart(vertices, faces, loop, init),
+    )
+    return _chart_uv(chart)
+
+
+def _disk_boundary(
+    name: str, vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
+) -> wp.array[wp.int32]:
+    """
+    Return a disk's boundary loop, after checking the mesh is one.
+
+    Raises
+    ------
+    ValueError
+        Unless the mesh is one connected component with one boundary loop and Euler
+        characteristic 1.
+    """
+    n_vertices = vertices.size
+    euler = od.measures.euler_characteristic(faces, n_vertices=n_vertices)
+    loops, loop_offsets = od.boundary.boundary_loops_with_offsets(vertices, faces)
+    n_loops = loop_offsets.size - 1
+    labels = od.adjacency.face_connected_component_labels(faces, n_vertices=n_vertices)
+    n_components = od.grouping.unique_1d(labels).size
+    if euler != 1 or n_loops != 1 or n_components != 1:
+        raise ValueError(
+            f"{name} needs a disk: one connected component with one boundary loop and Euler "
+            f"characteristic 1, got {n_components} components, {n_loops} boundary loops and "
+            f"Euler characteristic {euler}"
+        )
+    return loops
+
+
+def _low_distortion_bounds(
+    name: str,
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    counts: tuple[tuple[str, int], ...],
+) -> tuple[tuple[float, float, float], tuple[float, float, float]] | None:
+    """
+    Validate a low-distortion chart's mesh and counts; return the vertices' bounding box.
+
+    ``None`` for a mesh with no vertices.
+
+    Raises
+    ------
+    ValueError
+        If the arrays have the wrong dtypes, a count is negative, a coordinate is not finite or no
+        face has a positive area.
+    RuntimeError
+        If ``vertices`` and ``faces`` are not on one device.
+    """
+    require_same_device(vertices=vertices, faces=faces)
+    if vertices.dtype is not wp.vec3 or faces.dtype is not wp.int32 or faces.size % 3 != 0:
+        raise ValueError(
+            f"{name} takes wp.vec3 vertices and a flat wp.int32 faces buffer of 3 * n_faces "
+            f"entries, got {vertices.dtype.__name__} vertices and {faces.size} "
+            f"{faces.dtype.__name__} faces"
+        )
+    for argument, value in counts:
+        if value < 0:
+            raise ValueError(f"{name} {argument} must be >= 0, got {value}")
+    device = vertices.device
+    n_vertices = vertices.size
+    if n_vertices == 0:
+        return None
+    n_faces = faces.size // 3
+    bounds = _launch.full(8, math.inf, dtype=wp.float32, device=device)
+    _launch.launch_tiled(
+        kernel_parametrization.two_level_bounds,
+        dim=kernel_reduce.blocks_1d(max(n_vertices, n_faces)),
+        inputs=[vertices, faces],
+        outputs=[bounds],
+        block_dim=TILE_1D,
+        device=device,
+    )
+    # Read back: the validation decides whether to raise, and the grid's extent sizes its keys.
+    low_x, low_y, low_z, high_x, high_y, high_z, non_finite, positive_face = read_values(
+        bounds, 0, 8
+    )
+    if non_finite == 0.0:
+        raise ValueError(f"{name}: every vertex coordinate must be finite")
+    if positive_face != 0.0:
+        raise ValueError(f"{name} needs at least one face of positive area")
+    return (
+        (float(low_x), float(low_y), float(low_z)),
+        (-float(high_x), -float(high_y), -float(high_z)),
+    )
+
+
+def _projection_normal(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], normal: wp.vec3 | None
+) -> wp.vec3d:
+    """
+    Return the unit normal of the start's projection plane, zero for the best-fit plane.
+
+    ``normal`` normalized when given; else the normal of the plane fitted to the longest boundary
+    loop, or zero (the vertices' best-fit plane) when there is none.
+    """
+    if normal is None:
+        loop = od.boundary.longest_boundary_loop(vertices, faces)
+        if loop.size < 3:
+            return wp.vec3d(0.0, 0.0, 0.0)
+        normal = od.points.fit_plane(cast("wp.array[wp.vec3]", od.array.gather(vertices, loop)))[0]
+    x, y, z = float(normal[0]), float(normal[1]), float(normal[2])
+    length = math.sqrt(x * x + y * y + z * z)
+    return wp.vec3d(x / length, y / length, z / length)
+
+
+def _chart_uv(chart: odt.Array2dFloat64) -> wp.array[wp.vec2]:
+    """Narrow a ``(2, n)`` ``float64`` chart to ``float32`` UV."""
+    n_vertices = int(chart.shape[1])
+    out_uv = _launch.empty(n_vertices, dtype=wp.vec2, device=chart.device)
+    _launch.launch(
+        kernel_parametrization.chart_to_uv,
+        dim=n_vertices,
+        inputs=[chart],
+        outputs=[out_uv],
+        device=chart.device,
+    )
+    return out_uv
+
+
+def _start_chart(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], loop: wp.array[wp.int32], init: str
+) -> odt.Array2dFloat64:
+    """
+    Return the map ``low_distortion_disk_parametrization`` starts from, as a ``(2, n)`` chart.
+
+    Placing the disk's boundary ``loop``; scaled to the mesh's area and mirrored if its faces wind
+    clockwise on the whole.
+    """
+    device = vertices.device
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
+    if init == "lscm":
+        # Two vertices half the loop apart, at unit distance: the area scaling fixes the scale.
+        slots = wp.array([0, loop.size // 2], dtype=wp.int32, device=device)
+        pins = cast("wp.array[wp.int32]", od.array.gather(loop, slots))
+        pins_uv = wp.array([[0.0, 0.0], [1.0, 0.0]], dtype=wp.vec2, device=device)
+        uv = lscm(vertices, faces, pins, pins_uv)
+    else:
+        circle = map_vertices_to_circle(vertices, loop)
+        boundary_map = harmonic if init == "harmonic" else tutte
+        uv = boundary_map(vertices, faces, loop, circle)
+    blocks = kernel_reduce.blocks_1d(n_faces)
+    areas, _ = _launch.block_partials(blocks, 1, wp.vec3d, device)
+    _launch.launch_tiled(
+        kernel_parametrization.start_chart_areas,
+        dim=blocks,
+        inputs=[vertices, faces, uv],
+        outputs=[areas],
+        block_dim=TILE_1D,
+        device=device,
+    )
+    chart = odt.as_array2d(
+        _launch.empty((2, n_vertices), dtype=wp.float64, device=device), wp.float64
+    )
+    _launch.launch(
+        kernel_parametrization.scaled_start_chart,
+        dim=n_vertices,
+        inputs=[uv, areas],
+        outputs=[chart],
+        device=device,
+    )
+    return chart
+
+
+def _two_level_chart(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    low: tuple[float, float, float],
+    high: tuple[float, float, float],
+    coarse_cell: float,
+    normal: wp.vec3d,
+    iterations: int,
+    settled: float,
+    smoothing_passes: int,
+    smoothing_steps: int,
+) -> odt.Array2dFloat64 | None:
+    """
+    Return the chart through the coarse level, as ``(2, n_vertices)`` ``float64``.
+
+    ``None`` when the clustering leaves too few coarse faces, or too many clusters, for a coarse
+    level to pay: the caller then iterates the mesh directly.
+    """
+    coarse = _coarse_mesh(vertices, faces, low, high, coarse_cell)
+    if coarse is None:
+        return None
+    cluster, centroids, centroids_f32, coarse_faces = coarse
+    n_clusters = centroids.size
+    coarse_vertex_faces, coarse_offsets = od.adjacency.vertex_face_adjacency(
+        coarse_faces, n_vertices=n_clusters
+    )
+    coarse_chart = _proximal_arap(
+        centroids,
+        centroids_f32,
+        coarse_faces,
+        coarse_vertex_faces,
+        coarse_offsets,
+        iterations,
+        settled,
+        normal=normal,
+    )
+    chart = _prolonged_chart(
+        vertices, cluster, centroids, centroids_f32, coarse_faces, coarse_vertex_faces,
+        coarse_offsets, coarse_chart,
+    )  # fmt: skip
+    _smooth_chart(vertices, faces, chart, smoothing_passes, smoothing_steps)
+    return chart
+
+
+def _coarse_mesh(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    low: tuple[float, float, float],
+    high: tuple[float, float, float],
+    coarse_cell: float,
+) -> tuple[wp.array[wp.int32], wp.array[wp.vec3d], wp.array[wp.vec3], wp.array[wp.int32]] | None:
+    """
+    Cluster the vertices on a grid and join the clusters' means by the faces spanning three.
+
+    ``low`` and ``high`` are the corners of the vertices' bounding box; cells are anchored at
+    ``low``. Returns ``(cluster, centroids, centroids_f32, coarse_faces)``: each vertex's cluster,
+    numbered in sorted cell order, the clusters' means in ``float64`` and ``float32``, and the
+    flat coarse faces, each triple of clusters once per orientation, wound as the fine face that
+    spans it and in ascending key order, nearly collinear ones left out. ``None`` when there are
+    more clusters than half the vertices, or fewer than ``_TWO_LEVEL_MIN_COARSE_FACES`` coarse
+    faces: no coarse level pays.
+
+    Raises
+    ------
+    ValueError
+        If ``coarse_cell`` is so small that the grid's cells or the clusters cannot be numbered
+        by a 63-bit key.
+    """
+    device = vertices.device
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
+    # The grid's extent in cells, the reference's ``max(floor((x - min) / cell)) + 1`` per axis.
+    extents = [math.floor((high[axis] - low[axis]) / coarse_cell) + 1 for axis in range(3)]
+    n_cells = extents[0] * extents[1] * extents[2]
+    if n_cells > _MAX_PACKED_KEY:
+        raise ValueError(
+            f"low_distortion_parametrization: coarse_cell {coarse_cell} splits the mesh's "
+            "bounding box into "
+            f"{n_cells} cells, more than a 63-bit key numbers"
+        )
+    cell_keys = _launch.empty(n_vertices, dtype=wp.int64, device=device)
+    positions = _launch.empty(n_vertices, dtype=wp.vec3d, device=device)
+    _launch.launch(
+        kernel_parametrization.cluster_cell_keys,
+        dim=n_vertices,
+        inputs=[vertices, wp.vec3d(*low), wp.float64(coarse_cell), wp.int64(extents[1]),
+                wp.int64(extents[2])],
+        outputs=[cell_keys, positions],
+        device=device,
+    )  # fmt: skip
+    unique_cells, cluster, counts = od.grouping.unique_1d(
+        cell_keys, return_inverse=True, return_counts=True, max_value=n_cells - 1
+    )
+    n_clusters = unique_cells.size
+    if 2 * n_clusters > n_vertices:
+        return None
+    if n_clusters > _MAX_PACKED_CLUSTERS:
+        raise ValueError(
+            f"low_distortion_parametrization: coarse_cell {coarse_cell} leaves {n_clusters} "
+            "clusters, more than "
+            "the coarse faces' 63-bit keys number"
+        )
+    sums = od.reduce.scatter_sum(positions, cluster, n_clusters)
+    centroids = _launch.empty(n_clusters, dtype=wp.vec3d, device=device)
+    centroids_f32 = _launch.empty(n_clusters, dtype=wp.vec3, device=device)
+    _launch.launch(
+        kernel_parametrization.cluster_centroids,
+        dim=n_clusters,
+        inputs=[sums, counts],
+        outputs=[centroids, centroids_f32],
+        device=device,
+    )
+    face_keys = _launch.empty(n_faces, dtype=wp.int64, device=device)
+    _launch.launch(
+        kernel_parametrization.coarse_face_keys,
+        dim=n_faces,
+        inputs=[vertices, faces, cluster, centroids, wp.int64(n_clusters)],
+        outputs=[face_keys],
+        device=device,
+    )
+    unique_faces = od.grouping.unique_1d(face_keys, max_value=n_clusters**3)
+    kept = _launch.empty(unique_faces.size, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_parametrization.coarse_face_flags,
+        dim=unique_faces.size,
+        inputs=[unique_faces, centroids, wp.int64(n_clusters),
+                wp.float64(_TWO_LEVEL_FLAT_FACE * coarse_cell * coarse_cell)],
+        outputs=[kept],
+        device=device,
+    )  # fmt: skip
+    kept = od.array.flatnonzero_in_place(kept)
+    n_coarse_faces = kept.size
+    if n_coarse_faces < _TWO_LEVEL_MIN_COARSE_FACES:
+        return None
+    coarse_faces = _launch.empty(3 * n_coarse_faces, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_parametrization.coarse_faces_emit,
+        dim=n_coarse_faces,
+        inputs=[unique_faces, kept, wp.int64(n_clusters)],
+        outputs=[coarse_faces],
+        device=device,
+    )
+    return cluster, centroids, centroids_f32, coarse_faces
+
+
+def _proximal_arap(
+    points: wp.array[wp.vec3d],
+    points_f32: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    vertex_offsets: wp.array[wp.int32],
+    iterations: int,
+    settled: float,
+    *,
+    start: odt.Array2dFloat64 | None = None,
+    normal: wp.vec3d | None = None,
+) -> odt.Array2dFloat64:
+    """
+    Pin-free ARAP iterated from ``start``, each global step a factored solve.
+
+    ``start`` is a ``(2, n_points)`` chart, iterated in place; ``None`` starts from the points'
+    projection onto the plane of unit ``normal``, their best-fit plane when it is zero or
+    ``None``.
+
+    Returns the ``(2, n_points)`` chart. The stiffness matrix alone is singular (a translation of
+    the chart, or of any piece no face joins to the rest, costs nothing); ``K + epsilon I``,
+    matched on the right-hand side by ``epsilon`` times the previous iterate, is not, and holds a
+    loose piece where it started. Each iteration's largest move is reduced on the device and read
+    every ``_TWO_LEVEL_READ_EVERY`` iterations; the iterations after the one that settles change
+    nothing (``kernels/parametrization.proximal_rhs``), so the stop is exact.
+    """
+    device = points.device
+    n_points = points.size
+    n_faces = faces.size // 3
+    chart = start
+    if chart is None:
+        chart = odt.as_array2d(
+            _launch.empty((2, n_points), dtype=wp.float64, device=device), wp.float64
+        )
+        _launch.launch_tiled(
+            kernel_parametrization.plane_projection_block,
+            dim=1,
+            inputs=[points, faces, wp.vec3d(0.0, 0.0, 0.0) if normal is None else normal],
+            outputs=[chart],
+            device=device,
+        )
+    if iterations == 0:
+        return chart
+
+    n_keys = _TWO_LEVEL_FACE_KEYS * n_faces + n_points
+    keys, order = od.array.csr_key_buffers(n_keys, device)
+    gradients = odt.empty_2d((n_faces, 3), wp.vec2d, device=device)
+    areas = _launch.empty(n_faces, dtype=wp.float64, device=device)
+    setup_blocks = kernel_reduce.blocks_1d(max(n_faces, n_points))
+    trace, _ = _launch.block_partials(setup_blocks, 1, wp.float64, device)
+    _launch.launch_tiled(
+        kernel_parametrization.proximal_system_setup,
+        dim=setup_blocks,
+        inputs=[points, faces],
+        outputs=[gradients, areas, keys, order, trace],
+        block_dim=TILE_1D,
+        device=device,
+    )
+    offsets, columns, starts = od.array.csr_from_keys(keys, order, n_keys, n_points, n_points)
+    values = _launch.empty(n_keys, dtype=wp.float64, device=device)
+    anchor = _launch.empty(1, dtype=wp.float64, device=device)
+    _launch.launch(
+        kernel_parametrization.proximal_system_values,
+        dim=n_keys,
+        inputs=[offsets, starts, order, gradients, areas, trace, wp.int32(n_points)],
+        outputs=[values, anchor],
+        device=device,
+    )
+    system = od.array.bsr_from_csr(n_points, n_points, offsets, columns, values)
+    factorization = od.cholesky.sparse_cholesky(system, points_f32)
+    # Every iteration solves into the same two buffers: recorded on the first solve, replayed.
+    factorization.records_at_once = True
+
+    rhs = odt.as_array2d(_launch.empty((2, n_points), dtype=wp.float64, device=device), wp.float64)
+    previous = odt.as_array2d(
+        _launch.empty((2, n_points), dtype=wp.float64, device=device), wp.float64
+    )
+    moves = _launch.zeros(iterations, dtype=wp.float64, device=device)
+    move_blocks = kernel_reduce.blocks_1d(n_points)
+    # Every vertex is solved: no pinned mask for the local step's reader.
+    no_mask, no_map = _no_pins(device)
+    for iteration in range(iterations):
+        _launch.launch(
+            kernel_parametrization.proximal_rhs,
+            dim=n_points,
+            inputs=[faces, vertex_faces, vertex_offsets, gradients, areas, anchor, moves,
+                    wp.int32(iteration), wp.float64(settled), no_mask, no_map, chart],
+            outputs=[rhs, previous],
+            device=device,
+        )  # fmt: skip
+        factorization.solve(rhs, chart)
+        _launch.launch_tiled(
+            kernel_parametrization.proximal_moves,
+            dim=move_blocks,
+            inputs=[chart, previous, wp.int32(iteration)],
+            outputs=[moves],
+            block_dim=TILE_1D,
+            device=device,
+        )
+        if (iteration + 1) % _TWO_LEVEL_READ_EVERY == 0 and iteration + 1 < iterations:
+            # Read back: whether the loop has settled decides whether to issue more iterations.
+            if float(read_scalar(moves, iteration)) <= settled:
+                break
+    return chart
+
+
+def _prolonged_chart(
+    vertices: wp.array[wp.vec3],
+    cluster: wp.array[wp.int32],
+    centroids: wp.array[wp.vec3d],
+    centroids_f32: wp.array[wp.vec3],
+    coarse_faces: wp.array[wp.int32],
+    coarse_vertex_faces: wp.array[wp.int32],
+    coarse_offsets: wp.array[wp.int32],
+    coarse_chart: odt.Array2dFloat64,
+) -> odt.Array2dFloat64:
+    """
+    Carry a coarse chart to the vertices through each cluster's mean Jacobian.
+
+    Returns the ``(2, n_vertices)`` chart. A cluster no coarse face touches has no Jacobian: its
+    vertices follow the nearest cluster that has one.
+    """
+    device = vertices.device
+    n_vertices = vertices.size
+    n_clusters = centroids.size
+    jacobians = _launch.empty(n_clusters, dtype=kernel_parametrization.mat23d, device=device)
+    covered = _launch.empty(n_clusters, dtype=wp.bool, device=device)
+    uncovered = _launch.empty(n_clusters, dtype=wp.bool, device=device)
+    source = _launch.empty(n_clusters, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_parametrization.cluster_jacobians,
+        dim=n_clusters,
+        inputs=[centroids, coarse_faces, coarse_vertex_faces, coarse_offsets, coarse_chart],
+        outputs=[jacobians, covered, uncovered, source],
+        device=device,
+    )
+    uncovered_clusters = od.array.flatnonzero(uncovered)
+    if uncovered_clusters.size > 0:
+        covered_clusters = od.array.flatnonzero(covered)
+        nearest, _ = od.neighbors.query_nearest(
+            od.array.gather(centroids_f32, covered_clusters),
+            od.array.gather(centroids_f32, uncovered_clusters),
+            k=1,
+        )
+        _launch.launch(
+            kernel_parametrization.borrow_cluster_sources,
+            dim=uncovered_clusters.size,
+            inputs=[uncovered_clusters, covered_clusters, nearest],
+            outputs=[source],
+            device=device,
+        )
+    chart = odt.as_array2d(
+        _launch.empty((2, n_vertices), dtype=wp.float64, device=device), wp.float64
+    )
+    _launch.launch(
+        kernel_parametrization.prolong_chart,
+        dim=n_vertices,
+        inputs=[vertices, cluster, source, centroids, jacobians, coarse_chart],
+        outputs=[chart],
+        device=device,
+    )
+    return chart
+
+
+def _smooth_chart(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    chart: odt.Array2dFloat64,
+    passes: int,
+    steps: int,
+) -> None:
+    """
+    Run ARAP passes on ``chart`` in place, each global step cut short after ``steps`` CG steps.
+
+    The conjugate gradients start from the current chart and are preconditioned by the stiffness
+    diagonal; u and v share the matrix and are solved side by side, each with its own step
+    lengths, which stay on the device. The stiffness is applied face by face from edge weights.
+    """
+    if passes == 0:
+        return
+    device = vertices.device
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
+    vertex_faces, offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
+    gradients = odt.empty_2d((n_faces, 3), wp.vec2d, device=device)
+    areas = _launch.empty(n_faces, dtype=wp.float64, device=device)
+    edge_weights = _launch.empty(n_faces, dtype=wp.vec3d, device=device)
+    _launch.launch(
+        kernel_parametrization.smoothing_face_terms,
+        dim=n_faces,
+        inputs=[vertices, faces],
+        outputs=[gradients, areas, edge_weights],
+        device=device,
+    )
+    width, blocks = kernel_reduce.spanned_blocks_1d(n_vertices, device)
+    # Per pass: the preconditioned residual norm at the start and after each step, then each
+    # step's curvature.
+    slots = 2 * steps + 1
+    partials, stride = _launch.block_partials(blocks, passes * slots, wp.vec2d, device)
+    inverse_diagonal = _launch.empty(n_vertices, dtype=wp.float64, device=device)
+    residual, direction, applied = (
+        odt.as_array2d(_launch.empty((2, n_vertices), dtype=wp.float64, device=device), wp.float64)
+        for _ in range(3)
+    )
+    width_arg, stride_arg = wp.int32(width), wp.int32(stride)
+    no_mask, no_map = _no_pins(device)
+    for pass_index in range(passes):
+        base = pass_index * slots
+        _launch.launch_tiled(
+            kernel_parametrization.smoothing_start,
+            dim=blocks,
+            inputs=[faces, vertex_faces, offsets, gradients, areas, edge_weights, no_mask, no_map,
+                    chart,
+                    width_arg, wp.int32(base), stride_arg],
+            outputs=[inverse_diagonal, residual, direction, partials],
+            block_dim=TILE_1D,
+            device=device,
+        )  # fmt: skip
+        for step in range(steps):
+            norm_slot = wp.int32(base + step)
+            curvature_slot = wp.int32(base + steps + 1 + step)
+            _launch.launch_tiled(
+                kernel_parametrization.smoothing_apply,
+                dim=blocks,
+                inputs=[faces, vertex_faces, offsets, edge_weights, direction, width_arg,
+                        curvature_slot, stride_arg],
+                outputs=[applied, partials],
+                block_dim=TILE_1D,
+                device=device,
+            )  # fmt: skip
+            _launch.launch_tiled(
+                kernel_parametrization.smoothing_update,
+                dim=blocks,
+                inputs=[direction, applied, inverse_diagonal, width_arg, norm_slot,
+                        curvature_slot, stride_arg],
+                outputs=[chart, residual, partials],
+                block_dim=TILE_1D,
+                device=device,
+            )  # fmt: skip
+            # The last step's direction is never used: the next pass restarts from its residual.
+            if step + 1 < steps:
+                _launch.launch(
+                    kernel_parametrization.smoothing_direction,
+                    dim=n_vertices,
+                    inputs=[residual, inverse_diagonal, partials, norm_slot],
+                    outputs=[direction],
+                    device=device,
+                )
+
+
+def _no_pins(device: wp.DeviceLike) -> tuple[wp.array[wp.bool], wp.array[wp.int32]]:
+    """Return the empty pinned mask and free map of a local step that solves every vertex."""
+    return (
+        _launch.empty(0, dtype=wp.bool, device=device),
+        _launch.empty(0, dtype=wp.int32, device=device),
+    )
 
 
 @overload

@@ -103,7 +103,8 @@ On the **CUDA** device:
   [`segment_sum`][ordito.reduce.segment_sum], which are then summed *exactly* in fixed point and
   rounded once. Their result is identical on the CPU and the CUDA device too.
 - **Per-vertex and per-component sums** inside geometry functions: lumped masses, Hessian
-  energies, vertex defects, the local steps of [`arap`][ordito.parametrization.arap], loop
+  energies, vertex defects, the local steps of [`arap`][ordito.parametrization.arap] and
+  [`low_distortion_parametrization`][ordito.parametrization.low_distortion_parametrization], loop
   perimeters and areas, the component volumes and areas
   [`repair`](api/ordito/repair.md) decides on, the positions of
   [`subdivide_loop`][ordito.remesh.subdivide_loop],

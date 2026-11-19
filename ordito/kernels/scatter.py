@@ -935,15 +935,14 @@ def sum_sorted_corner_values(
     # ``add_corner_triple``'s atomics commit in arrival order -- the deterministic form of that
     # scatter for ``float64`` values, which have no exact float atomic sum, and for vectors
     # (``SUM_SORTED_CORNER_VALUES``' dtypes). The exact group sum (``kernels/reduce.py``,
-    # ``scatter_add_vector``) covers both and was priced against it as ``parametrization.arap``
-    # uses it, one sort a call and a walk a round: with its bound pass skipped (``|R w| = |w|``
-    # bounds every term) it ran 2x the walk's device time on a scrambled 5 M-face mesh and 0.8x on
-    # an ordered one, so the walk stays.
+    # ``scatter_add_vector``) covers both and was priced against it on ``parametrization.arap``'s
+    # former rotation right-hand side, one sort a call and a walk a round: with its bound pass
+    # skipped it ran 2x the walk's device time on a scrambled 5 M-face mesh and 0.8x on an ordered
+    # one, so the walk stays.
     #
     # A "corner" is a slot of the flat buffer ``sorted_vertices`` was sorted from, and
     # ``corner_values`` has one row per row of that buffer: three slots a face here, two an edge
-    # for ``remesh.subdivide_loop``'s ring sums, which sorts its unique edges' endpoints, six a
-    # face (two per edge) for ``parametrization.arap``'s rotation right-hand side.
+    # for ``remesh.subdivide_loop``'s ring sums, which sorts its unique edges' endpoints.
     #
     # The runs are also the vertex-face incidence CSR ``adjacency.vertex_face_adjacency`` returns
     # in deterministic mode, each row in ascending face order, so a caller that wants those rows

@@ -1,18 +1,23 @@
 import warp as wp
 
 from ordito import constants as twc
-from ordito.kernels.array import cross2, to_vec2d
+from ordito.kernels.array import cross2, csr_key, declare_block_dims, to_vec3d
 from ordito.kernels.laplacian import signed_cotmatrix_rows
 from ordito.kernels.linalg import free_row
-from ordito.kernels.predicates import squared_edge_lengths
-from ordito.kernels.reduce import block_running_sum
-from ordito.kernels.triangles import corner_triple, face_vertices, row_triple
+from ordito.kernels.reduce import (
+    block_chunk,
+    block_chunk_1d,
+    block_max,
+    block_min,
+    block_running_sum,
+    block_sum,
+    last_ticket,
+    last_ticket_vector,
+    store_block_total,
+)
+from ordito.kernels.triangles import corner_triple, face_vertices, face_vertices_vec3d
 
 wp.set_module_options({"enable_backward": False})
-
-# Below this (float64) squared edge length the isometric rest-triangle flattening is treated as
-# degenerate: its rest edges are zeroed so the ARAP local step contributes nothing for that face.
-EPSILON_ARAP_EDGE_SQ = wp.float64(1.0e-20)
 
 
 @wp.func
@@ -290,168 +295,6 @@ def scatter_solution_stacked(
 
 
 @wp.func
-def arap_rest_edges(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    cot_entries: wp.array2d[wp.float64],
-    f: wp.int32,
-    out_rest_edges: wp.array2d[wp.vec2d],
-) -> None:
-    # Isometrically flatten each triangle into the plane (igl project_isometrically_to_plane) and
-    # store its three weight-folded rest edges ``c_e * p_e`` in igl edge order e0:(1,2), e1:(2,0),
-    # e2:(0,1). Run once (``arap_setup``): folding the half-cotangent weight ``c_e`` in here removes
-    # the cotangent lookup from the per-iteration local step. Computed in float64 (squared edge
-    # lengths promoted from the float32 vertex precision) for a deterministic operator.
-    v0, v1, v2 = face_vertices(vertices, faces, f)
-    l2_0f, l2_1f, l2_2f = squared_edge_lengths(v0, v1, v2)
-    # l0 = |v1 - v2|, l1 = |v2 - v0|, l2 = |v0 - v1| (igl edge_lengths column order).
-    l2_0 = wp.float64(l2_0f)
-    l2_1 = wp.float64(l2_1f)
-    l2_2 = wp.float64(l2_2f)
-    c0, c1, c2 = row_triple(cot_entries, f)
-    if l2_2 < EPSILON_ARAP_EDGE_SQ:
-        # Degenerate base edge |v0 - v1|: emit zero rest edges (local step contributes nothing).
-        out_rest_edges[f, 0] = wp.vec2d(wp.float64(0.0), wp.float64(0.0))
-        out_rest_edges[f, 1] = wp.vec2d(wp.float64(0.0), wp.float64(0.0))
-        out_rest_edges[f, 2] = wp.vec2d(wp.float64(0.0), wp.float64(0.0))
-        return
-    # Flattened rest positions: P0 = (0, 0), P1 = (|v0 - v1|, 0), P2 from the law of cosines.
-    base = wp.sqrt(l2_2)
-    p2x = (-l2_0 + l2_1 + l2_2) / (wp.float64(2.0) * base)
-    p2y_sq = wp.max(l2_1 - p2x * p2x, wp.float64(0.0))
-    p1 = wp.vec2d(base, wp.float64(0.0))
-    p2 = wp.vec2d(p2x, wp.sqrt(p2y_sq))
-    # p_e = P_source - P_dest per igl edge, folded with c_e: e0 -> P1 - P2, e1 -> P2 (P0 = 0),
-    # e2 -> -P1 (P0 - P1).
-    out_rest_edges[f, 0] = c0 * (p1 - p2)
-    out_rest_edges[f, 1] = c1 * p2
-    out_rest_edges[f, 2] = -c2 * p1
-
-
-@wp.func
-def arap_edge_endpoints(corners: wp.vec3i, e: wp.int32) -> tuple[wp.int32, wp.int32]:
-    # The (source, dest) vertices of a face's ARAP edge ``e`` in igl edge order e0:(1,2), e1:(2,0),
-    # e2:(0,1). One spelling for the local step's scatter and the endpoint buffer ``arap_setup``
-    # writes for the deterministic sum, whose slot ``6 * f + 2 * e`` (source) and ``+ 1`` (dest)
-    # must name the vertex the scatter's term goes to.
-    return corners[(e + 1) % 3], corners[(e + 2) % 3]
-
-
-@wp.func
-def scatter_arap_edge(
-    rotation: wp.mat22d,
-    w: wp.vec2d,
-    corners: wp.vec3i,
-    f: wp.int32,
-    e: wp.int32,
-    out_rhs_x: wp.array[wp.float64],
-    out_rhs_y: wp.array[wp.float64],
-    out_edge_terms: wp.array2d[wp.vec2d],
-) -> None:
-    # Rotate the weight-folded rest edge ``e`` of face ``f`` and scatter the ARAP right-hand side
-    # ``+r`` to the edge source and ``-r`` to the edge dest. The two components go to separate 1D
-    # buffers so the atomic adds stay 1D (row-view outputs of the (2, n_vertices) rotation RHS).
-    #
-    # Under ``ordito.config``'s deterministic mode ``out_edge_terms`` is a non-empty
-    # ``(n_faces, 6)`` table and the two terms are stored in it instead, at columns ``2 * e`` and
-    # ``2 * e + 1``, for ``scatter.sum_sorted_corner_values`` to add per vertex over the stable sort
-    # of the endpoint buffer: in ascending face, edge and source-before-dest order, the order the
-    # CPU's in-order atomics add them in (the branch is warp-uniform).
-    r = rotation * w
-    if out_edge_terms.shape[0] > 0:
-        out_edge_terms[f, 2 * e] = r
-        out_edge_terms[f, 2 * e + 1] = -r
-    else:
-        source, dest = arap_edge_endpoints(corners, e)
-        wp.atomic_add(out_rhs_x, source, r[0])
-        wp.atomic_add(out_rhs_y, source, r[1])
-        wp.atomic_add(out_rhs_x, dest, -r[0])
-        wp.atomic_add(out_rhs_y, dest, -r[1])
-
-
-@wp.kernel
-def arap_local_step(
-    faces: wp.array[wp.int32],
-    fixed_mask: wp.array[wp.bool],
-    free_map: wp.array[wp.int32],
-    sol: wp.array2d[wp.float64],
-    fixed_values: wp.array2d[wp.float64],
-    rest_edges: wp.array2d[wp.vec2d],
-    out_rhs_x: wp.array[wp.float64],
-    out_rhs_y: wp.array[wp.float64],
-    out_edge_terms: wp.array2d[wp.vec2d],
-) -> None:
-    # Per face (dim = n_faces, once per iteration): fit the closest 2D rotation to the current UV
-    # and scatter the rotation right-hand side, fused so no per-face rotation buffer is needed.
-    # The current UV is read straight off the reduced solution (``solved_uv``: the value
-    # ``scatter_solution`` stores), so the loop scatters the full field only once, after its last
-    # step. ``out_rhs_x`` / ``out_rhs_y`` are the two rows of the (2, n_vertices) rotation RHS and
-    # must be zero at launch (``arap_interior_rhs`` clears them as it reads them), unless
-    # ``out_edge_terms`` is non-empty and takes the terms instead (``scatter_arap_edge``).
-    # Degenerate faces have zero rest edges, so S = 0, atan2(0, 0) = 0, and the identity rotation
-    # scatters nothing.
-    f = wp.int32(wp.tid())
-    i0, i1, i2 = corner_triple(faces, f)
-    uv0 = solved_uv(fixed_mask, free_map, sol, fixed_values, i0)
-    uv1 = solved_uv(fixed_mask, free_map, sol, fixed_values, i1)
-    uv2 = solved_uv(fixed_mask, free_map, sol, fixed_values, i2)
-    # UV edges in igl order e0:(1,2), e1:(2,0), e2:(0,1), promoted to float64.
-    u0 = to_vec2d(uv1) - to_vec2d(uv2)
-    u1 = to_vec2d(uv2) - to_vec2d(uv0)
-    u2 = to_vec2d(uv0) - to_vec2d(uv1)
-    w0, w1, w2 = row_triple(rest_edges, f)
-    # Covariance S = sum_e u_e (outer) w_e (rest edges already weight-folded with c_e).
-    s = wp.outer(u0, w0) + wp.outer(u1, w1) + wp.outer(u2, w2)
-    # Closest proper rotation (reflections forbidden), fit_rotations_planar closed form.
-    theta = wp.atan2(s[1, 0] - s[0, 1], s[0, 0] + s[1, 1])
-    cos_t = wp.cos(theta)
-    sin_t = wp.sin(theta)
-    rotation = wp.mat22d(cos_t, -sin_t, sin_t, cos_t)
-    corners = wp.vec3i(i0, i1, i2)
-    scatter_arap_edge(rotation, w0, corners, f, 0, out_rhs_x, out_rhs_y, out_edge_terms)
-    scatter_arap_edge(rotation, w1, corners, f, 1, out_rhs_x, out_rhs_y, out_edge_terms)
-    scatter_arap_edge(rotation, w2, corners, f, 2, out_rhs_x, out_rhs_y, out_edge_terms)
-
-
-@wp.kernel
-def arap_interior_rhs(
-    fixed_mask: wp.array[wp.bool],
-    free_map: wp.array[wp.int32],
-    rhs_const: wp.array2d[wp.float64],
-    rhs_rot_x: wp.array[wp.float64],
-    rhs_rot_y: wp.array[wp.float64],
-    rhs_rot_sorted: wp.array[wp.vec2d],
-    out_b: wp.array2d[wp.float64],
-) -> None:
-    # Assemble the interior right-hand side of the global step (dim = n_vertices). Interior rows get
-    # the constant term ``rhs_const`` (the ``-(-L)_ub bc`` boundary contribution, already at the
-    # compact free index) plus the scattered rotation RHS at the original vertex index; boundary
-    # rows carry no unknown and are skipped. ``rhs_const`` / ``out_b`` are (2, n_interior) (rows
-    # u, v); ``rhs_rot_*`` are (n_vertices,).
-    #
-    # ``rhs_rot_*`` are cleared here, every row, as they are read: the next iteration's local
-    # step scatters into them, and each slot is read only by its own thread, after the scatter
-    # that filled it, so the loop issues no memset.
-    #
-    # Under ``ordito.config``'s deterministic mode the rotation RHS is instead the non-empty
-    # ``rhs_rot_sorted``, the ``(n_vertices,)`` sums ``scatter.sum_sorted_corner_values`` writes
-    # whole every iteration, so nothing is cleared (the branch is warp-uniform).
-    i = wp.int32(wp.tid())
-    ri = free_row(fixed_mask, free_map, i)
-    if rhs_rot_sorted.shape[0] > 0:
-        if ri >= 0:
-            rot = rhs_rot_sorted[i]
-            out_b[0, ri] = rhs_const[0, ri] + rot[0]
-            out_b[1, ri] = rhs_const[1, ri] + rot[1]
-        return
-    if ri >= 0:
-        out_b[0, ri] = rhs_const[0, ri] + rhs_rot_x[i]
-        out_b[1, ri] = rhs_const[1, ri] + rhs_rot_y[i]
-    rhs_rot_x[i] = wp.float64(0.0)
-    rhs_rot_y[i] = wp.float64(0.0)
-
-
-@wp.func
 def gather_interior_uv(
     fixed_mask: wp.array[wp.bool],
     free_map: wp.array[wp.int32],
@@ -473,39 +316,923 @@ def gather_interior_uv(
     out_sol[1, ri] = wp.float64(p[1])
 
 
+# The element ARAP pieces every ARAP here shares (``arap``, ``low_distortion_parametrization``,
+# ``low_distortion_disk_parametrization``): one rest shape per face (its shape-function gradients
+# and area), one local step (``face_rotation``) and one right-hand side, gathered per vertex
+# (``rotation_row``) rather than scattered, so a vertex's sum is one launch with no zeroing and,
+# under ``ordito.config``'s deterministic setting, in the adjacency rows' ascending face order.
+# Charts are ``(2, n)`` ``float64`` buffers (rows u, v), the layout the solves take.
+
+
+@wp.func
+def face_gradients(
+    p0: wp.vec3d, p1: wp.vec3d, p2: wp.vec3d
+) -> tuple[wp.vec2d, wp.vec2d, wp.vec2d, wp.float64]:
+    # A face's three shape-function gradients in an isometric frame of its own plane (first axis
+    # along the edge from corner 0 to corner 1), and its area; all zero for a face of no area, so
+    # such a face adds nothing to any sum.
+    first = p1 - p0
+    second = p2 - p0
+    double_area = wp.length(wp.cross(first, second))
+    zero = wp.vec2d()
+    if not (double_area > wp.float64(0.0) and wp.isfinite(double_area)):
+        return zero, zero, zero, wp.float64(0.0)
+    length = wp.length(first)
+    projection = wp.dot(first, second) / length
+    height = double_area / length
+    gradient1 = wp.vec2d(wp.float64(1.0) / length, -projection / double_area)
+    gradient2 = wp.vec2d(wp.float64(0.0), wp.float64(1.0) / height)
+    return -gradient1 - gradient2, gradient1, gradient2, wp.float64(0.5) * double_area
+
+
+@wp.func
+def store_face_gradients(
+    f: wp.int32,
+    g0: wp.vec2d,
+    g1: wp.vec2d,
+    g2: wp.vec2d,
+    area: wp.float64,
+    out_gradients: wp.array2d[wp.vec2d],
+    out_areas: wp.array[wp.float64],
+) -> None:
+    # Row ``f`` of the per-face gradient table and its area.
+    out_gradients[f, 0] = g0
+    out_gradients[f, 1] = g1
+    out_gradients[f, 2] = g2
+    out_areas[f] = area
+
+
+@wp.func
+def chart_point(chart: wp.array2d[wp.float64], i: wp.int32) -> wp.vec2d:
+    # Vertex ``i``'s UV in a ``(2, n)`` chart.
+    return wp.vec2d(chart[0, i], chart[1, i])
+
+
+@wp.func
+def store_chart_point(chart: wp.array2d[wp.float64], i: wp.int32, uv: wp.vec2d) -> None:
+    # Write vertex ``i``'s UV into a ``(2, n)`` chart.
+    chart[0, i] = uv[0]
+    chart[1, i] = uv[1]
+
+
+@wp.func
+def chart_vertex(
+    chart: wp.array2d[wp.float64],
+    fixed_mask: wp.array[wp.bool],
+    free_map: wp.array[wp.int32],
+    solution: wp.array2d[wp.float64],
+    i: wp.int32,
+) -> wp.vec2d:
+    # Vertex ``i``'s UV, the one reader of every ARAP local step. With an empty ``fixed_mask`` it is
+    # the full ``(2, n)`` chart's row; otherwise (``arap``'s pinned system) a free vertex reads the
+    # reduced ``solution`` at its compact index and a pinned one its prescribed position in
+    # ``chart``. The branch is warp-uniform.
+    if fixed_mask.shape[0] > 0:
+        if not fixed_mask[i]:
+            return chart_point(solution, free_map[i])
+    return chart_point(chart, i)
+
+
+@wp.func
+def face_corner(faces: wp.array[wp.int32], f: wp.int32, v: wp.int32) -> wp.int32:
+    # The corner of face ``f`` at vertex ``v`` (its first, should a face of no area repeat it).
+    i0, i1, _i2 = corner_triple(faces, f)
+    return wp.where(i0 == v, 0, wp.where(i1 == v, 1, 2))
+
+
+@wp.func
+def face_rotation(
+    uv0: wp.vec2d, uv1: wp.vec2d, uv2: wp.vec2d, g1: wp.vec2d, g2: wp.vec2d
+) -> wp.vec2d:
+    # ``(cos, sin)`` of the proper rotation nearest a face's Jacobian ``J = [grad u; grad v]``:
+    # ``cos ~ a + d``, ``sin ~ c - b`` normalized. A collapsed Jacobian, or an exactly ambiguous
+    # reflection, admits any rotation: the identity.
+    first = uv1 - uv0
+    second = uv2 - uv0
+    gradient_u = first[0] * g1 + second[0] * g2
+    gradient_v = first[1] * g1 + second[1] * g2
+    cosine = gradient_u[0] + gradient_v[1]
+    sine = gradient_v[0] - gradient_u[1]
+    magnitude = wp.sqrt(cosine * cosine + sine * sine)
+    if magnitude == wp.float64(0.0):
+        return wp.vec2d(wp.float64(1.0), wp.float64(0.0))
+    return wp.vec2d(cosine / magnitude, sine / magnitude)
+
+
+@wp.func
+def rotation_row(
+    faces: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    vertex_offsets: wp.array[wp.int32],
+    gradients: wp.array2d[wp.vec2d],
+    areas: wp.array[wp.float64],
+    chart: wp.array2d[wp.float64],
+    fixed_mask: wp.array[wp.bool],
+    free_map: wp.array[wp.int32],
+    solution: wp.array2d[wp.float64],
+    v: wp.int32,
+) -> wp.vec2d:
+    # Vertex ``v``'s row of the global step's right-hand side ``sum_f A_f R_f g_k``: each incident
+    # face's rotation fitted to the UV ``chart_vertex`` reads (the local step, recomputed by each of
+    # its corners) applied to the gradient at ``v``'s corner, in the adjacency row's order. For an
+    # isometric flattening ``P`` of the face, ``A G G^T P = A g_k``: the rotated rest edges
+    # ``sum_e c_e R (P_i - P_j)`` libigl's element ARAP scatters, gathered per vertex.
+    total = wp.vec2d()
+    for s in range(vertex_offsets[v], vertex_offsets[v + 1]):
+        f = vertex_faces[s]
+        i0, i1, i2 = corner_triple(faces, f)
+        rotation = face_rotation(
+            chart_vertex(chart, fixed_mask, free_map, solution, i0),
+            chart_vertex(chart, fixed_mask, free_map, solution, i1),
+            chart_vertex(chart, fixed_mask, free_map, solution, i2),
+            gradients[f, 1], gradients[f, 2],
+        )  # fmt: skip
+        g = gradients[f, face_corner(faces, f, v)]
+        total += areas[f] * wp.vec2d(
+            g[0] * rotation[0] - g[1] * rotation[1], g[0] * rotation[1] + g[1] * rotation[0]
+        )
+    return total
+
+
 @wp.kernel
 def arap_setup(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    cot_entries: wp.array2d[wp.float64],
     fixed_mask: wp.array[wp.bool],
     free_map: wp.array[wp.int32],
     uv: wp.array[wp.vec2],
-    out_rest_edges: wp.array2d[wp.vec2d],
+    out_gradients: wp.array2d[wp.vec2d],
+    out_areas: wp.array[wp.float64],
     out_sol: wp.array2d[wp.float64],
-    out_edge_endpoints: wp.array[wp.int32],
-    out_edge_slots: wp.array[wp.int32],
 ) -> None:
-    # The ARAP loop's two one-time inputs in one launch over ``max(n_faces, n_vertices)`` threads:
-    # the rest edges per face (``arap_rest_edges``) and the warm start per vertex
-    # (``gather_interior_uv``). They write disjoint buffers from the input alone.
-    #
-    # Under ``ordito.config``'s deterministic mode ``out_edge_endpoints`` / ``out_edge_slots`` are
-    # the non-empty ``(12 * n_faces,)`` buffers of a radix sort, and their leading halves receive
-    # each face's six edge endpoints in ``scatter_arap_edge``'s table order and the identity
-    # payload: the stable sort of those orders the per-vertex sum of the local step's terms.
+    # ``arap``'s two one-time inputs in one launch over ``max(n_faces, n_vertices)`` threads: each
+    # face's gradients and area, and the warm start per vertex (``gather_interior_uv``).
     t = wp.int32(wp.tid())
     if t < faces.shape[0] // 3:
-        arap_rest_edges(vertices, faces, cot_entries, t, out_rest_edges)
-        if out_edge_endpoints.shape[0] > 0:
-            i0, i1, i2 = corner_triple(faces, t)
-            corners = wp.vec3i(i0, i1, i2)
-            for e in range(3):
-                source, dest = arap_edge_endpoints(corners, e)
-                slot = 6 * t + 2 * e
-                out_edge_endpoints[slot] = source
-                out_edge_endpoints[slot + 1] = dest
-                out_edge_slots[slot] = slot
-                out_edge_slots[slot + 1] = slot + 1
+        p0, p1, p2 = face_vertices_vec3d(vertices, faces, t)
+        g0, g1, g2, area = face_gradients(p0, p1, p2)
+        store_face_gradients(t, g0, g1, g2, area, out_gradients, out_areas)
     if t < vertices.shape[0]:
         gather_interior_uv(fixed_mask, free_map, uv, t, out_sol)
+
+
+@wp.kernel
+def arap_rhs(
+    faces: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    vertex_offsets: wp.array[wp.int32],
+    gradients: wp.array2d[wp.vec2d],
+    areas: wp.array[wp.float64],
+    fixed_values: wp.array2d[wp.float64],
+    fixed_mask: wp.array[wp.bool],
+    free_map: wp.array[wp.int32],
+    sol: wp.array2d[wp.float64],
+    rhs_const: wp.array2d[wp.float64],
+    out_b: wp.array2d[wp.float64],
+) -> None:
+    # ``arap``'s local step and global right-hand side at each free vertex: the constant boundary
+    # term plus its ``rotation_row``, the pinned vertices read at their prescribed positions.
+    i = wp.int32(wp.tid())
+    ri = free_row(fixed_mask, free_map, i)
+    if ri < 0:
+        return
+    rotated = rotation_row(
+        faces, vertex_faces, vertex_offsets, gradients, areas, fixed_values, fixed_mask, free_map,
+        sol, i,
+    )  # fmt: skip
+    out_b[0, ri] = rhs_const[0, ri] + rotated[0]
+    out_b[1, ri] = rhs_const[1, ri] + rotated[1]
+
+
+# The low-distortion charts: pin-free element ARAP from a coarse level or a classic map's start,
+# on the shared pieces above. Their per-vertex sums are gathers too (Jacobians, stiffness rows).
+
+# A coarse face whose doubled area is at most this times ``coarse_cell ** 2`` joins three nearly
+# collinear centroids and is dropped (the reference's threshold).
+TWO_LEVEL_FLAT_FACE = wp.float64(2.0e-9)
+# The proximal anchor ``epsilon`` is this fraction of the mean diagonal of the stiffness matrix.
+TWO_LEVEL_ANCHOR = wp.float64(1.0e-6)
+# Contributions a face makes to the coarse system's keys: its ``3 x 3`` block.
+TWO_LEVEL_FACE_KEYS = 9
+
+mat23d = wp.types.matrix(shape=(2, 3), dtype=wp.float64)
+
+
+@wp.kernel
+def two_level_bounds(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], out_bounds: wp.array[wp.float32]
+) -> None:
+    # The validation and grid inputs of the low-distortion charts in one lane-strided pass over
+    # ``max(n_vertices, n_faces)`` items, committed by ``atomic_min`` (exact in any order) into
+    # ``out_bounds``, eight slots filled with ``+inf``: the lower corner of the finite vertices
+    # (0-2), the negated upper corner (3-5), 0 in slot 6 if any coordinate is not finite and 0 in
+    # slot 7 if any face has a positive area (its ``float64`` cross product is not zero, the test
+    # ``face_gradients`` zeroes a face by).
+    block, lane = wp.tid()
+    n_vertices = vertices.shape[0]
+    n_faces = faces.shape[0] // 3
+    offset, count = block_chunk_1d(wp.max(n_vertices, n_faces), block)
+    infinity = wp.vec3(twc.FLOAT32_INF_CONSTANT, twc.FLOAT32_INF_CONSTANT, twc.FLOAT32_INF_CONSTANT)
+    low = infinity
+    negated_high = infinity
+    # (non-finite seen, positive face seen) as 0 where seen
+    flags = wp.vec2(twc.FLOAT32_INF_CONSTANT, twc.FLOAT32_INF_CONSTANT)
+    for k in range(lane, count, wp.block_dim()):
+        i = offset + k
+        if i < n_vertices:
+            p = vertices[i]
+            if wp.isfinite(p[0]) and wp.isfinite(p[1]) and wp.isfinite(p[2]):
+                low = wp.min(low, p)
+                negated_high = wp.min(negated_high, -p)
+            else:
+                flags[0] = wp.float32(0.0)
+        if i < n_faces:
+            p0, p1, p2 = face_vertices_vec3d(vertices, faces, i)
+            if wp.length_sq(wp.cross(p1 - p0, p2 - p0)) > wp.float64(0.0):
+                flags[1] = wp.float32(0.0)
+    for axis in range(3):
+        block_low = block_min(low[axis])
+        block_high = block_min(negated_high[axis])
+        if lane == 0:
+            wp.atomic_min(out_bounds, axis, block_low)
+            wp.atomic_min(out_bounds, 3 + axis, block_high)
+    for slot in range(2):
+        seen = block_min(flags[slot])
+        if lane == 0 and seen == wp.float32(0.0):
+            wp.atomic_min(out_bounds, 6 + slot, seen)
+
+
+@wp.kernel
+def cluster_cell_keys(
+    vertices: wp.array[wp.vec3],
+    origin: wp.vec3d,
+    cell: wp.float64,
+    extent_y: wp.int64,
+    extent_z: wp.int64,
+    out_keys: wp.array[wp.int64],
+    out_positions: wp.array[wp.vec3d],
+) -> None:
+    # Each vertex's grid cell ``floor((x - origin) / cell)`` packed as ``(cx * ey + cy) * ez + cz``,
+    # so the sorted distinct keys number the clusters in the reference's order; and its position
+    # in ``float64``, which the clusters' sums add.
+    i = wp.int32(wp.tid())
+    p = to_vec3d(vertices[i])
+    out_positions[i] = p
+    cx = wp.int64(wp.floor((p[0] - origin[0]) / cell))
+    cy = wp.int64(wp.floor((p[1] - origin[1]) / cell))
+    cz = wp.int64(wp.floor((p[2] - origin[2]) / cell))
+    out_keys[i] = (cx * extent_y + cy) * extent_z + cz
+
+
+@wp.kernel
+def cluster_centroids(
+    sums: wp.array[wp.vec3d],
+    counts: wp.array[wp.int32],
+    out_centroids: wp.array[wp.vec3d],
+    out_centroids_f32: wp.array[wp.vec3],
+) -> None:
+    # Each cluster's plain mean of its vertices, and its ``float32`` copy for the factorization's
+    # geometric ordering.
+    c = wp.int32(wp.tid())
+    centroid = sums[c] / wp.float64(counts[c])
+    out_centroids[c] = centroid
+    out_centroids_f32[c] = wp.vec3(
+        wp.float32(centroid[0]), wp.float32(centroid[1]), wp.float32(centroid[2])
+    )
+
+
+@wp.func
+def oriented_cluster_key(
+    c0: wp.int32, c1: wp.int32, c2: wp.int32, flipped: wp.bool, n_clusters: wp.int64
+) -> wp.int64:
+    # The key of the coarse face ``(c0, c1, c2)``, wound the other way when ``flipped``, rotated so
+    # its smallest cluster comes first (a rotation keeps the winding): ``(a * n + b) * n + c``. A
+    # triple and its reversed twin keep distinct keys.
+    b0 = wp.where(flipped, c2, c1)
+    b1 = wp.where(flipped, c1, c2)
+    second_least = b0 < c0 and b0 < b1
+    third_least = b1 < c0 and b1 < b0
+    a = wp.where(second_least, b0, wp.where(third_least, b1, c0))
+    b = wp.where(second_least, b1, wp.where(third_least, c0, b0))
+    c = wp.where(second_least, c0, wp.where(third_least, b0, b1))
+    return (wp.int64(a) * n_clusters + wp.int64(b)) * n_clusters + wp.int64(c)
+
+
+@wp.kernel
+def coarse_face_keys(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    cluster: wp.array[wp.int32],
+    centroids: wp.array[wp.vec3d],
+    n_clusters: wp.int64,
+    out_keys: wp.array[wp.int64],
+) -> None:
+    # The coarse face a fine face spans, as ``oriented_cluster_key``: its corners' three distinct
+    # clusters, wound so the centroids' normal agrees with the fine face's (three centroids can
+    # turn the other way from the face joining them, and a flat sheet's coarse mesh would then be
+    # folded). A face of no area, or whose corners share a cluster, writes the sentinel
+    # ``n_clusters ** 3``, which sorts past every key.
+    f = wp.int32(wp.tid())
+    i0, i1, i2 = corner_triple(faces, f)
+    c0 = cluster[i0]
+    c1 = cluster[i1]
+    c2 = cluster[i2]
+    p0, p1, p2 = face_vertices_vec3d(vertices, faces, f)
+    fine = wp.cross(p1 - p0, p2 - p0)
+    if c0 == c1 or c1 == c2 or c2 == c0 or wp.length_sq(fine) == wp.float64(0.0):
+        out_keys[f] = n_clusters * n_clusters * n_clusters
+        return
+    q0 = centroids[c0]
+    coarse = wp.cross(centroids[c1] - q0, centroids[c2] - q0)
+    out_keys[f] = oriented_cluster_key(
+        c0, c1, c2, wp.dot(fine, coarse) < wp.float64(0.0), n_clusters
+    )
+
+
+@wp.func
+def decoded_cluster_key(key: wp.int64, n_clusters: wp.int64) -> wp.vec3i:
+    # The three clusters ``oriented_cluster_key`` packed.
+    return wp.vec3i(
+        wp.int32(key // (n_clusters * n_clusters)),
+        wp.int32((key // n_clusters) % n_clusters),
+        wp.int32(key % n_clusters),
+    )
+
+
+@wp.kernel
+def coarse_face_flags(
+    keys: wp.array[wp.int64],
+    centroids: wp.array[wp.vec3d],
+    n_clusters: wp.int64,
+    flat_bound: wp.float64,
+    out_flags: wp.array[wp.int32],
+) -> None:
+    # 1 for each distinct coarse face kept: not the sentinel, and its centroids' cross product
+    # longer than ``flat_bound``. Written into the buffer the caller scans in place.
+    t = wp.int32(wp.tid())
+    key = keys[t]
+    kept = wp.int32(0)
+    if key < n_clusters * n_clusters * n_clusters:
+        c = decoded_cluster_key(key, n_clusters)
+        q0 = centroids[c[0]]
+        normal = wp.cross(centroids[c[1]] - q0, centroids[c[2]] - q0)
+        if wp.length(normal) > flat_bound:
+            kept = wp.int32(1)
+    out_flags[t] = kept
+
+
+@wp.kernel
+def coarse_faces_emit(
+    keys: wp.array[wp.int64],
+    kept: wp.array[wp.int32],
+    n_clusters: wp.int64,
+    out_faces: wp.array[wp.int32],
+) -> None:
+    # The kept coarse faces as a flat triangle buffer, in ascending key order.
+    t = wp.int32(wp.tid())
+    c = decoded_cluster_key(keys[kept[t]], n_clusters)
+    out_faces[3 * t] = c[0]
+    out_faces[3 * t + 1] = c[1]
+    out_faces[3 * t + 2] = c[2]
+
+
+@wp.func
+def plane_axes(normal: wp.vec3d) -> tuple[wp.vec3d, wp.vec3d]:
+    # Two orthonormal axes of the plane of unit ``normal``, ``u x v = normal``: ``u`` crosses the
+    # normal with the coordinate axis it is least aligned with.
+    magnitude = wp.vec3d(wp.abs(normal[0]), wp.abs(normal[1]), wp.abs(normal[2]))
+    seed = wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(1.0))
+    if magnitude[0] <= magnitude[1] and magnitude[0] <= magnitude[2]:
+        seed = wp.vec3d(wp.float64(1.0), wp.float64(0.0), wp.float64(0.0))
+    elif magnitude[1] <= magnitude[2]:
+        seed = wp.vec3d(wp.float64(0.0), wp.float64(1.0), wp.float64(0.0))
+    axis_u = wp.normalize(wp.cross(seed, normal))
+    return axis_u, wp.cross(normal, axis_u)
+
+
+@wp.kernel
+def plane_projection_block(
+    points: wp.array[wp.vec3d],
+    faces: wp.array[wp.int32],
+    normal: wp.vec3d,
+    out_chart: wp.array2d[wp.float64],
+) -> None:
+    # The points' coordinates in a plane through their mean, as one block (the CPU's one lane
+    # walks every point): the plane of unit ``normal``, or with a zero ``normal`` their best-fit
+    # plane (the centred covariance's two leading eigenvectors, the top two right singular vectors
+    # of the centred points). Then v is mirrored if the faces' summed signed area in that frame is
+    # negative, since ARAP fits proper rotations and cannot unmirror a start.
+    _block, lane = wp.tid()
+    lanes = wp.block_dim()
+    n = points.shape[0]
+    total = wp.vec3d()
+    for i in range(lane, n, lanes):
+        total += points[i]
+    mean = block_sum(total) / wp.float64(n)
+    axis_u = wp.vec3d()
+    axis_v = wp.vec3d()
+    if wp.length_sq(normal) > wp.float64(0.0):
+        axis_u, axis_v = plane_axes(normal)
+    else:
+        scatter = wp.mat33d()
+        for i in range(lane, n, lanes):
+            d = points[i] - mean
+            scatter += wp.outer(d, d)
+        covariance = block_sum(scatter)
+        vectors, values = wp.eig3(covariance)
+        # The largest eigenvalue's column is u, the middle one's v (``eig3`` does not sort them).
+        largest = wp.where(
+            values[0] >= values[1] and values[0] >= values[2],
+            0,
+            wp.where(values[1] >= values[2], 1, 2),
+        )
+        rest_a = (largest + 1) % 3
+        rest_b = (largest + 2) % 3
+        middle = wp.where(values[rest_a] >= values[rest_b], rest_a, rest_b)
+        axis_u = wp.vec3d(vectors[0, largest], vectors[1, largest], vectors[2, largest])
+        axis_v = wp.vec3d(vectors[0, middle], vectors[1, middle], vectors[2, middle])
+    signed = wp.float64(0.0)
+    for f in range(lane, faces.shape[0] // 3, lanes):
+        p0, p1, p2 = face_vertices(points, faces, f)
+        e1 = p1 - p0
+        e2 = p2 - p0
+        signed += wp.dot(e1, axis_u) * wp.dot(e2, axis_v) - wp.dot(e1, axis_v) * wp.dot(e2, axis_u)
+    mirror = wp.where(block_sum(signed) < wp.float64(0.0), wp.float64(-1.0), wp.float64(1.0))
+    for i in range(lane, n, lanes):
+        d = points[i] - mean
+        out_chart[0, i] = wp.dot(d, axis_u)
+        out_chart[1, i] = mirror * wp.dot(d, axis_v)
+
+
+@wp.kernel
+def proximal_system_setup(
+    points: wp.array[wp.vec3d],
+    faces: wp.array[wp.int32],
+    out_gradients: wp.array2d[wp.vec2d],
+    out_areas: wp.array[wp.float64],
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+    out_partials: wp.array[wp.float64],
+) -> None:
+    # The proximal ARAP level's one-time inputs, lane-strided over ``max(n_faces, n_points)``:
+    # each face's gradients and area, its nine stiffness keys ``(i_a, i_b)`` (payload
+    # ``9 f + 3 a + b``), one diagonal key per point (payload ``9 n_faces + i``, so the anchor
+    # sorts after a row's face terms and every row has a diagonal, a point of no face too), and the
+    # sum of the stiffness diagonal ``sum_f A_f sum_k |g_k|^2`` into ``out_partials`` (a
+    # ``_launch.block_partials`` buffer of one slot), whose mean sets the anchor.
+    block, lane = wp.tid()
+    n_points = points.shape[0]
+    n_faces = faces.shape[0] // 3
+    offset, count = block_chunk_1d(wp.max(n_faces, n_points), block)
+    trace = wp.float64(0.0)
+    for k in range(lane, count, wp.block_dim()):
+        t = offset + k
+        if t < n_faces:
+            p0, p1, p2 = face_vertices(points, faces, t)
+            g0, g1, g2, area = face_gradients(p0, p1, p2)
+            store_face_gradients(t, g0, g1, g2, area, out_gradients, out_areas)
+            trace += area * (wp.dot(g0, g0) + wp.dot(g1, g1) + wp.dot(g2, g2))
+            i0, i1, i2 = corner_triple(faces, t)
+            corners = wp.vec3i(i0, i1, i2)
+            for a in range(3):
+                for b in range(3):
+                    slot = TWO_LEVEL_FACE_KEYS * t + 3 * a + b
+                    out_keys[slot] = csr_key(corners[a], corners[b], n_points, n_points)
+                    out_order[slot] = slot
+        if t < n_points:
+            slot = TWO_LEVEL_FACE_KEYS * n_faces + t
+            out_keys[slot] = csr_key(t, t, n_points, n_points)
+            out_order[slot] = slot
+    store_block_total(block, lane, trace, out_partials, 0, 1, last_ticket)
+
+
+@wp.kernel
+def proximal_system_values(
+    offsets: wp.array[wp.int32],
+    starts: wp.array[wp.int32],
+    order: wp.array[wp.int32],
+    gradients: wp.array2d[wp.vec2d],
+    areas: wp.array[wp.float64],
+    trace: wp.array[wp.float64],
+    n_rows: wp.int32,
+    out_values: wp.array[wp.float64],
+    out_anchor: wp.array[wp.float64],
+) -> None:
+    # Each stored entry of ``K + epsilon I``, ``K = sum_f A_f G_f G_f^T``: its contributions added
+    # in the order the keys were written (a row's face terms in face order, then the anchor),
+    # ``epsilon`` being ``TWO_LEVEL_ANCHOR`` times the mean of ``K``'s diagonal over every row.
+    # Launched over the key count, an upper bound on the entries.
+    e = wp.int32(wp.tid())
+    anchor = TWO_LEVEL_ANCHOR * trace[0] / wp.float64(n_rows)
+    if e == 0:
+        out_anchor[0] = anchor
+    if e >= offsets[n_rows]:
+        return
+    face_keys = TWO_LEVEL_FACE_KEYS * (gradients.shape[0])
+    value = wp.float64(0.0)
+    for s in range(starts[e], starts[e + 1]):
+        payload = order[s]
+        if payload >= face_keys:
+            value += anchor
+        else:
+            f = payload // TWO_LEVEL_FACE_KEYS
+            a = (payload // 3) % 3
+            b = payload % 3
+            value += areas[f] * wp.dot(gradients[f, a], gradients[f, b])
+    out_values[e] = value
+
+
+@wp.kernel
+def proximal_rhs(
+    faces: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    vertex_offsets: wp.array[wp.int32],
+    gradients: wp.array2d[wp.vec2d],
+    areas: wp.array[wp.float64],
+    anchor: wp.array[wp.float64],
+    moves: wp.array[wp.float64],
+    iteration: wp.int32,
+    settled: wp.float64,
+    no_mask: wp.array[wp.bool],
+    no_map: wp.array[wp.int32],
+    chart: wp.array2d[wp.float64],
+    out_rhs: wp.array2d[wp.float64],
+    out_previous: wp.array2d[wp.float64],
+) -> None:
+    # The proximal global step's right-hand side ``B + epsilon U``, with ``U`` kept in
+    # ``out_previous`` for the move test. Once an iteration has moved no vertex by more than
+    # ``settled`` the loop has converged and every later iteration leaves both buffers as they
+    # are: the solve then returns the chart unchanged and ``proximal_moves`` repeats the settled
+    # move, so the host may read the moves only every few iterations and still stop exactly.
+    v = wp.int32(wp.tid())
+    if iteration > 0:
+        if moves[iteration - 1] <= settled:
+            return
+    uv = chart_point(chart, v)
+    rotated = rotation_row(
+        faces, vertex_faces, vertex_offsets, gradients, areas, chart, no_mask, no_map, chart, v
+    )
+    store_chart_point(out_rhs, v, rotated + anchor[0] * uv)
+    store_chart_point(out_previous, v, uv)
+
+
+@wp.kernel
+def proximal_moves(
+    chart: wp.array2d[wp.float64],
+    previous: wp.array2d[wp.float64],
+    iteration: wp.int32,
+    out_moves: wp.array[wp.float64],
+) -> None:
+    # The largest coordinate move of the iteration, ``max |U_new - U_old|``, into the zeroed
+    # ``out_moves[iteration]`` (``atomic_max`` of non-negative values: exact in any order).
+    block, lane = wp.tid()
+    offset, count = block_chunk_1d(chart.shape[1], block)
+    largest = wp.float64(0.0)
+    for k in range(lane, count, wp.block_dim()):
+        i = offset + k
+        largest = wp.max(
+            largest,
+            wp.max(wp.abs(chart[0, i] - previous[0, i]), wp.abs(chart[1, i] - previous[1, i])),
+        )
+    block_largest = block_max(largest)
+    if lane == 0:
+        wp.atomic_max(out_moves, iteration, block_largest)
+
+
+@wp.func
+def face_jacobian(
+    q0: wp.vec3d, q1: wp.vec3d, q2: wp.vec3d, uv0: wp.vec2d, uv1: wp.vec2d, uv2: wp.vec2d
+) -> tuple[mat23d, wp.float64]:
+    # A coarse face's ``2 x 3`` Jacobian from space to the chart,
+    # ``J = E_uv (E^T E)^-1 E^T`` over its edge vectors from corner 0, and its area
+    # ``sqrt(det(E^T E)) / 2``.
+    e1 = q1 - q0
+    e2 = q2 - q0
+    d1 = uv1 - uv0
+    d2 = uv2 - uv0
+    g11 = wp.dot(e1, e1)
+    g12 = wp.dot(e1, e2)
+    g22 = wp.dot(e2, e2)
+    det = g11 * g22 - g12 * g12
+    # ``E_uv (E^T E)^-1``, by the adjugate
+    m00 = (d1[0] * g22 - d2[0] * g12) / det
+    m01 = (d2[0] * g11 - d1[0] * g12) / det
+    m10 = (d1[1] * g22 - d2[1] * g12) / det
+    m11 = (d2[1] * g11 - d1[1] * g12) / det
+    row_u = m00 * e1 + m01 * e2
+    row_v = m10 * e1 + m11 * e2
+    jacobian = mat23d(row_u[0], row_u[1], row_u[2], row_v[0], row_v[1], row_v[2])
+    return jacobian, wp.float64(0.5) * wp.sqrt(det)
+
+
+@wp.kernel
+def cluster_jacobians(
+    centroids: wp.array[wp.vec3d],
+    faces: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    vertex_offsets: wp.array[wp.int32],
+    chart: wp.array2d[wp.float64],
+    out_jacobians: wp.array[mat23d],
+    out_covered: wp.array[wp.bool],
+    out_uncovered: wp.array[wp.bool],
+    out_source: wp.array[wp.int32],
+) -> None:
+    # Each cluster's area-weighted mean of its coarse faces' Jacobians (``face_jacobian``,
+    # recomputed by each corner), in the adjacency row's order. A cluster no coarse face touches
+    # is uncovered: flagged, and its vertices will follow the nearest covered cluster
+    # (``out_source``, the cluster itself until then).
+    c = wp.int32(wp.tid())
+    weighted = mat23d()
+    total = wp.float64(0.0)
+    for s in range(vertex_offsets[c], vertex_offsets[c + 1]):
+        f = vertex_faces[s]
+        i0, i1, i2 = corner_triple(faces, f)
+        jacobian, weight = face_jacobian(
+            centroids[i0], centroids[i1], centroids[i2],
+            chart_point(chart, i0), chart_point(chart, i1), chart_point(chart, i2),
+        )  # fmt: skip
+        weighted += weight * jacobian
+        total += weight
+    covered = total > wp.float64(0.0)
+    if covered:
+        weighted = weighted / total
+    out_jacobians[c] = weighted
+    out_covered[c] = covered
+    out_uncovered[c] = not covered
+    out_source[c] = c
+
+
+@wp.kernel
+def borrow_cluster_sources(
+    uncovered: wp.array[wp.int32],
+    covered: wp.array[wp.int32],
+    nearest: wp.array[wp.int32],
+    out_source: wp.array[wp.int32],
+) -> None:
+    # An uncovered cluster takes the nearest covered cluster as the source of its vertices' UV.
+    t = wp.int32(wp.tid())
+    out_source[uncovered[t]] = covered[nearest[t]]
+
+
+@wp.kernel
+def prolong_chart(
+    vertices: wp.array[wp.vec3],
+    cluster: wp.array[wp.int32],
+    source: wp.array[wp.int32],
+    centroids: wp.array[wp.vec3d],
+    jacobians: wp.array[mat23d],
+    coarse_chart: wp.array2d[wp.float64],
+    out_chart: wp.array2d[wp.float64],
+) -> None:
+    # Each vertex's UV: its source cluster's UV plus its offset from that cluster's centroid,
+    # carried by the cluster's Jacobian (an uncovered cluster's vertices take the borrowed
+    # cluster's centroid as their origin too).
+    i = wp.int32(wp.tid())
+    c = source[cluster[i]]
+    offset = to_vec3d(vertices[i]) - centroids[c]
+    store_chart_point(out_chart, i, chart_point(coarse_chart, c) + jacobians[c] * offset)
+
+
+@wp.kernel
+def smoothing_face_terms(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    out_gradients: wp.array2d[wp.vec2d],
+    out_areas: wp.array[wp.float64],
+    out_edge_weights: wp.array[wp.vec3d],
+) -> None:
+    # The fine level's per-face gradients and areas, and its stiffness as edge weights:
+    # ``w_k = -A g_{k+1} . g_{k+2}`` weighs the edge opposite corner ``k`` (half its cotangent).
+    f = wp.int32(wp.tid())
+    p0, p1, p2 = face_vertices_vec3d(vertices, faces, f)
+    g0, g1, g2, area = face_gradients(p0, p1, p2)
+    store_face_gradients(f, g0, g1, g2, area, out_gradients, out_areas)
+    out_edge_weights[f] = wp.vec3d(
+        -area * wp.dot(g1, g2), -area * wp.dot(g2, g0), -area * wp.dot(g0, g1)
+    )
+
+
+@wp.func
+def stiffness_row(
+    faces: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    vertex_offsets: wp.array[wp.int32],
+    edge_weights: wp.array[wp.vec3d],
+    values: wp.array2d[wp.float64],
+    v: wp.int32,
+) -> wp.vec2d:
+    # Vertex ``v``'s row of the stiffness matrix applied to ``values``: over each incident face,
+    # the two edges at ``v``'s corner ``k`` weighted by ``w_{k+2}`` (to corner ``k + 1``) and
+    # ``w_{k+1}`` (to corner ``k + 2``).
+    own = chart_point(values, v)
+    total = wp.vec2d()
+    for s in range(vertex_offsets[v], vertex_offsets[v + 1]):
+        f = vertex_faces[s]
+        k = face_corner(faces, f, v)
+        weights = edge_weights[f]
+        following = faces[3 * f + (k + 1) % 3]
+        preceding = faces[3 * f + (k + 2) % 3]
+        total += weights[(k + 2) % 3] * (own - chart_point(values, following))
+        total += weights[(k + 1) % 3] * (own - chart_point(values, preceding))
+    return total
+
+
+@wp.func
+def stiffness_diagonal(
+    faces: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    vertex_offsets: wp.array[wp.int32],
+    gradients: wp.array2d[wp.vec2d],
+    areas: wp.array[wp.float64],
+    v: wp.int32,
+) -> wp.float64:
+    # Vertex ``v``'s stiffness diagonal ``sum_f A_f |g_k|^2``.
+    total = wp.float64(0.0)
+    for s in range(vertex_offsets[v], vertex_offsets[v + 1]):
+        f = vertex_faces[s]
+        g = gradients[f, face_corner(faces, f, v)]
+        total += areas[f] * wp.dot(g, g)
+    return total
+
+
+@wp.func
+def step_ratio(numerator: wp.vec2d, denominator: wp.vec2d) -> wp.vec2d:
+    # Component-wise ``numerator / denominator``, zero where the denominator is not positive.
+    result = wp.vec2d()
+    for coordinate in range(2):
+        if denominator[coordinate] > wp.float64(0.0):
+            result[coordinate] = numerator[coordinate] / denominator[coordinate]
+    return result
+
+
+@wp.kernel
+def smoothing_start(
+    faces: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    vertex_offsets: wp.array[wp.int32],
+    gradients: wp.array2d[wp.vec2d],
+    areas: wp.array[wp.float64],
+    edge_weights: wp.array[wp.vec3d],
+    no_mask: wp.array[wp.bool],
+    no_map: wp.array[wp.int32],
+    chart: wp.array2d[wp.float64],
+    width: wp.int32,
+    slot: wp.int32,
+    stride: wp.int32,
+    out_inverse_diagonal: wp.array[wp.float64],
+    out_residual: wp.array2d[wp.float64],
+    out_direction: wp.array2d[wp.float64],
+    out_partials: wp.array[wp.vec2d],
+) -> None:
+    # A smoothing pass's local step and the start of its conjugate gradients, warm-started from
+    # the chart: the residual ``B - K U``, the Jacobi-preconditioned first direction, and the
+    # preconditioned residual norm per coordinate into slot ``slot``. A vertex of no face has a
+    # zero diagonal, preconditioned by 1: its residual stays zero.
+    block, lane = wp.tid()
+    offset, count = block_chunk(chart.shape[1], block, width)
+    norm = wp.vec2d()
+    for k in range(lane, count, wp.block_dim()):
+        v = offset + k
+        diagonal = stiffness_diagonal(faces, vertex_faces, vertex_offsets, gradients, areas, v)
+        inverse = wp.where(diagonal > wp.float64(0.0), wp.float64(1.0) / diagonal, wp.float64(1.0))
+        out_inverse_diagonal[v] = inverse
+        rotated = rotation_row(
+            faces, vertex_faces, vertex_offsets, gradients, areas, chart, no_mask, no_map, chart, v
+        )
+        residual = rotated - stiffness_row(
+            faces, vertex_faces, vertex_offsets, edge_weights, chart, v
+        )
+        store_chart_point(out_residual, v, residual)
+        store_chart_point(out_direction, v, inverse * residual)
+        norm += inverse * wp.cw_mul(residual, residual)
+    store_block_total(block, lane, norm, out_partials, slot, stride, last_ticket_vector)
+
+
+@wp.kernel
+def smoothing_apply(
+    faces: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    vertex_offsets: wp.array[wp.int32],
+    edge_weights: wp.array[wp.vec3d],
+    direction: wp.array2d[wp.float64],
+    width: wp.int32,
+    slot: wp.int32,
+    stride: wp.int32,
+    out_applied: wp.array2d[wp.float64],
+    out_partials: wp.array[wp.vec2d],
+) -> None:
+    # ``K p`` and the curvature ``p . K p`` per coordinate into slot ``slot``.
+    block, lane = wp.tid()
+    offset, count = block_chunk(direction.shape[1], block, width)
+    curvature = wp.vec2d()
+    for k in range(lane, count, wp.block_dim()):
+        v = offset + k
+        applied = stiffness_row(faces, vertex_faces, vertex_offsets, edge_weights, direction, v)
+        store_chart_point(out_applied, v, applied)
+        curvature += wp.cw_mul(chart_point(direction, v), applied)
+    store_block_total(block, lane, curvature, out_partials, slot, stride, last_ticket_vector)
+
+
+@wp.kernel
+def smoothing_update(
+    direction: wp.array2d[wp.float64],
+    applied: wp.array2d[wp.float64],
+    inverse_diagonal: wp.array[wp.float64],
+    width: wp.int32,
+    norm_slot: wp.int32,
+    curvature_slot: wp.int32,
+    stride: wp.int32,
+    out_chart: wp.array2d[wp.float64],
+    out_residual: wp.array2d[wp.float64],
+    out_partials: wp.array[wp.vec2d],
+) -> None:
+    # Step the chart along the direction by ``alpha = (r . z) / (p . K p)`` per coordinate, update
+    # the residual, and its preconditioned norm into slot ``norm_slot + 1``.
+    block, lane = wp.tid()
+    offset, count = block_chunk(direction.shape[1], block, width)
+    length = step_ratio(out_partials[norm_slot], out_partials[curvature_slot])
+    norm = wp.vec2d()
+    for k in range(lane, count, wp.block_dim()):
+        v = offset + k
+        store_chart_point(
+            out_chart, v, chart_point(out_chart, v) + wp.cw_mul(length, chart_point(direction, v))
+        )
+        residual = chart_point(out_residual, v) - wp.cw_mul(length, chart_point(applied, v))
+        store_chart_point(out_residual, v, residual)
+        norm += inverse_diagonal[v] * wp.cw_mul(residual, residual)
+    store_block_total(block, lane, norm, out_partials, norm_slot + 1, stride, last_ticket_vector)
+
+
+@wp.kernel
+def smoothing_direction(
+    residual: wp.array2d[wp.float64],
+    inverse_diagonal: wp.array[wp.float64],
+    partials: wp.array[wp.vec2d],
+    norm_slot: wp.int32,
+    out_direction: wp.array2d[wp.float64],
+) -> None:
+    # The next conjugate direction, ``z + beta p`` with ``beta = (r' . z') / (r . z)``.
+    v = wp.int32(wp.tid())
+    ratio = step_ratio(partials[norm_slot + 1], partials[norm_slot])
+    store_chart_point(
+        out_direction,
+        v,
+        inverse_diagonal[v] * chart_point(residual, v)
+        + wp.cw_mul(ratio, chart_point(out_direction, v)),
+    )
+
+
+@wp.kernel
+def start_chart_areas(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    uv: wp.array[wp.vec2],
+    out_partials: wp.array[wp.vec3d],
+) -> None:
+    # A start chart's sums over the faces, lane-strided, into slot 0 of a ``_launch.block_partials``
+    # buffer: ``(surface area, |UV area|, signed UV area)``. The first two scale the chart to the
+    # mesh's units; the third's sign says whether it winds clockwise, which ARAP cannot undo.
+    block, lane = wp.tid()
+    offset, count = block_chunk_1d(faces.shape[0] // 3, block)
+    sums = wp.vec3d()
+    for k in range(lane, count, wp.block_dim()):
+        f = offset + k
+        p0, p1, p2 = face_vertices_vec3d(vertices, faces, f)
+        q0, q1, q2 = face_vertices(uv, faces, f)
+        signed = wp.float64(0.5) * wp.float64(cross2(q1 - q0, q2 - q0))
+        surface = wp.float64(0.5) * wp.length(wp.cross(p1 - p0, p2 - p0))
+        sums += wp.vec3d(surface, wp.abs(signed), signed)
+    store_block_total(block, lane, sums, out_partials, 0, 1, last_ticket_vector)
+
+
+@wp.kernel
+def scaled_start_chart(
+    uv: wp.array[wp.vec2], areas: wp.array[wp.vec3d], out_chart: wp.array2d[wp.float64]
+) -> None:
+    # A start chart as a ``(2, n)`` ``float64`` chart, scaled by ``sqrt(surface / UV area)`` to the
+    # mesh's units and mirrored in v if its faces wind clockwise on the whole.
+    i = wp.int32(wp.tid())
+    totals = areas[0]
+    scale = wp.float64(1.0)
+    if totals[1] > wp.float64(0.0):
+        scale = wp.sqrt(totals[0] / totals[1])
+    mirror = wp.where(totals[2] < wp.float64(0.0), wp.float64(-1.0), wp.float64(1.0))
+    p = uv[i]
+    out_chart[0, i] = scale * wp.float64(p[0])
+    out_chart[1, i] = mirror * scale * wp.float64(p[1])
+
+
+@wp.kernel
+def chart_to_uv(chart: wp.array2d[wp.float64], out_uv: wp.array[wp.vec2]) -> None:
+    # A ``(2, n)`` chart narrowed to ``float32`` UV.
+    i = wp.int32(wp.tid())
+    out_uv[i] = column_uv(chart, i)
+
+
+def _declare_block_dims() -> None:
+    """Declare the CUDA launch widths of this module's kernels besides the default (precompile)."""
+    # ``low_distortion_parametrization``'s lane-strided folds launch ``TILE_1D``-lane blocks.
+    declare_block_dims(__name__, (twc.TILE_1D,))
+
+
+_declare_block_dims()
