@@ -6467,9 +6467,7 @@ so its <code>R</code> is this matrix's linear block divided by the scale and <em
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/registration.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 72</span>
-<span class="normal"> 73</span>
-<span class="normal"> 74</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 74</span>
 <span class="normal"> 75</span>
 <span class="normal"> 76</span>
 <span class="normal"> 77</span>
@@ -6596,7 +6594,9 @@ so its <code>R</code> is this matrix's linear block divided by the scale and <em
 <span class="normal">198</span>
 <span class="normal">199</span>
 <span class="normal">200</span>
-<span class="normal">201</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">procrustes</span><span class="p">(</span>
+<span class="normal">201</span>
+<span class="normal">202</span>
+<span class="normal">203</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">procrustes</span><span class="p">(</span>
     <span class="n">a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">b</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">weights</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -7159,9 +7159,7 @@ correspondences are given:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/registration.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">306</span>
-<span class="normal">307</span>
-<span class="normal">308</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">308</span>
 <span class="normal">309</span>
 <span class="normal">310</span>
 <span class="normal">311</span>
@@ -7490,7 +7488,9 @@ correspondences are given:</p>
 <span class="normal">634</span>
 <span class="normal">635</span>
 <span class="normal">636</span>
-<span class="normal">637</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">icp</span><span class="p">(</span>
+<span class="normal">637</span>
+<span class="normal">638</span>
+<span class="normal">639</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">icp</span><span class="p">(</span>
     <span class="n">a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">target_vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">target_faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -8034,9 +8034,10 @@ fit improves, including Tukey's, whose weights redescend.</p>
 the median taken afresh at every iteration's correspondences (and at the final pose's, for
 <code>cost</code>): a gate that follows the fit's own scale, where <code>max_distance</code> is fixed in
 the target's units. <code>None</code> (the default) for no such gate; not with <code>max_distance</code>.
-Each iteration then reads its median back to the host, so the iterations are issued from
-the host one at a time rather than run on the device. The <code>threshold</code> stop compares
-<code>cost</code> between iterations gated at their own medians.</p>
+On CUDA the median is selected on the device and the iterations run there as without a
+gate; on the CPU each iteration reads its median back, so its iterations are issued from
+the host one at a time. The <code>threshold</code> stop compares <code>cost</code> between iterations gated
+at their own medians.</p>
               </div>
             </td>
             <td>
@@ -8276,9 +8277,7 @@ a mesh target.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/registration.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 733</span>
-<span class="normal"> 734</span>
-<span class="normal"> 735</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 735</span>
 <span class="normal"> 736</span>
 <span class="normal"> 737</span>
 <span class="normal"> 738</span>
@@ -8699,7 +8698,49 @@ a mesh target.</p>
 <span class="normal">1153</span>
 <span class="normal">1154</span>
 <span class="normal">1155</span>
-<span class="normal">1156</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">icp_point_to_plane</span><span class="p">(</span>
+<span class="normal">1156</span>
+<span class="normal">1157</span>
+<span class="normal">1158</span>
+<span class="normal">1159</span>
+<span class="normal">1160</span>
+<span class="normal">1161</span>
+<span class="normal">1162</span>
+<span class="normal">1163</span>
+<span class="normal">1164</span>
+<span class="normal">1165</span>
+<span class="normal">1166</span>
+<span class="normal">1167</span>
+<span class="normal">1168</span>
+<span class="normal">1169</span>
+<span class="normal">1170</span>
+<span class="normal">1171</span>
+<span class="normal">1172</span>
+<span class="normal">1173</span>
+<span class="normal">1174</span>
+<span class="normal">1175</span>
+<span class="normal">1176</span>
+<span class="normal">1177</span>
+<span class="normal">1178</span>
+<span class="normal">1179</span>
+<span class="normal">1180</span>
+<span class="normal">1181</span>
+<span class="normal">1182</span>
+<span class="normal">1183</span>
+<span class="normal">1184</span>
+<span class="normal">1185</span>
+<span class="normal">1186</span>
+<span class="normal">1187</span>
+<span class="normal">1188</span>
+<span class="normal">1189</span>
+<span class="normal">1190</span>
+<span class="normal">1191</span>
+<span class="normal">1192</span>
+<span class="normal">1193</span>
+<span class="normal">1194</span>
+<span class="normal">1195</span>
+<span class="normal">1196</span>
+<span class="normal">1197</span>
+<span class="normal">1198</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">icp_point_to_plane</span><span class="p">(</span>
     <span class="n">a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">target_vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">target_faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -8764,9 +8805,10 @@ a mesh target.</p>
 <span class="sd">        the median taken afresh at every iteration's correspondences (and at the final pose's, for</span>
 <span class="sd">        ``cost``): a gate that follows the fit's own scale, where ``max_distance`` is fixed in</span>
 <span class="sd">        the target's units. ``None`` (the default) for no such gate; not with ``max_distance``.</span>
-<span class="sd">        Each iteration then reads its median back to the host, so the iterations are issued from</span>
-<span class="sd">        the host one at a time rather than run on the device. The ``threshold`` stop compares</span>
-<span class="sd">        ``cost`` between iterations gated at their own medians.</span>
+<span class="sd">        On CUDA the median is selected on the device and the iterations run there as without a</span>
+<span class="sd">        gate; on the CPU each iteration reads its median back, so its iterations are issued from</span>
+<span class="sd">        the host one at a time. The ``threshold`` stop compares ``cost`` between iterations gated</span>
+<span class="sd">        at their own medians.</span>
 <span class="sd">    robust_kernel</span>
 <span class="sd">        M-estimator applied to residuals: ``"none"``, ``"huber"``, or ``"tukey"``.</span>
 <span class="sd">    robust_scale</span>
@@ -8969,6 +9011,20 @@ a mesh target.</p>
     <span class="n">round_inputs</span> <span class="o">=</span> <span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">damping</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">(</span><span class="n">threshold</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">max_iterations</span><span class="p">)]</span>
     <span class="n">no_matrix</span> <span class="o">=</span> <span class="n">_zero_length</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">mat44</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
     <span class="n">no_state</span> <span class="o">=</span> <span class="n">_zero_length</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+    <span class="c1"># ``max_distance_factor`` on CUDA: each round's median is selected on the device into</span>
+    <span class="c1"># ``select_state`` and scaled into ``gate_value``, which the accumulation reads in place of</span>
+    <span class="c1"># ``max_d``, so the gated rounds record and replay like the others. The CPU device reads the</span>
+    <span class="c1"># median back (its rounds are issued from the host below).</span>
+    <span class="n">device_gate</span> <span class="o">=</span> <span class="n">max_distance_factor</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">wp</span><span class="o">.</span><span class="n">get_device</span><span class="p">(</span><span class="n">device</span><span class="p">)</span><span class="o">.</span><span class="n">is_cuda</span>
+    <span class="n">gate_value</span> <span class="o">=</span> <span class="n">_zero_length</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+    <span class="n">select_scratch</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">median_rank</span><span class="p">,</span> <span class="n">median_fraction</span> <span class="o">=</span> <span class="mi">0</span><span class="p">,</span> <span class="mf">0.0</span>
+    <span class="k">if</span> <span class="n">device_gate</span><span class="p">:</span>
+        <span class="n">gate_value</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+        <span class="n">select_scratch</span> <span class="o">=</span> <span class="n">radix_select_scratch</span><span class="p">(</span><span class="n">device</span><span class="p">)</span>
+        <span class="n">middle</span> <span class="o">=</span> <span class="mf">0.5</span> <span class="o">*</span> <span class="p">(</span><span class="n">n</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span>
+        <span class="n">median_rank</span> <span class="o">=</span> <span class="n">math</span><span class="o">.</span><span class="n">floor</span><span class="p">(</span><span class="n">middle</span><span class="p">)</span>
+        <span class="n">median_fraction</span> <span class="o">=</span> <span class="n">middle</span> <span class="o">-</span> <span class="n">median_rank</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">accumulate</span><span class="p">(</span><span class="n">close</span><span class="p">:</span> <span class="nb">bool</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="c1"># ``close``: the launch's last block also closes the round</span>
@@ -8984,6 +9040,7 @@ a mesh target.</p>
                 <span class="n">distance</span><span class="p">,</span>
                 <span class="n">triangle_id</span><span class="p">,</span>
                 <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">max_d</span><span class="p">),</span>
+                <span class="n">gate_value</span><span class="p">,</span>
                 <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">kind</span><span class="p">),</span>
                 <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">scale_value</span> <span class="k">if</span> <span class="n">scale_value</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="mf">0.0</span><span class="p">),</span>
                 <span class="n">stride</span><span class="p">,</span>
@@ -8997,22 +9054,45 @@ a mesh target.</p>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">gate</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="c1"># ``max_distance_factor``'s gate for the correspondences the last search wrote: the</span>
-        <span class="c1"># factor times their median distance, read back (the gate is a launch argument).</span>
+        <span class="c1"># factor times their median distance, on CUDA into ``gate_value`` (``median_gate``), on</span>
+        <span class="c1"># the CPU read back into the launch argument.</span>
         <span class="k">nonlocal</span> <span class="n">max_d</span>
-        <span class="k">if</span> <span class="n">max_distance_factor</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">max_distance_factor</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">return</span>
+        <span class="k">if</span> <span class="n">select_scratch</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="n">max_d</span> <span class="o">=</span> <span class="n">max_distance_factor</span> <span class="o">*</span> <span class="n">od</span><span class="o">.</span><span class="n">reduce</span><span class="o">.</span><span class="n">median</span><span class="p">(</span><span class="n">distance</span><span class="p">)</span>
+            <span class="k">return</span>
+        <span class="n">state</span> <span class="o">=</span> <span class="n">select_scratch</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">zero_</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+        <span class="n">launch_radix_select</span><span class="p">(</span><span class="n">distance</span><span class="p">,</span> <span class="n">median_rank</span><span class="p">,</span> <span class="n">median_fraction</span> <span class="o">!=</span> <span class="mf">0.0</span><span class="p">,</span> <span class="o">*</span><span class="n">select_scratch</span><span class="p">)</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+            <span class="n">kernel_registration</span><span class="o">.</span><span class="n">median_gate</span><span class="p">,</span>
+            <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span>
+                <span class="n">state</span><span class="p">,</span>
+                <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="mi">1</span> <span class="k">if</span> <span class="n">median_fraction</span> <span class="o">!=</span> <span class="mf">0.0</span> <span class="k">else</span> <span class="mi">0</span><span class="p">),</span>
+                <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">(</span><span class="n">median_fraction</span><span class="p">),</span>
+                <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">(</span><span class="n">max_distance_factor</span><span class="p">),</span>
+            <span class="p">],</span>
+            <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">gate_value</span><span class="p">],</span>
+            <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+        <span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">resolve_scale</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="c1"># It reads the residuals back, so it runs before any recorded round.</span>
-        <span class="k">nonlocal</span> <span class="n">scale_value</span>
+        <span class="k">nonlocal</span> <span class="n">scale_value</span><span class="p">,</span> <span class="n">max_d</span>
         <span class="k">if</span> <span class="n">kind</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">or</span> <span class="n">scale_value</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">return</span>
+        <span class="k">if</span> <span class="n">device_gate</span><span class="p">:</span>
+            <span class="c1"># Readback: the first round's gate, which the scale's residuals are gated at.</span>
+            <span class="n">max_d</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">read_scalar</span><span class="p">(</span><span class="n">gate_value</span><span class="p">,</span> <span class="mi">0</span><span class="p">))</span>
         <span class="n">scale_value</span> <span class="o">=</span> <span class="n">_robust_scale_from_residuals</span><span class="p">(</span>
             <span class="n">current</span><span class="p">,</span> <span class="n">closest</span><span class="p">,</span> <span class="n">normal_table</span><span class="p">,</span> <span class="n">distance</span><span class="p">,</span> <span class="n">triangle_id</span><span class="p">,</span> <span class="n">max_d</span><span class="p">,</span> <span class="n">kind</span>
         <span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">iterate</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">search</span><span class="p">(</span><span class="kc">True</span><span class="p">)</span>
+        <span class="n">gate</span><span class="p">()</span>
         <span class="n">accumulate</span><span class="p">(</span><span class="n">close</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 
     <span class="c1"># --- iteration 0, issued from the host: it may need the robust scale, a host reduction ---</span>
@@ -9028,9 +9108,9 @@ a mesh target.</p>
     <span class="c1"># returned the identity transform with ``cost=0.0`` on a cloud still offset by (1.0, 0.5, -0.3)</span>
     <span class="c1"># from its target.</span>
     <span class="n">stepped</span> <span class="o">=</span> <span class="kc">False</span>
-    <span class="k">if</span> <span class="n">max_iterations</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">max_distance_factor</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="c1"># The gate moves with every round's median, a readback, so the rounds are issued from the</span>
-        <span class="c1"># host and none can be recorded. Each first reads the condition its predecessor's close</span>
+    <span class="k">if</span> <span class="n">max_iterations</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">max_distance_factor</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">device_gate</span><span class="p">:</span>
+        <span class="c1"># On the CPU the gate moves with every round's median, a readback, so the rounds are</span>
+        <span class="c1"># issued from the host. Each first reads the condition its predecessor's close</span>
         <span class="c1"># wrote, the only way the host learns of a stop, and a weightless first round returns the</span>
         <span class="c1"># seed's answer, as the recorded path's read below does.</span>
         <span class="n">search</span><span class="p">(</span><span class="kc">False</span><span class="p">)</span>
@@ -9050,6 +9130,7 @@ a mesh target.</p>
         <span class="n">stepped</span> <span class="o">=</span> <span class="kc">True</span>
     <span class="k">elif</span> <span class="n">max_iterations</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
         <span class="n">search</span><span class="p">(</span><span class="kc">False</span><span class="p">)</span>
+        <span class="n">gate</span><span class="p">()</span>
         <span class="n">resolve_scale</span><span class="p">()</span>
         <span class="n">accumulate</span><span class="p">(</span><span class="n">close</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
         <span class="c1"># --- iterations 1.., one recorded body replayed on the device with no readback ---</span>
@@ -9101,7 +9182,7 @@ a mesh target.</p>
             <span class="n">replay</span> <span class="o">=</span> <span class="n">record_device_loop</span><span class="p">(</span>
                 <span class="n">device</span><span class="p">,</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">state</span><span class="p">[</span><span class="n">kernel_array</span><span class="o">.</span><span class="n">LOOP_CONDITION_VIEW</span><span class="p">]),</span> <span class="n">iterate</span>
             <span class="p">)</span>
-        <span class="k">if</span> <span class="p">(</span><span class="n">max_distance</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">or</span> <span class="n">kind</span> <span class="o">==</span> <span class="n">_ROBUST_KINDS</span><span class="p">[</span><span class="s2">"tukey"</span><span class="p">])</span> <span class="ow">and</span> <span class="nb">int</span><span class="p">(</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">max_distance</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">or</span> <span class="n">device_gate</span> <span class="ow">or</span> <span class="n">kind</span> <span class="o">==</span> <span class="n">_ROBUST_KINDS</span><span class="p">[</span><span class="s2">"tukey"</span><span class="p">])</span> <span class="ow">and</span> <span class="nb">int</span><span class="p">(</span>
             <span class="n">read_scalar</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="nb">int</span><span class="p">(</span><span class="n">kernel_array</span><span class="o">.</span><span class="n">LOOP_ROUND</span><span class="p">))</span>
         <span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
             <span class="k">return</span> <span class="n">total</span><span class="p">,</span> <span class="n">current</span><span class="p">,</span> <span class="n">math</span><span class="o">.</span><span class="n">inf</span>

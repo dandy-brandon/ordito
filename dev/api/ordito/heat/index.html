@@ -7468,7 +7468,10 @@ refers to its mesh weakly and is unusable once the mesh is gone.</p>
 
                   <details class="mkdocstrings-source">
                     <summary>Source code in <code>ordito/heat.py</code></summary>
-                    <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3578</span>
+                    <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3575</span>
+<span class="normal">3576</span>
+<span class="normal">3577</span>
+<span class="normal">3578</span>
 <span class="normal">3579</span>
 <span class="normal">3580</span>
 <span class="normal">3581</span>
@@ -7520,9 +7523,7 @@ refers to its mesh weakly and is unusable once the mesh is gone.</p>
 <span class="normal">3627</span>
 <span class="normal">3628</span>
 <span class="normal">3629</span>
-<span class="normal">3630</span>
-<span class="normal">3631</span>
-<span class="normal">3632</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+<span class="normal">3630</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
     <span class="bp">self</span><span class="p">,</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span><span class="p">,</span>
     <span class="n">t</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -7549,8 +7550,9 @@ refers to its mesh weakly and is unusable once the mesh is gone.</p>
     <span class="c1"># Set once a settled iterate of this mesh's systems fails its backward-error check: the</span>
     <span class="c1"># operators are ill-conditioned in places, so the Poisson solve is factored at once too.</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_ill_conditioned</span> <span class="o">=</span> <span class="kc">False</span>
-    <span class="c1"># A diffusion's check failed and its system could not be factored (past the budget): the</span>
-    <span class="c1"># Poisson systems, stored over its pattern, are not offered a factorization either.</span>
+    <span class="c1"># A diffusion's system is too large to factor (past the budget): the Poisson systems,</span>
+    <span class="c1"># stored over its pattern, are not offered a factorization either, and iterate under</span>
+    <span class="c1"># multigrid.</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_unfactorable</span> <span class="o">=</span> <span class="kc">False</span>
     <span class="c1"># The heat system pinned to zero on the rim, its preconditioner and rim mask, once built;</span>
     <span class="c1"># ``()`` for a mesh with no rim, which has no pinned solve to run.</span>
@@ -7847,7 +7849,9 @@ the memory budget, preconditioned by multigrid).</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3835</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3833</span>
+<span class="normal">3834</span>
+<span class="normal">3835</span>
 <span class="normal">3836</span>
 <span class="normal">3837</span>
 <span class="normal">3838</span>
@@ -7857,9 +7861,7 @@ the memory budget, preconditioned by multigrid).</p>
 <span class="normal">3842</span>
 <span class="normal">3843</span>
 <span class="normal">3844</span>
-<span class="normal">3845</span>
-<span class="normal">3846</span>
-<span class="normal">3847</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">release</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="normal">3845</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">release</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Drop every kept factorization and multigrid hierarchy, and forget the solve counts.</span>
 
@@ -7938,7 +7940,9 @@ keep iterating.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3849</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3847</span>
+<span class="normal">3848</span>
+<span class="normal">3849</span>
 <span class="normal">3850</span>
 <span class="normal">3851</span>
 <span class="normal">3852</span>
@@ -7961,9 +7965,7 @@ keep iterating.</p>
 <span class="normal">3869</span>
 <span class="normal">3870</span>
 <span class="normal">3871</span>
-<span class="normal">3872</span>
-<span class="normal">3873</span>
-<span class="normal">3874</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">factor</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="normal">3872</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">factor</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Factor the heat and Poisson systems now, before any solve.</span>
 
@@ -8112,7 +8114,9 @@ shaped as <code>rhs</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3876</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3874</span>
+<span class="normal">3875</span>
+<span class="normal">3876</span>
 <span class="normal">3877</span>
 <span class="normal">3878</span>
 <span class="normal">3879</span>
@@ -8134,9 +8138,7 @@ shaped as <code>rhs</code>.</p>
 <span class="normal">3895</span>
 <span class="normal">3896</span>
 <span class="normal">3897</span>
-<span class="normal">3898</span>
-<span class="normal">3899</span>
-<span class="normal">3900</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">diffuse</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">rhs</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">,</span> <span class="n">solution</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="normal">3898</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">diffuse</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">rhs</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">,</span> <span class="n">solution</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Diffuse scalar fields: solve the heat system ``(M - t L) u = rhs`` to settled entries.</span>
 
@@ -8275,7 +8277,9 @@ hold one vector per vertex.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3902</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3900</span>
+<span class="normal">3901</span>
+<span class="normal">3902</span>
 <span class="normal">3903</span>
 <span class="normal">3904</span>
 <span class="normal">3905</span>
@@ -8294,9 +8298,7 @@ hold one vector per vertex.</p>
 <span class="normal">3918</span>
 <span class="normal">3919</span>
 <span class="normal">3920</span>
-<span class="normal">3921</span>
-<span class="normal">3922</span>
-<span class="normal">3923</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">diffuse_tangent</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">rhs</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2d</span><span class="p">],</span> <span class="n">solution</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2d</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="normal">3921</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">diffuse_tangent</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">rhs</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2d</span><span class="p">],</span> <span class="n">solution</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2d</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Diffuse a tangent field: solve the vector heat system ``(M + t L_connection) X = rhs``.</span>
 
@@ -8454,7 +8456,9 @@ hold <code>(2 + n_scalars) * n_vertices</code> entries.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3925</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3923</span>
+<span class="normal">3924</span>
+<span class="normal">3925</span>
 <span class="normal">3926</span>
 <span class="normal">3927</span>
 <span class="normal">3928</span>
@@ -8500,7 +8504,24 @@ hold <code>(2 + n_scalars) * n_vertices</code> entries.</p>
 <span class="normal">3968</span>
 <span class="normal">3969</span>
 <span class="normal">3970</span>
-<span class="normal">3971</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">diffuse_stacked</span><span class="p">(</span>
+<span class="normal">3971</span>
+<span class="normal">3972</span>
+<span class="normal">3973</span>
+<span class="normal">3974</span>
+<span class="normal">3975</span>
+<span class="normal">3976</span>
+<span class="normal">3977</span>
+<span class="normal">3978</span>
+<span class="normal">3979</span>
+<span class="normal">3980</span>
+<span class="normal">3981</span>
+<span class="normal">3982</span>
+<span class="normal">3983</span>
+<span class="normal">3984</span>
+<span class="normal">3985</span>
+<span class="normal">3986</span>
+<span class="normal">3987</span>
+<span class="normal">3988</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">diffuse_stacked</span><span class="p">(</span>
     <span class="bp">self</span><span class="p">,</span> <span class="n">rhs</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">solution</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">n_scalars</span><span class="p">:</span> <span class="nb">int</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -8546,6 +8567,25 @@ hold <code>(2 + n_scalars) * n_vertices</code> entries.</p>
                 <span class="n">n_scalars</span><span class="p">,</span>
             <span class="p">)</span>
         <span class="p">)</span>
+    <span class="k">if</span> <span class="n">kept</span><span class="o">.</span><span class="n">factorization</span><span class="o">.</span><span class="n">exceeds_budget</span><span class="p">():</span>
+        <span class="c1"># Past the budget the stack is solved by its blocks, as it is factored: the tangent</span>
+        <span class="c1"># field by the vector system (marched) and the scalar fields by the heat system, which</span>
+        <span class="c1"># may still be factored. Marched whole, its scalar rows would share the vector rows'</span>
+        <span class="c1"># band preconditioning, which cannot take the heat system's multigrid escalation.</span>
+        <span class="n">n_vertices</span> <span class="o">=</span> <span class="n">rhs</span><span class="o">.</span><span class="n">size</span> <span class="o">//</span> <span class="p">(</span><span class="mi">2</span> <span class="o">+</span> <span class="n">n_scalars</span><span class="p">)</span>
+        <span class="n">split</span> <span class="o">=</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">n_vertices</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">diffuse_tangent</span><span class="p">(</span>
+            <span class="n">_launch</span><span class="o">.</span><span class="n">view_as</span><span class="p">(</span><span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">rhs</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">split</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec2d</span><span class="p">),</span>
+            <span class="n">_launch</span><span class="o">.</span><span class="n">view_as</span><span class="p">(</span><span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">solution</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">split</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec2d</span><span class="p">),</span>
+        <span class="p">)</span>
+        <span class="n">scalar_rhs</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">rhs</span><span class="p">,</span> <span class="n">split</span><span class="p">,</span> <span class="n">rhs</span><span class="o">.</span><span class="n">size</span><span class="p">)</span>
+        <span class="n">scalar_solution</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">solution</span><span class="p">,</span> <span class="n">split</span><span class="p">,</span> <span class="n">solution</span><span class="o">.</span><span class="n">size</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">n_scalars</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
+            <span class="n">shape</span> <span class="o">=</span> <span class="p">(</span><span class="n">n_scalars</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">diffuse</span><span class="p">(</span><span class="n">scalar_rhs</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="n">shape</span><span class="p">),</span> <span class="n">scalar_solution</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="n">shape</span><span class="p">))</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">diffuse</span><span class="p">(</span><span class="n">scalar_rhs</span><span class="p">,</span> <span class="n">scalar_solution</span><span class="p">)</span>
+        <span class="k">return</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_settle</span><span class="p">(</span><span class="n">role</span><span class="p">,</span> <span class="n">kept</span><span class="o">.</span><span class="n">factorization</span><span class="o">.</span><span class="n">matrix</span><span class="p">,</span> <span class="n">rhs</span><span class="p">,</span> <span class="n">solution</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -8661,24 +8701,7 @@ entries.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3973</span>
-<span class="normal">3974</span>
-<span class="normal">3975</span>
-<span class="normal">3976</span>
-<span class="normal">3977</span>
-<span class="normal">3978</span>
-<span class="normal">3979</span>
-<span class="normal">3980</span>
-<span class="normal">3981</span>
-<span class="normal">3982</span>
-<span class="normal">3983</span>
-<span class="normal">3984</span>
-<span class="normal">3985</span>
-<span class="normal">3986</span>
-<span class="normal">3987</span>
-<span class="normal">3988</span>
-<span class="normal">3989</span>
-<span class="normal">3990</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3990</span>
 <span class="normal">3991</span>
 <span class="normal">3992</span>
 <span class="normal">3993</span>
@@ -8701,7 +8724,24 @@ entries.</p>
 <span class="normal">4010</span>
 <span class="normal">4011</span>
 <span class="normal">4012</span>
-<span class="normal">4013</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">diffuse_tangent_pair</span><span class="p">(</span>
+<span class="normal">4013</span>
+<span class="normal">4014</span>
+<span class="normal">4015</span>
+<span class="normal">4016</span>
+<span class="normal">4017</span>
+<span class="normal">4018</span>
+<span class="normal">4019</span>
+<span class="normal">4020</span>
+<span class="normal">4021</span>
+<span class="normal">4022</span>
+<span class="normal">4023</span>
+<span class="normal">4024</span>
+<span class="normal">4025</span>
+<span class="normal">4026</span>
+<span class="normal">4027</span>
+<span class="normal">4028</span>
+<span class="normal">4029</span>
+<span class="normal">4030</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">diffuse_tangent_pair</span><span class="p">(</span>
     <span class="bp">self</span><span class="p">,</span> <span class="n">rhs</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">solution</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -8851,29 +8891,29 @@ constant per component.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4015</span>
-<span class="normal">4016</span>
-<span class="normal">4017</span>
-<span class="normal">4018</span>
-<span class="normal">4019</span>
-<span class="normal">4020</span>
-<span class="normal">4021</span>
-<span class="normal">4022</span>
-<span class="normal">4023</span>
-<span class="normal">4024</span>
-<span class="normal">4025</span>
-<span class="normal">4026</span>
-<span class="normal">4027</span>
-<span class="normal">4028</span>
-<span class="normal">4029</span>
-<span class="normal">4030</span>
-<span class="normal">4031</span>
-<span class="normal">4032</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4032</span>
 <span class="normal">4033</span>
 <span class="normal">4034</span>
 <span class="normal">4035</span>
 <span class="normal">4036</span>
-<span class="normal">4037</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">solve_poisson</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">rhs</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">solution</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="normal">4037</span>
+<span class="normal">4038</span>
+<span class="normal">4039</span>
+<span class="normal">4040</span>
+<span class="normal">4041</span>
+<span class="normal">4042</span>
+<span class="normal">4043</span>
+<span class="normal">4044</span>
+<span class="normal">4045</span>
+<span class="normal">4046</span>
+<span class="normal">4047</span>
+<span class="normal">4048</span>
+<span class="normal">4049</span>
+<span class="normal">4050</span>
+<span class="normal">4051</span>
+<span class="normal">4052</span>
+<span class="normal">4053</span>
+<span class="normal">4054</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">solve_poisson</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">rhs</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">solution</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Solve the Poisson system ``-L phi = rhs`` to the heat method's tolerance.</span>
 
@@ -9033,24 +9073,7 @@ pin, and <code>solution</code> is then left as it was.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4106</span>
-<span class="normal">4107</span>
-<span class="normal">4108</span>
-<span class="normal">4109</span>
-<span class="normal">4110</span>
-<span class="normal">4111</span>
-<span class="normal">4112</span>
-<span class="normal">4113</span>
-<span class="normal">4114</span>
-<span class="normal">4115</span>
-<span class="normal">4116</span>
-<span class="normal">4117</span>
-<span class="normal">4118</span>
-<span class="normal">4119</span>
-<span class="normal">4120</span>
-<span class="normal">4121</span>
-<span class="normal">4122</span>
-<span class="normal">4123</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4123</span>
 <span class="normal">4124</span>
 <span class="normal">4125</span>
 <span class="normal">4126</span>
@@ -9078,7 +9101,24 @@ pin, and <code>solution</code> is then left as it was.</p>
 <span class="normal">4148</span>
 <span class="normal">4149</span>
 <span class="normal">4150</span>
-<span class="normal">4151</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">diffuse_pinned</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">rhs</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">solution</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="normal">4151</span>
+<span class="normal">4152</span>
+<span class="normal">4153</span>
+<span class="normal">4154</span>
+<span class="normal">4155</span>
+<span class="normal">4156</span>
+<span class="normal">4157</span>
+<span class="normal">4158</span>
+<span class="normal">4159</span>
+<span class="normal">4160</span>
+<span class="normal">4161</span>
+<span class="normal">4162</span>
+<span class="normal">4163</span>
+<span class="normal">4164</span>
+<span class="normal">4165</span>
+<span class="normal">4166</span>
+<span class="normal">4167</span>
+<span class="normal">4168</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">diffuse_pinned</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">rhs</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">solution</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Diffuse a scalar field with the heat pinned to zero on the mesh's rim.</span>
 
@@ -9243,24 +9283,7 @@ edge.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4188</span>
-<span class="normal">4189</span>
-<span class="normal">4190</span>
-<span class="normal">4191</span>
-<span class="normal">4192</span>
-<span class="normal">4193</span>
-<span class="normal">4194</span>
-<span class="normal">4195</span>
-<span class="normal">4196</span>
-<span class="normal">4197</span>
-<span class="normal">4198</span>
-<span class="normal">4199</span>
-<span class="normal">4200</span>
-<span class="normal">4201</span>
-<span class="normal">4202</span>
-<span class="normal">4203</span>
-<span class="normal">4204</span>
-<span class="normal">4205</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4205</span>
 <span class="normal">4206</span>
 <span class="normal">4207</span>
 <span class="normal">4208</span>
@@ -9293,7 +9316,24 @@ edge.</p>
 <span class="normal">4235</span>
 <span class="normal">4236</span>
 <span class="normal">4237</span>
-<span class="normal">4238</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">diffuse_edge_field</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">rhs</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2d</span><span class="p">],</span> <span class="n">solution</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2d</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="normal">4238</span>
+<span class="normal">4239</span>
+<span class="normal">4240</span>
+<span class="normal">4241</span>
+<span class="normal">4242</span>
+<span class="normal">4243</span>
+<span class="normal">4244</span>
+<span class="normal">4245</span>
+<span class="normal">4246</span>
+<span class="normal">4247</span>
+<span class="normal">4248</span>
+<span class="normal">4249</span>
+<span class="normal">4250</span>
+<span class="normal">4251</span>
+<span class="normal">4252</span>
+<span class="normal">4253</span>
+<span class="normal">4254</span>
+<span class="normal">4255</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">diffuse_edge_field</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">rhs</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2d</span><span class="p">],</span> <span class="n">solution</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2d</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Diffuse a tangent field held on the edges: the Crouzeix-Raviart vector heat system.</span>
 
@@ -10378,45 +10418,24 @@ not <code>"meshlab"</code>, <code>"igl"</code> or <code>"potpourri3d"</code>.</p
     </table>
 
 
-<p><span class="doc-section-title">Warns:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Type</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#UserWarning">UserWarning</a></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>At the default <code>t</code>, when the heat solve fails its accuracy check and cannot be factored
-(see Notes).</p>
-              </div>
-            </td>
-          </tr>
-      </tbody>
-    </table>
-
-
 <details class="note" open>
   <summary>Notes</summary>
   <p>The default time is the solver's, which on a mesh more than about 400 mean edges across is
 longer than the method's library takes (see <a class="autorefs autorefs-internal" title="HeatSolver" href="./#ordito.heat.HeatSolver"><code>HeatSolver</code></a>): there
 MeshLab's, igl's and geometry-central's far field falls below the <code>float64</code> range, and
 their distance stops growing far from the sources.</p>
-<p>On a mesh whose heat solve fails its accuracy check and whose system is too large to factor
-within <a class="autorefs autorefs-internal" title="CHOLESKY_MEMORY_BUDGET
+<p>On a mesh whose heat system is too large to factor within
+<a class="autorefs autorefs-internal" title="CHOLESKY_MEMORY_BUDGET
 
 
   
       module-attribute
-  " href="../cholesky/#ordito.cholesky.CHOLESKY_MEMORY_BUDGET"><code>CHOLESKY_MEMORY_BUDGET</code></a> (tens of millions of
-vertices), the iterate stands and the distance is unreliable far from the sources; at the
-default time this warns.</p>
+  " href="../cholesky/#ordito.cholesky.CHOLESKY_MEMORY_BUDGET"><code>CHOLESKY_MEMORY_BUDGET</code></a> (about a million vertices
+and up), the heat is marched outward from the sources a band at a time instead of iterated
+(see <a class="autorefs autorefs-internal" title="solve_spd_settled" href="../linalg/#ordito.linalg.solve_spd_settled"><code>solve_spd_settled</code></a>), which reaches the far field to
+its own precision as a factorization would, and its Poisson solve takes a multigrid hierarchy.
+The vector heat method's diffusions (<a class="autorefs autorefs-internal" title="log_map" href="./#ordito.heat.log_map"><code>log_map</code></a>,
+<a class="autorefs autorefs-internal" title="transport_tangent_vectors" href="./#ordito.heat.transport_tangent_vectors"><code>transport_tangent_vectors</code></a>) are marched alike.</p>
 <p>The <code>vertices, faces</code> form logs at <code>INFO</code> on the <code>ordito.heat</code> logger when it built a
 factorization it is about to drop (the heat solve's verification failed on an ill-conditioned
 mesh), since the <code>Trimesh</code> form would have kept it for the next call. That form runs on
@@ -10621,10 +10640,7 @@ few per cent of it:</p>
 <span class="normal">537</span>
 <span class="normal">538</span>
 <span class="normal">539</span>
-<span class="normal">540</span>
-<span class="normal">541</span>
-<span class="normal">542</span>
-<span class="normal">543</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">heat_geodesic</span><span class="p">(</span>
+<span class="normal">540</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">heat_geodesic</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">sources</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -10722,12 +10738,6 @@ few per cent of it:</p>
 <span class="sd">    RuntimeError</span>
 <span class="sd">        If ``vertices``, ``faces`` and ``sources`` are not all on one device.</span>
 
-<span class="sd">    Warns</span>
-<span class="sd">    -----</span>
-<span class="sd">    UserWarning</span>
-<span class="sd">        At the default ``t``, when the heat solve fails its accuracy check and cannot be factored</span>
-<span class="sd">        (see Notes).</span>
-
 <span class="sd">    Notes</span>
 <span class="sd">    -----</span>
 <span class="sd">    The default time is the solver's, which on a mesh more than about 400 mean edges across is</span>
@@ -10735,10 +10745,13 @@ few per cent of it:</p>
 <span class="sd">    MeshLab's, igl's and geometry-central's far field falls below the ``float64`` range, and</span>
 <span class="sd">    their distance stops growing far from the sources.</span>
 
-<span class="sd">    On a mesh whose heat solve fails its accuracy check and whose system is too large to factor</span>
-<span class="sd">    within [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET] (tens of millions of</span>
-<span class="sd">    vertices), the iterate stands and the distance is unreliable far from the sources; at the</span>
-<span class="sd">    default time this warns.</span>
+<span class="sd">    On a mesh whose heat system is too large to factor within</span>
+<span class="sd">    [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET] (about a million vertices</span>
+<span class="sd">    and up), the heat is marched outward from the sources a band at a time instead of iterated</span>
+<span class="sd">    (see [`solve_spd_settled`][ordito.linalg.solve_spd_settled]), which reaches the far field to</span>
+<span class="sd">    its own precision as a factorization would, and its Poisson solve takes a multigrid hierarchy.</span>
+<span class="sd">    The vector heat method's diffusions ([`log_map`][ordito.heat.log_map],</span>
+<span class="sd">    [`transport_tangent_vectors`][ordito.heat.transport_tangent_vectors]) are marched alike.</span>
 
 <span class="sd">    The ``vertices, faces`` form logs at ``INFO`` on the ``ordito.heat`` logger when it built a</span>
 <span class="sd">    factorization it is about to drop (the heat solve's verification failed on an ill-conditioned</span>
@@ -11039,7 +11052,10 @@ point:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">618</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">615</span>
+<span class="normal">616</span>
+<span class="normal">617</span>
+<span class="normal">618</span>
 <span class="normal">619</span>
 <span class="normal">620</span>
 <span class="normal">621</span>
@@ -11182,10 +11198,7 @@ point:</p>
 <span class="normal">758</span>
 <span class="normal">759</span>
 <span class="normal">760</span>
-<span class="normal">761</span>
-<span class="normal">762</span>
-<span class="normal">763</span>
-<span class="normal">764</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">fast_marching_distance</span><span class="p">(</span>
+<span class="normal">761</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">fast_marching_distance</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">sources</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
@@ -11755,7 +11768,10 @@ the grid's corner lies outside:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1218</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1215</span>
+<span class="normal">1216</span>
+<span class="normal">1217</span>
+<span class="normal">1218</span>
 <span class="normal">1219</span>
 <span class="normal">1220</span>
 <span class="normal">1221</span>
@@ -11928,10 +11944,7 @@ the grid's corner lies outside:</p>
 <span class="normal">1388</span>
 <span class="normal">1389</span>
 <span class="normal">1390</span>
-<span class="normal">1391</span>
-<span class="normal">1392</span>
-<span class="normal">1393</span>
-<span class="normal">1394</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">heat_signed_distance</span><span class="p">(</span>
+<span class="normal">1391</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">heat_signed_distance</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">curve_vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -12428,7 +12441,10 @@ is why <code>scalar_operators</code> is the one argument here that cannot be val
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1742</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1739</span>
+<span class="normal">1740</span>
+<span class="normal">1741</span>
+<span class="normal">1742</span>
 <span class="normal">1743</span>
 <span class="normal">1744</span>
 <span class="normal">1745</span>
@@ -12640,10 +12656,7 @@ is why <code>scalar_operators</code> is the one argument here that cannot be val
 <span class="normal">1951</span>
 <span class="normal">1952</span>
 <span class="normal">1953</span>
-<span class="normal">1954</span>
-<span class="normal">1955</span>
-<span class="normal">1956</span>
-<span class="normal">1957</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vector_heat_operators</span><span class="p">(</span>
+<span class="normal">1954</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vector_heat_operators</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">t</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -13156,7 +13169,10 @@ pole's value, away from the equator where the two blend:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2323</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2320</span>
+<span class="normal">2321</span>
+<span class="normal">2322</span>
+<span class="normal">2323</span>
 <span class="normal">2324</span>
 <span class="normal">2325</span>
 <span class="normal">2326</span>
@@ -13255,10 +13271,7 @@ pole's value, away from the equator where the two blend:</p>
 <span class="normal">2419</span>
 <span class="normal">2420</span>
 <span class="normal">2421</span>
-<span class="normal">2422</span>
-<span class="normal">2423</span>
-<span class="normal">2424</span>
-<span class="normal">2425</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">extend_scalar</span><span class="p">(</span>
+<span class="normal">2422</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">extend_scalar</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">sources</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -13663,9 +13676,9 @@ from the centre to an interior vertex is the source vector again:</p>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 10 places</summary>
+      <summary>Referenced by 11 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="./#ordito.heat">heat</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.diffuse_tangent_field">diffuse_tangent_field</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.extend_scalar">extend_scalar</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.heat_signed_distance">heat_signed_distance</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.log_map">log_map</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.vector_heat_operators">vector_heat_operators</a></span> · <span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.vector_heat_operators">vector_heat_operators</a></span> · <span class="ordito-backlink"><a href="../laplacian/#ordito.laplacian">laplacian</a> › <a href="../laplacian/#ordito.laplacian.connection_laplacian">connection_laplacian</a></span></p>
+<span class="ordito-backlink"><a href="./#ordito.heat">heat</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.diffuse_tangent_field">diffuse_tangent_field</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.extend_scalar">extend_scalar</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.heat_geodesic">heat_geodesic</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.heat_signed_distance">heat_signed_distance</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.log_map">log_map</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.vector_heat_operators">vector_heat_operators</a></span> · <span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.vector_heat_operators">vector_heat_operators</a></span> · <span class="ordito-backlink"><a href="../laplacian/#ordito.laplacian">laplacian</a> › <a href="../laplacian/#ordito.laplacian.connection_laplacian">connection_laplacian</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
 <span class="ordito-backlink"><a href="../../../examples/geodesics/#geodesics-and-tangent-fields">Geodesics and tangent fields</a> › <a href="../../../examples/geodesics/#g6">Parallel transport and the logarithmic map</a></span></p>
         <p><span class="ordito-backlinks-section">Migrating from another library</span>
@@ -13675,7 +13688,10 @@ from the centre to an interior vertex is the source vector again:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2522</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2519</span>
+<span class="normal">2520</span>
+<span class="normal">2521</span>
+<span class="normal">2522</span>
 <span class="normal">2523</span>
 <span class="normal">2524</span>
 <span class="normal">2525</span>
@@ -13799,10 +13815,7 @@ from the centre to an interior vertex is the source vector again:</p>
 <span class="normal">2643</span>
 <span class="normal">2644</span>
 <span class="normal">2645</span>
-<span class="normal">2646</span>
-<span class="normal">2647</span>
-<span class="normal">2648</span>
-<span class="normal">2649</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">transport_tangent_vectors</span><span class="p">(</span>
+<span class="normal">2646</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">transport_tangent_vectors</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">sources</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -14226,9 +14239,9 @@ direction with its shorter radius:</p>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 10 places</summary>
+      <summary>Referenced by 11 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../geodesic_walk/#ordito.geodesic_walk">geodesic_walk</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.HeatSolver">HeatSolver</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.LogMapMethod">LogMapMethod</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.transport_tangent_vectors">transport_tangent_vectors</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.vector_heat_operators">vector_heat_operators</a></span> · <span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.vector_heat_operators">vector_heat_operators</a></span></p>
+<span class="ordito-backlink"><a href="../geodesic_walk/#ordito.geodesic_walk">geodesic_walk</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.HeatSolver">HeatSolver</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.LogMapMethod">LogMapMethod</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.heat_geodesic">heat_geodesic</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.transport_tangent_vectors">transport_tangent_vectors</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.vector_heat_operators">vector_heat_operators</a></span> · <span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.vector_heat_operators">vector_heat_operators</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
 <span class="ordito-backlink"><a href="../../../examples/geodesics/#geodesics-and-tangent-fields">Geodesics and tangent fields</a> › <a href="../../../examples/geodesics/#g6">Parallel transport and the logarithmic map</a></span> · <span class="ordito-backlink"><a href="../../../examples/trimesh-object/#the-trimesh-object">The Trimesh object</a> › <a href="../../../examples/trimesh-object/#t7">Reusing cached operators</a></span></p>
         <p><span class="ordito-backlinks-section">Migrating from another library</span>
@@ -14238,7 +14251,10 @@ direction with its shorter radius:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2736</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2733</span>
+<span class="normal">2734</span>
+<span class="normal">2735</span>
+<span class="normal">2736</span>
 <span class="normal">2737</span>
 <span class="normal">2738</span>
 <span class="normal">2739</span>
@@ -14358,10 +14374,7 @@ direction with its shorter radius:</p>
 <span class="normal">2853</span>
 <span class="normal">2854</span>
 <span class="normal">2855</span>
-<span class="normal">2856</span>
-<span class="normal">2857</span>
-<span class="normal">2858</span>
-<span class="normal">2859</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">log_map</span><span class="p">(</span>
+<span class="normal">2856</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">log_map</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">source</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -14657,7 +14670,10 @@ vector either way.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3263</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3260</span>
+<span class="normal">3261</span>
+<span class="normal">3262</span>
+<span class="normal">3263</span>
 <span class="normal">3264</span>
 <span class="normal">3265</span>
 <span class="normal">3266</span>
@@ -14707,10 +14723,7 @@ vector either way.</p>
 <span class="normal">3310</span>
 <span class="normal">3311</span>
 <span class="normal">3312</span>
-<span class="normal">3313</span>
-<span class="normal">3314</span>
-<span class="normal">3315</span>
-<span class="normal">3316</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">tangent_to_world</span><span class="p">(</span>
+<span class="normal">3313</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">tangent_to_world</span><span class="p">(</span>
     <span class="n">tangent</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span> <span class="n">basis_x</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">basis_y</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -15039,7 +15052,10 @@ would have kept.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3331</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3328</span>
+<span class="normal">3329</span>
+<span class="normal">3330</span>
+<span class="normal">3331</span>
 <span class="normal">3332</span>
 <span class="normal">3333</span>
 <span class="normal">3334</span>
@@ -15139,10 +15155,7 @@ would have kept.</p>
 <span class="normal">3428</span>
 <span class="normal">3429</span>
 <span class="normal">3430</span>
-<span class="normal">3431</span>
-<span class="normal">3432</span>
-<span class="normal">3433</span>
-<span class="normal">3434</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">diffuse_tangent_field</span><span class="p">(</span>
+<span class="normal">3431</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">diffuse_tangent_field</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span> <span class="o">|</span> <span class="n">odt</span><span class="o">.</span><span class="n">SparseMatrix</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">source</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2d</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>

@@ -6544,11 +6544,15 @@ print is checked, so the output shown is the output you will get.</p>
 </tr>
 <tr>
 <td>flatten to the plane (UV parametrization)</td>
-<td><a class="autorefs autorefs-internal" title="ordito.parametrization" href="../api/ordito/parametrization/#ordito.parametrization"><code>parametrization</code></a>: <a class="autorefs autorefs-internal" title="harmonic" href="../api/ordito/parametrization/#ordito.parametrization.harmonic"><code>harmonic</code></a>, <a class="autorefs autorefs-internal" title="lscm" href="../api/ordito/parametrization/#ordito.parametrization.lscm"><code>lscm</code></a>, <a class="autorefs autorefs-internal" title="arap" href="../api/ordito/parametrization/#ordito.parametrization.arap"><code>arap</code></a>, <a class="autorefs autorefs-internal" title="low_distortion_parametrization" href="../api/ordito/parametrization/#ordito.parametrization.low_distortion_parametrization"><code>low_distortion_parametrization</code></a> (free boundary, no pins, any topology), <a class="autorefs autorefs-internal" title="low_distortion_disk_parametrization" href="../api/ordito/parametrization/#ordito.parametrization.low_distortion_disk_parametrization"><code>low_distortion_disk_parametrization</code></a> (the same for a disk, from a classic map)</td>
+<td><a class="autorefs autorefs-internal" title="ordito.parametrization" href="../api/ordito/parametrization/#ordito.parametrization"><code>parametrization</code></a>: <a class="autorefs autorefs-internal" title="harmonic" href="../api/ordito/parametrization/#ordito.parametrization.harmonic"><code>harmonic</code></a>, <a class="autorefs autorefs-internal" title="lscm" href="../api/ordito/parametrization/#ordito.parametrization.lscm"><code>lscm</code></a>, <a class="autorefs autorefs-internal" title="arap" href="../api/ordito/parametrization/#ordito.parametrization.arap"><code>arap</code></a>, <a class="autorefs autorefs-internal" title="slim" href="../api/ordito/parametrization/#ordito.parametrization.slim"><code>slim</code></a> (least symmetric Dirichlet distortion from a start, fold-free), <a class="autorefs autorefs-internal" title="low_distortion_parametrization" href="../api/ordito/parametrization/#ordito.parametrization.low_distortion_parametrization"><code>low_distortion_parametrization</code></a> (free boundary, no pins, any topology), <a class="autorefs autorefs-internal" title="low_distortion_disk_parametrization" href="../api/ordito/parametrization/#ordito.parametrization.low_distortion_disk_parametrization"><code>low_distortion_disk_parametrization</code></a> (the same for a disk, from a classic map), <a class="autorefs autorefs-internal" title="slim_parametrization" href="../api/ordito/parametrization/#ordito.parametrization.slim_parametrization"><code>slim_parametrization</code></a> (the whole unwrap to the least symmetric Dirichlet distortion, from the free chart or a classic map; fold-free on a disk)</td>
 </tr>
 <tr>
 <td>bake or sample textures</td>
 <td><a class="autorefs autorefs-internal" title="ordito.texture" href="../api/ordito/texture/#ordito.texture"><code>texture</code></a></td>
+</tr>
+<tr>
+<td>which face covers each pixel of a UV window (visibility buffer)</td>
+<td><a class="autorefs autorefs-internal" title="rasterize_face_indices" href="../api/ordito/texture/#ordito.texture.rasterize_face_indices"><code>texture.rasterize_face_indices</code></a></td>
 </tr>
 <tr>
 <td><strong>Arrays</strong></td>
@@ -6818,7 +6822,7 @@ print is checked, so the output shown is the output you will get.</p>
 </tr>
 <tr>
 <td><a href="../api/ordito/parametrization/">parametrization</a></td>
-<td>Flattening a mesh into the plane: harmonic, Tutte, ARAP and LSCM.</td>
+<td>Flattening a mesh into the plane: harmonic, Tutte, ARAP, SLIM and LSCM.</td>
 </tr>
 </tbody>
 </table>
