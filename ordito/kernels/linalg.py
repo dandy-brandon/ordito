@@ -1277,7 +1277,11 @@ def backward_error_exceeds(
 # 15.6 -> 7.6 s, its distance unchanged. A heat system decays by ~0.1 e-fold a hop on ``lucy``
 # (``sqrt(t)`` is ten mean edges) and ~0.7 on ``dragon``, so no fixed hop count serves both. A
 # band's rounds (~1 000 on ``lucy``) are its Jacobi-scaled conditioning, 7 500 on ``dragon``'s
-# first band where a sliver-free mesh gives ~20, not its width.
+# first band where a sliver-free mesh gives ~20, not its width. A row finished on a neighbour's
+# magnitude alone (a vector's near-zero component, a sign change) must stand ``e^4`` past the
+# threshold: at the threshold itself that rule finished the ring just under it all along the
+# front, those rows became the next band's data, and ``dragon``'s worst grew to 2e-5 (4 000 rows
+# over 1e-6, the median 17x).
 
 
 @wp.kernel
@@ -1488,27 +1492,34 @@ def march_band_commit(
     x: wp.array[wp.float64],
     words: wp.array[wp.float64],
     threshold: wp.float64,
+    dominated: wp.float64,
     out_solution: wp.array[wp.float64],
     out_tentative: wp.array[wp.float64],
     out_keep: wp.array[wp.int32],
 ) -> None:
     # Finish the band's rows at ``threshold`` or above (resolved, and clear of the zero beyond the
-    # band), and a row whose every neighbour is finished or kept: a sign change the threshold
-    # leaves behind the front, which no later band would reach. Every row's value seeds the next
-    # band's guess.
+    # band), and a row far smaller than a neighbour -- in the band or finished, at the band's scale
+    # -- at ``dominated`` or above: a vector component near zero beside its vertex's other one, or
+    # a scalar field's sign change, is right to within the band's errors of the field around it,
+    # and would otherwise wait behind the front for a band scaled to itself. ``dominated`` stands
+    # well above ``threshold`` so the rule finishes no row of a smoothly decaying front a hop early:
+    # a row finished at the threshold's edge is the next band's datum, and its error spreads. Every
+    # row's value seeds the next band's guess.
     i = wp.int32(wp.tid())
     v = band[i]
     keep = wp.where(wp.abs(x[i]) >= threshold, 1, 0)
     if keep == 0:
-        keep = wp.int32(1)
+        scale = words[MARCH_SCALE]
+        inverse = wp.where(scale > wp.float64(0.0), wp.float64(1.0) / scale, wp.float64(0.0))
         for k in range(offsets[v], offsets[v + 1]):
             j = columns[k]
             lj = local[j]
             if lj >= 0:
-                if j != v and not (wp.abs(x[lj]) >= threshold):
-                    keep = wp.int32(0)
-            elif finished[j] == 0:
-                keep = wp.int32(0)
+                if wp.abs(x[lj]) >= dominated:
+                    keep = wp.int32(1)
+            elif finished[j] != 0:
+                if wp.abs(out_solution[j]) * inverse >= dominated:
+                    keep = wp.int32(1)
     value = x[i] * words[MARCH_SCALE]
     out_tentative[v] = value
     if keep != 0:

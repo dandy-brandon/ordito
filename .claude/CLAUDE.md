@@ -1411,9 +1411,9 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   two or three latency-bound kernels. Open: a `solve` without refinement for such a loop (an API
   choice, outputs move by rounding), and a one-block triangular solve for a factor this small.
   Numbers in `reference/component-status.md` ("Post-0.3.0 sweep").
-- **Settled diffusions past the factorization budget, what the march left** (`lucy`): a scalar
-  system is marched (`linalg._march_settled`, at once when its analysis refuses it; distance 0.97
-  of the graph distance where it was 0.04). Open: (a) a `wp.mat22d` system (vector heat,
-  Crouzeix-Raviart) is not marched and still returns its iterate with a warning; (b) a band's
-  ~1 000 rounds on `lucy` are its Jacobi conditioning, the lever a better band preconditioner.
-  Status in `reference/component-status.md` (16.10).
+- **The march's band rounds** (`linalg._march_settled`, every settled diffusion past the
+  factorization budget): a band's ~1 000 conjugate-gradient rounds on `lucy` are its Jacobi
+  conditioning (7 500 on `dragon`'s first band, ~20 on a sliver-free mesh), not its width, and
+  set the march's 6.5 s there; on `dragon` and `happy_buddha`'s indefinite vector systems the
+  march costs 0.9-1.1 s where the failing iteration took 0.14-0.18 s. Open: a better band
+  preconditioner. Status in `reference/component-status.md` (16.10).

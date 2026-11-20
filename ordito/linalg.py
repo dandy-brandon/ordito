@@ -179,6 +179,9 @@ SETTLE_DIRECT_TOLERANCE = 1e-12
 _MARCH_RESOLVED = 14.0
 _MARCH_MARGIN = 16.0
 _MARCH_TOLERANCE = 1e-14
+# A row below that is finished with a neighbour this many times past it (a vector's near-zero
+# component, a sign change): ``e^4``, well past a smooth front's decay over a hop.
+_MARCH_DOMINATED = math.exp(4.0)
 # Hops the first band grows; each band's count is rescaled from the last band's span in e-folds
 # (peak over outer layer) toward ``_MARCH_RESOLVED + _MARCH_MARGIN``, within a factor of
 # ``_MARCH_GROWTH`` up and two down: an operator's decay a hop is its own.
@@ -188,8 +191,9 @@ _MARCH_GROWTH = 4
 # device only.
 _MARCH_HOP_THREADS = 1 << 16
 # Bytes a row above every scalar mesh operator's factorization peak measured (the heat systems
-# need 3.6-7.7 KiB a row), so an operator of fewer than ``CHOLESKY_MEMORY_BUDGET`` over this many
-# rows fits, and ``solve_spd_settled`` asks a larger one's analysis before iterating: past the
+# need 3.6-7.7 KiB a row; a vector heat system's expansion 6.7-10 KiB a scalar row, so twice this
+# for a ``wp.mat22d`` operator), so an operator of fewer than ``CHOLESKY_MEMORY_BUDGET`` over this
+# many rows fits, and ``solve_spd_settled`` asks a larger one's analysis before iterating: past the
 # budget it marches at once (``kernels/linalg.py``'s march section prices it).
 _FACTOR_ROW_BYTES = 8192
 
@@ -2265,7 +2269,7 @@ class OperatorFactorization:
         self._refused = False
         # Whether the refusal was the operator's definiteness, not its size.
         self._indefinite = False
-        # Whether the analysis found the factorization within the budget (``_too_large``), once
+        # Whether the analysis found the factorization within the budget (``exceeds_budget``), once
         # asked; ``None`` before.
         self._fits: bool | None = None
         # Whether a settled iterate of this operator failed its backward-error check.
@@ -2376,25 +2380,41 @@ class OperatorFactorization:
         self._refused = True
         return False
 
-    def _too_large(self) -> bool:
+    def exceeds_budget(self) -> bool:
         """
-        Whether this scalar operator's factorization is refused for its size, asked ahead.
+        Whether the operator is too large to factor within the memory budget, asked ahead.
 
-        An operator that could exceed the budget (``_could_exceed_budget``) is measured by its
-        analysis alone (``cholesky.factorization_nbytes``) the first time, the verdict kept; a
-        refusal found so is remembered as ``factor``'s own.
+        Nothing is factored. An operator whose size says it may need more than
+        [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET] is measured by its
+        analysis alone ([`factorization_nbytes`][ordito.cholesky.factorization_nbytes]) the
+        first time, and the verdict is kept until
+        [`release`][ordito.linalg.OperatorFactorization.release]; one found too large is
+        [`refused`][ordito.linalg.OperatorFactorization.refused] as ``factor`` would have been.
+        [`solve_spd_settled`][ordito.linalg.solve_spd_settled] asks it before iterating, and
+        marches an operator that is.
+
+        Returns
+        -------
+        bool
+            ``True`` when a factorization would be refused for its size (or ``factor`` already
+            was); ``False`` when it fits, is held, or the operator is too small to need asking.
         """
         if self._factorization is not None:
             return False
         if self._refused:
             return not self._indefinite
         if self._fits is None:
-            if not _could_exceed_budget(int(self._matrix.nrow)):
+            blocks = odt.has_blocks(self._matrix, wp.mat22d)
+            width = 2 if blocks else 1
+            if not _could_exceed_budget(int(self._matrix.nrow) * width, width):
                 return False
-            needed = factorization_nbytes(
-                cast("odt.BsrMatrix[wp.float64]", self._matrix), self._ordering_points()
+            scalar = (
+                od.array.scalar_expansion(self._matrix)
+                if blocks
+                else cast("odt.BsrMatrix[wp.float64]", self._matrix)
             )
-            self._fits = needed <= od.cholesky.CHOLESKY_MEMORY_BUDGET
+            points = _expanded_coordinates(self._ordering_points(), width)
+            self._fits = factorization_nbytes(scalar, points) <= od.cholesky.CHOLESKY_MEMORY_BUDGET
             if not self._fits:
                 self._refused = True
         return not self._fits
@@ -2492,18 +2512,19 @@ def solve_spd_settled(
     is built in ``factorization`` when one is passed, where the caller keeps it; and a
     ``factorization`` that already holds one is solved by directly, with no iteration.
 
-    A scalar operator too large to factor (over
+    An operator too large to factor (over
     [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET]) is marched instead, with
     no iteration first: solved a band at a time outward from the right-hand side's support, each
     band by conjugate gradient with the values already finished as its boundary data and scaled
-    so its front is of order one, keeping the entries it resolves to their own precision. The
-    answer matches a direct solve's entry by entry to about ``1e-6`` of each entry, at any depth
-    below the peak, and on such an operator costs less than the settled iteration, whether that
+    so its front is of order one, keeping the entries it resolves. Each entry matches a direct
+    solve's to about ``1e-6`` of the largest entry around it (a ``wp.mat22d`` operator's through
+    its scalar expansion, so a vector to about that much of itself), at any depth below the peak,
+    and on such an operator the march costs less than the settled iteration, whether that
     iteration would pass its check or not. Whether the operator is too large is asked of its
-    analysis alone ([`factorization_nbytes`][ordito.cholesky.factorization_nbytes]) when its row
-    count says it may be, the verdict kept in ``factorization``; an operator found too large only
-    when its rejected iterate's fallback is refused is marched then. A ``wp.mat22d``-block
-    operator, or one that is not positive definite, returns its settled iterate as it is.
+    analysis alone ([`exceeds_budget`][ordito.linalg.OperatorFactorization.exceeds_budget]) when
+    its size says it may be, the verdict kept in ``factorization``; an operator found too large
+    only when its rejected iterate's fallback is refused is marched then. One that is not positive
+    definite returns its settled iterate as it is.
 
     Parameters
     ----------
@@ -2622,11 +2643,11 @@ def solve_spd_settled(
             tol=SETTLE_DIRECT_TOLERANCE, componentwise=True,
         )  # fmt: skip
         return _direct_result(factorization, SETTLE_DIRECT_TOLERANCE, 0, rhs.device)[0]
-    marchable = not odt.has_blocks(matrix, wp.mat22d)
+    width = 2 if odt.has_blocks(matrix, wp.mat22d) else 1
     holder = factorization
-    if marchable and holder is None and _could_exceed_budget(int(scalar.nrow)):
+    if holder is None and _could_exceed_budget(int(scalar.nrow), width):
         holder = OperatorFactorization(matrix)
-    if marchable and holder is not None and holder._too_large():  # pyright: ignore[reportPrivateUsage]
+    if holder is not None and holder.exceeds_budget():
         # Past the budget the march costs less than the settled iteration, whether the iterate
         # would pass its check or not: march at once.
         rounds = _march_columns(scalar, rhs_flat, solution_flat, n_columns)
@@ -2666,7 +2687,7 @@ def solve_spd_settled(
     fallback = holder if holder is not None else OperatorFactorization(matrix)
     fallback._iterate_rejected = True  # pyright: ignore[reportPrivateUsage]
     if not fallback.factor():
-        if not marchable or fallback._indefinite:  # pyright: ignore[reportPrivateUsage]
+        if fallback._indefinite:  # pyright: ignore[reportPrivateUsage]
             # No warning: the check also fails on a far field near the bottom of the ``float64``
             # range, where the iterate's directions are right (the heat diffusions at a large
             # ``t``), so it cannot tell the caller the answer is wrong. A caller that can is the
@@ -2686,9 +2707,14 @@ def solve_spd_settled(
     return solver.iterations
 
 
-def _could_exceed_budget(n_rows: int) -> bool:
-    """Whether a scalar operator of ``n_rows`` rows may need more than the factorization budget."""
-    return n_rows * _FACTOR_ROW_BYTES > od.cholesky.CHOLESKY_MEMORY_BUDGET
+def _could_exceed_budget(n_rows: int, width: int) -> bool:
+    """
+    Whether an operator of ``n_rows`` scalar rows may need more than the factorization budget.
+
+    ``width`` is its blocks' width, ``2`` for a ``wp.mat22d`` operator's expansion, whose rows
+    are each coupled to twice as many.
+    """
+    return n_rows * width * _FACTOR_ROW_BYTES > od.cholesky.CHOLESKY_MEMORY_BUDGET
 
 
 def _march_columns(
@@ -2849,7 +2875,17 @@ def _march_settled(
         _launch.launch(
             kernel_linalg.march_band_commit,
             dim=m,
-            inputs=[offsets, columns, band, local, finished, x, words, threshold],
+            inputs=[
+                offsets,
+                columns,
+                band,
+                local,
+                finished,
+                x,
+                words,
+                threshold,
+                threshold * _MARCH_DOMINATED,
+            ],
             outputs=[solution, tentative, keep],
             device=device,
         )

@@ -2920,6 +2920,9 @@ _BENCHMARK_EXEMPT: dict[str, str] = {
     "linalg.MinQuadWithFixedData.release": "drops a held factorization; frees, computes nothing",
     "linalg.MinQuadWithFixedData.matches": "compares a pinned index set by identity; host only",
     "linalg.OperatorFactorization.release": "drops a held factorization; frees, computes nothing",
+    "linalg.OperatorFactorization.exceeds_budget": (
+        "one cholesky.factorization_nbytes, kept; that row (test_cholesky.py) times it"
+    ),
     "parametrization.FixedVertexSolver.release": "drops held factorizations; computes nothing",
 }
 

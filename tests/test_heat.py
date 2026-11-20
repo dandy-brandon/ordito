@@ -3143,6 +3143,70 @@ def test_an_unfactorable_ill_conditioned_mesh_solves_poisson_by_multigrid(
     assert hierarchies == [n_vertices]
 
 
+@pytest.mark.parametrize("probed", [True, False], ids=["probed", "after-a-rejected-iterate"])
+def test_a_vector_diffusion_past_the_budget_is_marched(
+    graded_saddle: GradedSaddle, monkeypatch: pytest.MonkeyPatch, probed: bool
+) -> None:
+    """
+    Class A, against ``scipy.sparse.linalg.spsolve``: past the budget a tangent field is marched.
+
+    With the budget set to nothing the vector heat system of ``saddle_graded`` cannot be factored:
+    its analysis says so before any iteration and the field is marched at once over its scalar
+    expansion, or (``probed`` off, the size test bypassed) its settled iterate fails its check,
+    the fallback is refused and the field is marched then. Every vertex's vector, magnitudes
+    spanning 1e-16, is within ``1e-6`` of itself of the direct solve's (measured 3.5e-9), with no
+    warning, and the solver says it is ill-conditioned exactly when an iterate was rejected.
+    Mutation probe: returning the rejected iterate (the old fallback) misses a vector by 6 % of
+    itself.
+    """
+    _, _, vertices_wp, faces_wp = graded_saddle
+    device = vertices_wp.device
+    monkeypatch.setattr(od.cholesky, "CHOLESKY_MEMORY_BUDGET", 0)
+    if not probed:
+        monkeypatch.setattr(od.linalg, "_FACTOR_ROW_BYTES", 0)
+    mesh = od.Trimesh(vertices_wp, faces_wp)
+    solver = mesh.heat_solver()
+    n_vertices = vertices_wp.size
+    rhs_np = np.zeros((n_vertices, 2))
+    rhs_np[0] = (1.0, 0.0)
+    field_wp = wp.zeros(n_vertices, dtype=wp.vec2d, device=device)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        solver.diffuse_tangent(wp.array(rhs_np, dtype=wp.vec2d, device=device), field_wp)
+    assert solver.ill_conditioned != probed
+    system_sp = bsr_to_csr(od.array.scalar_expansion(solver.vector_operators[0]))
+    expected_np = spla.spsolve(system_sp.tocsc(), rhs_np.ravel()).reshape(n_vertices, 2)
+    magnitude_np = np.linalg.norm(expected_np, axis=1)
+    assert magnitude_np.min() < 1e-15 * magnitude_np.max()
+    error_np = np.linalg.norm(field_wp.numpy() - expected_np, axis=1)
+    assert np.all(error_np <= 1e-6 * magnitude_np)
+
+
+@pytest.mark.parametrize("method", ["heat_geodesic", "potpourri3d"])
+def test_log_map_past_the_budget_matches_its_factored_form(
+    graded_saddle: GradedSaddle, monkeypatch: pytest.MonkeyPatch, method: od.heat.LogMapMethod
+) -> None:
+    """
+    Ordito against ordito: past the budget ``log_map`` marches its stacked or paired diffusion.
+
+    No reference factors past a budget. On ``saddle_graded`` the settled iterates fail their check,
+    so within the budget ``log_map`` is factored: by blocks for ``"heat_geodesic"``'s stack of the
+    vector and heat systems, as the vector system for ``"potpourri3d"``'s pair. With the budget set
+    to nothing both are marched at once instead, and the log map must be the factored one to
+    ``1e-5`` of its extent (measured 1.8e-7 and 5.4e-8), with no warning. Mutation probe: returning
+    the rejected iterates (the old fallback) moves it by 3.8 % and 5.2 %.
+    """
+    _, _, vertices_wp, faces_wp = graded_saddle
+    factored_np = od.heat.log_map(od.Trimesh(vertices_wp, faces_wp), 0, method=method).numpy()
+    monkeypatch.setattr(od.cholesky, "CHOLESKY_MEMORY_BUDGET", 0)
+    mesh = od.Trimesh(vertices_wp, faces_wp)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        marched_np = od.heat.log_map(mesh, 0, method=method).numpy()
+    assert mesh.heat_solver().nbytes == 0
+    assert np.abs(marched_np - factored_np).max() <= 1e-5 * np.abs(factored_np).max()
+
+
 @pytest.mark.parametrize("on_trimesh", [False, True], ids=["vertices_faces", "trimesh"])
 def test_a_discarded_factorization_is_logged(
     graded_saddle: GradedSaddle, caplog: pytest.LogCaptureFixture, on_trimesh: bool

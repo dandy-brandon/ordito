@@ -484,12 +484,13 @@ def heat_geodesic(
     MeshLab's, igl's and geometry-central's far field falls below the ``float64`` range, and
     their distance stops growing far from the sources.
 
-    On a mesh whose heat solve fails its accuracy check and whose system is too large to factor
-    within [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET] (millions of
-    vertices), the heat is marched outward from the sources a band at a time instead (see
-    [`solve_spd_settled`][ordito.linalg.solve_spd_settled]), which reaches the far field to its
-    own precision as a factorization would; the solver marches its later heat solves at once, and
-    its Poisson solve takes a multigrid hierarchy.
+    On a mesh whose heat system is too large to factor within
+    [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET] (about a million vertices
+    and up), the heat is marched outward from the sources a band at a time instead of iterated
+    (see [`solve_spd_settled`][ordito.linalg.solve_spd_settled]), which reaches the far field to
+    its own precision as a factorization would, and its Poisson solve takes a multigrid hierarchy.
+    The vector heat method's diffusions ([`log_map`][ordito.heat.log_map],
+    [`transport_tangent_vectors`][ordito.heat.transport_tangent_vectors]) are marched alike.
 
     The ``vertices, faces`` form logs at ``INFO`` on the ``ordito.heat`` logger when it built a
     factorization it is about to drop (the heat solve's verification failed on an ill-conditioned
@@ -4335,28 +4336,11 @@ class HeatSolver:
                 role,
             )
         elif not held and kept.factorization.refused and not was_refused:
-            # The system is too large to factor: a scalar one was marched band by band, to every
-            # entry's own precision (at once, or after its settled iterate failed its check); a
-            # block one's iterate failed its check and stands.
+            # The system is too large to factor: it was marched band by band, to every entry's
+            # own precision, at once or after its settled iterate failed its check.
             self._ill_conditioned = self._ill_conditioned or kept.factorization.iterate_rejected
             self._unfactorable = True
-            marched = not odt.has_blocks(matrix, wp.mat22d)
-            _LOGGER.debug(
-                "HeatSolver: the %s system is too large to factor; %s",
-                role,
-                "marched it" if marched else "its rejected settled iterate stands",
-            )
-            if self.t is None and not marched:
-                # At the default time the field spans the float64 range by construction, so the
-                # failure is real; a caller's long ``t`` can fail it on a far field merely tiny.
-                warnings.warn(
-                    f"HeatSolver: the {role} diffusion failed its accuracy check and its system is "
-                    "too large to factor within CHOLESKY_MEMORY_BUDGET, so conjugate gradient's "
-                    "iterate is used: the field, and a distance or transport formed from it, is "
-                    "unreliable far from the sources. Raise ordito.cholesky.CHOLESKY_MEMORY_BUDGET "
-                    "if the device holds the factorization, or pass a longer t.",
-                    stacklevel=4,
-                )
+            _LOGGER.debug("HeatSolver: the %s system is too large to factor; marched it", role)
 
     def _kept(self, role: str, matrix: odt.SparseMatrix) -> _KeptSystem:
         """Count a solve of ``role``'s system, factoring it on its second (rent or buy)."""
@@ -4649,6 +4633,14 @@ class _StackedFactorization(twl.OperatorFactorization):
         """Device memory the factorizations held for the stack hold, in bytes."""
         return held_nbytes(_held_factorizations(self))
 
+    def exceeds_budget(self) -> bool:
+        """Whether the stack, as ``factor`` would factor it (whole or by blocks), is too large."""
+        if self.factorization is not None:
+            return False
+        if not self._by_blocks():
+            return super().exceeds_budget()
+        return self._vector.exceeds_budget() or self._heat.exceeds_budget()
+
     def factor(
         self, sharing: twl.OperatorFactorization | None = None, *, expandable: bool = False
     ) -> bool:
@@ -4656,12 +4648,7 @@ class _StackedFactorization(twl.OperatorFactorization):
         del sharing, expandable
         if self.factorization is not None:
             return True
-        blocks = (
-            self.matrix.nrow * self.matrix.block_shape[0] >= _STACK_BLOCKS_FROM
-            or self._vector.factorization is not None
-            or self._heat.factorization is not None
-        )
-        if not blocks:
+        if not self._by_blocks():
             if self._vertices is not None:
                 self._coordinates = _stacked_positions(self._vertices, self._n_scalars)
                 self._vertices = None
@@ -4671,6 +4658,14 @@ class _StackedFactorization(twl.OperatorFactorization):
         heat = self._heat.factor(expandable=True)
         vector = self._vector.factor(self._heat)
         return vector and heat
+
+    def _by_blocks(self) -> bool:
+        """Whether the stack is factored by its blocks rather than whole."""
+        return (
+            self.matrix.nrow * self.matrix.block_shape[0] >= _STACK_BLOCKS_FROM
+            or self._vector.factorization is not None
+            or self._heat.factorization is not None
+        )
 
     def solve(
         self, rhs: odt.ArrayNd, solution: odt.ArrayNd, *, tol: float, componentwise: bool = False
@@ -4732,6 +4727,10 @@ class _PairedFactorization(twl.OperatorFactorization):
     def nbytes(self) -> int:
         """Device memory the vector system's factorization holds, in bytes."""
         return self._vector.nbytes
+
+    def exceeds_budget(self) -> bool:
+        """Whether the vector system is too large to factor."""
+        return self._vector.exceeds_budget()
 
     def factor(
         self, sharing: twl.OperatorFactorization | None = None, *, expandable: bool = False
