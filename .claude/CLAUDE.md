@@ -1403,6 +1403,14 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `offset_mesh(method="meshlib")` against MeshLib's `offsetMesh`, whose extraction is ported
   (`marching_cubes(method="openvdb")`, Class A) and whose OpenVDB `meshToLevelSet` band field is
   not. Scoped, with source availability and licensing, in `reference/component-status.md` (16.0b).
+- **The low-distortion chart's coarse solve** (`parametrization._proximal_arap`): every iteration
+  is one refined `SparseCholesky.solve`, ~88 us of an iteration's ~105 us on bunny's 1 381-row
+  coarse level (150 iterations, 0.8 of the call). About a quarter of a solve's kernels are its
+  residual tests (`refine_start`, two `residual_test`, two `refine_advance`), which a loop
+  iterating to its own fixpoint does not need; the rest is the triangular solve's 14 levels of
+  two or three latency-bound kernels. Open: a `solve` without refinement for such a loop (an API
+  choice, outputs move by rounding), and a one-block triangular solve for a factor this small.
+  Numbers in `reference/component-status.md` ("Post-0.3.0 sweep").
 - **The heat method past the factorization budget** (`heat_geodesic` and every settled
   diffusion on meshes of tens of millions of vertices, `lucy`): the heat system cannot be factored
   within `CHOLESKY_MEMORY_BUDGET` (108 GB on `lucy`) and conjugate gradient's iterate fails the
