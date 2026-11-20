@@ -333,6 +333,137 @@ def test_closest_point_on_mesh_unreferenced_vertex(device: str) -> None:
     assert np.array_equal(triangle_id_wp.numpy(), triangle_id_tm)
 
 
+@pytest.mark.parametrize("mesh_name", ["sphere_well_shaped", "torus_well_shaped"])
+def test_closest_point_on_mesh_barycentric_matches_igl(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Class B: libigl's closest point, re-expressed as barycentric coordinates on ordito's triangle.
+
+    ``igl.point_mesh_squared_distance`` returns the closest point and its face, and
+    ``igl.barycentric_coordinates`` its weights on that face's corners -- the quantity
+    ``return_barycentric`` returns. The named transform is the face the weights are taken on: a
+    query whose closest point is an edge or vertex ties between the faces sharing it, and the two
+    libraries break the tie differently (ordito takes igl's face on 61-66 % of these box
+    queries), so igl's point is expressed on *ordito's* face. On a tie the point lies on both
+    faces and its weights there are exact zeros on the corners it does not touch, so the transform
+    is not a tolerance. Measured on both devices: at most 9.5e-07 on ``sphere_well_shaped`` and
+    6.2e-06 on the irregular closed fixtures, against the 1e-5 asserted. A tie between two
+    different points has no common face and is checked as a tie (equal distances) instead.
+
+    Well-shaped fixtures, because barycentric coordinates in ``float32`` lose the digits of the
+    triangle's aspect ratio: on ``saddle_graded``'s needles (aspect about 4 800) they differ from
+    igl's ``float64`` weights by up to 2.5e-2 while the point they reconstruct agrees to 1e-7.
+    ``test_closest_point_on_mesh_barycentric_rebuilds_the_point`` covers those fixtures through
+    the point.
+
+    Non-vacuous: the queries reach both the interior of faces and their edges or corners (a zero
+    weight), and igl's face is ordito's on most of them, so the transform is not doing all the work.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    points_np = _queries_in_bounds_np(mesh_tm, 400, seed=4)
+    points_wp = points_to_warp(points_np, mesh_wp.device)
+    closest_wp, distances_wp, faces_wp, barycentric_wp = od.proximity.closest_point_on_mesh(
+        mesh_wp.points, mesh_wp.indices, points_wp, return_barycentric=True
+    )
+    vertices_igl, faces_igl = mesh_igl(mesh_tm)
+    distances_igl, faces_hit_igl, closest_igl = (
+        np.asarray(result)
+        for result in igl.point_mesh_squared_distance(
+            np.ascontiguousarray(points_np), vertices_igl, faces_igl
+        )
+    )
+    corners_np = vertices_igl[faces_igl[faces_wp.numpy()]]
+    barycentric_igl = np.asarray(
+        igl.barycentric_coordinates(
+            np.ascontiguousarray(closest_igl),
+            np.ascontiguousarray(corners_np[:, 0]),
+            np.ascontiguousarray(corners_np[:, 1]),
+            np.ascontiguousarray(corners_np[:, 2]),
+        )
+    )
+    # A tie between two *different* points (equal distances, neither on the other's face) has no
+    # common face to compare on: one query of the 400 on ``sphere_well_shaped``, 5.3e-05 apart.
+    same_point_np = np.linalg.norm(closest_igl - closest_wp.numpy(), axis=1) <= 1e-5
+    assert same_point_np.mean() >= 0.99
+    assert np.allclose(
+        distances_wp.numpy()[~same_point_np],
+        np.sqrt(distances_igl[~same_point_np]),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+    assert np.allclose(
+        barycentric_wp.numpy()[same_point_np], barycentric_igl[same_point_np], rtol=1e-5, atol=1e-5
+    )
+
+    assert np.mean(faces_wp.numpy() == faces_hit_igl) > 0.5
+    zeros_np = (barycentric_wp.numpy() <= 1e-6).sum(axis=1)
+    assert (zeros_np == 0).any()
+    assert (zeros_np > 0).any()
+
+
+@pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular"])
+def test_closest_point_on_mesh_barycentric_rebuilds_the_point(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Not a library comparison: the barycentric output against ordito's own closest point.
+
+    The igl comparison above runs on well-shaped fixtures; this pins the weights on the needles,
+    where their own digits are few but the point they describe is still exact: they sum to one,
+    none is negative, and their weighted sum of the face's corners is the returned closest point
+    to 1e-5. The point itself is compared against three libraries in
+    ``test_closest_point_on_mesh_matches_references``. Also pinned: the three arrays the call
+    returns without ``return_barycentric`` are the same ones, and a query with no face within
+    ``max_dist`` gets zero weights beside its ``-1``.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    points_np = _queries_in_bounds_np(mesh_tm, 400, seed=7)
+    points_wp = points_to_warp(points_np, mesh_wp.device)
+    closest_wp, distances_wp, faces_wp, barycentric_wp = od.proximity.closest_point_on_mesh(
+        mesh_wp.points, mesh_wp.indices, points_wp, return_barycentric=True
+    )
+    corners_np = mesh_tm.vertices[mesh_tm.faces[faces_wp.numpy()]]
+    weights_np = barycentric_wp.numpy().astype(np.float64)
+    assert np.allclose(weights_np.sum(axis=1), 1.0, rtol=1e-5, atol=1e-5)
+    assert weights_np.min() >= -1e-6  # a zero weight formed as ``1 - u - v`` can round below
+    assert np.allclose(
+        np.einsum("ij,ijk->ik", weights_np, corners_np), closest_wp.numpy(), rtol=1e-5, atol=1e-5
+    )
+
+    plain_wp = od.proximity.closest_point_on_mesh(mesh_wp.points, mesh_wp.indices, points_wp)
+    assert np.array_equal(plain_wp[0].numpy(), closest_wp.numpy())
+    assert np.array_equal(plain_wp[1].numpy(), distances_wp.numpy())
+    assert np.array_equal(plain_wp[2].numpy(), faces_wp.numpy())
+
+    radius = float(np.median(distances_wp.numpy()))
+    _, _, near_faces_wp, near_barycentric_wp = od.proximity.closest_point_on_mesh(
+        mesh_wp.points, mesh_wp.indices, points_wp, max_dist=radius, return_barycentric=True
+    )
+    missed_np = near_faces_wp.numpy() < 0
+    assert 0 < missed_np.sum() < missed_np.size  # both branches present
+    assert np.array_equal(near_barycentric_wp.numpy()[missed_np], np.zeros((missed_np.sum(), 3)))
+    assert np.array_equal(
+        near_barycentric_wp.numpy()[~missed_np], barycentric_wp.numpy()[~missed_np]
+    )
+
+
+def test_closest_point_on_mesh_barycentric_on_no_queries_or_faces(device: str) -> None:
+    """Not a library comparison: the two early returns hand back the fourth array too."""
+    vertices_wp, faces_wp = od.creation.box(device=device)
+    empty_wp = warp_empty(0, wp.vec3, device)
+    result_wp = od.proximity.closest_point_on_mesh(
+        vertices_wp, faces_wp, empty_wp, return_barycentric=True
+    )
+    assert [array.shape for array in result_wp] == [(0,), (0,), (0,), (0,)]
+    points_wp = points_to_warp(np.zeros((2, 3)), device)
+    result_wp = od.proximity.closest_point_on_mesh(
+        vertices_wp, warp_empty(0, wp.int32, device), points_wp, return_barycentric=True
+    )
+    assert result_wp[2].numpy().tolist() == [-1, -1]
+    assert np.array_equal(result_wp[3].numpy(), np.zeros((2, 3)))
+
+
 def _closest_on_edges_np(
     vertices_np: np.ndarray, edges_np: np.ndarray, queries_np: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -1343,6 +1474,113 @@ def test_signed_distance_on_mesh_winding_sign_matches_exact_winding_number(
         od.proximity.winding_number(mesh_wp.points, mesh_wp.indices, points_wp).numpy() > 0.5
     )
     assert np.array_equal(inside_wp, inside_exact)
+
+
+def _shell_queries_np(mesh_tm: tm.Trimesh, n: int, seed: int) -> np.ndarray:
+    """
+    Draw ``n`` queries off the surface: sample points pushed along their face normals.
+
+    The offset is normal with a standard deviation of 5 % of the mesh's scale, so the points sit on
+    both sides of the surface and close enough that its edges and corners, not only its faces, are
+    the closest features of many of them -- where the pseudonormal sign is decided.
+    """
+    rng = np.random.default_rng(seed)
+    points_np, faces_np = tm.sample.sample_surface(mesh_tm, n, seed=seed)[:2]
+    offsets_np = rng.normal(0.0, 0.05 * mesh_tm.scale, (n, 1))
+    return points_np + mesh_tm.face_normals[faces_np] * offsets_np
+
+
+@pytest.mark.parametrize(
+    "mesh_name", ["sphere_irregular_hollow", "torus_irregular_holes", "saddle_graded", "unit_box"]
+)
+@pytest.mark.parametrize("queries", ["box", "shell"])
+@pytest.mark.parity("signed_distance_on_mesh", "igl")
+def test_signed_distance_on_mesh_pseudonormal_matches_igl(
+    request: pytest.FixtureRequest, mesh_name: str, queries: str
+) -> None:
+    """
+    Class A: ``sign_mode="pseudonormal"`` against libigl's ``SIGNED_DISTANCE_TYPE_PSEUDONORMAL``.
+
+    The same rule, so a direct comparison of signs and values. igl forms the face normals, the
+    uniform edge normals and the angle-weighted vertex normals once over the mesh; ordito sums the
+    faces sharing the closest feature in the query, and on a welded mesh those are the same
+    faces. Measured on both devices: every sign equal, values within 3e-08-5.1e-07.
+
+    The fixtures cover where the rule is decided: a cavity (``sphere_irregular_hollow``), boundary
+    edges and vertices of an open surface (``saddle_graded``, ``torus_irregular_holes``, where the
+    pseudonormal is the side of the surface and winding and parity give a different answer) and
+    the exact creases of ``unit_box``. ``box`` queries fill the grown bounding box and reach the
+    edges and corners from afar; ``shell`` queries sit near the surface.
+
+    Non-vacuous: both signs occur in the answer, and on the box queries the closest feature of some
+    query is an edge or vertex (a zero barycentric weight), where a face-normal rule and this one
+    can differ.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    points_np = (
+        _queries_in_bounds_np(mesh_tm, 400, seed=4)
+        if queries == "box"
+        else _shell_queries_np(mesh_tm, 400, seed=5)
+    )
+    points_wp = points_to_warp(points_np, mesh_wp.device)
+    signed_np = od.proximity.signed_distance_on_mesh(
+        mesh_wp.points, mesh_wp.indices, points_wp, sign_mode="pseudonormal"
+    ).numpy()
+    signed_igl, _, _, _ = igl.signed_distance(
+        np.ascontiguousarray(points_np), *mesh_igl(mesh_tm), igl.SIGNED_DISTANCE_TYPE_PSEUDONORMAL
+    )
+    assert np.array_equal(np.sign(signed_np), np.sign(signed_igl))
+    assert np.allclose(signed_np, signed_igl, rtol=1e-5, atol=1e-5)
+
+    assert (signed_np < 0).any()
+    assert (signed_np > 0).any()
+    if queries == "box":
+        _, _, _, barycentric_wp = od.proximity.closest_point_on_mesh(
+            mesh_wp.points, mesh_wp.indices, points_wp, return_barycentric=True
+        )
+        assert (barycentric_wp.numpy() <= 1e-6).any()
+
+
+def test_signed_distance_on_mesh_pseudonormal_sees_across_a_seam(
+    sphere_irregular_hollow: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: a fully unwelded copy of a closed mesh gets the welded mesh's signs.
+
+    Every face of the copy has vertices of its own, so no two faces share a vertex index and every
+    edge and corner is a seam. The pseudonormal sums the faces sharing the closest feature by
+    position, so it sees the whole fan across a seam and the copy answers as the welded mesh does:
+    same signs, same values. Not a library comparison, because libigl matches faces by vertex
+    index: on the copy it signs each edge or corner by one face's share of its fan. On a smooth
+    surface that share still points the right way, but where the surface folds sharply it does
+    not: on the ``dragon`` scan, whose 2 100 duplicated vertex positions are such seams, igl's
+    sign differed from the welded fan's on 10 of 20 165 near-surface queries.
+
+    Non-vacuous: on the welded mesh both signs occur, and the closest feature of many queries is
+    an edge or vertex of the copy -- a seam.
+    """
+    mesh_tm, mesh_wp = sphere_irregular_hollow
+    points_np = _shell_queries_np(mesh_tm, 400, seed=5)
+    points_wp = points_to_warp(points_np, mesh_wp.device)
+    soup_np = mesh_tm.vertices[mesh_tm.faces].reshape(-1, 3)
+    soup_faces_np = np.arange(soup_np.shape[0], dtype=np.int32)
+    soup_vertices_wp, soup_faces_wp = numpy_to_warp(soup_np, soup_faces_np, mesh_wp.device)
+
+    welded_np = od.proximity.signed_distance_on_mesh(
+        mesh_wp.points, mesh_wp.indices, points_wp, sign_mode="pseudonormal"
+    ).numpy()
+    soup_wp = od.proximity.signed_distance_on_mesh(
+        soup_vertices_wp, soup_faces_wp, points_wp, sign_mode="pseudonormal"
+    ).numpy()
+    assert np.array_equal(np.sign(soup_wp), np.sign(welded_np))
+    assert np.allclose(soup_wp, welded_np, rtol=1e-5, atol=1e-5)
+
+    assert (welded_np < 0).any()
+    assert (welded_np > 0).any()
+    _, _, _, barycentric_wp = od.proximity.closest_point_on_mesh(
+        soup_vertices_wp, soup_faces_wp, points_wp, return_barycentric=True
+    )
+    assert (barycentric_wp.numpy() <= 1e-6).any(axis=1).sum() >= 10
 
 
 def test_signed_distance_on_mesh_rejects_unknown_sign_mode(

@@ -70,7 +70,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | extract an isosurface | [`levelset.marching_cubes`][ordito.levelset.marching_cubes], [`intersection.marching_triangles`][ordito.intersection.marching_triangles] |
 | **Query** | |
 | closest point on a surface, signed distance | [`proximity.closest_point_on_mesh`][ordito.proximity.closest_point_on_mesh], [`signed_distance_on_mesh`][ordito.proximity.signed_distance_on_mesh], [`winding_number`][ordito.proximity.winding_number] |
-| cast rays | [`ray.intersects_first`][ordito.ray.intersects_first], [`intersects_location`][ordito.ray.intersects_location] |
+| cast rays | [`ray.intersects_first`][ordito.ray.intersects_first], [`intersects_location`][ordito.ray.intersects_location], [`first_hits`][ordito.ray.first_hits] |
 | test which points are inside | [`ray.contains_points`][ordito.ray.contains_points] |
 | nearest neighbours, radius search | [`neighbors.query_nearest`][ordito.neighbors.query_nearest], [`query_ball`][ordito.neighbors.query_ball] |
 | one-to-one matches between two clouds (mutual nearest neighbours) | [`neighbors.mutual_nearest`][ordito.neighbors.mutual_nearest] |

@@ -12,15 +12,19 @@ wp.set_module_options({"enable_backward": False})
 
 
 @wp.func
-def first_hit(
-    mesh_id: wp.uint64, origin: wp.vec3, direction: wp.vec3, max_t: wp.float32
-) -> tuple[wp.int32, wp.vec3]:
-    # First-hit face index (-1 on miss) and location; ``direction`` need not be unit length.
+def first_hit_record(
+    mesh_id: wp.uint64, origin: wp.vec3, direction: wp.vec3, max_t: wp.float32, both_ways: wp.bool
+) -> tuple[wp.vec3, wp.float32, wp.int32, wp.vec3]:
+    # A ray's first hit: its location, its distance along the unit ray, the face (-1 on a miss)
+    # and the hit's weights on that face's three corners in order (``mesh_eval_position``'s
+    # ``(u, v, 1 - u - v)``); ``direction`` need not be unit length. A miss is the origin, an
+    # infinite distance, ``-1`` and zero weights. With ``both_ways`` the ray is also cast along
+    # ``-direction`` and the nearer hit wins, a backward one carrying a negative distance; a tie
+    # keeps the forward hit.
     #
-    # The face index carries the hit test -- both consumers already read it that way
-    # (``first_hit_append``'s ``face >= 0`` and ``ray.intersects_first``'s documented ``-1``
-    # sentinel) -- so there is no separate hit flag to keep in step with it. On a miss the
-    # location is the zero vector and no caller reads it.
+    # The face index carries the hit test -- every consumer reads it that way -- so there is no
+    # separate hit flag to keep in step with it. The location is ``origin + t * direction``, the
+    # same ``float32`` expression on both sides of the cast.
     #
     # The casts take their rays in index order. Taking them in the Hilbert order of their origins
     # (``_common.space_filling_order``, as the tree searches do) was measured and declined
@@ -29,10 +33,58 @@ def first_hit(
     # leaving the surface gain from 2**18 (0.73-0.87x; 0.46-0.59x at 2**20). Telling the two apart
     # takes a sampled test and a readback, a host sync these casts do not otherwise make.
     unit_direction = wp.normalize(direction)
+    location = origin
+    distance = wp.float32(wp.inf)
+    face = wp.int32(-1)
+    weights = wp.vec3(0.0, 0.0, 0.0)
     query = wp.mesh_query_ray(mesh_id, origin, unit_direction, max_t)
     if query.result:
-        return query.face, origin + unit_direction * query.t
-    return wp.int32(-1), wp.vec3(0.0, 0.0, 0.0)
+        location = origin + unit_direction * query.t
+        distance = query.t
+        face = query.face
+        weights = wp.vec3(query.u, query.v, wp.float32(1.0) - query.u - query.v)
+    if both_ways:
+        backward = wp.mesh_query_ray(mesh_id, origin, -unit_direction, max_t)
+        if backward.result:
+            if backward.t < wp.abs(distance):
+                location = origin - unit_direction * backward.t
+                distance = -backward.t
+                face = backward.face
+                weights = wp.vec3(backward.u, backward.v, wp.float32(1.0) - backward.u - backward.v)
+    return location, distance, face, weights
+
+
+@wp.func
+def first_hit(
+    mesh_id: wp.uint64, origin: wp.vec3, direction: wp.vec3, max_t: wp.float32
+) -> tuple[wp.int32, wp.vec3]:
+    # ``first_hit_record``'s face and location, forward only: what ``intersects_first`` and the
+    # sparse ``intersects_location`` kernels read.
+    location, _distance, face, _weights = first_hit_record(mesh_id, origin, direction, max_t, False)
+    return face, location
+
+
+@wp.kernel
+def first_hits(
+    mesh_id: wp.uint64,
+    ray_origins: wp.array[wp.vec3],
+    ray_directions: wp.array[wp.vec3],
+    max_t: wp.float32,
+    both_ways: wp.bool,
+    out_locations: wp.array[wp.vec3],
+    out_distances: wp.array[wp.float32],
+    out_faces: wp.array[wp.int32],
+    out_barycentric: wp.array[wp.vec3],
+) -> None:
+    # ``ray.first_hits``: every ray's ``first_hit_record`` at its own index.
+    i = wp.int32(wp.tid())
+    location, distance, face, weights = first_hit_record(
+        mesh_id, ray_origins[i], ray_directions[i], max_t, both_ways
+    )
+    out_locations[i] = location
+    out_distances[i] = distance
+    out_faces[i] = face
+    out_barycentric[i] = weights
 
 
 @wp.kernel

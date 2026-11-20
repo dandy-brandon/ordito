@@ -30,7 +30,7 @@ Point-set acceleration structures (``wp.Bvh`` / ``wp.HashGrid``) and raw neighbo
 from __future__ import annotations
 
 import math
-from typing import Literal, cast
+from typing import Literal, cast, overload
 
 import numpy as np
 import warp as wp
@@ -145,6 +145,7 @@ _CONTAINMENT_SEARCH_SCALE = wp.float32(1e-3)
 _CONTAINMENT_BARYCENTRIC_EPS = wp.float32(1e-6)
 
 
+@overload
 def closest_point_on_mesh(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -152,7 +153,34 @@ def closest_point_on_mesh(
     *,
     max_dist: float | None = None,
     mesh: wp.Mesh | None = None,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.float32], wp.array[wp.int32]]:
+    return_barycentric: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.float32], wp.array[wp.int32]]: ...
+
+
+@overload
+def closest_point_on_mesh(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    points: wp.array[wp.vec3],
+    *,
+    max_dist: float | None = None,
+    mesh: wp.Mesh | None = None,
+    return_barycentric: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.float32], wp.array[wp.int32], wp.array[wp.vec3]]: ...
+
+
+def closest_point_on_mesh(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    points: wp.array[wp.vec3],
+    *,
+    max_dist: float | None = None,
+    mesh: wp.Mesh | None = None,
+    return_barycentric: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.float32], wp.array[wp.int32]]
+    | tuple[wp.array[wp.vec3], wp.array[wp.float32], wp.array[wp.int32], wp.array[wp.vec3]]
+):
     """
     For each query point, find the closest point on any triangle of the mesh.
 
@@ -181,6 +209,8 @@ def closest_point_on_mesh(
         *different* geometry silently answers for that geometry, since only ``mesh`` is queried.
         [`Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh] is a cached property and is what to
         pass.
+    return_barycentric
+        When ``True``, also return each closest point's barycentric coordinates in its triangle.
 
     Returns
     -------
@@ -191,6 +221,11 @@ def closest_point_on_mesh(
     triangle_id
         ``(m,)`` index of the triangle containing each closest point, or ``-1``
         when no face lies within ``max_dist``.
+    barycentric
+        ``(m,)`` weights of each closest point on its triangle's three corners, in the order
+        ``faces`` lists them, so ``closest`` is their weighted sum
+        ([`barycentric_to_points`][ordito.triangles.barycentric_to_points]); ``(0, 0, 0)`` where
+        ``triangle_id`` is ``-1``. Only with ``return_barycentric=True``.
 
     Raises
     ------
@@ -215,22 +250,46 @@ def closest_point_on_mesh(
     _, _, triangle_ids = od.proximity.closest_point_on_mesh(vertices, faces, points, max_dist=1.0)
     print(triangle_ids.numpy()[0])  # -1
     ```
+
+    The barycentric coordinates locate the closest point within its triangle; they sum to one and
+    reproduce the point:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    points = wp.array([[2.0, 0.1, 0.2]], dtype=wp.vec3)
+    closest, _, triangle_ids, weights = od.proximity.closest_point_on_mesh(
+        vertices, faces, points, return_barycentric=True
+    )
+    corners = vertices.numpy()[faces.numpy().reshape(-1, 3)[triangle_ids.numpy()[0]]]
+    print(round(float(weights.numpy()[0].sum()), 5))  # 1.0
+    print((weights.numpy()[0] @ corners).round(3))  # [0.5 0.1 0.2]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, points=points, mesh=mesh)
     device = vertices.device
     m = points.size
     n_faces = faces.size // 3
     if m == 0:
-        return (
+        empty = (
             _launch.empty(0, dtype=wp.vec3, device=device),
             _launch.empty(0, dtype=wp.float32, device=device),
             _launch.empty(0, dtype=wp.int32, device=device),
         )
+        if return_barycentric:
+            return (*empty, _launch.empty(0, dtype=wp.vec3, device=device))
+        return empty
     if n_faces == 0:
         nan = float("nan")
         out_closest = _launch.full(m, wp.vec3(nan, nan, nan), dtype=wp.vec3, device=device)
         out_distance = _launch.full(m, float("inf"), dtype=wp.float32, device=device)
         out_face = _launch.full(m, -1, dtype=wp.int32, device=device)
+        if return_barycentric:
+            out_weights = _launch.zeros(m, dtype=wp.vec3, device=device)
+            return out_closest, out_distance, out_face, out_weights
         return out_closest, out_distance, out_face
 
     # The order is chosen before the mesh is built, so the read it may take waits on no build.
@@ -245,12 +304,24 @@ def closest_point_on_mesh(
     out_closest = _launch.empty(m, dtype=wp.vec3, device=device)
     out_distance = _launch.empty(m, dtype=wp.float32, device=device)
     out_face = _launch.empty(m, dtype=wp.int32, device=device)
+    out_weights = _launch.empty(m, dtype=wp.vec3, device=device) if return_barycentric else None
     _launch.launch(
         kernel_proximity.closest_point_on_mesh,
         dim=m,
-        inputs=[mesh.id, points, wp.float32(max_dist), order, out_closest, out_distance, out_face],
+        inputs=[
+            mesh.id,
+            points,
+            wp.float32(max_dist),
+            order,
+            out_closest,
+            out_distance,
+            out_face,
+            out_weights,
+        ],
         device=device,
     )
+    if out_weights is not None:
+        return out_closest, out_distance, out_face, out_weights
     return out_closest, out_distance, out_face
 
 
@@ -845,7 +916,7 @@ def signed_distance_on_mesh(
     points: wp.array[wp.vec3],
     *,
     max_dist: float | None = None,
-    sign_mode: Literal["parity", "winding"] = "parity",
+    sign_mode: Literal["parity", "winding", "pseudonormal"] = "parity",
     n_sample: int = 5,
     perturbation_scale: float = 0.1,
     accuracy: float = 2.0,
@@ -866,7 +937,7 @@ def signed_distance_on_mesh(
     See also [`contains_points`][ordito.ray.contains_points] (inside iff signed distance is
     negative, except on the on-surface tolerance band).
 
-    The **unsigned** distance is identical in both ``sign_mode`` values — only the sign differs.
+    The **unsigned** distance is identical in every ``sign_mode`` — only the sign differs.
 
     !!! note "Choosing a `sign_mode`"
 
@@ -894,6 +965,18 @@ def signed_distance_on_mesh(
         [`winding_number`][ordito.proximity.winding_number] only when you need the winding
         *value* — Warp exposes no builtin for the approximated value, only its sign.
 
+        ``"pseudonormal"`` signs by the side of the surface the point lies on: the offset from the
+        closest point is dotted with the angle-weighted pseudonormal (Bærentzen and Aanæs) of
+        the face, edge or vertex that point lies on -- the face's normal, the sum of the normals
+        of the faces sharing the edge, or the angle-weighted sum of those sharing the vertex.
+        It casts no ray and needs no extra mesh data, so it costs little more than the unsigned
+        query. On a closed, consistently wound mesh it agrees with the other two modes. On an
+        open surface it is the one that answers *which side*: a point in front of the surface
+        (along its normals) is positive, one behind it negative, wherever the point is. That is
+        the usual sign for a deviation from a scan. Signing by the closest *face*'s normal alone
+        is wrong wherever the closest point is on an edge or vertex where the surface bends
+        sharply; the pseudonormal avoids that.
+
     Parameters
     ----------
     vertices
@@ -910,7 +993,8 @@ def signed_distance_on_mesh(
         diagonal of the box enclosing the mesh and the query points.
     sign_mode
         ``"parity"`` (default) for ray-parity sign, ``"winding"`` for the generalized
-        winding-number sign. See the note above.
+        winding-number sign, ``"pseudonormal"`` for the side of the closest surface feature. See
+        the note above.
     n_sample
         Perturbed rays for parity voting (off-triangle sign branch). ``"parity"`` only.
     perturbation_scale
@@ -936,7 +1020,8 @@ def signed_distance_on_mesh(
     Raises
     ------
     ValueError
-        If ``sign_mode`` is not ``"parity"`` or ``"winding"``, or if ``mesh`` is supplied with
+        If ``sign_mode`` is not ``"parity"``, ``"winding"`` or ``"pseudonormal"``, or if ``mesh``
+        is supplied with
         ``sign_mode="winding"`` but was built without ``support_winding_number=True``.
     RuntimeError
         If ``vertices``, ``faces``, ``points`` and ``mesh`` are not all on one device.
@@ -962,10 +1047,27 @@ def signed_distance_on_mesh(
     winding = od.proximity.signed_distance_on_mesh(vertices, faces, points, sign_mode="winding")
     print(winding.numpy().tolist())  # [-0.5, 1.0]
     ```
+
+    On an open surface only ``"pseudonormal"`` tells the two sides apart: a point above or below
+    a flat square is ``+`` or ``-`` by the side its normals face:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices = wp.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], dtype=wp.vec3)
+    faces = wp.array([0, 1, 2, 0, 2, 3], dtype=wp.int32)
+    points = wp.array([[0.5, 0.5, 0.25], [0.5, 0.5, -0.25], [1.5, 0.5, -0.5]], dtype=wp.vec3)
+    signed = od.proximity.signed_distance_on_mesh(vertices, faces, points, sign_mode="pseudonormal")
+    print([round(float(d), 4) for d in signed.numpy()])  # [0.25, -0.25, -0.7071]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, points=points, mesh=mesh)
-    if sign_mode not in ("parity", "winding"):
-        raise ValueError(f"sign_mode must be 'parity' or 'winding', got {sign_mode!r}")
+    if sign_mode not in ("parity", "winding", "pseudonormal"):
+        raise ValueError(
+            f"sign_mode must be 'parity', 'winding' or 'pseudonormal', got {sign_mode!r}"
+        )
 
     device = vertices.device
     m = points.size
@@ -996,6 +1098,14 @@ def signed_distance_on_mesh(
             device=device,
         )
         return out_distance
+    if sign_mode == "pseudonormal":
+        _launch.launch(
+            kernel_proximity.signed_distance_on_mesh_pseudonormal,
+            dim=m,
+            inputs=[mesh.id, points, wp.float32(max_dist), order, out_distance],
+            device=device,
+        )
+        return out_distance
     _launch.launch(
         kernel_proximity.signed_distance_on_mesh,
         dim=m,
@@ -1016,7 +1126,7 @@ def signed_distance_on_mesh(
 def _signed_distance_mesh(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    sign_mode: Literal["parity", "winding"],
+    sign_mode: Literal["parity", "winding", "pseudonormal"],
     mesh: wp.Mesh | None,
 ) -> wp.Mesh:
     """Return the ``wp.Mesh`` a signed-distance query runs on: ``mesh`` checked, or a new one."""

@@ -33,7 +33,10 @@ from ordito.kernels.predicates import (
     point_triangle_offset,
     segment_aabb,
     triangle_aabb,
+    triangle_area_vector,
     triangle_triangle_distance_sq,
+    vec3_equal,
+    vector_angle,
 )
 from ordito.kernels.reduce import (
     block_argmin,
@@ -100,11 +103,13 @@ def publish_best_sq(global_best_sq: wp.array[wp.float32], distance_sq: wp.float3
 
 
 @wp.func
-def closest_point_query(
+def closest_point_query_barycentric(
     mesh_id: wp.uint64, p: wp.vec3, max_dist: wp.float32
-) -> tuple[wp.vec3, wp.float32, wp.int32]:
-    # One point's closest point on the mesh, its distance and the face carrying it; a miss returns
-    # the query point, ``max_dist`` and ``-1``, so the sentinel convention lives in one place.
+) -> tuple[wp.vec3, wp.float32, wp.int32, wp.vec3]:
+    # One point's closest point on the mesh, its distance, the face carrying it and the point's
+    # weights on that face's three corners in order (``mesh_eval_position``'s
+    # ``(u, v, 1 - u - v)``); a miss returns the query point, ``max_dist``, ``-1`` and zero
+    # weights, so the sentinel convention lives in one place.
     #
     # Named rather than left inline in the kernel below because ``registration``'s ICP loop fuses
     # this query with the passes that consume its answer, and a cross-reference in prose is a
@@ -112,8 +117,19 @@ def closest_point_query(
     query = wp.mesh_query_point_no_sign(mesh_id, p, max_dist)
     if query.result:
         closest = wp.mesh_eval_position(mesh_id, query.face, query.u, query.v)
-        return closest, wp.length(p - closest), query.face
-    return p, max_dist, wp.int32(-1)
+        weights = wp.vec3(query.u, query.v, wp.float32(1.0) - query.u - query.v)
+        return closest, wp.length(p - closest), query.face, weights
+    return p, max_dist, wp.int32(-1), wp.vec3(0.0, 0.0, 0.0)
+
+
+@wp.func
+def closest_point_query(
+    mesh_id: wp.uint64, p: wp.vec3, max_dist: wp.float32
+) -> tuple[wp.vec3, wp.float32, wp.int32]:
+    # ``closest_point_query_barycentric`` without the weights, for the callers that read only
+    # the point, its distance and its face.
+    closest, distance, face, _weights = closest_point_query_barycentric(mesh_id, p, max_dist)
+    return closest, distance, face
 
 
 @wp.func
@@ -356,13 +372,17 @@ def closest_point_on_mesh(
     out_closest: wp.array[wp.vec3],
     out_distance: wp.array[wp.float32],
     out_face: wp.array[wp.int32],
+    out_barycentric: wp.array[wp.vec3],
 ) -> None:
     # Thread ``t`` answers point ``order[t]`` (``_common.search_order``; point ``t`` without one).
+    # ``out_barycentric`` is written only when it holds a row per point (``None`` otherwise).
     i = ordered_item(order, wp.int32(wp.tid()))
-    closest, distance, face = closest_point_query(mesh_id, points[i], max_dist)
+    closest, distance, face, weights = closest_point_query_barycentric(mesh_id, points[i], max_dist)
     out_closest[i] = closest
     out_distance[i] = distance
     out_face[i] = face
+    if out_barycentric.shape[0] > 0:
+        out_barycentric[i] = weights
 
 
 @wp.kernel
@@ -1770,6 +1790,117 @@ def signed_distance_on_lattice_winding(
     out_distance[i, j, k] = signed_distance_winding(
         mesh_id, lattice_position(lower, step, i, j, k), max_dist, accuracy, winding_threshold
     )
+
+
+# Barycentric weight at or below which a closest point is taken to lie on the face's edge or
+# corner rather than inside it. ``wp.mesh_query_point_no_sign`` reports a closest point in an
+# edge or corner region with the other weights exactly zero, except that a point on the edge
+# opposite corner 0 can carry an ulp of weight there (``1 - v - w`` in ``float32``); 1e-6 is well
+# above that and harmless below it: a point inside a face this near an edge or corner has its
+# offset along the face normal, which every pseudonormal containing that face's normal signs the
+# same way unless the surface folds back on itself there.
+PSEUDONORMAL_FEATURE_WEIGHT = wp.float32(1.0e-6)
+
+
+@wp.func
+def closest_feature_pseudonormal(mesh_id: wp.uint64, face: wp.int32, weights: wp.vec3) -> wp.vec3:
+    # The angle-weighted pseudonormal (Baerentzen & Aanaes 2005) of the feature of ``face`` its
+    # closest point lies on, given that point's corner weights: the face's own unit normal inside
+    # it; the sum of the unit normals of every face sharing the edge on an edge; on a corner, the
+    # sum over the faces sharing that vertex of each unit normal times the face's angle there.
+    # These are libigl's ``signed_distance`` pseudonormals (uniform edge weights, angle vertex
+    # weights) on a welded mesh. Unnormalized: only its sign against an offset is read.
+    #
+    # The faces sharing the feature are found by position, not by a distance tolerance: an AABB
+    # query over the feature's own bounds (the vertex, or the edge's box) visits every face whose
+    # bounds contain it, and a face counts when its corners include the feature's end positions
+    # exactly. On a welded mesh that is libigl's index test; across an unwelded seam (two vertices
+    # at one position) it still sees the whole fan, where an index test sees one side of the seam
+    # and signs by half a pseudonormal. A non-manifold edge sums all its faces, a boundary edge or
+    # vertex only those it has, and no precomputed adjacency is needed.
+    corner = face * 3
+    zero0 = weights[0] <= PSEUDONORMAL_FEATURE_WEIGHT
+    zero1 = weights[1] <= PSEUDONORMAL_FEATURE_WEIGHT
+    zero2 = weights[2] <= PSEUDONORMAL_FEATURE_WEIGHT
+    n_zero = wp.where(zero0, 1, 0) + wp.where(zero1, 1, 0) + wp.where(zero2, 1, 0)
+    if n_zero == 0:
+        return wp.normalize(
+            triangle_area_vector(
+                wp.mesh_get_point(mesh_id, corner),
+                wp.mesh_get_point(mesh_id, corner + 1),
+                wp.mesh_get_point(mesh_id, corner + 2),
+            )
+        )
+    # The feature's two corners of ``face``: the edge's ends, or the vertex twice.
+    first = wp.int32(0)
+    second = wp.int32(0)
+    if n_zero >= 2:
+        first = wp.where(zero0, wp.where(zero1, 2, 1), 0)
+        second = first
+    else:
+        missing = wp.where(zero0, 0, wp.where(zero1, 1, 2))
+        first = (missing + 1) % 3
+        second = (missing + 2) % 3
+    point_a = wp.mesh_get_point(mesh_id, corner + first)
+    point_b = wp.mesh_get_point(mesh_id, corner + second)
+    is_vertex = first == second
+    normal = wp.vec3(0.0, 0.0, 0.0)
+    query = wp.mesh_query_aabb(mesh_id, wp.min(point_a, point_b), wp.max(point_a, point_b))
+    other = wp.int32(0)
+    while wp.mesh_query_next(query, other):
+        base = other * 3
+        q0 = wp.mesh_get_point(mesh_id, base)
+        q1 = wp.mesh_get_point(mesh_id, base + 1)
+        q2 = wp.mesh_get_point(mesh_id, base + 2)
+        a0 = vec3_equal(q0, point_a)
+        a1 = vec3_equal(q1, point_a)
+        a2 = vec3_equal(q2, point_a)
+        has_b = vec3_equal(q0, point_b) or vec3_equal(q1, point_b) or vec3_equal(q2, point_b)
+        if (a0 or a1 or a2) and has_b:
+            unit = wp.normalize(triangle_area_vector(q0, q1, q2))
+            weight = wp.float32(1.0)
+            if is_vertex:
+                # The face's angle at the shared vertex, between its two edges leaving it.
+                at = wp.where(a0, q0, wp.where(a1, q1, q2))
+                ahead = wp.where(a0, q1, wp.where(a1, q2, q0))
+                behind = wp.where(a0, q2, wp.where(a1, q0, q1))
+                weight = vector_angle(ahead - at, behind - at)
+            normal = normal + weight * unit
+    return normal
+
+
+@wp.func
+def signed_distance_pseudonormal(
+    mesh_id: wp.uint64, p: wp.vec3, max_dist: wp.float32
+) -> wp.float32:
+    # The pseudonormal head: the shared tail over an unsigned query, then negative where the
+    # offset from the closest point runs against the closest feature's pseudonormal
+    # (``closest_feature_pseudonormal``). libigl's rule: a zero dot product is outside.
+    query = wp.mesh_query_point_no_sign(mesh_id, p, max_dist)
+    distance = signed_distance_from_query(
+        mesh_id, p, query.result, query.face, query.u, query.v, wp.float32(1.0), max_dist
+    )
+    if query.result:
+        if distance > TOLERANCE_MERGE_CONSTANT:
+            closest = wp.mesh_eval_position(mesh_id, query.face, query.u, query.v)
+            weights = wp.vec3(query.u, query.v, wp.float32(1.0) - query.u - query.v)
+            normal = closest_feature_pseudonormal(mesh_id, query.face, weights)
+            if wp.dot(p - closest, normal) < wp.float32(0.0):
+                return -distance
+    return distance
+
+
+@wp.kernel
+def signed_distance_on_mesh_pseudonormal(
+    mesh_id: wp.uint64,
+    points: wp.array[wp.vec3],
+    max_dist: wp.float32,
+    order: wp.array[wp.int32],
+    out_distance: wp.array[wp.float32],
+) -> None:
+    # ``signed_distance_on_mesh`` with the pseudonormal head.
+    i = ordered_item(order, wp.int32(wp.tid()))
+    out_distance[i] = signed_distance_pseudonormal(mesh_id, points[i], max_dist)
 
 
 def signed_distance_lattice_kernel(sign_mode: str) -> tuple[wp.Kernel, list[object]]:

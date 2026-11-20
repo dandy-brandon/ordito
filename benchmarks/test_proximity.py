@@ -459,12 +459,12 @@ def test_closest_point_on_edges(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="signed_distance_on_mesh")
 @pytest.mark.benchlibs("ordito", "igl", "open3d", "pymeshlab", "pyvista", "meshlib")
-@pytest.mark.parametrize("sign_mode", ["parity", "winding"])
+@pytest.mark.parametrize("sign_mode", ["parity", "winding", "pseudonormal"])
 def test_signed_distance_on_mesh(
-    bench_case: BenchCase, sign_mode: Literal["parity", "winding"]
+    bench_case: BenchCase, sign_mode: Literal["parity", "winding", "pseudonormal"]
 ) -> None:
     """
-    The two sign modes, on the same closest-point query.
+    The three sign modes, on the same closest-point query.
 
     ``"winding"`` walks the BVH accumulating solid angle (Barnes-Hut, ``accuracy=2.0``) instead of
     casting 5 perturbed parity rays, and needs a ``wp.Mesh`` carrying the per-node solid-angle
@@ -473,11 +473,15 @@ def test_signed_distance_on_mesh(
     ``signed_distance_on_mesh`` constructs its own mesh, so there is no way for a caller to hoist
     it.
 
-    **libigl is the only reference whose sign axis maps onto both of ordito's modes**, which is why
+    ``"pseudonormal"`` signs by the closest feature's pseudonormal in the query itself, one AABB
+    walk over the faces sharing the feature where the closest point is an edge or vertex, so it
+    should sit between the unsigned ``closest_point_on_mesh`` and ``"parity"``.
+
+    **libigl is the only reference whose sign axis maps onto two of ordito's modes**, which is why
     it appears twice where pymeshlab appears once: ``SIGNED_DISTANCE_TYPE_PSEUDONORMAL`` against
-    ``"parity"`` and ``SIGNED_DISTANCE_TYPE_FAST_WINDING_NUMBER`` against ``"winding"`` -- the
-    second is the same Barnes-Hut family ordito's mode is. Its AABB tree is built per call, as
-    ordito's ``wp.Mesh`` is, and it gets ``rounds=3`` like the pymeshlab row.
+    ``"pseudonormal"`` (the same rule) and ``SIGNED_DISTANCE_TYPE_FAST_WINDING_NUMBER`` against
+    ``"winding"`` -- the same Barnes-Hut family ordito's mode is. Its AABB tree is built per call,
+    as ordito's ``wp.Mesh`` is, and it gets ``rounds=3`` like the pymeshlab row.
 
     **open3d's row is Embree**: ``RaycastingScene.compute_signed_distance`` signs by ray parity, so
     it pairs with ``"parity"`` only, and it shares ordito's sign convention exactly. The scene
@@ -507,12 +511,14 @@ def test_signed_distance_on_mesh(
         return
 
     if bench_case.kind == "igl":
+        if sign_mode == "parity":
+            pytest.skip("igl casts no parity rays: its rows pair with pseudonormal and winding")
         skip_larger_than(bench_case, "bunny", "igl rebuilds a single-threaded AABB tree per call")
         vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
         points_np = _query_points_np(bench_case)
         sign_type = (
             igl.SIGNED_DISTANCE_TYPE_PSEUDONORMAL
-            if sign_mode == "parity"
+            if sign_mode == "pseudonormal"
             else igl.SIGNED_DISTANCE_TYPE_FAST_WINDING_NUMBER
         )
         distance_igl, _, _, _ = bench_case.run(

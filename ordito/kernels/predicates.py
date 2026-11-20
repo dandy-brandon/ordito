@@ -421,6 +421,12 @@ def triangle_aabb_overlap(
 
 
 @wp.func
+def vec3_equal(a: wp.vec3, b: wp.vec3) -> wp.bool:
+    # Exact equality of two positions, component by component (``-0.0`` equals ``0.0``).
+    return a[0] == b[0] and a[1] == b[1] and a[2] == b[2]
+
+
+@wp.func
 def vector_angle(a: Any, b: Any) -> wp.Float:
     # Unsigned angle in [0, pi] between two vectors, as ``atan2(|a x b|, a . b)`` rather than
     # ``acos(a . b)``.

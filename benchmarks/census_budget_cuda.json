@@ -6149,6 +6149,12 @@
    "alloc": 1
   }
  },
+ "benchmarks/test_proximity.py::test_signed_distance_on_mesh[sphere_small-ordito-cuda-pseudonormal]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
  "benchmarks/test_proximity.py::test_signed_distance_on_mesh[sphere_small-ordito-cuda-winding]": {
   "counts": {
    "launch": 1,
@@ -6188,6 +6194,30 @@
   "counts": {
    "launch": 1,
    "alloc": 1
+  }
+ },
+ "benchmarks/test_ray.py::test_first_hits[shells_8-ordito-cuda-False]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 4
+  }
+ },
+ "benchmarks/test_ray.py::test_first_hits[shells_8-ordito-cuda-True]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 4
+  }
+ },
+ "benchmarks/test_ray.py::test_first_hits[sphere_med-ordito-cuda-False]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 4
+  }
+ },
+ "benchmarks/test_ray.py::test_first_hits[sphere_med-ordito-cuda-True]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 4
   }
  },
  "benchmarks/test_ray.py::test_intersects_any[shells_8-ordito-cuda]": {

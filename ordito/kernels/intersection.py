@@ -16,7 +16,7 @@ from ordito.kernels.array import (
     map_probe_single,
 )
 from ordito.kernels.halfedge import halfedge_endpoints
-from ordito.kernels.predicates import point_plane_dot, triangles_intersect
+from ordito.kernels.predicates import point_plane_dot, triangles_intersect, vec3_equal
 from ordito.kernels.reduce import block_sum
 from ordito.kernels.remesh import write_split_children
 
@@ -247,11 +247,6 @@ def compact_plane_segments(
     out_segments[slot, 1] = p1
     if out_rows.shape[0] > 0:
         out_rows[slot] = f
-
-
-@wp.func
-def vec3_equal(a: wp.vec3, b: wp.vec3) -> wp.bool:
-    return a[0] == b[0] and a[1] == b[1] and a[2] == b[2]
 
 
 @wp.func

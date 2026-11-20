@@ -286,11 +286,142 @@ def test_intersects_match_open3d(request: pytest.FixtureRequest, mesh_name: str)
     assert np.allclose(locations_wp.numpy(), points_o3d, rtol=1e-5, atol=1e-5)
 
 
+def _cast_open3d(
+    mesh_tm: tm.Trimesh, origins_np: np.ndarray, directions_np: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Embree's first hit per ray through open3d: distance, face and corner weights in ordito's order.
+
+    ``cast_rays`` reports a hit's ``primitive_uvs`` ``(u, v)`` with the point at
+    ``(1 - u - v) a + u b + v c``, so the weights on the corners in order are
+    ``(1 - u - v, u, v)``. A miss is ``INVALID_ID`` (written ``-1`` here) with ``t_hit`` ``inf``.
+    """
+    scene_o3d = o3d.t.geometry.RaycastingScene()
+    scene_o3d.add_triangles(
+        o3d.core.Tensor(  # pyright: ignore[reportCallIssue]  # the stub drops dtype/device defaults
+            np.ascontiguousarray(mesh_tm.vertices, dtype=np.float32), dtype=o3d.core.Dtype.Float32
+        ),
+        o3d.core.Tensor(  # pyright: ignore[reportCallIssue]  # the stub drops dtype/device defaults
+            np.ascontiguousarray(mesh_tm.faces, dtype=np.uint32), dtype=o3d.core.Dtype.UInt32
+        ),
+    )
+    rays_o3d = o3d.core.Tensor(  # pyright: ignore[reportCallIssue]  # the stub drops dtype/device defaults
+        np.ascontiguousarray(np.hstack([origins_np, directions_np]), dtype=np.float32),
+        dtype=o3d.core.Dtype.Float32,
+    )
+    cast_o3d = scene_o3d.cast_rays(rays_o3d)
+    faces_o3d = cast_o3d["primitive_ids"].numpy().astype(np.int64)
+    faces_o3d = np.where(faces_o3d == o3d.t.geometry.RaycastingScene.INVALID_ID, -1, faces_o3d)
+    uv_o3d = cast_o3d["primitive_uvs"].numpy().astype(np.float64)
+    weights_o3d = np.column_stack([1.0 - uv_o3d[:, 0] - uv_o3d[:, 1], uv_o3d[:, 0], uv_o3d[:, 1]])
+    return cast_o3d["t_hit"].numpy().astype(np.float64), faces_o3d, weights_o3d
+
+
+def _rays_through_np(mesh_tm: tm.Trimesh, n: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
+    """``n`` rays from inside the mesh's bounding box along random unit directions."""
+    rng = np.random.default_rng(seed)
+    lower, upper = mesh_tm.bounds
+    origins_np = rng.uniform(lower, upper, size=(n, 3)).astype(np.float32)
+    directions_np = rng.normal(size=(n, 3))
+    directions_np /= np.linalg.norm(directions_np, axis=1, keepdims=True)
+    return origins_np, directions_np.astype(np.float32)
+
+
+@pytest.mark.parity("first_hits", "open3d")
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+@pytest.mark.parametrize("both_ways", [False, True])
+def test_first_hits_match_open3d(
+    request: pytest.FixtureRequest, mesh_name: str, both_ways: bool
+) -> None:
+    """
+    Class A on the face and the distance, Class B on the weights: Embree's ``cast_rays``.
+
+    ``cast_rays`` returns every ray's first hit densely, as ``first_hits`` does: ``t_hit`` along
+    the unit ray (the distance), ``primitive_ids`` (the face, ``INVALID_ID`` for ``-1``) and
+    ``primitive_uvs``, the hit's coordinates in Embree's convention, which ``_cast_open3d`` turns
+    into weights on the corners in order -- the named transform. With ``both_ways`` the reference
+    is two casts, along each direction and its negation, the nearer kept and a backward one
+    negated, the forward one on a tie. Measured on both devices: every face equal, distances
+    within 7.2e-07 and weights within 8.4e-06 (the needles of ``saddle_graded``; 2.7e-06 on the
+    sphere). The location is ``origin + distance * direction`` on both sides
+    (``test_intersects_match_open3d`` pins that transform), so here it is checked against the
+    returned weights instead: their weighted sum of the face's corners is the hit.
+
+    Non-vacuous: rays start inside the mesh's box in random directions, so both hits and misses
+    occur, and with ``both_ways`` some of the kept hits are backward ones.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    origins_np, directions_np = _rays_through_np(mesh_tm, 256, seed=0)
+    origins_wp = points_to_warp(origins_np, mesh_wp.device)
+    directions_wp = points_to_warp(directions_np, mesh_wp.device)
+    locations_wp, distances_wp, faces_wp, weights_wp = od.ray.first_hits(
+        mesh_wp, origins_wp, directions_wp, both_ways=both_ways
+    )
+
+    distance_o3d, faces_o3d, weights_o3d = _cast_open3d(mesh_tm, origins_np, directions_np)
+    if both_ways:
+        back_distance_o3d, back_faces_o3d, back_weights_o3d = _cast_open3d(
+            mesh_tm, origins_np, -directions_np
+        )
+        backward_np = back_distance_o3d < distance_o3d
+        assert backward_np.any()  # some kept hits are backward ones
+        distance_o3d = np.where(backward_np, -back_distance_o3d, distance_o3d)
+        faces_o3d = np.where(backward_np, back_faces_o3d, faces_o3d)
+        weights_o3d = np.where(backward_np[:, None], back_weights_o3d, weights_o3d)
+    hit_o3d = faces_o3d >= 0
+    assert 0 < hit_o3d.sum() < hit_o3d.size  # both branches present
+
+    assert np.array_equal(faces_wp.numpy(), faces_o3d.astype(np.int32))
+    assert np.array_equal(np.isinf(distances_wp.numpy()), ~hit_o3d)
+    assert np.allclose(distances_wp.numpy()[hit_o3d], distance_o3d[hit_o3d], rtol=1e-5, atol=1e-5)
+    assert np.allclose(weights_wp.numpy()[hit_o3d], weights_o3d[hit_o3d], rtol=1e-5, atol=1e-5)
+
+    corners_np = mesh_tm.vertices[mesh_tm.faces[faces_wp.numpy()[hit_o3d]]]
+    rebuilt_np = np.einsum("ij,ijk->ik", weights_wp.numpy()[hit_o3d].astype(np.float64), corners_np)
+    assert np.allclose(locations_wp.numpy()[hit_o3d], rebuilt_np, rtol=1e-5, atol=1e-5)
+
+
+def test_first_hits_misses_and_agreement(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Ordito against ordito: the forward cast is ``intersects_first``'s, and a miss is pinned.
+
+    ``first_hits`` and ``intersects_first`` share the cast, so the faces are equal row for row; the
+    open3d comparison above covers the values. A miss returns its origin as the location, an
+    infinite distance, ``-1`` and zero weights, and ``max_t`` cuts hits off in both directions.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    origins_np, directions_np = _rays_through_np(mesh_tm, 256, seed=1)
+    origins_wp = points_to_warp(origins_np, mesh_wp.device)
+    directions_wp = points_to_warp(directions_np, mesh_wp.device)
+    locations_wp, distances_wp, faces_wp, weights_wp = od.ray.first_hits(
+        mesh_wp, origins_wp, directions_wp
+    )
+    assert np.array_equal(
+        faces_wp.numpy(), od.ray.intersects_first(mesh_wp, origins_wp, directions_wp).numpy()
+    )
+    missed_np = faces_wp.numpy() < 0
+    assert 0 < missed_np.sum() < missed_np.size
+    assert np.array_equal(locations_wp.numpy()[missed_np], origins_np[missed_np])
+    assert np.isinf(distances_wp.numpy()[missed_np]).all()
+    assert not weights_wp.numpy()[missed_np].any()
+
+    max_t = float(np.median(np.abs(distances_wp.numpy()[~missed_np])))
+    _, near_wp, near_faces_wp, _ = od.ray.first_hits(
+        mesh_wp, origins_wp, directions_wp, max_t=max_t, both_ways=True
+    )
+    kept_np = near_faces_wp.numpy() >= 0
+    assert kept_np.any()
+    assert (~kept_np & ~missed_np).any()
+    assert np.abs(near_wp.numpy()[kept_np]).max() < max_t
+
+
 def test_queries_on_no_rays_or_points(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
     _, mesh_wp = sphere_irregular
     origins_wp = warp_empty(0, wp.vec3, mesh_wp.device)
     directions_wp = warp_empty(0, wp.vec3, mesh_wp.device)
     assert od.ray.intersects_first(mesh_wp, origins_wp, directions_wp).numpy().shape == (0,)
+    hits_wp = od.ray.first_hits(mesh_wp, origins_wp, directions_wp, both_ways=True)
+    assert [array.shape for array in hits_wp] == [(0,), (0,), (0,), (0,)]
     assert od.ray.intersects_any(mesh_wp, origins_wp, directions_wp).numpy().shape == (0,)
     loc_wp, ray_wp, tri_wp = od.ray.intersects_location(mesh_wp, origins_wp, directions_wp)
     assert loc_wp.size == 0
@@ -307,7 +438,7 @@ def test_intersects_rejects_mismatched_shapes(
     """
     Not a library comparison: an argument-validation guard, which no reference library exposes.
 
-    All four ray queries document a ``ValueError`` for origins and directions of unequal length,
+    All five ray queries document a ``ValueError`` for origins and directions of unequal length,
     and all four raise it -- including on an *empty* origin buffer, which is the arm that pins
     where the check sits. It used to run after the ``n == 0`` early return, so a mismatched empty
     call returned an empty answer for a question that has none; with ``n_origins=4`` alone the
@@ -318,6 +449,7 @@ def test_intersects_rejects_mismatched_shapes(
     directions_wp = warp_empty(n_origins + 3, wp.vec3, mesh_wp.device)
     for query in (
         od.ray.intersects_first,
+        od.ray.first_hits,
         od.ray.intersects_any,
         od.ray.intersects_location,
         od.ray.longest_ray,

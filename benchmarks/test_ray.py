@@ -3,12 +3,14 @@ Benchmarks for ``ordito.ray``: the ray-cast entry points over the mesh BVH.
 
 Axis: **depth**, the registry's name for the number of times a ray pierces the surface
 (``sphere_med`` at 2 against ``shells_8``'s 8 concentric shells at 16). It is the axis that
-separates the three groups from each other rather than merely scaling them:
+separates the groups from each other rather than merely scaling them:
 
 - ``intersects_any`` may stop at the *first* hit, so it should be flat across the axis;
 - ``intersects_first`` must find the *nearest* hit, so it cannot stop early and pays the descent;
 - ``intersects_location`` does the same traversal and additionally compacts the hits, so it should
   track ``intersects_first`` plus a scan.
+- ``first_hits`` does the same traversal and writes every ray's hit densely, so it should track
+  ``intersects_first`` plus three stores.
 
 A group whose cost follows the crossing count when it should not is the finding here; so is one
 that does not when it should.
@@ -47,6 +49,8 @@ methods:
 - ``cast_rays`` again for ``intersects_location``, where the hit points are ``origin + t_hit *
   dir`` and ordito compacts, so open3d's row is the lower bound of the same work exactly as
   MeshLib's is.
+- ``cast_rays`` once more for ``first_hits``, whose dense record (with ``primitive_uvs``) is the
+  same answer.
 
 ``count_intersections`` is a **fourth** question -- the crossing count, which is the axis this file
 is built on -- and there is no row for it because ordito exposes no crossing-count entry point.
@@ -275,6 +279,36 @@ def test_intersects_first(bench_case: BenchCase) -> None:
     mesh, (origins, directions) = _mesh_wp(bench_case), _rays_wp(bench_case)
     faces_hit = bench_case.run(lambda: od.ray.intersects_first(mesh, origins, directions))
     assert faces_hit.shape == (_N_RAYS,)
+
+
+@pytest.mark.benchmark(group="first_hits")
+@pytest.mark.benchaxis("depth")
+@pytest.mark.benchlibs("ordito", "open3d")
+@pytest.mark.parametrize("both_ways", [False, True])
+def test_first_hits(bench_case: BenchCase, both_ways: bool) -> None:
+    """
+    Every ray's first hit densely: location, distance, face and barycentric coordinates.
+
+    Read against ``intersects_first``, which is the same traversal: the gap is three more
+    ``(n_rays,)`` outputs. ``both_ways=True`` casts each ray a second time backwards, so it should
+    cost about twice the forward row.
+
+    open3d's ``cast_rays`` is the matching dense record (``t_hit``, ``primitive_ids`` and
+    ``primitive_uvs``, the hit position left as ``origin + t_hit * dir``), so it pairs with the
+    forward row only; the two-way answer would be a second cast plus host selection.
+    """
+    if bench_case.kind == "open3d":
+        if both_ways:
+            pytest.skip("cast_rays casts one way: the forward row is its counterpart")
+        scene_o3d, rays_o3d = _scene_o3d(bench_case), _rays_o3d(bench_case)
+        hits_o3d = bench_case.run(lambda: scene_o3d.cast_rays(rays_o3d))
+        assert hits_o3d["primitive_uvs"].shape[0] == _N_RAYS
+        return
+    mesh, (origins, directions) = _mesh_wp(bench_case), _rays_wp(bench_case)
+    locations, distances, faces_hit, weights = bench_case.run(
+        lambda: od.ray.first_hits(mesh, origins, directions, both_ways=both_ways)
+    )
+    assert locations.shape == distances.shape == faces_hit.shape == weights.shape == (_N_RAYS,)
 
 
 @pytest.mark.benchmark(group="intersects_any")

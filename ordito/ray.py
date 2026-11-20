@@ -251,6 +251,125 @@ def intersects_first(
     return out_triangle_index
 
 
+def first_hits(
+    mesh: wp.Mesh,
+    ray_origins: wp.array[wp.vec3],
+    ray_directions: wp.array[wp.vec3],
+    *,
+    max_t: float | None = None,
+    both_ways: bool = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.float32], wp.array[wp.int32], wp.array[wp.vec3]]:
+    """
+    Every ray's first hit: its location, distance, triangle and barycentric coordinates.
+
+    One row per ray, in ray order: the dense form of
+    [`intersects_location`][ordito.ray.intersects_location], carrying what
+    [`intersects_first`][ordito.ray.intersects_first] finds plus where along the ray and where in
+    the triangle the hit lies. Uses ``wp.mesh_query_ray`` on the mesh BVH; ray directions are
+    unitized before querying, so a distance is a length in the mesh's units.
+
+    Parameters
+    ----------
+    mesh
+        Triangle mesh with a built BVH (``wp.Mesh``).
+    ray_origins
+        ``(n,)`` ray origin positions.
+    ray_directions
+        ``(n,)`` ray direction vectors (need not be unit length).
+    max_t
+        Optional maximum distance along each ray, in each direction cast. When ``None``, the
+        search is unbounded, which finds the same first hit as any bound at least as long as the
+        diagonal of the box enclosing the mesh and the ray origins.
+    both_ways
+        When ``True``, also cast each ray backwards from its origin and keep whichever hit is
+        nearer, the forward one on a tie: the surface point nearest the origin along the line.
+
+    Returns
+    -------
+    locations
+        ``(n,)`` hit positions, ``origin + distance * unit_direction``; the origin itself where
+        the ray misses.
+    distances
+        ``(n,)`` distance from the origin to the hit; negative for a backward hit (only with
+        ``both_ways=True``), ``inf`` where the ray misses.
+    triangle_id
+        ``(n,)`` index of the triangle hit, or ``-1`` where the ray misses.
+    barycentric
+        ``(n,)`` weights of each hit on its triangle's three corners, in the order ``mesh``'s
+        indices list them, so the hit is their weighted sum; ``(0, 0, 0)`` on a miss.
+
+    Raises
+    ------
+    ValueError
+        If ``ray_origins`` and ``ray_directions`` do not have the same shape.
+    RuntimeError
+        If ``mesh``, ``ray_origins`` and ``ray_directions`` are not all on one device.
+
+    See Also
+    --------
+    [`intersects_first`][ordito.ray.intersects_first]
+        The triangle alone.
+    [`intersects_location`][ordito.ray.intersects_location]
+        The hits alone, compacted.
+    [`closest_point_on_mesh`][ordito.proximity.closest_point_on_mesh]
+        The nearest surface point in any direction.
+
+    Examples
+    --------
+    From inside a unit cube along ``+x``, a ray reaches the face at ``x = 0.5``; cast both ways
+    from nearer the ``x = -0.5`` face, the backward hit wins with a negative distance. A ray that
+    passes the cube misses:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    mesh = wp.Mesh(points=vertices, indices=faces)
+    origins = wp.array([[0.0, 0.1, 0.2], [-0.3, 0.1, 0.2], [0.0, 3.0, 0.0]], dtype=wp.vec3)
+    directions = wp.array([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=wp.vec3)
+    locations, distances, triangle_ids, weights = od.ray.first_hits(
+        mesh, origins, directions, both_ways=True
+    )
+    print([round(float(d), 3) for d in distances.numpy()])  # [0.5, -0.2, inf]
+    print(locations.numpy()[1].round(3))  # [-0.5  0.1  0.2]
+    print(triangle_ids.numpy()[2], weights.numpy()[2].tolist())  # -1 [0.0, 0.0, 0.0]
+    ```
+    """
+    require_same_device(mesh=mesh, ray_origins=ray_origins, ray_directions=ray_directions)
+    _validate_ray_inputs(ray_origins, ray_directions)
+    n = ray_origins.size
+    device = ray_origins.device
+    # One allocation each rather than one carved buffer: a caller keeping some of the outputs can
+    # drop the others and free their memory, which a view of a shared buffer would hold alive.
+    out_locations = _launch.empty(n, dtype=wp.vec3, device=device)
+    out_distances = _launch.empty(n, dtype=wp.float32, device=device)
+    out_faces = _launch.empty(n, dtype=wp.int32, device=device)
+    out_weights = _launch.empty(n, dtype=wp.vec3, device=device)
+    if n == 0:
+        return out_locations, out_distances, out_faces, out_weights
+    if max_t is None:
+        max_t = math.inf
+    _launch.launch(
+        kernel_ray.first_hits,
+        dim=n,
+        inputs=[
+            wp.uint64(mesh.id),
+            ray_origins,
+            ray_directions,
+            wp.float32(max_t),
+            both_ways,
+            out_locations,
+            out_distances,
+            out_faces,
+            out_weights,
+        ],
+        device=device,
+    )
+    return out_locations, out_distances, out_faces, out_weights
+
+
 def intersects_any(
     mesh: wp.Mesh,
     ray_origins: wp.array[wp.vec3],
