@@ -4,7 +4,9 @@ Generative sampling: new points on a mesh surface, inside its volume, or over a 
 Everything here *creates* points -- uniformly over the faces
 ([`sample_surface`][ordito.sample.sample_surface]), spaced at least ``radius`` apart
 ([`sample_surface_poisson_disk`][ordito.sample.sample_surface_poisson_disk],
-[`sample_surface_blue_noise`][ordito.sample.sample_surface_blue_noise]), inside a watertight solid
+[`sample_surface_blue_noise`][ordito.sample.sample_surface_blue_noise]), any of the three over
+only the part of the surface inside a ball
+([`sample_surface_in_ball`][ordito.sample.sample_surface_in_ball]), inside a watertight solid
 ([`sample_volume`][ordito.sample.sample_volume]), or over a sphere, hemisphere or cone as a
 low-discrepancy Fibonacci lattice (the ``sample_fibonacci_*`` family, which take a count and no
 mesh at all).
@@ -60,6 +62,15 @@ from ordito.triangles import face_normals_and_areas
 # Dart-throwing rounds ``sample_surface_blue_noise`` issues on CUDA between reads of its work
 # list's length, after the first round's read.
 _DART_ROUNDS_PER_READ = 2
+
+# ``sample_surface_in_ball``'s methods.
+_BALL_METHODS = ("uniform", "poisson_disk", "blue_noise")
+# Rejection rounds ``sample_surface_in_ball``'s uniform pool draws at most, the most one round
+# draws (unless the pool asks for more), and the draws after which a pool with nothing in the ball
+# is given up as covering no area.
+_BALL_ROUNDS = 16
+_BALL_ROUND_DRAW_CAP = 1 << 24
+_BALL_EMPTY_DRAWS = 1 << 24
 
 
 def sample_fibonacci_sphere(count: int, device: wp.DeviceLike = None) -> wp.array[wp.vec3]:
@@ -455,6 +466,275 @@ def sample_surface_poisson_disk(
         _, areas = face_normals_and_areas(vertices, faces)
         surface_area = float(cast("float", wp.utils.array_sum(areas)))
 
+    return _eliminate_to_count(init_points, init_face_indices, count, surface_area)
+
+
+def sample_surface_blue_noise(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], radius: float, seed: int | None = None
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    Sample points on a triangle mesh surface with a blue-noise (Poisson-disk) distribution.
+
+    Draws a dense uniform surface pool — ``30x`` the expected output, the oversampling factor
+    ``igl::blue_noise`` uses — and reduces it to a **maximal** subset in which no two points are
+    within ``radius`` of each other, by randomized-priority parallel dart throwing. The result has
+    the distribution of sequential dart throwing over a uniformly random order of the pool; see
+    ``kernels/algorithms/blue_noise.py`` for why the parallelism costs nothing in distribution, and
+    for the measured spacing and coverage against MeshLab and Open3D.
+
+    Parameters
+    ----------
+    vertices
+        ``(n_vertices,)`` vertex positions.
+    faces
+        ``(3 * n_faces,)`` flat triangle indices, ``(i0, i1, i2)`` per face.
+    radius
+        Minimum Poisson disk radius (Euclidean distance in 3D). Enforced exactly: the closest pair
+        in the output is never below it.
+    seed
+        RNG seed for the initial uniform sampling and the sampling order. If ``None``, a random seed
+        is chosen. With a seed the output is reproducible — every round of the loop is a
+        deterministic function of its input state.
+
+    Returns
+    -------
+    samples
+        ``(m,)`` sampled positions on the mesh surface. Count ``m`` is determined
+        implicitly by ``radius`` and mesh area.
+    face_index
+        ``(m,)`` triangle index for each sample.
+
+    Raises
+    ------
+    ValueError
+        If ``radius <= 0``.
+    RuntimeError
+        If ``vertices`` and ``faces`` are not all on one device.
+
+    Notes
+    -----
+    The count is **derived**, never requested: it is what a maximal ``radius``-packing of the
+    surface comes to, so it lands near — not at — the hexagonal-packing estimate the radius is
+    usually chosen from. Ask for a *count* with
+    [`sample_surface_poisson_disk`][ordito.sample.sample_surface_poisson_disk] instead.
+
+    A mesh with no faces returns two empty arrays rather than raising.
+
+    Examples
+    --------
+    No two samples are closer than ``radius``; the count follows from the area:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    samples, face_index = od.sample.sample_surface_blue_noise(vertices, faces, 0.2, seed=0)
+    _, spacing = od.neighbors.query_nearest(samples, samples, 2)
+    print(bool(spacing.numpy()[:, 1].min() >= 0.2))  # True
+    print(150 < samples.shape[0] < 300)  # True
+    ```
+    """
+    require_same_device(vertices=vertices, faces=faces)
+    device = vertices.device
+    n_faces = faces.size // 3
+
+    if radius <= 0.0:
+        raise ValueError(f"radius must be > 0, got {radius}")
+
+    if n_faces == 0:
+        return (
+            _launch.empty(0, dtype=wp.vec3, device=device),
+            _launch.empty(0, dtype=wp.int32, device=device),
+        )
+
+    # The surface area is the total of the area CDF the pool is drawn from below; the vertices' box,
+    # read back with it, encloses the pool and anchors the dart loop's grid.
+    cdf, surface_area, box = _face_cdf_and_vertex_box(vertices, faces)
+    if surface_area <= 0.0:
+        raise ValueError("total face weight must be positive")
+    pool_size, pool_seed, priority_seed = _blue_noise_pool(surface_area, radius, seed)
+    init_points, init_face_indices = _draw_surface_samples(
+        vertices, faces, cdf, surface_area, pool_size, pool_seed
+    )
+    return _dart_throw_blue_noise(init_points, init_face_indices, radius, priority_seed, box)
+
+
+def sample_surface_in_ball(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    center: wp.vec3,
+    radius: float,
+    count: int | None = None,
+    *,
+    method: Literal["uniform", "poisson_disk", "blue_noise"] = "uniform",
+    spacing: float | None = None,
+    init_factor: float = 5.0,
+    seed: int | None = None,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    Sample the part of a triangle mesh surface that lies inside a ball.
+
+    The samples cover exactly the surface within ``radius`` of ``center``, faces crossing the
+    sphere included: every face whose closest point to ``center`` lies in the ball is drawn from,
+    even when all its corners and its centroid lie outside, and the samples landing outside the
+    ball are discarded. No submesh is built; the faces outside the ball get zero weight in the
+    draw.
+
+    Parameters
+    ----------
+    vertices
+        ``(n_vertices,)`` vertex positions.
+    faces
+        ``(3 * n_faces,)`` flat triangle indices, ``(i0, i1, i2)`` per face.
+    center
+        Center of the ball.
+    radius
+        Radius of the ball (closed: a sample at distance ``radius`` is inside).
+    count
+        Number of samples, for ``"uniform"`` and ``"poisson_disk"``. Must be ``None`` for
+        ``"blue_noise"``, whose count follows from ``spacing``.
+    method
+        How the samples are spread over the surface in the ball:
+
+        - ``"uniform"`` (default): ``count`` independent, uniformly distributed samples, as
+          [`sample_surface`][ordito.sample.sample_surface] draws over a whole mesh.
+        - ``"poisson_disk"``: ``count`` samples by weighted sample elimination of a uniform pool
+          of ``init_factor * count`` samples in the ball, as
+          [`sample_surface_poisson_disk`][ordito.sample.sample_surface_poisson_disk].
+        - ``"blue_noise"``: a maximal set of samples no two closer than ``spacing``, as
+          [`sample_surface_blue_noise`][ordito.sample.sample_surface_blue_noise].
+    spacing
+        Minimum distance between samples, for ``"blue_noise"`` only.
+    init_factor
+        Over-sampling factor of the ``"poisson_disk"`` pool. Must satisfy ``init_factor >= 1``.
+    seed
+        RNG seed. If ``None``, a random seed is chosen. With a seed the output is reproducible.
+
+    Returns
+    -------
+    samples
+        ``(m,)`` sampled positions on the surface inside the ball: ``m`` is ``count`` for
+        ``"uniform"`` and ``"poisson_disk"`` (see Notes), and follows from ``spacing`` and the
+        area inside the ball for ``"blue_noise"``.
+    face_index
+        ``(m,)`` triangle index for each sample.
+
+    Raises
+    ------
+    ValueError
+        If ``method`` is not one of the options, if ``radius`` is not positive, if ``count`` is
+        missing or negative for ``"uniform"`` / ``"poisson_disk"``, if ``spacing`` is missing or
+        not positive for ``"blue_noise"``, if the argument the method does not take is given, or
+        if ``init_factor < 1`` for ``"poisson_disk"``.
+    RuntimeError
+        If ``vertices`` and ``faces`` are not on one device.
+
+    Notes
+    -----
+    A ball that meets no face, or meets the surface in a set of no area, returns two empty arrays.
+    The uniform pool is drawn over the faces meeting the ball and the samples outside it rejected,
+    so its cost grows with the area of those faces against the area inside the ball; a ball
+    covering less than about one part in ``2**24`` of the faces it meets can return fewer than
+    ``count`` samples.
+
+    Examples
+    --------
+    A ball of radius 0.1 centred on a face of the unit cube, away from every vertex:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    center = wp.vec3(0.5, 0.1, 0.2)
+    samples, _ = od.sample.sample_surface_in_ball(vertices, faces, center, 0.1, 500, seed=0)
+    print(samples.shape)  # (500,)
+    offsets = samples.numpy() - np.array([0.5, 0.1, 0.2])
+    print(bool(np.linalg.norm(offsets, axis=1).max() <= 0.1))  # True
+    print(np.abs(offsets[:, 0]).max().round(4))  # 0.0
+    ```
+    """
+    require_same_device(vertices=vertices, faces=faces)
+    device = vertices.device
+    if method not in _BALL_METHODS:
+        raise ValueError(f"method must be one of {_BALL_METHODS}, got {method!r}")
+    if not radius > 0.0:
+        raise ValueError(f"radius must be > 0, got {radius}")
+    if method == "blue_noise":
+        if spacing is None or not spacing > 0.0:
+            raise ValueError(f"method='blue_noise' takes a spacing > 0, got {spacing}")
+        if count is not None:
+            raise ValueError(
+                "method='blue_noise' derives its count from spacing; count must be None"
+            )
+    else:
+        if count is None or count < 0:
+            raise ValueError(f"method={method!r} takes a count >= 0, got {count}")
+        if spacing is not None:
+            raise ValueError(f"method={method!r} takes a count; spacing must be None")
+        if method == "poisson_disk" and init_factor < 1.0:
+            raise ValueError(f"init_factor must be >= 1, got {init_factor}")
+
+    empty = (
+        _launch.empty(0, dtype=wp.vec3, device=device),
+        _launch.empty(0, dtype=wp.int32, device=device),
+    )
+    if faces.size == 0 or count == 0:
+        return empty
+    radius_sq = radius * radius
+    # The faces reaching into the ball weighted by area, every other face by zero, and the total:
+    # the area the draws cover, of which the part inside the ball is what they keep.
+    cdf, hit_area, box = _face_cdf_and_vertex_box(vertices, faces, center, radius_sq)
+    if not hit_area > 0.0:
+        return empty
+
+    if method == "blue_noise":
+        assert spacing is not None
+        # The pool at the whole-surface sampler's density over the faces meeting the ball, pruned
+        # to the ball: the dart throw then packs the surface inside the ball alone, its border
+        # included. The grid only has to enclose the pruned pool: the vertices' box cut to the
+        # ball's.
+        pool_size, pool_seed, priority_seed = _blue_noise_pool(hit_area, spacing, seed)
+        points, face_index, flags = _draw_ball_round(
+            vertices, faces, cdf, hit_area, center, radius_sq, pool_seed, 0, pool_size
+        )
+        points, face_index = _emit_kept_samples(flags, points, face_index)
+        lower, upper = box
+        lower = wp.vec3(*(max(float(lower[a]), float(center[a]) - radius) for a in range(3)))
+        upper = wp.vec3(*(min(float(upper[a]), float(center[a]) + radius) for a in range(3)))
+        return _dart_throw_blue_noise(points, face_index, spacing, priority_seed, (lower, upper))
+
+    assert count is not None
+    target = count if method == "uniform" else max(math.ceil(init_factor * count), count)
+    points, face_index, area = _draw_ball_pool(
+        vertices, faces, cdf, hit_area, center, radius_sq, target, seed
+    )
+    if method == "uniform":
+        return points, face_index
+    return _eliminate_to_count(points, face_index, count, area)
+
+
+def _eliminate_to_count(
+    init_points: wp.array[wp.vec3],
+    init_face_indices: wp.array[wp.int32],
+    count: int,
+    surface_area: float,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    Weighted sample elimination of a uniform pool down to ``count`` points, and their faces.
+
+    ``surface_area`` is the area the pool covers, which sizes the Poisson radii. A pool of at most
+    ``count`` points is returned as it stands. Shared by
+    [`sample_surface_poisson_disk`][ordito.sample.sample_surface_poisson_disk] and the
+    ``"poisson_disk"`` method of [`sample_surface_in_ball`][ordito.sample.sample_surface_in_ball].
+    """
+    device = init_points.device
+    init_count = init_points.size
+    if init_count <= count:
+        return init_points, init_face_indices
+
     # 3. Poisson disk radii (Öztireli & Gross 2012 constants)
     #
     # Plain Python floats, not ``wp.float32``: these are *host* arithmetic, and a Warp scalar's
@@ -656,90 +936,16 @@ def _cut_terminal_round(
     )
 
 
-def sample_surface_blue_noise(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], radius: float, seed: int | None = None
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+def _blue_noise_pool(area: float, radius: float, seed: int | None) -> tuple[int, int, int]:
     """
-    Sample points on a triangle mesh surface with a blue-noise (Poisson-disk) distribution.
+    Return the blue-noise pool's size over ``area`` at ``radius`` and its two seeds.
 
-    Draws a dense uniform surface pool — ``30x`` the expected output, the oversampling factor
-    ``igl::blue_noise`` uses — and reduces it to a **maximal** subset in which no two points are
-    within ``radius`` of each other, by randomized-priority parallel dart throwing. The result has
-    the distribution of sequential dart throwing over a uniformly random order of the pool; see
-    ``kernels/algorithms/blue_noise.py`` for why the parallelism costs nothing in distribution, and
-    for the measured spacing and coverage against MeshLab and Open3D.
+    The seeds are the pool draw's and the dart throw's priority draw's.
 
-    Parameters
-    ----------
-    vertices
-        ``(n_vertices,)`` vertex positions.
-    faces
-        ``(3 * n_faces,)`` flat triangle indices, ``(i0, i1, i2)`` per face.
-    radius
-        Minimum Poisson disk radius (Euclidean distance in 3D). Enforced exactly: the closest pair
-        in the output is never below it.
-    seed
-        RNG seed for the initial uniform sampling and the sampling order. If ``None``, a random seed
-        is chosen. With a seed the output is reproducible — every round of the loop is a
-        deterministic function of its input state.
-
-    Returns
-    -------
-    samples
-        ``(m,)`` sampled positions on the mesh surface. Count ``m`` is determined
-        implicitly by ``radius`` and mesh area.
-    face_index
-        ``(m,)`` triangle index for each sample.
-
-    Raises
-    ------
-    ValueError
-        If ``radius <= 0``.
-    RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
-
-    Notes
-    -----
-    The count is **derived**, never requested: it is what a maximal ``radius``-packing of the
-    surface comes to, so it lands near — not at — the hexagonal-packing estimate the radius is
-    usually chosen from. Ask for a *count* with
-    [`sample_surface_poisson_disk`][ordito.sample.sample_surface_poisson_disk] instead.
-
-    A mesh with no faces returns two empty arrays rather than raising.
-
-    Examples
-    --------
-    No two samples are closer than ``radius``; the count follows from the area:
-
-    ```python
-    import ordito as od
-
-    vertices, faces = od.creation.icosphere(subdivisions=3)
-    samples, face_index = od.sample.sample_surface_blue_noise(vertices, faces, 0.2, seed=0)
-    _, spacing = od.neighbors.query_nearest(samples, samples, 2)
-    print(bool(spacing.numpy()[:, 1].min() >= 0.2))  # True
-    print(150 < samples.shape[0] < 300)  # True
-    ```
+    The pool is ``30x`` the hexagonal-packing estimate of the output, ``igl::blue_noise``'s
+    oversampling factor.
     """
-    require_same_device(vertices=vertices, faces=faces)
-    device = vertices.device
-    n_faces = faces.size // 3
-
-    if radius <= 0.0:
-        raise ValueError(f"radius must be > 0, got {radius}")
-
-    if n_faces == 0:
-        return (
-            _launch.empty(0, dtype=wp.vec3, device=device),
-            _launch.empty(0, dtype=wp.int32, device=device),
-        )
-
-    # The surface area is the total of the area CDF the pool is drawn from below; the vertices' box,
-    # read back with it, encloses the pool and anchors the dart loop's grid.
-    cdf, surface_area, box = _face_cdf_and_vertex_box(vertices, faces)
-    expected = surface_area * (math.pi * math.sqrt(3.0) / 6.0) / (math.pi * radius * radius / 4.0)
-    nx = max(1, int(30.0 * expected))
-
+    expected = area * (math.pi * math.sqrt(3.0) / 6.0) / (math.pi * radius * radius / 4.0)
     # The pool draw and the dart-throw priority draw both key off the same point index (``tid``
     # here, ``i`` in ``random_priorities``) at the same pool size, so a shared seed would give
     # ``wp.rand_init(seed, i)`` the identical initial state in both kernels -- ``sample_cdf``'s
@@ -749,21 +955,23 @@ def sample_surface_blue_noise(
     # correlation while staying a deterministic function of the caller's own seed.
     pool_seed = resolve_seed(seed)
     priority_seed = (pool_seed ^ 0x2545F491) & 0x7FFFFFFF
-    init_points, init_face_indices = _draw_surface_samples(
-        vertices, faces, cdf, surface_area, nx, pool_seed
-    )
-    return _dart_throw_blue_noise(init_points, init_face_indices, radius, priority_seed, box)
+    return max(1, int(30.0 * expected)), pool_seed, priority_seed
 
 
 def _face_cdf_and_vertex_box(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    center: wp.vec3 | None = None,
+    radius_sq: float = -1.0,
 ) -> tuple[wp.array[wp.float32], float, tuple[wp.vec3, wp.vec3]]:
     """
     [`_face_cdf`][ordito.sample._face_cdf] of the areas, and the box of ``vertices``, in one sync.
 
     The areas and the box are formed in one launch into one buffer (the CDF, then the packed box
     ``reduce.minmax_vec3_chunked`` writes, at the next multiple of six), so the scan's total and
-    the box come back in one readback. ``faces`` must be non-empty.
+    the box come back in one readback. ``faces`` must be non-empty. A ``center`` and a non-negative
+    ``radius_sq`` keep only the faces reaching into that ball in the CDF, whose total is then their
+    area; the caller decides what a non-positive total means.
     """
     device = vertices.device
     n_faces = faces.size // 3
@@ -772,21 +980,122 @@ def _face_cdf_and_vertex_box(
     _launch.launch(
         kernel_sample.face_areas_and_vertex_box,
         dim=n_faces + kernel_reduce.chunks_1d(vertices.size),
-        inputs=[vertices, faces, box],
+        inputs=[
+            vertices,
+            faces,
+            box,
+            wp.vec3(0.0, 0.0, 0.0) if center is None else center,
+            wp.float32(radius_sq),
+        ],
         outputs=[buffer],
         device=device,
     )
     cdf = _launch.view(buffer, 0, n_faces)
     _launch.array_scan(cdf, out_array=cdf)
-    # Host readback: the total sizes the pool and decides whether to raise, and the box sizes the
-    # dart loop's grid.
+    # Host readback: the total sizes the pool and decides what the caller does, and the box sizes
+    # the dart loop's grid.
     values = read_values(buffer, n_faces - 1, 6 * box + 7 - n_faces)
     total = float(values[0])
-    if total <= 0.0:
-        raise ValueError("total face weight must be positive")
     lower = wp.vec3(*values[-6:-3])
     upper = wp.vec3(-values[-3], -values[-2], -values[-1])
     return cdf, total, (lower, upper)
+
+
+def _draw_ball_pool(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    cdf: wp.array[wp.float32],
+    hit_area: float,
+    center: wp.vec3,
+    radius_sq: float,
+    target: int,
+    seed: int | None,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], float]:
+    """
+    ``target`` uniform samples of the surface inside the ball, their faces, and its area.
+
+    Rounds of rejection sampling over ``cdf`` (the faces meeting the ball, of total area
+    ``hit_area``): each round draws on, from where the last one stopped in the seeded stream, and
+    appends its in-ball samples in draw order until ``target`` are kept. Draw order is independent
+    of position, so the first ``target`` in-ball samples are uniform over the surface in the ball.
+    The first round draws ``target``; each later one what the kept fraction so far says is
+    missing, with ten percent and 64 to spare, so a call is two rounds and two readbacks unless the
+    ball covers a small share of its faces. The area is the kept fraction of ``hit_area``, which
+    sizes the Poisson radii. Fewer samples come back only when ``_BALL_ROUNDS`` rounds, or draws
+    past ``_BALL_EMPTY_DRAWS`` with nothing kept, do not reach ``target``.
+    """
+    device = vertices.device
+    stream_seed = resolve_seed(seed)
+    out_points = _launch.empty(target, dtype=wp.vec3, device=device)
+    out_faces = _launch.empty(target, dtype=wp.int32, device=device)
+    round_cap = max(_BALL_ROUND_DRAW_CAP, 2 * target)
+    filled = kept = drawn = 0
+    draw = target
+    for _ in range(_BALL_ROUNDS):
+        points, face_index, flags = _draw_ball_round(
+            vertices, faces, cdf, hit_area, center, radius_sq, stream_seed, drawn, draw
+        )
+        # Host readback: the round's in-ball count decides whether another round is drawn.
+        round_kept = scan_count(flags)
+        if round_kept > 0 and filled < target:
+            _launch.launch(
+                kernel_sample.emit_kept_samples,
+                dim=draw,
+                inputs=[flags, points, face_index, filled, target],
+                outputs=[out_points, out_faces],
+                device=device,
+            )
+        filled = min(target, filled + round_kept)
+        kept += round_kept
+        drawn += draw
+        if filled == target or (kept == 0 and drawn >= _BALL_EMPTY_DRAWS):
+            break
+        missing = target - filled
+        draw = math.ceil(1.1 * missing * drawn / kept) + 64 if kept > 0 else 8 * draw
+        draw = min(draw, round_cap)
+    area = hit_area * kept / drawn
+    if filled < target:
+        return (
+            odt.as_dense(_launch.view(out_points, 0, filled)),
+            odt.as_dense(_launch.view(out_faces, 0, filled)),
+            area,
+        )
+    return out_points, out_faces, area
+
+
+def _draw_ball_round(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    cdf: wp.array[wp.float32],
+    hit_area: float,
+    center: wp.vec3,
+    radius_sq: float,
+    seed: int,
+    first: int,
+    count: int,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32]]:
+    """Draw samples ``first`` to ``first + count`` of the seeded stream, and their in-ball flags."""
+    device = vertices.device
+    points = _launch.empty(count, dtype=wp.vec3, device=device)
+    face_index = _launch.empty(count, dtype=wp.int32, device=device)
+    flags = _launch.empty(count, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_sample.sample_surface_in_ball,
+        dim=count,
+        inputs=[
+            vertices,
+            faces,
+            cdf,
+            wp.float32(hit_area),
+            seed,
+            first,
+            center,
+            wp.float32(radius_sq),
+        ],
+        outputs=[points, face_index, flags],
+        device=device,
+    )
+    return points, face_index, flags
 
 
 def _dart_throw_blue_noise(
@@ -1068,7 +1377,7 @@ def _emit_kept_samples(
         _launch.launch(
             kernel_sample.emit_kept_samples,
             dim=n,
-            inputs=[flags, points, face_indices],
+            inputs=[flags, points, face_indices, 0, n_kept],
             outputs=[kept_points, kept_faces],
             device=device,
         )

@@ -5,7 +5,7 @@ from __future__ import annotations
 import heapq
 import math
 from collections.abc import Callable
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import igl
 import numpy as np
@@ -20,6 +20,7 @@ import warp as wp
 from meshlib import mrmeshpy as mm
 from scipy.spatial import cKDTree
 from scipy.spatial.distance import pdist
+from scipy.stats import ks_2samp
 
 import ordito as od
 from ordito.kernels import sample as kernel_sample
@@ -781,6 +782,326 @@ def test_sample_surface_blue_noise_matches_open3d_pymeshlab_and_igl(
     assert 0.7 <= n_samples / points_ml.shape[0] <= 1.3
 
 
+def _in_ball_case(mesh_tm: tm.Trimesh, ball: str) -> tuple[np.ndarray, float]:
+    """
+    Return the center and radius of a test ball on ``mesh_tm``.
+
+    ``"wide"`` holds about three hundred whole faces; ``"small"`` sits on the largest face's
+    centroid at 1.2 mean edges, so several faces cross it with every corner outside.
+    """
+    if ball == "wide":
+        extent = float(mesh_tm.extents.max())
+        return np.asarray(mesh_tm.vertices[0]) + 0.01 * extent, 0.25 * extent
+    largest = int(np.argmax(mesh_tm.area_faces))
+    return (
+        np.asarray(mesh_tm.triangles_center[largest]),
+        1.2 * float(mesh_tm.edges_unique_length.mean()),
+    )
+
+
+def _in_ball_dense(
+    mesh_tm: tm.Trimesh, center_np: np.ndarray, radius: float, draws: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return trimesh's uniform draw over the whole surface pruned to the ball, and its faces."""
+    samples_tm, face_index_tm = tm.sample.sample_surface(mesh_tm, draws, seed=0)[:2]
+    inside = np.linalg.norm(samples_tm - center_np, axis=1) <= radius
+    return samples_tm[inside], np.asarray(face_index_tm)[inside]
+
+
+def _assert_on_reported_faces_in_ball(
+    mesh_tm: tm.Trimesh,
+    points_np: np.ndarray,
+    face_index_np: np.ndarray,
+    center_np: np.ndarray,
+    radius: float,
+) -> None:
+    """Every sample lies in the closed ball and on the face it reports."""
+    assert np.linalg.norm(points_np - center_np, axis=1).max() <= radius * (1.0 + 1e-6)
+    closest_tm = tm.triangles.closest_point(mesh_tm.triangles[face_index_np], points_np)
+    assert np.linalg.norm(closest_tm - points_np, axis=1).max() < 1e-5
+
+
+@pytest.mark.parametrize("ball", ["wide", "small"])
+@pytest.mark.parity("sample_surface_in_ball", "trimesh")
+def test_sample_surface_in_ball_matches_pruned_trimesh(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], ball: str
+) -> None:
+    """
+    Class C, against trimesh's whole-surface uniform draw pruned to the ball: two distributions.
+
+    No library samples a ball's part of a surface, but the answer is defined by the pruned
+    whole-surface draw (2 M trimesh samples), so the comparison is on distribution: the
+    Kolmogorov-Smirnov distance between the two samples' distances from the center, and the share
+    of samples on faces crossing the ball with no corner in it.
+
+    **Bug classes excluded:** selecting the faces by their corners (the ``"small"`` ball's three
+    crossing faces hold 24 % of its area) and a mis-weighted draw over the selected faces. Both
+    pass every per-sample check below. **Measured**, identical on both devices, ``count = 50 000``:
+    KS 0.0059 (``"wide"``) and 0.0047 (``"small"``), bound 0.03; crossing share 0 against 0 and
+    0.2439 against trimesh's 0.2355, bound 0.03 on the difference (a lattice integration of the
+    faces gives 0.2419: trimesh's draw carries most of the 0.0084). **Mutation probes:** faces
+    selected by a corner in the ball read crossing share 0 on the ``"small"`` ball (0.236 off, 8x
+    the bound) and KS 0.067; area ignored over the selected faces reads KS 0.15 / 0.20.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    center_np, radius = _in_ball_case(mesh_tm, ball)
+    count = 50_000
+    points_wp, face_index_wp = od.sample.sample_surface_in_ball(
+        mesh_wp.points, mesh_wp.indices, wp.vec3(*center_np.tolist()), radius, count, seed=0
+    )
+    samples_tm, face_index_tm = _in_ball_dense(mesh_tm, center_np, radius, 2_000_000)
+
+    corner_inside = np.linalg.norm(mesh_tm.vertices - center_np, axis=1) <= radius
+    crossing_np = ~corner_inside[mesh_tm.faces].any(axis=1)
+    # Non-vacuity: the wide ball spans hundreds of faces, the small one has crossing faces.
+    assert np.unique(face_index_tm).size > (100 if ball == "wide" else 8)
+    if ball == "small":
+        assert crossing_np[face_index_tm].mean() > 0.1
+
+    assert points_wp.shape == (count,)
+    points_np = points_wp.numpy()
+    _assert_on_reported_faces_in_ball(mesh_tm, points_np, face_index_wp.numpy(), center_np, radius)
+    distance_np = np.linalg.norm(points_np - center_np, axis=1)
+    distance_tm = np.linalg.norm(samples_tm - center_np, axis=1)
+    assert ks_2samp(distance_np, distance_tm).statistic < 0.03
+    share_np = crossing_np[face_index_wp.numpy()].mean()
+    assert abs(share_np - crossing_np[face_index_tm].mean()) < 0.03
+
+
+def test_sample_surface_in_ball_covers_a_ball_inside_one_face(device: str) -> None:
+    """
+    Not a library comparison: a disk inside a face of the cube, where the answer is analytic.
+
+    The ball sits inside one triangle of the cube's ``x = 0.5`` face, away from its corners, so
+    no vertex and no centroid lies in it and only the faces crossing the sphere carry samples. Its
+    disk covers ``2.5e-3`` of the triangle, so the draw takes several rejection rounds. The
+    samples must fill the disk uniformly: their mean is the center (the disk's centroid), and half
+    of them lie within ``radius / sqrt(2)`` (the disk's area law). A sampler confined to a ring or
+    an off-center patch fails one of the two; one drawing nothing returns no samples.
+    """
+    vertices, faces = od.creation.box(device=device)
+    center_np = np.array([0.5, 0.1, 0.2])
+    radius = 0.02
+    count = 4_000
+    points_wp, face_index_wp = od.sample.sample_surface_in_ball(
+        vertices, faces, wp.vec3(*center_np.tolist()), radius, count, seed=4
+    )
+    assert points_wp.shape == (count,)
+    points_np = points_wp.numpy()
+    offsets_np = points_np - center_np
+    assert np.abs(offsets_np[:, 0]).max() < 1e-6
+    distance_np = np.linalg.norm(offsets_np, axis=1)
+    assert distance_np.max() <= radius * (1.0 + 1e-6)
+    assert np.unique(face_index_wp.numpy()).size == 1
+    # The mean's standard error is ``radius / (2 sqrt(count))`` a coordinate: 1.6e-4.
+    assert np.abs(offsets_np.mean(axis=0)).max() < 8e-4
+    # A binomial share of 4 000: standard error 0.008.
+    assert abs((distance_np <= radius / math.sqrt(2.0)).mean() - 0.5) < 0.04
+
+
+# Balls cutting the unit cube (``od.creation.box``) that hold no vertex and no face centroid, each
+# meeting the faces a different way: across the edge between two faces from outside the solid;
+# over three faces near a corner they share, from inside, missing the corner (the ``x = 0.5``
+# disk touches neither edge nor diagonal of its triangle); across the diagonal splitting the top
+# face; and strictly inside one top triangle, touching none of its edges.
+_HARD_CUBE_BALLS = {
+    "edge": ((0.6, 0.6, 0.0), 0.35),
+    "corner": ((0.3, 0.3, 0.3), 0.25),
+    "diagonal": ((0.0, 0.0, 0.3), 0.25),
+    "interior": ((0.35, -0.35, 0.55), math.hypot(0.1, 0.05)),
+}
+
+
+def _lattice_in_ball(
+    triangles_np: np.ndarray, center_np: np.ndarray, radius: float, k: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Return each triangle's share of the area inside the ball, and distances to points covering it.
+
+    Every triangle carries the same ``k * (k + 1) / 2`` points of a uniform barycentric lattice,
+    so on triangles of equal area (the cube's) the lattice points in the ball are an evenly spread
+    sample of the surface inside it, and each triangle's count of them its share of that area.
+    """
+    rows, cols = np.meshgrid(np.arange(k), np.arange(k), indexing="ij")
+    below = rows + cols < k
+    u = (rows[below] + 1.0 / 3.0) / k
+    w = (cols[below] + 1.0 / 3.0) / k
+    counts = np.zeros(triangles_np.shape[0])
+    distances = []
+    for t, (a, b, c) in enumerate(triangles_np):
+        lattice = a + np.outer(u, b - a) + np.outer(w, c - a)
+        distance = np.linalg.norm(lattice - center_np, axis=1)
+        distance = distance[distance <= radius]
+        counts[t] = distance.size
+        distances.append(distance)
+    return counts / counts.sum(), np.concatenate(distances)
+
+
+@pytest.mark.parametrize("ball", list(_HARD_CUBE_BALLS))
+def test_sample_surface_in_ball_selects_faces_by_their_closest_point(
+    device: str, ball: str
+) -> None:
+    """
+    Not a library comparison: on the cube the answer is a lattice integration, exact to 1e-3.
+
+    Each ball (``_HARD_CUBE_BALLS``) meets one to five of the cube's twelve triangles and holds
+    none of their vertices or centroids, so a selection by corner or centroid draws from no face,
+    and an edge test misses a triangle whose interior alone reaches into the ball. The draw must
+    put each triangle's share of the samples at its share of the area in the ball (a 1 200-row
+    lattice on every triangle) and none on any other, and the samples' distances from the center
+    must follow the lattice's. **Measured**, identical on both devices over three seeds of 50 000
+    samples: worst share error 0.0031 (bound 0.01), KS 0.0068 (bound 0.025). **Mutation
+    probes:** selecting by a corner or centroid in the ball returns no samples on every ball;
+    selecting by an edge reaching the ball returns none on ``"interior"`` and leaves the
+    ``"corner"`` ball's ``x = 0.5`` triangle, a third of its area, unsampled (share error 0.333;
+    its KS stays at 0.005, so the share is the assert that carries it).
+    """
+    center_tuple, radius = _HARD_CUBE_BALLS[ball]
+    center_np = np.array(center_tuple)
+    vertices, faces = od.creation.box(device=device)
+    vertices_np = vertices.numpy().astype(np.float64)
+    triangles_np = vertices_np[faces.numpy().reshape(-1, 3)]
+    # The premise: no vertex and no centroid in the ball, yet it meets the surface.
+    assert np.linalg.norm(vertices_np - center_np, axis=1).min() > radius
+    assert np.linalg.norm(triangles_np.mean(axis=1) - center_np, axis=1).min() > radius
+    shares_np, distances_np = _lattice_in_ball(triangles_np, center_np, radius, 1_200)
+    assert (
+        np.count_nonzero(shares_np) == {"edge": 2, "corner": 5, "diagonal": 2, "interior": 1}[ball]
+    )
+
+    count = 50_000
+    points_wp, face_index_wp = od.sample.sample_surface_in_ball(
+        vertices, faces, wp.vec3(*center_tuple), radius, count, seed=0
+    )
+    assert points_wp.shape == (count,)
+    points_np = points_wp.numpy()
+    face_index_np = face_index_wp.numpy()
+    assert np.linalg.norm(points_np - center_np, axis=1).max() <= radius * (1.0 + 1e-6)
+    closest_np = tm.triangles.closest_point(triangles_np[face_index_np], points_np)
+    assert np.linalg.norm(closest_np - points_np, axis=1).max() < 1e-6
+    sample_shares_np = np.bincount(face_index_np, minlength=12) / count
+    assert np.all(sample_shares_np[shares_np == 0.0] == 0.0)
+    assert np.abs(sample_shares_np - shares_np).max() < 0.01
+    distance_np = np.linalg.norm(points_np - center_np, axis=1)
+    assert ks_2samp(distance_np, distances_np).statistic < 0.025
+
+
+def test_sample_surface_in_ball_poisson_disk_spreads_the_count(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a library comparison: no library eliminates a pool confined to a ball.
+
+    The ``"poisson_disk"`` method runs ``sample_surface_poisson_disk``'s elimination over a
+    uniform pool inside the ball, its radii sized off the area inside it. It returns exactly
+    ``count`` samples in the ball and on the surface, spread as Poisson-disk samples: the closest
+    pair at least half the elimination radius ``r_max`` (measured 0.73 ``r_max`` on the
+    ``"small"`` ball, identical on both devices; the uniform method's closest pair is 0.10), and
+    every point of a dense uniform draw in the ball within 1.2 ``r_max`` of a sample (measured
+    0.87).
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    center_np, radius = _in_ball_case(mesh_tm, "small")
+    count = 100
+    center = wp.vec3(*center_np.tolist())
+    points_wp, face_index_wp = od.sample.sample_surface_in_ball(
+        mesh_wp.points, mesh_wp.indices, center, radius, count, method="poisson_disk", seed=2
+    )
+    assert points_wp.shape == (count,)
+    points_np = points_wp.numpy()
+    _assert_on_reported_faces_in_ball(mesh_tm, points_np, face_index_wp.numpy(), center_np, radius)
+    dense_np, _ = _in_ball_dense(mesh_tm, center_np, radius, 400_000)
+    area_in_ball = mesh_tm.area * dense_np.shape[0] / 400_000
+    r_max = 2.0 * math.sqrt(area_in_ball / count / (2.0 * math.sqrt(3.0)))
+    assert pdist(points_np).min() >= 0.5 * r_max
+    assert np.max(cKDTree(points_np).query(dense_np)[0]) <= 1.2 * r_max
+    uniform_np = od.sample.sample_surface_in_ball(
+        mesh_wp.points, mesh_wp.indices, center, radius, count, seed=2
+    )[0].numpy()
+    assert pdist(uniform_np).min() < 0.25 * r_max  # Non-vacuity: a uniform draw clumps.
+
+
+@pytest.mark.parametrize("ball", ["wide", "small"])
+def test_sample_surface_in_ball_blue_noise_packs_the_ball(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], ball: str
+) -> None:
+    """
+    Not a library comparison: no library throws darts over the part of a surface in a ball.
+
+    The ``"blue_noise"`` method prunes ``sample_surface_blue_noise``'s pool to the ball before the
+    dart throw, so the samples are a maximal ``spacing``-packing of the surface inside the ball,
+    its border included. Closest pair at least ``spacing`` (exact, as for the whole surface), and
+    the worst gap from a dense uniform draw in the ball at most 1.15 ``spacing`` (measured 1.054
+    ``"wide"`` / 1.049 ``"small"``, identical on both devices). **Mutation probe:** packing the
+    faces meeting the ball and pruning the packing to it leaves the rim's samples without their
+    outside neighbours' replacements, gaps 1.29 / 1.19.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    center_np, radius = _in_ball_case(mesh_tm, ball)
+    spacing = radius / (6.0 if ball == "wide" else 4.0)
+    points_wp, face_index_wp = od.sample.sample_surface_in_ball(
+        mesh_wp.points,
+        mesh_wp.indices,
+        wp.vec3(*center_np.tolist()),
+        radius,
+        method="blue_noise",
+        spacing=spacing,
+        seed=5,
+    )
+    points_np = points_wp.numpy()
+    assert points_wp.size > 10
+    _assert_on_reported_faces_in_ball(mesh_tm, points_np, face_index_wp.numpy(), center_np, radius)
+    dense_np, _ = _in_ball_dense(mesh_tm, center_np, radius, 400_000)
+    closest, gap = _blue_noise_statistics(points_np, spacing, dense_np)
+    assert closest >= 1.0 - 1e-5
+    assert gap <= 1.15
+
+
+def test_sample_surface_in_ball_returns_nothing_for_a_ball_off_the_surface(device: str) -> None:
+    """
+    Not a library comparison: a ball meeting no face returns empty buffers for every method.
+
+    The ball is off the cube, so no face reaches into it and the draw has nothing to weight; the
+    call returns rather than raising, as for a zero ``count``.
+    """
+    vertices, faces = od.creation.box(device=device)
+    center = wp.vec3(3.0, 0.0, 0.0)
+    cases: tuple[tuple[int, Literal["uniform", "poisson_disk"]], ...] = (
+        (10, "uniform"),
+        (10, "poisson_disk"),
+        (0, "uniform"),
+    )
+    for count, method in cases:
+        buffers = od.sample.sample_surface_in_ball(
+            vertices, faces, center, 1.0, count, method=method
+        )
+        assert all(buffer.shape == (0,) for buffer in buffers)
+    buffers = od.sample.sample_surface_in_ball(
+        vertices, faces, center, 1.0, method="blue_noise", spacing=0.1
+    )
+    assert all(buffer.shape == (0,) for buffer in buffers)
+
+
+def test_sample_surface_in_ball_returns_what_its_rounds_kept(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Not a library comparison: the draw's round limit, which a vanishing ball reaches.
+
+    Held to one round, a ball covering ``2.5e-3`` of its face keeps about ten of 4 000 draws: the
+    call returns those, each in the ball and on its face, rather than ``count`` samples.
+    """
+    monkeypatch.setattr(od.sample, "_BALL_ROUNDS", 1)
+    vertices, faces = od.creation.box(device=device)
+    center_np = np.array([0.5, 0.1, 0.2])
+    points_wp, face_index_wp = od.sample.sample_surface_in_ball(
+        vertices, faces, wp.vec3(*center_np.tolist()), 0.02, 4_000, seed=4
+    )
+    assert 0 < points_wp.shape[0] < 100
+    assert face_index_wp.shape == points_wp.shape
+    assert np.linalg.norm(points_wp.numpy() - center_np, axis=1).max() <= 0.02 * (1.0 + 1e-6)
+
+
 @pytest.mark.parity(
     "sample_volume",
     "trimesh",
@@ -874,7 +1195,18 @@ def test_sample_volume_rejects_a_faceless_mesh_only_when_sampling(device: str) -
         od.sample.sample_volume(vertices_wp, faces_wp, 5)
 
 
-@pytest.mark.parametrize("sampler", ["fibonacci_sphere", "poisson_disk", "blue_noise", "volume"])
+@pytest.mark.parametrize(
+    "sampler",
+    [
+        "fibonacci_sphere",
+        "poisson_disk",
+        "blue_noise",
+        "volume",
+        "in_ball_uniform",
+        "in_ball_poisson_disk",
+        "in_ball_blue_noise",
+    ],
+)
 def test_samplers_are_deterministic(request: pytest.FixtureRequest, sampler: str) -> None:
     """
     Ordito against ordito: two calls with the same arguments and seed return identical buffers.
@@ -882,11 +1214,14 @@ def test_samplers_are_deterministic(request: pytest.FixtureRequest, sampler: str
     The lattice takes no seed, so its claim is plain reproducibility; the three seeded samplers
     are called at ``seed=7`` twice, and every returned buffer (points and, where returned, face
     indices) is compared bit for bit. ``sample_volume`` takes ``sphere_well_shaped``, the solid it
-    accepts (``test_sample_volume_containment``).
+    accepts (``test_sample_volume_containment``). The in-ball draws take the ``"small"`` ball,
+    whose uniform pool takes several rounds.
     """
-    _, mesh_wp = request.getfixturevalue(
+    mesh_tm, mesh_wp = request.getfixturevalue(
         "sphere_well_shaped" if sampler == "volume" else "sphere_irregular"
     )
+    center_np, radius = _in_ball_case(mesh_tm, "small")
+    center = wp.vec3(*center_np.tolist())
 
     def draw() -> tuple[wp.array[Any], ...]:
         if sampler == "fibonacci_sphere":
@@ -898,6 +1233,21 @@ def test_samplers_are_deterministic(request: pytest.FixtureRequest, sampler: str
         if sampler == "blue_noise":
             return od.sample.sample_surface_blue_noise(
                 mesh_wp.points, mesh_wp.indices, _blue_noise_radius_for_count(1.0, 30), seed=7
+            )
+        if sampler.startswith("in_ball_"):
+            method = "uniform" if sampler == "in_ball_uniform" else "poisson_disk"
+            if sampler == "in_ball_blue_noise":
+                return od.sample.sample_surface_in_ball(
+                    mesh_wp.points,
+                    mesh_wp.indices,
+                    center,
+                    radius,
+                    method="blue_noise",
+                    spacing=radius / 4.0,
+                    seed=7,
+                )
+            return od.sample.sample_surface_in_ball(
+                mesh_wp.points, mesh_wp.indices, center, radius, 300, method=method, seed=7
             )
         return (od.sample.sample_volume(mesh_wp.points, mesh_wp.indices, 200, seed=7),)
 
@@ -1067,6 +1417,79 @@ def test_arrival_order_scan_samplers_draw_valid_samples(device: str, sampler: st
             ),
             "radius",
             id="blue_noise_radius_zero",
+        ),
+        pytest.param(
+            lambda mesh_wp: od.sample.sample_surface_in_ball(
+                mesh_wp.points,
+                mesh_wp.indices,
+                wp.vec3(0.0, 0.0, 0.0),
+                1.0,
+                5,
+                method="grid",  # pyright: ignore[reportArgumentType]
+            ),
+            "method must be one of",
+            id="in_ball_method",
+        ),
+        pytest.param(
+            lambda mesh_wp: od.sample.sample_surface_in_ball(
+                mesh_wp.points, mesh_wp.indices, wp.vec3(0.0, 0.0, 0.0), 0.0, 5
+            ),
+            r"radius must be > 0, got 0\.0",
+            id="in_ball_radius_zero",
+        ),
+        pytest.param(
+            lambda mesh_wp: od.sample.sample_surface_in_ball(
+                mesh_wp.points, mesh_wp.indices, wp.vec3(0.0, 0.0, 0.0), 1.0
+            ),
+            "method='uniform' takes a count >= 0, got None",
+            id="in_ball_uniform_no_count",
+        ),
+        pytest.param(
+            lambda mesh_wp: od.sample.sample_surface_in_ball(
+                mesh_wp.points, mesh_wp.indices, wp.vec3(0.0, 0.0, 0.0), 1.0, -1
+            ),
+            "takes a count >= 0, got -1",
+            id="in_ball_negative_count",
+        ),
+        pytest.param(
+            lambda mesh_wp: od.sample.sample_surface_in_ball(
+                mesh_wp.points, mesh_wp.indices, wp.vec3(0.0, 0.0, 0.0), 1.0, 5, spacing=0.1
+            ),
+            "spacing must be None",
+            id="in_ball_uniform_spacing",
+        ),
+        pytest.param(
+            lambda mesh_wp: od.sample.sample_surface_in_ball(
+                mesh_wp.points, mesh_wp.indices, wp.vec3(0.0, 0.0, 0.0), 1.0, method="blue_noise"
+            ),
+            "takes a spacing > 0, got None",
+            id="in_ball_blue_noise_no_spacing",
+        ),
+        pytest.param(
+            lambda mesh_wp: od.sample.sample_surface_in_ball(
+                mesh_wp.points,
+                mesh_wp.indices,
+                wp.vec3(0.0, 0.0, 0.0),
+                1.0,
+                5,
+                method="blue_noise",
+                spacing=0.1,
+            ),
+            "count must be None",
+            id="in_ball_blue_noise_count",
+        ),
+        pytest.param(
+            lambda mesh_wp: od.sample.sample_surface_in_ball(
+                mesh_wp.points,
+                mesh_wp.indices,
+                wp.vec3(0.0, 0.0, 0.0),
+                1.0,
+                0,
+                method="poisson_disk",
+                init_factor=0.5,
+            ),
+            r"init_factor must be >= 1, got 0\.5",
+            id="in_ball_poisson_init_factor",
         ),
     ],
 )

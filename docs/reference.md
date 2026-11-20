@@ -79,6 +79,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | intersection curve of two meshes, colliding faces | [`intersection.mesh_with_mesh`][ordito.intersection.mesh_with_mesh], [`collision_masks`][ordito.intersection.collision_masks] |
 | **Point clouds** | |
 | sample points on a surface | [`sample.sample_surface`][ordito.sample.sample_surface], [`sample_surface_poisson_disk`][ordito.sample.sample_surface_poisson_disk] |
+| sample the surface inside a ball | [`sample.sample_surface_in_ball`][ordito.sample.sample_surface_in_ball] |
 | estimate normals | [`points.estimate_normals`][ordito.points.estimate_normals] |
 | down-sample | [`voxels.voxel_down_sample`][ordito.voxels.voxel_down_sample], [`points.farthest_point_sample`][ordito.points.farthest_point_sample] |
 | order points or cells along a Hilbert or Morton curve | [`points.space_filling_order`][ordito.points.space_filling_order], [`voxels.space_filling_codes`][ordito.voxels.space_filling_codes] |

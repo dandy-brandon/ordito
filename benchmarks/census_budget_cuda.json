@@ -7509,6 +7509,34 @@
    "sort": 1
   }
  },
+ "benchmarks/test_sample.py::test_sample_surface_in_ball[sphere_small-ordito-cuda-blue_noise]": {
+  "counts": {
+   "launch": 31,
+   "alloc": 23,
+   "memset": 4,
+   "d2h": 8,
+   "scan": 11,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_sample.py::test_sample_surface_in_ball[sphere_small-ordito-cuda-poisson_disk]": {
+  "counts": {
+   "launch": 14,
+   "alloc": 19,
+   "memset": 5,
+   "d2h": 6,
+   "scan": 5
+  }
+ },
+ "benchmarks/test_sample.py::test_sample_surface_in_ball[sphere_small-ordito-cuda-uniform]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 9,
+   "memset": 1,
+   "d2h": 3,
+   "scan": 3
+  }
+ },
  "benchmarks/test_sample.py::test_sample_surface_poisson_disk[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 11,

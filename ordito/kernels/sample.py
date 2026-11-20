@@ -14,6 +14,7 @@ from ordito.kernels.array import (
     row_chunk_slots,
     scanned_count,
 )
+from ordito.kernels.predicates import point_triangle_distance_sq
 from ordito.kernels.reduce import (
     block_chunk,
     fold_block_totals,
@@ -74,23 +75,70 @@ def fibonacci_lattice(
     out_directions[i] = fibonacci_direction(i, count, z_span)
 
 
+@wp.func
+def face_meets_ball(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    f: wp.int32,
+    center: wp.vec3,
+    radius_sq: wp.float32,
+) -> wp.bool:
+    # Whether closed face ``f`` reaches into the closed ball: its closest point to ``center`` lies
+    # within the radius, which holds for a face crossing the ball with every corner (and its
+    # centroid) outside it. The distance is ``float64``, so a face that only grazes the sphere is
+    # decided by the geometry rather than by ``float32`` rounding of the closest point.
+    v0, v1, v2 = face_vertices(vertices, faces, f)
+    d_sq = point_triangle_distance_sq(wp.vec3d(center), wp.vec3d(v0), wp.vec3d(v1), wp.vec3d(v2))
+    return d_sq <= wp.float64(radius_sq)
+
+
 @wp.kernel
 def face_areas_and_vertex_box(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     box: wp.int32,
+    center: wp.vec3,
+    radius_sq: wp.float32,
     out_cdf: wp.array[wp.float32],
 ) -> None:
     # ``triangles.face_areas`` into the leading ``n_faces`` slots of ``out_cdf`` and, from the
     # trailing ``chunks_1d(n_vertices)`` threads, the vertices' box folded into packed box ``box``
     # of the same buffer (``reduce.minmax_vec3_chunked``'s layout, seeded ``inf``), so the CDF's
-    # total and the box come back in one readback.
+    # total and the box come back in one readback. A non-negative ``radius_sq`` zeroes the area of
+    # every face that does not reach into the ball about ``center`` (``face_meets_ball``), so the
+    # CDF draws from the faces meeting the ball alone; a negative one keeps every face.
     t = wp.int32(wp.tid())
     n_faces = faces.shape[0] // 3
     if t < n_faces:
-        out_cdf[t] = face_area(vertices, faces, t)
+        area = face_area(vertices, faces, t)
+        if radius_sq >= 0.0:
+            if not face_meets_ball(vertices, faces, t, center, radius_sq):
+                area = wp.float32(0.0)
+        out_cdf[t] = area
     else:
         minmax_vec3_chunk(vertices, t - n_faces, out_cdf, box)
+
+
+@wp.func
+def draw_surface_sample(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    cdf: wp.array[wp.float32],
+    total: wp.float32,
+    state: wp.uint32,
+) -> tuple[wp.int32, wp.vec3, wp.vec3]:
+    # One uniform surface sample from the random stream ``state`` starts: its face, its position
+    # and its barycentric coordinates in corner order. ``wp.sample_cdf`` over the *unnormalized*
+    # prefix sum: the same single ``randf`` draw, scaled to ``total`` rather than the cdf divided
+    # by it -- no normalizing pass. The two place a bin edge differently only by float32 rounding,
+    # below the prefix scan's own. ``state`` is this function's copy, advanced in place by the
+    # draws. Shared by ``sample_surface`` and ``sample_surface_in_ball``, which differ only in
+    # where the stream starts and in the latter's in-ball flag.
+    fi = wp.lower_bound(cdf, wp.randf(state) * total)
+    v0, v1, v2 = face_vertices(vertices, faces, fi)
+    uv = wp.sample_triangle(state)
+    w = 1.0 - uv.x - uv.y
+    return fi, v0 * w + v1 * uv.x + v2 * uv.y, wp.vec3(w, uv.x, uv.y)
 
 
 @wp.kernel
@@ -106,22 +154,40 @@ def sample_surface(
 ) -> None:
     # A non-empty ``out_barycentric`` receives each point's coordinates in its face, corner order.
     tid = wp.int32(wp.tid())
-    state = wp.rand_init(seed, tid)
-    # ``wp.sample_cdf`` over the *unnormalized* prefix sum: the same single ``randf`` draw, so the
-    # random stream continues exactly as before, scaled to ``total`` rather than the cdf divided by
-    # it -- no normalizing pass. The two place a bin edge differently only by float32 rounding,
-    # below the prefix scan's own; inline because ``randf`` advances ``state`` in place.
-    fi = wp.lower_bound(cdf, wp.randf(state) * total)
-
-    v0, v1, v2 = face_vertices(vertices, faces, fi)
-
-    uv = wp.sample_triangle(state)
-    w = 1.0 - uv.x - uv.y
-
+    fi, point, barycentric = draw_surface_sample(
+        vertices, faces, cdf, total, wp.rand_init(seed, tid)
+    )
     out_face_indices[tid] = fi
-    out_points[tid] = v0 * w + v1 * uv.x + v2 * uv.y
+    out_points[tid] = point
     if out_barycentric.shape[0] > 0:
-        out_barycentric[tid] = wp.vec3(w, uv.x, uv.y)
+        out_barycentric[tid] = barycentric
+
+
+@wp.kernel
+def sample_surface_in_ball(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    cdf: wp.array[wp.float32],
+    total: wp.float32,
+    seed: wp.int32,
+    first: wp.int32,
+    center: wp.vec3,
+    radius_sq: wp.float32,
+    out_points: wp.array[wp.vec3],
+    out_face_indices: wp.array[wp.int32],
+    out_flags: wp.array[wp.int32],
+) -> None:
+    # Sample ``first + tid`` of the seeded stream, drawn from the CDF of the faces meeting the ball
+    # (``face_areas_and_vertex_box``), and a 0/1 flag for whether it lies in the closed ball: the
+    # flagged samples are uniform over the surface inside it. Thread ``tid`` of a later round
+    # continues the stream where the earlier rounds stopped, so the rounds are one longer draw.
+    tid = wp.int32(wp.tid())
+    fi, point, _barycentric = draw_surface_sample(
+        vertices, faces, cdf, total, wp.rand_init(seed, first + tid)
+    )
+    out_face_indices[tid] = fi
+    out_points[tid] = point
+    out_flags[tid] = wp.where(wp.length_sq(point - center) <= radius_sq, 1, 0)
 
 
 @wp.kernel(module="unique")
@@ -645,17 +711,22 @@ def emit_kept_samples(
     inclusive: wp.array[wp.int32],
     points: wp.array[wp.vec3],
     face_indices: wp.array[wp.int32],
+    first: wp.int32,
+    capacity: wp.int32,
     out_points: wp.array[wp.vec3],
     out_face_indices: wp.array[wp.int32],
 ) -> None:
     # The kept samples and their faces, in input order, from the in-place inclusive scan of their
     # 0/1 keep flags: sample ``i`` is kept exactly where the scan steps (``array.scanned_count``,
-    # ``scatter.scatter_index_where_scanned``'s rule) and lands at the exclusive value -- the index
-    # compaction and both gathers in one launch. Shared by the Poisson-disk elimination (its
-    # ``alive`` flags) and the blue-noise dart throw (``blue_noise.dart_accepted_pool_flags``).
+    # ``scatter.scatter_index_where_scanned``'s rule) and lands at the exclusive value plus
+    # ``first``, if that is below ``capacity`` -- the index compaction and both gathers in one
+    # launch. Shared by the Poisson-disk elimination (its ``alive`` flags), the blue-noise dart
+    # throw (``blue_noise.dart_accepted_pool_flags``) and the in-ball rounds, which append each
+    # round's in-ball samples after the last round's until ``capacity`` are kept.
     i = wp.int32(wp.tid())
     slot, count = scanned_count(inclusive, i)
-    if count != 0:
+    slot += first
+    if count != 0 and slot < capacity:
         out_points[slot] = points[i]
         out_face_indices[slot] = face_indices[i]
 

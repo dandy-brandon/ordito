@@ -6833,6 +6833,33 @@
    "sort": 1
   }
  },
+ "benchmarks/test_sample.py::test_sample_surface_in_ball[sphere_small-ordito-cpu-blue_noise]": {
+  "counts": {
+   "launch": 11,
+   "alloc": 22,
+   "readback": 4,
+   "scan": 4,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_sample.py::test_sample_surface_in_ball[sphere_small-ordito-cpu-poisson_disk]": {
+  "counts": {
+   "launch": 149,
+   "alloc": 20,
+   "h2h": 1,
+   "readback": 6,
+   "scan": 5,
+   "sort": 35
+  }
+ },
+ "benchmarks/test_sample.py::test_sample_surface_in_ball[sphere_small-ordito-cpu-uniform]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 9,
+   "readback": 3,
+   "scan": 3
+  }
+ },
  "benchmarks/test_sample.py::test_sample_surface_poisson_disk[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 134,

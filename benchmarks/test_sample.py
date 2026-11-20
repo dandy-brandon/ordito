@@ -64,6 +64,7 @@ import pymeshlab as ml
 import pytest
 import pytorch3d.ops as p3d_ops
 import trimesh as tm
+import warp as wp
 from meshlib import mrmeshpy as mm
 
 import ordito as od
@@ -357,6 +358,79 @@ def test_sample_surface_poisson_disk(bench_case: BenchCase) -> None:
         lambda: od.sample.sample_surface_poisson_disk(vertices, faces, _TARGET_SAMPLES, seed=_SEED)
     )
     assert points.shape[0] == _TARGET_SAMPLES
+    assert face_index.shape == points.shape
+
+
+def _ball_for_mesh(bench_case: BenchCase) -> tuple[np.ndarray, float]:
+    """Return a ball at the first vertex of a quarter of the mesh's largest extent."""
+    vertices_np = np.asarray(bench_case.vertices_np, dtype=np.float64)
+    extent = float(np.max(vertices_np.max(axis=0) - vertices_np.min(axis=0)))
+    return vertices_np[0], 0.25 * extent
+
+
+@pytest.mark.benchmark(group="sample_surface_in_ball")
+@pytest.mark.benchlibs("ordito", "trimesh")
+@pytest.mark.parametrize("method", ["uniform", "poisson_disk", "blue_noise"])
+def test_sample_surface_in_ball(bench_case: BenchCase, method: str) -> None:
+    """
+    The surface inside a ball a quarter of the mesh across, sampled with no submesh built.
+
+    ``"uniform"`` and ``"poisson_disk"`` take ``_TARGET_SAMPLES`` samples, ``"blue_noise"`` a
+    spacing of a 25th of the ball's radius. ordito weights the faces meeting the ball by area and
+    draws rejection rounds over them until the count is in the ball, so its row is one area pass,
+    two to three rounds and their readbacks.
+
+    **trimesh** has no ball sampler: its row is the answer's definition, a whole-surface uniform
+    draw pruned to the ball, sized outside the timed callable by a pre-draw so that about
+    ``_TARGET_SAMPLES`` land in the ball. It is the reference for ``"uniform"`` only.
+    """
+    skip_larger_than(bench_case, "bunny", "the CPU reference draws the whole surface")
+    center_np, radius = _ball_for_mesh(bench_case)
+    if bench_case.kind == "trimesh":
+        if method != "uniform":
+            pytest.skip("trimesh's pruned draw is the uniform method's reference only")
+        vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
+        mesh_tm = tm.Trimesh(vertices_np, faces_np, process=False)
+        probe_tm = tm.sample.sample_surface(mesh_tm, 100_000, seed=_SEED)[0]
+        share = float(np.mean(np.linalg.norm(probe_tm - center_np, axis=1) <= radius))
+        draws = math.ceil(_TARGET_SAMPLES / share)
+
+        def pruned_draw() -> np.ndarray:
+            points_tm = tm.sample.sample_surface(
+                tm.Trimesh(vertices_np, faces_np, process=False), draws, seed=_SEED
+            )[0]
+            return points_tm[np.linalg.norm(points_tm - center_np, axis=1) <= radius]
+
+        assert bench_case.run(pruned_draw).shape[0] > 0
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    center = wp.vec3(*center_np.tolist())
+    if method == "blue_noise":
+        points, face_index = bench_case.run(
+            lambda: od.sample.sample_surface_in_ball(
+                vertices,
+                faces,
+                center,
+                radius,
+                method="blue_noise",
+                spacing=radius / 25.0,
+                seed=_SEED,
+            )
+        )
+        assert points.shape[0] > 0
+    else:
+        points, face_index = bench_case.run(
+            lambda: od.sample.sample_surface_in_ball(
+                vertices,
+                faces,
+                center,
+                radius,
+                _TARGET_SAMPLES,
+                method="poisson_disk" if method == "poisson_disk" else "uniform",
+                seed=_SEED,
+            )
+        )
+        assert points.shape[0] == _TARGET_SAMPLES
     assert face_index.shape == points.shape
 
 
