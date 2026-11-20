@@ -4331,6 +4331,12 @@
  "benchmarks/test_mesh.py::test_moment_inertia[sphere_small-ordito-cpu-warm]": {
   "counts": {}
  },
+ "benchmarks/test_mesh.py::test_moved_tree[sphere_small-ordito-cpu-rebuild]": {
+  "counts": {}
+ },
+ "benchmarks/test_mesh.py::test_moved_tree[sphere_small-ordito-cpu-refit]": {
+  "counts": {}
+ },
  "benchmarks/test_mesh.py::test_oriented_boundary_edges[saddle_small-ordito-cpu-cold]": {
   "counts": {
    "launch": 4,
@@ -4590,6 +4596,18 @@
    "alloc": 3,
    "readback": 1,
    "scan": 1
+  }
+ },
+ "benchmarks/test_neighbors.py::test_query_ball_sum[sphere_small-ordito-cpu-2.0]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_neighbors.py::test_query_ball_sum[sphere_small-ordito-cpu-4.0]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 2
   }
  },
  "benchmarks/test_neighbors.py::test_query_bvh_ball[sphere_small-ordito-cpu-2.0]": {
@@ -6031,6 +6049,15 @@
    "alloc": 3,
    "h2h": 1,
    "readback": 1
+  }
+ },
+ "benchmarks/test_registration.py::test_icp_point_to_plane_median_gate[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 34,
+   "alloc": 16,
+   "h2h": 1,
+   "readback": 22,
+   "sort": 11
   }
  },
  "benchmarks/test_registration.py::test_icp_point_to_plane_mesh[sphere_small-ordito-cpu]": {

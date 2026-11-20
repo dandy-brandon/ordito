@@ -138,12 +138,22 @@ def face_half_cotangents_float64(
 
 @wp.func
 def store_half_cotangents(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], f: wp.int32, out_cot: Any
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    f: wp.int32,
+    nonnegative: wp.int32,
+    out_cot: Any,
 ) -> None:
     # Face ``f``'s row of the half-cotangent table, computed in float32 (the vertex precision) and
     # cast to the table's dtype (float32 or float64) at store time: ``cotmatrix_entries``' body,
-    # shared by every face pass that writes the table beside something else.
+    # shared by every face pass that writes the table beside something else. ``nonnegative``
+    # (``cotmatrix_entries(nonnegative_weights=True)``) clamps an obtuse angle's negative weight
+    # to zero; every other pass stores the signed weights.
     c0, c1, c2 = face_half_cotangents(vertices, faces, f)
+    if nonnegative != 0:
+        c0 = wp.max(c0, wp.float32(0.0))
+        c1 = wp.max(c1, wp.float32(0.0))
+        c2 = wp.max(c2, wp.float32(0.0))
     out_cot[f, 0] = type(out_cot[f, 0])(c0)
     out_cot[f, 1] = type(out_cot[f, 1])(c1)
     out_cot[f, 2] = type(out_cot[f, 2])(c2)
@@ -166,11 +176,14 @@ def add_face_area_exact(
 
 @wp.kernel
 def cotmatrix_entries(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], out_cot: wp.array2d[wp.Float]
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    nonnegative: wp.int32,
+    out_cot: wp.array2d[wp.Float],
 ) -> None:
     # ``out_cot`` is generic: see ``store_half_cotangents``.
     f = wp.int32(wp.tid())
-    store_half_cotangents(vertices, faces, f, out_cot)
+    store_half_cotangents(vertices, faces, f, nonnegative, out_cot)
 
 
 @wp.kernel
@@ -189,7 +202,7 @@ def cotmatrix_entries_and_area_sums(
     # ``float32`` half-cotangent as it sums it, so the narrower table changes no entry.
     f = wp.int32(wp.tid())
     if write_cot != 0:
-        store_half_cotangents(vertices, faces, f, out_cot)
+        store_half_cotangents(vertices, faces, f, wp.int32(0), out_cot)
     add_face_area_exact(vertices, faces, f, out_area_sums)
 
 
@@ -748,7 +761,7 @@ def cotmatrix_entries_and_operator_keys(
     t = wp.int32(wp.tid())
     store_operator_keys(faces, n_vertices, diagonal, t, out_keys, out_order)
     if t < faces.shape[0] // 3:
-        store_half_cotangents(vertices, faces, t, out_cot)
+        store_half_cotangents(vertices, faces, t, wp.int32(0), out_cot)
 
 
 @wp.kernel
@@ -1681,7 +1694,10 @@ def _register_overloads() -> None:
     global MASS_DIAGONAL_ROWS
     COTMATRIX_ENTRIES = OverloadTable(
         cotmatrix_entries,
-        {d: [wp.array[wp.vec3], wp.array[wp.int32], wp.array2d[d]] for d in _MATRIX_DTYPES},
+        {
+            d: [wp.array[wp.vec3], wp.array[wp.int32], wp.int32, wp.array2d[d]]
+            for d in _MATRIX_DTYPES
+        },
     )
     COTMATRIX_ENTRIES_AND_OPERATOR_KEYS = OverloadTable(
         cotmatrix_entries_and_operator_keys,

@@ -1367,7 +1367,7 @@ def crouzeix_raviart_face_terms(
         else:
             out_nonmanifold[0] = 1
     if write_cot != 0:
-        store_half_cotangents(vertices, faces, f, out_cot)
+        store_half_cotangents(vertices, faces, f, wp.int32(0), out_cot)
 
 
 @wp.func

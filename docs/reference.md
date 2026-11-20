@@ -73,6 +73,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | cast rays | [`ray.intersects_first`][ordito.ray.intersects_first], [`intersects_location`][ordito.ray.intersects_location], [`first_hits`][ordito.ray.first_hits] |
 | test which points are inside | [`ray.contains_points`][ordito.ray.contains_points] |
 | nearest neighbours, radius search | [`neighbors.query_nearest`][ordito.neighbors.query_nearest], [`query_ball`][ordito.neighbors.query_ball] |
+| sum or average a value over each point's neighbourhood without listing the neighbours | [`neighbors.query_ball_sum`][ordito.neighbors.query_ball_sum] |
 | one-to-one matches between two clouds (mutual nearest neighbours) | [`neighbors.mutual_nearest`][ordito.neighbors.mutual_nearest] |
 | Chamfer and Hausdorff distances | [`metrics`][ordito.metrics]: [`chamfer_mesh_to_mesh`][ordito.metrics.chamfer_mesh_to_mesh], [`hausdorff_mesh_to_mesh`][ordito.metrics.hausdorff_mesh_to_mesh] |
 | intersection curve of two meshes, colliding faces | [`intersection.mesh_with_mesh`][ordito.intersection.mesh_with_mesh], [`collision_masks`][ordito.intersection.collision_masks] |

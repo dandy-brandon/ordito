@@ -740,6 +740,7 @@ def icp_point_to_plane(
     max_iterations: int = 20,
     threshold: float = 1e-6,
     max_distance: float | None = None,
+    max_distance_factor: float | None = None,
     robust_kernel: Literal["none", "huber", "tukey"] = "none",
     robust_scale: float | None = None,
     damping: float = 1e-6,
@@ -789,6 +790,14 @@ def icp_point_to_plane(
         fit improves, including Tukey's, whose weights redescend.
     max_distance
         Reject correspondences farther than this. No rejection when ``None``.
+    max_distance_factor
+        Reject correspondences farther than this factor times the median correspondence distance,
+        the median taken afresh at every iteration's correspondences (and at the final pose's, for
+        ``cost``): a gate that follows the fit's own scale, where ``max_distance`` is fixed in
+        the target's units. ``None`` (the default) for no such gate; not with ``max_distance``.
+        Each iteration then reads its median back to the host, so the iterations are issued from
+        the host one at a time rather than run on the device. The ``threshold`` stop compares
+        ``cost`` between iterations gated at their own medians.
     robust_kernel
         M-estimator applied to residuals: ``"none"``, ``"huber"``, or ``"tukey"``.
     robust_scale
@@ -833,9 +842,10 @@ def icp_point_to_plane(
     Raises
     ------
     ValueError
-        If ``robust_kernel`` is not one of the three names, or if the target is a point cloud
-        (``target_faces is None``) and ``target_normals`` is not provided, or does not have the
-        same length as ``target_vertices``.
+        If ``robust_kernel`` is not one of the three names, if both ``max_distance`` and
+        ``max_distance_factor`` are given or the factor is not positive, or if the target is a
+        point cloud (``target_faces is None``) and ``target_normals`` is not provided, or does not
+        have the same length as ``target_vertices``.
     TypeError
         If ``target_index`` is not a ``wp.Bvh`` for a point-cloud target, or not a ``wp.Mesh`` for
         a mesh target.
@@ -885,6 +895,13 @@ def icp_point_to_plane(
             f"robust_kernel must be one of {list(_ROBUST_KINDS)}, got {robust_kernel!r}"
         )
     kind = _ROBUST_KINDS[robust_kernel]
+    if max_distance_factor is not None and max_distance is not None:
+        raise ValueError(
+            "icp_point_to_plane takes max_distance or max_distance_factor, not both: both set "
+            "the distance beyond which a correspondence is rejected."
+        )
+    if max_distance_factor is not None and not max_distance_factor > 0.0:
+        raise ValueError(f"max_distance_factor must be positive, got {max_distance_factor}.")
 
     if not is_mesh and target_normals is None:
         raise ValueError(
@@ -1009,6 +1026,13 @@ def icp_point_to_plane(
             device=device,
         )
 
+    def gate() -> None:
+        # ``max_distance_factor``'s gate for the correspondences the last search wrote: the
+        # factor times their median distance, read back (the gate is a launch argument).
+        nonlocal max_d
+        if max_distance_factor is not None:
+            max_d = max_distance_factor * od.reduce.median(distance)
+
     def resolve_scale() -> None:
         # It reads the residuals back, so it runs before any recorded round.
         nonlocal scale_value
@@ -1035,7 +1059,27 @@ def icp_point_to_plane(
     # returned the identity transform with ``cost=0.0`` on a cloud still offset by (1.0, 0.5, -0.3)
     # from its target.
     stepped = False
-    if max_iterations > 0:
+    if max_iterations > 0 and max_distance_factor is not None:
+        # The gate moves with every round's median, a readback, so the rounds are issued from the
+        # host and none can be recorded. Each first reads the condition its predecessor's close
+        # wrote, the only way the host learns of a stop, and a weightless first round returns the
+        # seed's answer, as the recorded path's read below does.
+        search(False)
+        gate()
+        resolve_scale()
+        accumulate(close=True)
+        # Readback: did the first round keep a step (see the weightless stop above).
+        if int(read_scalar(state, int(kernel_array.LOOP_ROUND))) == 0:
+            return total, current, math.inf
+        for _ in range(max_iterations - 1):
+            # Readback: the host-issued loop's stop, which the device decided.
+            if int(read_scalar(state, int(kernel_array.LOOP_CONDITION))) == 0:
+                break
+            search(True)
+            gate()
+            accumulate(close=True)
+        stepped = True
+    elif max_iterations > 0:
         search(False)
         resolve_scale()
         accumulate(close=True)
@@ -1103,6 +1147,7 @@ def icp_point_to_plane(
     # (``close_point_to_plane_round``), so this pass finds the same correspondences, sums zero
     # weight again and reports ``inf`` -- the stop costs no readback of its own.
     search(stepped)
+    gate()
     resolve_scale()
     accumulate(close=False)
     cost, weight_sum = read_values(acc, int(kernel_registration.ICP_COST), 2)

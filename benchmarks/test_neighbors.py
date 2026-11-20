@@ -894,6 +894,49 @@ def test_query_ball_count(bench_case: BenchCase, radius_scale: float) -> None:
     assert counts.shape == (queries.size,)
 
 
+@pytest.mark.benchmark(group="query_ball_sum")
+@pytest.mark.benchlibs("ordito", "scipy")
+@pytest.mark.parametrize("radius_scale", _RADIUS_SCALES)
+def test_query_ball_sum(bench_case: BenchCase, radius_scale: float) -> None:
+    """
+    Each query's neighbours' offsets along a direction a query, summed, with the counts.
+
+    ``query_ball_count``'s walk carrying the sum, over the same prebuilt BVH and radii, so this
+    less ``query_ball_count`` is the term. It replaces ``query_ball_with_offsets`` plus a pair
+    pass plus ``reduce.segment_sum``, which stores every pair: 0.21-0.39x that composition on
+    bunny, dragon and lucy at 2 and 5 mean edges (2026-11-20, CUDA, grid prebuilt in both).
+    scipy's rows are ``query_ball_point``'s lists summed in NumPy, the test oracle.
+    """
+    skip_larger_than(bench_case, "bunny", "the neighbour count grows cubically with the radius")
+    radius = radius_scale * bench_case.mean_edge
+    queries_np = _queries_np(bench_case)
+    directions_np = np.tile(np.array([0.0, 0.6, 0.8], dtype=np.float32), (queries_np.shape[0], 1))
+    if bench_case.kind == "scipy":
+        tree, points_np = _kdtree(bench_case), bench_case.vertices_np
+
+        def scipy_sums() -> np.ndarray:
+            balls = tree.query_ball_point(queries_np, radius)
+            return np.array(
+                [
+                    ((points_np[ball] - queries_np[k]) @ directions_np[k]).sum()
+                    for k, ball in enumerate(balls)
+                ]
+            )
+
+        sums_np = bench_case.run(scipy_sums)
+        assert sums_np.shape == (queries_np.shape[0],)
+        return
+    points, queries = bench_case.vertices_wp, _queries_wp(bench_case)
+    directions = wp.array(directions_np, dtype=wp.vec3, device=bench_case.device)
+    bvh = _bvh(bench_case, leaf_size=1)
+    sums, counts = bench_case.run(
+        lambda: od.neighbors.query_ball_sum(
+            points, queries, radius, directions=directions, accelerator=bvh
+        )
+    )
+    assert sums.shape == counts.shape == (queries.size,)
+
+
 @pytest.mark.benchmark(group="query_ball_hashgrid")
 @pytest.mark.benchlibs("ordito", "scipy", "open3d", "pytorch3d")
 @pytest.mark.parametrize("grid_bins", _GRID_BINS)

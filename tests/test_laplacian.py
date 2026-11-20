@@ -251,6 +251,50 @@ def test_cotmatrix_entries(request: pytest.FixtureRequest, mesh_name: str) -> No
     assert np.allclose(cot_entries_wp.numpy(), cot_entries_igl, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular_cap"])
+def test_nonnegative_weights_are_igls_clamped_at_zero(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Class B: ``igl.cotmatrix_entries`` with its negative entries set to zero, the named transform.
+
+    Both the table and the operator assembled from it (in SciPy from igl's clamped table, the
+    igl sign convention) are compared. The fixtures are the obtuse ones: ``saddle_graded``'s
+    needles give 1 024 negative half-cotangents of 6 534 and ``sphere_irregular_cap`` 369 of
+    1 551, so the clamp changes both answers; every operator off-diagonal is then ``>= 0``. A
+    caller's ``cot_entries`` cannot be clamped by ``cotmatrix``, which says so.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_np, faces_np = mesh_igl(mesh_tm)
+    cot_entries_igl = np.asarray(igl.cotmatrix_entries(vertices_np, faces_np))
+    assert (cot_entries_igl < 0).sum() > 300
+    clamped_igl = np.maximum(cot_entries_igl, 0.0)
+
+    cot_entries_wp = od.laplacian.cotmatrix_entries(
+        mesh_wp.points, mesh_wp.indices, nonnegative_weights=True
+    )
+    assert np.allclose(cot_entries_wp.numpy(), clamped_igl, rtol=1e-5, atol=1e-5)
+
+    n_vertices = vertices_np.shape[0]
+    # Column ``c`` weighs the edge opposite corner ``c``: (1, 2), (2, 0), (0, 1).
+    rows = np.concatenate([faces_np[:, (c + 1) % 3] for c in range(3)])
+    cols = np.concatenate([faces_np[:, (c + 2) % 3] for c in range(3)])
+    weights = np.concatenate([clamped_igl[:, c] for c in range(3)])
+    off_diagonal = sp.coo_matrix((weights, (rows, cols)), shape=(n_vertices, n_vertices))
+    off_diagonal = (off_diagonal + off_diagonal.T).tocsr()
+    laplacian_np = (off_diagonal - sp.diags(np.asarray(off_diagonal.sum(axis=1)).ravel())).tocsr()
+    laplacian_wp = bsr_to_csr(
+        od.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices, nonnegative_weights=True)
+    )
+    assert sparse_allclose(laplacian_wp, laplacian_np, rtol=1e-5, atol=1e-5)
+    assert (laplacian_wp - sp.diags(laplacian_wp.diagonal())).min() >= 0.0
+
+    with pytest.raises(ValueError, match="nonnegative_weights clamps the weights it computes"):
+        od.laplacian.cotmatrix(
+            mesh_wp.points, mesh_wp.indices, cot_entries_wp, nonnegative_weights=True
+        )
+
+
 @pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity(
     "cotmatrix_entries",

@@ -344,6 +344,7 @@ def harmonic(
     *,
     k: int = 1,
     solver: Literal["auto", "direct"] = "auto",
+    nonnegative_weights: bool = False,
 ) -> wp.array[wp.vec2]: ...
 @overload
 def harmonic(
@@ -355,6 +356,7 @@ def harmonic(
     k: int = 1,
     *,
     solver: Literal["auto", "direct"] = "auto",
+    nonnegative_weights: bool = False,
 ) -> wp.array[wp.vec2]: ...
 def harmonic(
     mesh: Trimesh | wp.array[wp.vec3] | None = None,
@@ -365,6 +367,7 @@ def harmonic(
     *,
     vertices: wp.array[wp.vec3] | None = None,
     solver: Literal["auto", "direct"] = "auto",
+    nonnegative_weights: bool = False,
 ) -> wp.array[wp.vec2]:
     """
     Harmonic parametrization with fixed boundary.
@@ -402,6 +405,13 @@ def harmonic(
         given a `Trimesh`, the factorization is kept on it, so every later call fixing the same
         vertices -- whatever their values -- is a factored solve with no iteration. Pays from about
         the second such call; a one-shot call is usually faster under ``"auto"``.
+    nonnegative_weights
+        Build the Laplacian from cotangent weights clamped at zero
+        ([`cotmatrix`][ordito.laplacian.cotmatrix]'s ``nonnegative_weights``). At ``k == 1`` each
+        free vertex is then a convex combination of its neighbors, so with the boundary on a
+        convex polygon the map is an embedding (Tutte's and Floater's theorem) whatever the mesh's
+        obtuse angles, where the signed weights can fold triangles; the map is no longer exactly
+        harmonic. A `Trimesh` keeps this system's factorization apart from the signed one's.
 
     Returns
     -------
@@ -511,7 +521,7 @@ def harmonic(
     return _fixed_boundary_map(
         bound,
         owned,
-        "harmonic",
+        _HARMONIC_NONNEGATIVE if nonnegative_weights else "harmonic",
         cast("wp.array[wp.int32]", arguments[0]),
         cast("wp.array[wp.vec2]", arguments[1]),
         cast("int", arguments[2]),
@@ -2048,6 +2058,10 @@ def lscm(
 
 
 _FIXED_VERTEX_METHODS = ("harmonic", "tutte", "lscm")
+# ``harmonic(nonnegative_weights=True)``'s system: a ``FixedVertexSolver`` key of its own, so its
+# factorization is never taken for the signed system's, but not a method the public menu offers.
+_HARMONIC_NONNEGATIVE = "harmonic_nonnegative"
+_FIXED_VERTEX_SYSTEMS = (*_FIXED_VERTEX_METHODS, _HARMONIC_NONNEGATIVE)
 
 
 class FixedVertexSolver:
@@ -2270,6 +2284,7 @@ class FixedVertexSolver:
         print(np.allclose(solution.numpy()[0], x[~mask]))  # True
         ```
         """
+        _require_fixed_vertex_method(method, k, "FixedVertexSolver.solve")
         return self._solve(method, fixed_mask, fixed_values, k, solver, None)
 
     def _solve(
@@ -2288,7 +2303,7 @@ class FixedVertexSolver:
         out-of-range index fixes fewer, which the system's free count -- read when it is built --
         shows before anything is factored or solved.
         """
-        _require_fixed_vertex_method(method, k, "FixedVertexSolver.solve")
+        _require_fixed_vertex_method(method, k, "FixedVertexSolver.solve", _FIXED_VERTEX_SYSTEMS)
         _require_solver_name(solver, "FixedVertexSolver.solve")
         mesh = self._bound_mesh()
         require_same_device(
@@ -2389,7 +2404,7 @@ def _solve_fixed_vertices_once(
     [`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed] forms it: nothing outlives the call,
     so the system is never held for a later solve to re-form its right-hand side.
     """
-    _require_fixed_vertex_method(method, k, "FixedVertexSolver.solve")
+    _require_fixed_vertex_method(method, k, "FixedVertexSolver.solve", _FIXED_VERTEX_SYSTEMS)
     _require_solver_name(solver, "FixedVertexSolver.solve")
     vertices = mesh.vertices
     require_same_device(vertices=vertices, fixed_mask=fixed_mask, fixed_values=fixed_values)
@@ -2440,12 +2455,12 @@ def _require_solver_name(solver: str, caller: str) -> None:
         raise ValueError(f'{caller}: solver must be "auto" or "direct", got {solver!r}.')
 
 
-def _require_fixed_vertex_method(method: str, k: int, caller: str) -> None:
-    """Validate a ``FixedVertexSolver`` menu argument and its harmonic power."""
-    if method not in _FIXED_VERTEX_METHODS:
-        raise ValueError(
-            f"{caller}: method must be one of {list(_FIXED_VERTEX_METHODS)}, got {method!r}."
-        )
+def _require_fixed_vertex_method(
+    method: str, k: int, caller: str, methods: tuple[str, ...] = _FIXED_VERTEX_METHODS
+) -> None:
+    """Validate a ``FixedVertexSolver`` menu argument (one of ``methods``) and its power."""
+    if method not in methods:
+        raise ValueError(f"{caller}: method must be one of {list(methods)}, got {method!r}.")
     if k < 1 or (method == "lscm" and k != 1):
         raise ValueError(f"{caller}: k={k} is not a power {method} takes.")
 
@@ -2498,40 +2513,39 @@ def _fixed_vertex_operator(
     """
     vertices, faces = mesh.vertices, mesh.faces
     # The mesh's cached cotangent weights and sparsity serve the float64 operators too (both are
-    # dtype-free), so a second system over one mesh pays only for its values.
+    # dtype-free), so a second system over one mesh pays only for its values. The clamped weights
+    # of ``harmonic(nonnegative_weights=True)`` are not cached: its factorization is.
+    nonnegative = method == _HARMONIC_NONNEGATIVE
+    if nonnegative:
+        method = "harmonic"
     if method == "lscm":
         q = od.energies.lscm_hessian(
             vertices, faces, cot_entries=mesh.cotmatrix_entries, pattern=mesh.mesh_operator_pattern
         )
         return q, None, None
-    if method == "harmonic" and k == 1 and faces.size > 0:
-        # ``-L`` written by one row kernel over the mesh's pattern, so ``L`` is never formed.
-        _, _, offsets, columns, run_start, keys, count, order = mesh.mesh_operator_pattern
-        negated_values = _launch.empty(columns.size, dtype=wp.float64, device=vertices.device)
-        _launch.launch(
-            kernel_parametrization.negated_cotmatrix_rows,
-            dim=vertices.size,
-            inputs=[
-                offsets,
-                columns,
-                run_start,
-                keys,
-                wp.int32(count),
-                order,
-                mesh.cotmatrix_entries,
-            ],
-            outputs=[negated_values],
-            device=vertices.device,
-        )
-        q = od.array.bsr_from_csr(vertices.size, vertices.size, offsets, columns, negated_values)
-        return q, None, None
     if method == "harmonic":
+        cot_entries = (
+            od.laplacian.cotmatrix_entries(vertices, faces, nonnegative_weights=True)
+            if nonnegative
+            else mesh.cotmatrix_entries
+        )
+        if k == 1 and faces.size > 0:
+            # ``-L`` written by one row kernel over the mesh's pattern, so ``L`` is never formed.
+            _, _, offsets, columns, run_start, keys, count, order = mesh.mesh_operator_pattern
+            negated_values = _launch.empty(columns.size, dtype=wp.float64, device=vertices.device)
+            _launch.launch(
+                kernel_parametrization.negated_cotmatrix_rows,
+                dim=vertices.size,
+                inputs=[offsets, columns, run_start, keys, wp.int32(count), order, cot_entries],
+                outputs=[negated_values],
+                device=vertices.device,
+            )
+            q = od.array.bsr_from_csr(
+                vertices.size, vertices.size, offsets, columns, negated_values
+            )
+            return q, None, None
         laplacian = cotmatrix(
-            vertices,
-            faces,
-            mesh.cotmatrix_entries,
-            dtype=wp.float64,
-            pattern=mesh.mesh_operator_pattern,
+            vertices, faces, cot_entries, dtype=wp.float64, pattern=mesh.mesh_operator_pattern
         )
         mass_diag = (
             mass_matrix_entries(vertices, faces, dtype=wp.float64, face_areas=mesh.face_areas)

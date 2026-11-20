@@ -674,3 +674,30 @@ def test_icp_point_to_plane_mesh(bench_case: BenchCase) -> None:
         )
     )
     assert matrix.shape == (1,)
+
+
+@pytest.mark.benchmark(group="icp_point_to_plane_median_gate")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito")
+def test_icp_point_to_plane_median_gate(bench_case: BenchCase) -> None:
+    """
+    Point-to-plane ICP onto the surface with ``max_distance_factor``: a gate at three medians.
+
+    Each round reads its correspondences' median back, so its rounds are issued from the host
+    where ``icp_point_to_plane_mesh``'s replay on the device; the two rows together price that.
+    ordito-only: no reference rejects by the median (MeshLib's ``farDistFactor`` scales the root
+    mean square).
+    """
+    skip_larger_than(bench_case, "happy_buddha", "per-iteration mesh queries scale with face count")
+    source, vertices, faces = _source_wp(bench_case), bench_case.vertices_wp, bench_case.faces_wp
+    matrix, _transformed, _cost = bench_case.run(
+        lambda: od.registration.icp_point_to_plane(
+            source,
+            vertices,
+            faces,
+            max_iterations=_ICP_ITERATIONS,
+            threshold=-math.inf,
+            max_distance_factor=3.0,
+        )
+    )
+    assert matrix.shape == (1,)

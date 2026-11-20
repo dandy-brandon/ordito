@@ -291,6 +291,33 @@ def test_invalidation(bench_case: BenchCase, mode: str) -> None:
     assert bench_case.run(run) is not None
 
 
+@pytest.mark.benchmark(group="mesh_moved_tree")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("refit", [False, True], ids=["rebuild", "refit"])
+def test_moved_tree(bench_case: BenchCase, refit: bool) -> None:
+    """
+    A moved mesh's ``warp_mesh``: built afresh, or handed on by ``with_vertices(refit=True)``.
+
+    Each round moves the previous round's mesh, so the refit row always has a tree to hand on.
+    Measured 2026-11-20 on the bare ``wp.Mesh`` calls: a refit 0.20-0.22x a build on CUDA and
+    0.04x on the CPU (bunny to lucy), with closest-point queries on the refitted tree at 0.93-1.11x
+    a fresh tree's after a bend of up to 5 % of the diagonal.
+
+    ordito-only: a deformation loop's tree policy, which no reference exposes.
+    """
+    skip_larger_than(bench_case, "happy_buddha")
+    current = od.Trimesh(bench_case.vertices_wp, bench_case.faces_wp)
+    assert current.warp_mesh is not None
+    vertices = bench_case.vertices_wp
+
+    def run() -> object:
+        nonlocal current
+        current = current.with_vertices(vertices, refit=refit)
+        return current.warp_mesh
+
+    assert bench_case.run(run) is not None
+
+
 @pytest.mark.benchmark(group="mesh_carry_directions")
 @pytest.mark.benchlibs("ordito")
 @pytest.mark.parametrize("mode", ["invert", "rotate", "rotate_device"])

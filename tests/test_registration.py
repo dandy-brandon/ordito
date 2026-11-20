@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from functools import partial
 from typing import TYPE_CHECKING, Literal, Required, TypedDict, cast
 
@@ -1257,6 +1258,64 @@ def test_icp_point_to_plane_robust_outliers(saddle_graded: tuple[tm.Trimesh, wp.
     assert rms_tukey < rms_none
 
 
+def test_icp_point_to_plane_median_gate_rejects_outliers(
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a library comparison: no reference rejects by the median correspondence distance.
+
+    MeshLib's ``farDistFactor`` scales the root mean square instead, which the outliers below
+    inflate. ``test_icp_point_to_plane_robust_outliers``' setup: a tenth of the source points
+    thrown off by a normal of standard deviation 2. The gate at two and three medians recovers
+    the inliers' pose to under 1e-6 RMS (measured 1.7e-07 to 7.6e-07 over both devices) where the
+    ungated fit ends 1.2 off and Tukey's 0.015, so the bound below fails without the gate.
+
+    One round of it is one round of the fixed gate at the factor times the median of the first
+    correspondences' distances (``closest_point_on_mesh``'s, ``reduce.median``'s): equal matrices
+    (measured identical), while a fixed gate at 1.6 medians moves the matrix by 4.5e-03, so the
+    median is the one the gate reads.
+    """
+    rng = np.random.default_rng(11)
+    mesh_tm, mesh_wp = saddle_graded
+    vertices_np, faces_np = _mesh_vertices_faces(mesh_tm)
+    rotation_np, translation_np = _rigid_transform(0.08, [0.1, 0.5, 0.3], [0.02, -0.01, 0.03])
+    source_np = (vertices_np @ rotation_np.T + translation_np).astype(np.float32)
+    outlier_idx = rng.choice(len(source_np), size=len(source_np) // 10, replace=False)
+    source_np[outlier_idx] += rng.standard_normal((len(outlier_idx), 3)).astype(np.float32) * 2.0
+    inlier_idx = np.setdiff1d(np.arange(len(source_np)), outlier_idx)
+
+    source_wp = points_to_warp(source_np, mesh_wp.device)
+    vertices_wp = points_to_warp(vertices_np, mesh_wp.device)
+    faces_wp = wp.array(faces_np, dtype=wp.int32, device=mesh_wp.device)
+
+    _, transformed_none, _ = od.registration.icp_point_to_plane(
+        source_wp, vertices_wp, faces_wp, max_iterations=60
+    )
+    assert _rms(transformed_none.numpy()[inlier_idx], vertices_np[inlier_idx]) > 0.1
+    for factor in (2.0, 3.0):
+        _, transformed_wp, cost = od.registration.icp_point_to_plane(
+            source_wp, vertices_wp, faces_wp, max_iterations=60, max_distance_factor=factor
+        )
+        assert _rms(transformed_wp.numpy()[inlier_idx], vertices_np[inlier_idx]) < 1e-5
+        assert math.isfinite(cost)
+
+    _, distances_wp, _ = od.proximity.closest_point_on_mesh(vertices_wp, faces_wp, source_wp)
+    median = od.reduce.median(distances_wp)
+    one_round = partial(
+        od.registration.icp_point_to_plane,
+        source_wp,
+        vertices_wp,
+        faces_wp,
+        max_iterations=1,
+        threshold=-np.inf,
+    )
+    gated_wp, _, _ = one_round(max_distance_factor=2.0)
+    fixed_wp, _, _ = one_round(max_distance=2.0 * median)
+    narrower_wp, _, _ = one_round(max_distance=1.6 * median)
+    assert np.allclose(gated_wp.numpy(), fixed_wp.numpy(), rtol=1e-6, atol=1e-6)
+    assert np.abs(gated_wp.numpy() - narrower_wp.numpy()).max() > 1e-3
+
+
 @pytest.mark.parametrize("target", ["cloud", "mesh"])
 @pytest.mark.parametrize("scale", [0.01, 0.02])
 def test_icp_point_to_plane_tukey_converges_from_outside_its_kernel(
@@ -1877,7 +1936,9 @@ def test_icp_point_to_plane_face_normals_change_no_answer(
 
 def test_icp_point_to_plane_validates_its_arguments(device: str) -> None:
     """
-    Not a library comparison: the ``robust_kernel`` menu's guard and the ``target_normals`` one.
+    Not a library comparison: the guards on ``robust_kernel``, ``target_normals`` and the gates.
+
+    The two distance gates exclude each other and the factor must be positive.
 
     An unrecognised name used to index ``_ROBUST_KINDS`` directly and surface as a bare
     ``KeyError('bogus')``, which names neither the argument nor the three kernels. All three
@@ -1904,6 +1965,24 @@ def test_icp_point_to_plane_validates_its_arguments(device: str) -> None:
             target_normals=normals_wp,
             robust_kernel="bogus",  # pyright: ignore[reportArgumentType]  # deliberately off-menu
         )
+    with pytest.raises(ValueError, match="not both"):
+        od.registration.icp_point_to_plane(
+            source_wp,
+            target_wp,
+            None,
+            target_normals=normals_wp,
+            max_distance=0.5,
+            max_distance_factor=2.0,
+        )
+    for bad_factor in (0.0, -1.0):
+        with pytest.raises(ValueError, match="max_distance_factor must be positive"):
+            od.registration.icp_point_to_plane(
+                source_wp,
+                target_wp,
+                None,
+                target_normals=normals_wp,
+                max_distance_factor=bad_factor,
+            )
     for robust_kernel in ("none", "huber", "tukey"):
         matrix_wp, _, _ = od.registration.icp_point_to_plane(
             source_wp,

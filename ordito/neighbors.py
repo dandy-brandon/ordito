@@ -845,6 +845,171 @@ def query_ball_count(
     return neighbor_counts
 
 
+def query_ball_sum(
+    points: wp.array[wp.vec3],
+    queries: wp.array[wp.vec3],
+    r: float,
+    values: wp.array[wp.float32] | None = None,
+    *,
+    directions: wp.array[wp.vec3] | None = None,
+    accelerator: wp.HashGrid | wp.Bvh | None = None,
+    backend: QueryBackend | None = None,
+    grid_bins: int | None = None,
+    leaf_size: int = _BALL_LEAF_SIZE,
+) -> tuple[wp.array[wp.float32], wp.array[wp.int32]]:
+    """
+    Sum a per-neighbor term over each query's ball of radius ``r``, with the neighbor count.
+
+    For each query center ``q``, the neighbors are the ``points[j]`` with ``‖points[j] - q‖₂ ≤ r``,
+    exactly those [`query_ball_count`][ordito.neighbors.query_ball_count] counts, and the sum is
+    over one of two terms:
+
+    - ``values[j]``, a value carried by each data point (pass ``values``): the ball's total, or
+      its mean once divided by the count;
+    - ``(points[j] - q) · directions[k]``, each neighbor's offset from query ``k`` along that
+      query's own direction (pass ``directions``): with unit normals at the queries, how far the
+      neighborhood sits above or below each query's tangent plane, in total.
+
+    It is [`query_ball_with_offsets`][ordito.neighbors.query_ball_with_offsets] followed by the
+    term and a per-query sum, without storing a single neighbor pair: memory stays proportional
+    to the queries whatever the neighborhoods hold.
+
+    Parameters
+    ----------
+    points
+        ``(n,)`` data points.
+    queries
+        ``(m,)`` query centers. A query that is itself one of ``points`` counts itself, at offset
+        zero.
+    r
+        Inclusion radius; cast to ``float32`` in kernels (non-negative).
+    values
+        ``(n,)`` the value of each data point. Exactly one of ``values`` and ``directions``.
+    directions
+        ``(m,)`` a direction at each query; need not be unit length (the offset is scaled by its
+        length). Exactly one of ``values`` and ``directions``.
+    accelerator, backend, grid_bins, leaf_size
+        As in [`query_ball`][ordito.neighbors.query_ball].
+
+    Returns
+    -------
+    sums : wp.array[wp.float32]
+        ``(m,)`` the term summed over each query's neighbors, in ``float32``; ``0`` for a query
+        with none.
+    counts : wp.array[wp.int32]
+        ``(m,)`` the number of neighbors of each query, equal to
+        [`query_ball_count`][ordito.neighbors.query_ball_count]'s.
+
+    Raises
+    ------
+    ValueError
+        If neither or both of ``values`` and ``directions`` are given, if ``values`` does not
+        hold one entry per point or ``directions`` one per query, or if ``backend`` is neither
+        name or contradicts the type of ``accelerator``.
+    RuntimeError
+        If ``points``, ``queries``, ``values``, ``directions`` and ``accelerator`` are not all on
+        one device.
+
+    See Also
+    --------
+    [`query_ball_count`][ordito.neighbors.query_ball_count]
+    [`query_ball_with_offsets`][ordito.neighbors.query_ball_with_offsets]
+    [`segment_sum`][ordito.reduce.segment_sum]
+
+    Notes
+    -----
+    Each query's terms are added one after another in the accelerator's walk order, so a call
+    repeats bit for bit over one accelerator; the two backends add in different orders and may
+    differ by rounding.
+
+    Examples
+    --------
+    On a flat grid every neighbor lies in the plane, so the offsets along the normal sum to zero;
+    lifting the centre point shows up at its neighbors:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    points, _ = od.creation.grid(count=(5, 5), extents=(4.0, 4.0))  # unit spacing, 25 points
+    normals = wp.array(np.tile([0.0, 0.0, 1.0], (25, 1)), dtype=wp.vec3)
+    sums, counts = od.neighbors.query_ball_sum(points, points, 1.2, directions=normals)
+    print(counts.numpy()[12], float(np.abs(sums.numpy()).max()))  # 5 0.0
+    lifted_np = points.numpy()
+    lifted_np[12, 2] = 0.5  # the centre point, whose four nearest neighbors are 7, 11, 13, 17
+    lifted = wp.array(lifted_np, dtype=wp.vec3)
+    sums, _ = od.neighbors.query_ball_sum(lifted, lifted, 1.2, directions=normals)
+    print(sums.numpy()[[0, 7, 12]].tolist())  # [0.0, 0.5, -2.0]
+    heights = wp.array(lifted_np[:, 2], dtype=wp.float32)
+    totals, _ = od.neighbors.query_ball_sum(lifted, lifted, 1.2, heights)
+    print(totals.numpy()[[0, 7]].tolist())  # [0.0, 0.5]
+    ```
+    """
+    require_same_device(
+        points=points,
+        queries=queries,
+        values=values,
+        directions=directions,
+        accelerator=accelerator,
+    )
+    if (values is None) == (directions is None):
+        raise ValueError("query_ball_sum takes exactly one of values and directions.")
+    if values is not None and values.size != points.size:
+        raise ValueError(
+            f"values must hold one entry per point ({points.size}), got {values.size}."
+        )
+    if directions is not None and directions.size != queries.size:
+        raise ValueError(
+            f"directions must hold one entry per query ({queries.size}), got {directions.size}."
+        )
+    kind, accelerator = _resolve_accelerator(accelerator, backend)
+    device = points.device
+    m = queries.size
+    if points.size == 0:
+        return (
+            _launch.zeros(m, dtype=wp.float32, device=device),
+            _launch.zeros(m, dtype=wp.int32, device=device),
+        )
+    sums = _launch.empty(m, dtype=wp.float32, device=device)
+    counts = _launch.empty(m, dtype=wp.int32, device=device)
+    if m == 0:
+        return sums, counts
+    if kind == "hashgrid":
+        if accelerator is None:
+            accelerator = hashgrid_from_points(points, r, grid_bins)
+        accel_selector = kernel_neighbors.ACCEL_HASHGRID
+    else:
+        if accelerator is None:
+            accelerator = bvh_from_points(points, leaf_size)
+        accel_selector = kernel_neighbors.ACCEL_BVH
+    if values is not None:
+        term = kernel_neighbors.BALL_TERM_VALUES
+        values_in, directions_in = values, _launch.empty(0, dtype=wp.vec3, device=device)
+    else:
+        assert directions is not None
+        term = kernel_neighbors.BALL_TERM_OFFSET
+        values_in, directions_in = _launch.empty(0, dtype=wp.float32, device=device), directions
+    _launch.launch(
+        kernel_neighbors.query_ball_sum,
+        dim=m,
+        inputs=[
+            points,
+            queries,
+            accel_selector,
+            accelerator.id,
+            wp.float32(r),
+            term,
+            values_in,
+            directions_in,
+        ],
+        outputs=[sums, counts],
+        device=device,
+    )
+    return sums, counts
+
+
 def query_ball_with_offsets(
     points: wp.array[wp.vec3],
     queries: wp.array[wp.vec3] | wp.vec3,

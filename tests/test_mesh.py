@@ -1302,6 +1302,61 @@ def test_with_vertices_drops_every_position_dependent_cache(
     assert key not in moved._cache
 
 
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+def test_with_vertices_refit_hands_its_tree_on(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Class A against ``trimesh.proximity.closest_point``: the refitted tree answers the moved mesh.
+
+    The mesh is bent (each vertex lifted by a tenth of the diagonal times a sine of its ``x``), a
+    deformation that changes every bound of the tree, and the closest-point distances from points
+    scattered about the bent surface are compared with trimesh's on the bent mesh; then with
+    trimesh's on the original, through the tree the original mesh builds again once it has handed
+    its own on. The distances spread over more than a hundredth of the diagonal on both meshes, so
+    neither comparison is constant. A mesh that never built a tree hands nothing on.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    tree = mesh.warp_mesh
+    vertices_np = mesh_tm.vertices
+    diagonal = float(np.linalg.norm(np.ptp(vertices_np, axis=0)))
+    bent_np = vertices_np.copy()
+    bent_np[:, 2] += 0.1 * diagonal * np.sin(3.0 * np.pi * vertices_np[:, 0] / diagonal)
+    bent_tm = tm.Trimesh(bent_np, mesh_tm.faces, process=False)
+    rng = np.random.default_rng(41)
+
+    moved = mesh.with_vertices(points_to_warp(bent_np, mesh.device), refit=True)
+    assert moved.warp_mesh is tree
+    assert mesh.warp_mesh is not tree
+
+    for current, reference_tm in ((moved, bent_tm), (mesh, mesh_tm)):
+        queries_np = reference_tm.sample(500, seed=41) + rng.normal(
+            scale=0.03 * diagonal, size=(500, 3)
+        )
+        distances_tm = tm.proximity.closest_point(reference_tm, queries_np)[1]
+        assert np.ptp(distances_tm) > 0.01 * diagonal
+        _, distances_wp, _ = od.proximity.closest_point_on_mesh(
+            current.vertices,
+            current.faces,
+            points_to_warp(queries_np, mesh.device),
+            mesh=current.warp_mesh,
+        )
+        assert np.allclose(distances_wp.numpy(), distances_tm, rtol=1e-5, atol=1e-5)
+
+    untouched = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    assert "warp_mesh" not in untouched.with_vertices(mesh_wp.points, refit=True)._cache
+
+
+def test_with_vertices_requires_the_mesh_device(device: str) -> None:
+    """Not a library comparison: the device guard, reachable only where two devices exist."""
+    if not wp.get_device(device).is_cuda:
+        pytest.skip("the CPU device has no second device to mix in")
+    mesh = od.Trimesh(*od.creation.box(device=device))
+    with pytest.raises(RuntimeError):
+        mesh.with_vertices(points_to_warp(mesh.vertices.numpy(), "cpu"), refit=True)
+
+
 @pytest.mark.parametrize(
     ("name", "dependencies"),
     [

@@ -254,6 +254,58 @@ def test_harmonic_matches_igl(request: pytest.FixtureRequest, mesh_name: str):
     assert np.allclose(uv_wp.numpy(), uv_igl, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular_cap"])
+def test_harmonic_with_nonnegative_weights_solves_igls_clamped_laplacian(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Class B: the Dirichlet solve of igl's cotangent Laplacian with negative weights set to zero.
+
+    The reference clamps ``igl.cotmatrix_entries`` (the named transform), assembles the operator
+    in SciPy and solves its interior rows with SciPy's direct solver, with the same circle map
+    pinned. Each free vertex of that map is a convex combination of its neighbors, so it lies
+    strictly inside the disk and no face folds; on these obtuse fixtures it differs from the
+    signed harmonic map (by 0.026 and 0.34 measured), so the comparison is not the plain map's.
+    A `Trimesh` keeps the two systems apart: a signed call after a clamped direct one still
+    answers the signed map.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_np, faces_np = mesh_igl(mesh_tm)
+    boundary_wp, boundary_uv_wp = _circle_boundary(mesh_wp)
+    boundary_np = boundary_wp.numpy()
+
+    clamped_igl = np.maximum(igl.cotmatrix_entries(vertices_np, faces_np), 0.0)
+    n_vertices = vertices_np.shape[0]
+    rows = np.concatenate([faces_np[:, (c + 1) % 3] for c in range(3)])
+    cols = np.concatenate([faces_np[:, (c + 2) % 3] for c in range(3)])
+    weights = np.concatenate([clamped_igl[:, c] for c in range(3)])
+    off_diagonal = scipy.sparse.coo_matrix((weights, (rows, cols)), shape=(n_vertices,) * 2)
+    off_diagonal = (off_diagonal + off_diagonal.T).tocsr()
+    laplacian = (
+        off_diagonal - scipy.sparse.diags(np.asarray(off_diagonal.sum(axis=1)).ravel())
+    ).tocsr()
+    free = np.setdiff1d(np.arange(n_vertices), boundary_np)
+    uv_np = np.zeros((n_vertices, 2))
+    uv_np[boundary_np] = boundary_uv_wp.numpy()
+    rhs = -laplacian[free][:, boundary_np] @ uv_np[boundary_np]
+    uv_np[free] = scipy.sparse.linalg.spsolve(laplacian[free][:, free].tocsc(), rhs)
+
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    uv_wp = od.parametrization.harmonic(
+        mesh, boundary_wp, boundary_uv_wp, nonnegative_weights=True, solver="direct"
+    )
+    assert np.allclose(uv_wp.numpy(), uv_np, rtol=1e-5, atol=1e-5)
+    assert np.linalg.norm(uv_wp.numpy()[free], axis=1).max() < 1.0
+    assert od.parametrization.face_flipped_indices(uv_wp, mesh_wp.indices).size == 0
+
+    signed_wp = od.parametrization.harmonic(mesh, boundary_wp, boundary_uv_wp)
+    signed_np = np.asarray(
+        igl.harmonic(vertices_np, faces_np, boundary_np.astype(np.int64), uv_np[boundary_np], 1)
+    )
+    assert np.allclose(signed_wp.numpy(), signed_np, rtol=1e-5, atol=1e-5)
+    assert np.abs(signed_np - uv_np).max() > 1e-2
+
+
 @pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular_band"])
 @pytest.mark.parity("harmonic", "pymeshlab")
 @pytest.mark.parity("harmonic_conditioning", "pymeshlab")

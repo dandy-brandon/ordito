@@ -684,6 +684,68 @@ def query_ball_count_tiled(
         out_neighbor_counts[t] = total[0]
 
 
+# ``query_ball_sum``'s per-neighbour term, a warp-uniform selector: a value per data point, or the
+# neighbour's offset from the query along the query's direction.
+BALL_TERM_VALUES = wp.int32(0)
+BALL_TERM_OFFSET = wp.int32(1)
+
+
+@wp.func
+def ball_term(
+    points: wp.array[wp.vec3],
+    q: wp.vec3,
+    j: wp.int32,
+    term: wp.int32,
+    values: wp.array[wp.float32],
+    direction: wp.vec3,
+) -> wp.float32:
+    # Neighbour ``j``'s contribution to ``query_ball_sum`` (``BALL_TERM_*``).
+    if term == BALL_TERM_VALUES:
+        return values[j]
+    return wp.dot(points[j] - q, direction)
+
+
+@wp.kernel
+def query_ball_sum(
+    points: wp.array[wp.vec3],
+    queries: wp.array[wp.vec3],
+    accel: wp.int32,
+    accel_id: wp.uint64,
+    radius: wp.float32,
+    term: wp.int32,
+    values: wp.array[wp.float32],
+    directions: wp.array[wp.vec3],
+    out_sums: wp.array[wp.float32],
+    out_neighbor_counts: wp.array[wp.int32],
+) -> None:
+    # ``ball_count_in_radius``'s walk, summing ``ball_term`` over the neighbours it counts, so the
+    # count is ``query_ball_count``'s exactly and no pair is stored. It differs from that walk only
+    # in carrying the sum, which the BVH branch takes from the sphere walk itself (no narrow
+    # phase, for the reasons written there). A thread a query adds in the walk's order, so a sum
+    # repeats bit for bit over one accelerator; the two backends add in different orders.
+    tid = wp.int32(wp.tid())
+    q = queries[tid]
+    direction = wp.vec3()
+    if term == BALL_TERM_OFFSET:
+        direction = directions[tid]
+    total = wp.float32(0.0)
+    c = wp.int32(0)
+    j = wp.int32(0)
+    if accel == ACCEL_HASHGRID:
+        query = wp.hash_grid_query(accel_id, q, radius)
+        while wp.hash_grid_query_next(query, j):
+            if in_ball(points[j] - q, radius):
+                total += ball_term(points, q, j, term, values, direction)
+                c = c + 1
+    else:
+        query_sphere = wp.bvh_query_sphere(accel_id, q, radius)
+        while wp.bvh_query_next(query_sphere, j):
+            total += ball_term(points, q, j, term, values, direction)
+            c = c + 1
+    out_sums[tid] = total
+    out_neighbor_counts[tid] = c
+
+
 @wp.func
 def ball_collect(
     points: wp.array[wp.vec3],

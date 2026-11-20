@@ -172,14 +172,26 @@ def face_gradients(
 
 @overload
 def cotmatrix_entries(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], dtype: type[wp.float32] = wp.float32
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    dtype: type[wp.float32] = wp.float32,
+    *,
+    nonnegative_weights: bool = False,
 ) -> odt.Array2dFloat32: ...
 @overload
 def cotmatrix_entries(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], dtype: type[wp.float64]
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    dtype: type[wp.float64],
+    *,
+    nonnegative_weights: bool = False,
 ) -> odt.Array2dFloat64: ...
 def cotmatrix_entries(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], dtype: type = wp.float32
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    dtype: type = wp.float32,
+    *,
+    nonnegative_weights: bool = False,
 ) -> odt.Array2dFloat:
     """
     Per-triangle half-cotangent weights.
@@ -197,6 +209,11 @@ def cotmatrix_entries(
         Scalar type of the returned weights: ``wp.float32`` (default) or ``wp.float64``. The weights
         are computed in float32 (the vertex precision) and cast to ``dtype`` on write; request
         ``wp.float64`` to feed a native float64 [`cotmatrix`][ordito.laplacian.cotmatrix] build.
+    nonnegative_weights
+        Clamp each negative weight -- an obtuse angle's -- to zero. The operator assembled from
+        clamped weights has no positive off-diagonal entry, so each free vertex of a harmonic map
+        built on it is a convex combination of its neighbors (see
+        [`harmonic`][ordito.parametrization.harmonic]).
 
     Returns
     -------
@@ -215,7 +232,8 @@ def cotmatrix_entries(
 
     Notes
     -----
-    Matches ``igl::cotmatrix_entries``, column order included.
+    Matches ``igl::cotmatrix_entries``, column order included; ``nonnegative_weights=True`` is its
+    output with negative entries set to zero.
 
     Examples
     --------
@@ -241,7 +259,7 @@ def cotmatrix_entries(
     _launch.launch(
         kernel_laplacian.COTMATRIX_ENTRIES[dtype],
         dim=n_faces,
-        inputs=[vertices, faces, out_cot],
+        inputs=[vertices, faces, wp.int32(nonnegative_weights), out_cot],
         device=device,
     )
     return odt.as_array2d(out_cot, dtype)
@@ -328,6 +346,7 @@ def cotmatrix(
     dtype: type[wp.float32] = wp.float32,
     *,
     pattern: MeshOperatorPattern | None = None,
+    nonnegative_weights: bool = False,
 ) -> odt.BsrMatrix[wp.float32]: ...
 @overload
 def cotmatrix(
@@ -337,6 +356,7 @@ def cotmatrix(
     dtype: type[wp.float64],
     *,
     pattern: MeshOperatorPattern | None = None,
+    nonnegative_weights: bool = False,
 ) -> odt.BsrMatrix[wp.float64]: ...
 @overload
 def cotmatrix(
@@ -346,6 +366,7 @@ def cotmatrix(
     *,
     dtype: type[wp.float64],
     pattern: MeshOperatorPattern | None = None,
+    nonnegative_weights: bool = False,
 ) -> odt.BsrMatrix[wp.float64]: ...
 def cotmatrix(
     vertices: wp.array[wp.vec3],
@@ -354,6 +375,7 @@ def cotmatrix(
     dtype: type = wp.float32,
     *,
     pattern: MeshOperatorPattern | None = None,
+    nonnegative_weights: bool = False,
 ) -> odt.BsrMatrix[wp.float32] | odt.BsrMatrix[wp.float64]:
     """
     Cotangent stiffness matrix of the mesh: the discrete Laplace-Beltrami operator.
@@ -383,6 +405,11 @@ def cotmatrix(
         Optional sparsity from [`mesh_operator_pattern`][ordito.laplacian.mesh_operator_pattern]
         (``operator="cotmatrix"``) built on these same ``faces``. Only the values are then
         computed; the returned matrix shares the pattern's ``offsets`` and ``columns``.
+    nonnegative_weights
+        Assemble from the weights clamped at zero
+        ([`cotmatrix_entries`][ordito.laplacian.cotmatrix_entries]'s ``nonnegative_weights``),
+        so every off-diagonal entry is ``>= 0`` and each row still sums to zero. Only for weights
+        computed here, not for ``cot_entries``.
 
     Returns
     -------
@@ -395,8 +422,9 @@ def cotmatrix(
     RuntimeError
         If ``vertices``, ``faces``, ``cot_entries`` and ``pattern`` are not all on one device.
     ValueError
-        If ``cot_entries`` is given and its row count does not match ``faces``' triangle count, or
-        ``pattern`` was built for another operator or vertex count.
+        If ``cot_entries`` is given and its row count does not match ``faces``' triangle count, if
+        it is given with ``nonnegative_weights=True`` (clamp the entries when computing them
+        instead), or if ``pattern`` was built for another operator or vertex count.
 
     See Also
     --------
@@ -447,9 +475,17 @@ def cotmatrix(
     device = vertices.device
     _check_pattern(pattern, "cotmatrix", n_vertices)
 
+    if nonnegative_weights and cot_entries is not None:
+        raise ValueError(
+            "cotmatrix: nonnegative_weights clamps the weights it computes; pass cot_entries from "
+            "cotmatrix_entries(..., nonnegative_weights=True) instead"
+        )
     if n_faces == 0:
         return od.array.empty_square_bsr(n_vertices, dtype, device)
 
+    if nonnegative_weights:
+        # The clamp is the entry pass's alone; the pattern's fused key pass writes signed weights.
+        cot_entries = cotmatrix_entries(vertices, faces, dtype=dtype, nonnegative_weights=True)
     if cot_entries is None and pattern is None:
         cot_entries, pattern = _cotmatrix_entries_and_pattern(vertices, faces, dtype)
     elif cot_entries is None:
@@ -1229,7 +1265,7 @@ def _mesh_operator_pattern(
             _launch.launch(
                 kernel_laplacian.COTMATRIX_ENTRIES[out_cot.dtype],
                 dim=n_faces,
-                inputs=[source, faces, out_cot],
+                inputs=[source, faces, wp.int32(0), out_cot],
                 device=device,
             )
     if halfedges:

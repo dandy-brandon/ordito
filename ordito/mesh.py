@@ -2651,7 +2651,7 @@ class Trimesh:
                 survived["vertex_normals"] = outputs[1]
         return self._derived(self._vertices, od.repair.reverse_winding(self._faces), survived)
 
-    def with_vertices(self, new_vertices: wp.array[wp.vec3]) -> Trimesh:
+    def with_vertices(self, new_vertices: wp.array[wp.vec3], *, refit: bool = False) -> Trimesh:
         """
         Return a new `Trimesh` with different vertex positions but the same topology.
 
@@ -2665,6 +2665,14 @@ class Trimesh:
         new_vertices
             ``(n_vertices,)`` replacement vertex positions; must have the same length as the
             current `vertices`.
+        refit
+            Hand this mesh's built [`warp_mesh`][ordito.mesh.Trimesh.warp_mesh] to the new one,
+            its BVH refitted to ``new_vertices`` rather than built again: for a deformation loop
+            that queries the mesh after every move. This mesh then no longer holds it (it builds
+            its own if asked again), and a caller still holding that ``warp.Mesh`` sees it answer
+            for ``new_vertices``. A refit keeps the tree's shape, so it fits a moved mesh less
+            tightly than a fresh build and its queries slow as the motion grows; build afresh
+            after a large deformation. Does nothing when `warp_mesh` was never built.
 
         Returns
         -------
@@ -2675,6 +2683,8 @@ class Trimesh:
         ------
         ValueError
             If ``new_vertices`` has a different vertex count than the current mesh.
+        RuntimeError
+            If ``new_vertices`` is not on the mesh's device.
 
         Examples
         --------
@@ -2690,13 +2700,36 @@ class Trimesh:
         print(bigger.edges_unique is edges)  # True
         print(f"{bigger.area:.4f}")  # 24.0000
         ```
+
+        A deformation loop hands the search tree on instead of building one each step:
+
+        ```python
+        import ordito as od
+
+        mesh = od.Trimesh(*od.creation.icosphere(subdivisions=3))
+        tree = mesh.warp_mesh
+        moved = mesh.with_vertices(
+            od.transform.transform_points(mesh.vertices, od.transform.scale_matrix(1.1)),
+            refit=True,
+        )
+        print(moved.warp_mesh is tree, mesh.warp_mesh is tree)  # True False
+        ```
         """
+        require_same_device(vertices=self._vertices, new_vertices=new_vertices)
         if new_vertices.size != self.n_vertices:
             raise ValueError(
                 f"with_vertices requires the same vertex count ({self.n_vertices}), "
                 f"got {new_vertices.size}"
             )
         survived = {key: value for key, value in self._cache.items() if key in _WITH_VERTICES_CARRY}
+        if refit and "warp_mesh" in self._cache:
+            tree = cast("wp.Mesh", self._cache.pop("warp_mesh"))
+            if self._cache.get("traced_mesh") is tree:
+                # The CPU device's `traced_mesh` is `warp_mesh` itself.
+                del self._cache["traced_mesh"]
+            # Assigning the points refits the BVH to them.
+            tree.points = new_vertices
+            survived["warp_mesh"] = tree
         return self._derived(new_vertices, self._faces, survived)
 
     def with_faces(self, new_faces: wp.array[wp.int32]) -> Trimesh:

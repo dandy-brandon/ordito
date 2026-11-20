@@ -226,6 +226,101 @@ def test_query_ball_count_and_offsets_on_their_degenerate_forms(device: str) -> 
     assert np.array_equal(counts_wp.numpy(), np.zeros(7, dtype=np.int32))
 
 
+@pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
+@pytest.mark.parametrize("term", ["values", "directions"])
+@pytest.mark.parity("query_ball_sum", "scipy")
+def test_query_ball_sum_matches_scipy_balls_summed(
+    device: str, backend: Literal["bvh", "hashgrid"], term: str
+) -> None:
+    """
+    Class A: counts equal ``KDTree.query_ball_point``'s lengths and sums its balls' terms.
+
+    The reference sums the same term over SciPy's index lists in ``float64``: a value per point,
+    or each neighbor's offset along a per-query direction of length 0.5 to 2 (not unit, so a
+    wrapper normalizing it would fail). The cloud is a scrambled unit-cube sample, the queries are
+    40 of its points (each counting itself) and 40 off them. Measured counts 1 to 15, sums spread
+    over several units, so no ball is empty everywhere and no sum is constant.
+    """
+    rng = np.random.default_rng(31)
+    points_np = rng.random((600, 3), dtype=np.float32) * 3.0
+    queries_np = np.concatenate(
+        [points_np[rng.choice(600, 40, replace=False)], rng.random((40, 3), np.float32) * 3.0]
+    )
+    radius = 0.4
+    balls = cast("list[list[int]]", KDTree(points_np).query_ball_point(queries_np, radius))
+    counts_np = np.array([len(ball) for ball in balls], dtype=np.int32)
+    values_np = rng.normal(size=600).astype(np.float32)
+    directions_np = rng.normal(size=(80, 3)).astype(np.float32)
+    directions_np *= (rng.uniform(0.5, 2.0, 80) / np.linalg.norm(directions_np, axis=1))[:, None]
+    if term == "values":
+        sums_np = np.array([values_np[ball].astype(np.float64).sum() for ball in balls])
+    else:
+        sums_np = np.array(
+            [
+                ((points_np[ball] - queries_np[k]).astype(np.float64) @ directions_np[k]).sum()
+                for k, ball in enumerate(balls)
+            ]
+        )
+    assert counts_np.min() > 0
+    assert np.ptp(sums_np) > 1.0
+
+    points_wp = points_to_warp(points_np, device)
+    queries_wp = points_to_warp(queries_np, device)
+    if term == "values":
+        sums_wp, counts_wp = od.neighbors.query_ball_sum(
+            points_wp,
+            queries_wp,
+            radius,
+            wp.array(values_np, dtype=wp.float32, device=device),
+            backend=backend,
+        )
+    else:
+        sums_wp, counts_wp = od.neighbors.query_ball_sum(
+            points_wp,
+            queries_wp,
+            radius,
+            directions=points_to_warp(directions_np, device),
+            backend=backend,
+        )
+    assert np.array_equal(counts_wp.numpy(), counts_np)
+    assert np.allclose(sums_wp.numpy(), sums_np, rtol=1e-5, atol=1e-5)
+
+
+def test_query_ball_sum_on_its_degenerate_forms_and_guards(device: str) -> None:
+    """
+    Not a library comparison: the empty forms and the argument checks, which SciPy has no analog of.
+
+    An empty cloud gives every query a zero sum and count, no queries give empty outputs, and a
+    call must pass exactly one term whose length matches what it is indexed by (a short ``values``
+    or ``directions`` would be read out of bounds).
+    """
+    rng = np.random.default_rng(32)
+    points_wp = points_to_warp(rng.random((50, 3)), device)
+    values_wp = wp.array(rng.random(50), dtype=wp.float32, device=device)
+    queries_wp = points_to_warp(rng.random((7, 3)), device)
+
+    sums_wp, counts_wp = od.neighbors.query_ball_sum(
+        warp_empty(0, wp.vec3, device), queries_wp, 0.3, warp_empty(0, wp.float32, device)
+    )
+    assert np.array_equal(sums_wp.numpy(), np.zeros(7, np.float32))
+    assert np.array_equal(counts_wp.numpy(), np.zeros(7, np.int32))
+    sums_wp, counts_wp = od.neighbors.query_ball_sum(
+        points_wp, warp_empty(0, wp.vec3, device), 0.3, values_wp
+    )
+    assert sums_wp.size == counts_wp.size == 0
+
+    with pytest.raises(ValueError, match="exactly one of values and directions"):
+        od.neighbors.query_ball_sum(points_wp, queries_wp, 0.3)
+    with pytest.raises(ValueError, match="exactly one of values and directions"):
+        od.neighbors.query_ball_sum(points_wp, queries_wp, 0.3, values_wp, directions=queries_wp)
+    with pytest.raises(ValueError, match="one entry per point"):
+        od.neighbors.query_ball_sum(
+            points_wp, queries_wp, 0.3, wp.array(rng.random(40), dtype=wp.float32, device=device)
+        )
+    with pytest.raises(ValueError, match="one entry per query"):
+        od.neighbors.query_ball_sum(points_wp, queries_wp, 0.3, directions=points_wp)
+
+
 @pytest.mark.parametrize("copy", [False, True])
 def test_query_ball_is_its_packed_form_split(device: str, copy: bool) -> None:
     """
@@ -1662,7 +1757,7 @@ def test_backend_and_accelerator_must_agree(device: str) -> None:
 
     ``backend`` and ``accelerator`` can disagree, and the answer is to be loud rather than to
     silently prefer one -- a caller who passes a ``wp.Bvh`` and writes ``backend="hashgrid"`` has a
-    bug, not a preference. Checked on all four entry points, since each resolves the pair itself.
+    bug, not a preference. Checked on all five entry points, since each resolves the pair itself.
 
     The two positive branches matter as much as the raise: a prebuilt structure alone must be
     accepted (it selects the backend by its type), and a matching pair must be accepted too, or the
@@ -1673,12 +1768,13 @@ def test_backend_and_accelerator_must_agree(device: str) -> None:
     bvh = od.neighbors.bvh_from_points(points_wp)
     grid = od.neighbors.hashgrid_from_points(points_wp, 0.25)
 
-    # Four signatures behind one loop: typed as the common call shape, not their union.
+    # Five signatures behind one loop: typed as the common call shape, not their union.
     cases = cast(
         "tuple[tuple[Callable[..., object], dict[str, object]], ...]",
         (
             (od.neighbors.query_ball, {"r": 0.25}),
             (od.neighbors.query_ball_count, {"r": 0.25}),
+            (od.neighbors.query_ball_sum, {"r": 0.25, "directions": points_wp}),
             (od.neighbors.query_ball_with_offsets, {"r": 0.25}),
             (od.neighbors.query_nearest, {"k": 2}),
         ),
