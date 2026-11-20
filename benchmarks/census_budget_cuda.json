@@ -6651,12 +6651,11 @@
  },
  "benchmarks/test_registration.py::test_icp_point_to_plane_median_gate[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 34,
-   "alloc": 16,
-   "memset": 1,
+   "launch": 22,
+   "alloc": 7,
+   "memset": 5,
    "h2d": 1,
-   "d2h": 22,
-   "sort": 11
+   "d2h": 2
   }
  },
  "benchmarks/test_registration.py::test_icp_point_to_plane_mesh[sphere_small-ordito-cuda]": {

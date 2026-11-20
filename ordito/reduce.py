@@ -11,7 +11,13 @@ import warp as wp
 
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import read_scalar, read_values, require_same_device
+from ordito._common import (
+    launch_radix_select,
+    radix_select_scratch,
+    read_scalar,
+    read_values,
+    require_same_device,
+)
 from ordito.array import _sorted_copy, astype  # pyright: ignore[reportPrivateUsage]
 from ordito.config import is_deterministic
 from ordito.constants import TILE_1D, TILE_2D, UINT64_MAX
@@ -1471,49 +1477,13 @@ def _selected_order_statistics(
     [`_selects_order_statistics`][ordito.reduce._selects_order_statistics] says so. Without
     ``pair`` the second value repeats the first.
     """
-    device = values.device
-    dtype = values.dtype
-    n = values.size
-    passes = (
-        kernel_reduce.RADIX_SELECT_PASSES_32
-        if wp.types.type_size_in_bytes(dtype) == 4
-        else kernel_reduce.RADIX_SELECT_PASSES_64
-    )
-    # The state, the digit histogram and the passes' ticket in one zeroed allocation: each pass's
-    # last block re-zeroes the bins it read and the ticket, and the first pass takes the rank.
-    bins = kernel_reduce.RADIX_SELECT_BINS
-    state_bytes = kernel_reduce.SELECT_STATE_SIZE * 8
-    scratch = _launch.zeros(
-        kernel_reduce.SELECT_STATE_SIZE + (bins + 2) // 2, dtype=wp.uint64, device=device
-    )
-    state = _launch.view(scratch, 0, kernel_reduce.SELECT_STATE_SIZE)
-    hist = _launch.alias(scratch, wp.int32, state_bytes, bins)
-    ticket = _launch.alias(scratch, wp.int32, state_bytes + 4 * bins, 1)
-    blocks = -(-n // kernel_reduce.RADIX_SELECT_ITEMS_PER_BLOCK)
-    select_pass = kernel_reduce.RADIX_SELECT_PASS[dtype]
-    seed_rank = rank
-    for shift, width in passes:
-        _launch.launch_tiled(
-            select_pass,
-            dim=[blocks],
-            inputs=[values, shift, width, seed_rank, hist, ticket, state],
-            block_dim=TILE_1D,
-            device=device,
-        )
-        seed_rank = -1
-    if pair:
-        _launch.launch_tiled(
-            kernel_reduce.RADIX_SELECT_SUCCESSOR[dtype],
-            dim=[blocks],
-            inputs=[values, state],
-            block_dim=TILE_1D,
-            device=device,
-        )
+    scratch = radix_select_scratch(values.device)
+    state = launch_radix_select(values, rank, pair, *scratch)
     # Host readback: the selected key, its rank within its run of equals, the run's length and the
     # smallest key above it (complemented) -- the answer.
     key, within, run, successor = (int(value) for value in read_values(state, 0, 4))
     next_key = key if not pair or within + 1 < run else UINT64_MAX - successor
-    return _ordered_key_value(key, dtype), _ordered_key_value(next_key, dtype)
+    return _ordered_key_value(key, values.dtype), _ordered_key_value(next_key, values.dtype)
 
 
 def _ordered_key_value(key: int, dtype: object) -> float:

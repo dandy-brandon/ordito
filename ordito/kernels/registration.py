@@ -2,12 +2,18 @@ from typing import Any
 
 import warp as wp
 
-from ordito.constants import FLOAT32_INF_CONSTANT, FLOAT64_INF_CONSTANT, TILE_1D
+from ordito.constants import (
+    FLOAT32_INF_CONSTANT,
+    FLOAT64_INF_CONSTANT,
+    TILE_1D,
+    UINT64_MAX_CONSTANT,
+)
 from ordito.kernels.array import (
     LOOP_CONDITION,
     LOOP_ROUND,
     binary_search_index_left,
     declare_block_dims,
+    float_from_ordered_bits,
     ordered_item,
 )
 from ordito.kernels.neighbors import bvh_nearest_point
@@ -15,6 +21,10 @@ from ordito.kernels.predicates import normalize_or_zero
 from ordito.kernels.proximity import closest_offset_d, closest_point_query, nearest_offset_within
 from ordito.kernels.reduce import (
     ITEMS_PER_BLOCK_1D,
+    SELECT_PREFIX,
+    SELECT_RANK,
+    SELECT_RUN,
+    SELECT_SUCCESSOR,
     block_chunk_1d,
     block_sum,
     finish_block_total,
@@ -1561,6 +1571,35 @@ def accumulate_point_to_plane_block(
 
 
 @wp.kernel
+def median_gate(
+    state: wp.array[wp.uint64],
+    pair: wp.int32,
+    fraction: wp.float64,
+    factor: wp.float64,
+    out_gate: wp.array[wp.float32],
+) -> None:
+    # ``icp_point_to_plane``'s ``max_distance_factor`` gate on the device: ``factor`` times the
+    # median of the ``float32`` distances whose radix select left ``state``
+    # (``_common.launch_radix_select``), the lower order statistic and, with ``pair``, the next one
+    # interpolated at ``fraction`` from the nearer end as ``reduce.quantile`` does, in ``float64``
+    # and rounded once to ``float32``: the value the host-issued loop passes as ``max_distance``.
+    # One thread.
+    key = state[SELECT_PREFIX]
+    next_key = key
+    if pair != 0 and state[SELECT_RANK] + wp.uint64(1) >= state[SELECT_RUN]:
+        next_key = UINT64_MAX_CONSTANT - state[SELECT_SUCCESSOR]
+    low = wp.float64(float_from_ordered_bits(wp.uint32(key)))
+    high = wp.float64(float_from_ordered_bits(wp.uint32(next_key)))
+    median = low
+    if fraction != wp.float64(0.0):
+        if fraction < wp.float64(0.5):
+            median = low + (high - low) * fraction
+        else:
+            median = high - (high - low) * (wp.float64(1.0) - fraction)
+    out_gate[0] = wp.float32(factor * median)
+
+
+@wp.kernel
 def accumulate_point_to_plane(
     source: wp.array[wp.vec3],
     target: wp.array[wp.vec3],
@@ -1568,6 +1607,7 @@ def accumulate_point_to_plane(
     distance: wp.array[wp.float32],
     triangle_id: wp.array[wp.int32],
     max_distance: wp.float32,
+    gate: wp.array[wp.float32],
     robust_kind: wp.int32,
     robust_scale: wp.float32,
     stride: wp.int32,
@@ -1581,8 +1621,12 @@ def accumulate_point_to_plane(
     out_state: wp.array[wp.int32],
     out_ticket: wp.array[wp.int32],
 ) -> None:
-    # ``accumulate_point_to_plane_block`` at this thread.
+    # ``accumulate_point_to_plane_block`` at this thread, gated at ``gate[0]`` (``median_gate``)
+    # in place of ``max_distance`` when ``gate`` holds a value.
     i, lane = wp.tid()
+    gated = max_distance
+    if gate.shape[0] > 0:
+        gated = gate[0]
     accumulate_point_to_plane_block(
         i,
         lane,
@@ -1591,7 +1635,7 @@ def accumulate_point_to_plane(
         normals,
         distance,
         triangle_id,
-        max_distance,
+        gated,
         robust_kind,
         robust_scale,
         stride,

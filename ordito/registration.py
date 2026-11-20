@@ -12,6 +12,8 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._common import (
+    launch_radix_select,
+    radix_select_scratch,
     read_scalar,
     read_values,
     record_device_loop,
@@ -795,9 +797,10 @@ def icp_point_to_plane(
         the median taken afresh at every iteration's correspondences (and at the final pose's, for
         ``cost``): a gate that follows the fit's own scale, where ``max_distance`` is fixed in
         the target's units. ``None`` (the default) for no such gate; not with ``max_distance``.
-        Each iteration then reads its median back to the host, so the iterations are issued from
-        the host one at a time rather than run on the device. The ``threshold`` stop compares
-        ``cost`` between iterations gated at their own medians.
+        On CUDA the median is selected on the device and the iterations run there as without a
+        gate; on the CPU each iteration reads its median back, so its iterations are issued from
+        the host one at a time. The ``threshold`` stop compares ``cost`` between iterations gated
+        at their own medians.
     robust_kernel
         M-estimator applied to residuals: ``"none"``, ``"huber"``, or ``"tukey"``.
     robust_scale
@@ -1000,6 +1003,20 @@ def icp_point_to_plane(
     round_inputs = [wp.float32(damping), wp.float64(threshold), wp.int32(max_iterations)]
     no_matrix = _zero_length(wp.mat44, device)
     no_state = _zero_length(wp.int32, device)
+    # ``max_distance_factor`` on CUDA: each round's median is selected on the device into
+    # ``select_state`` and scaled into ``gate_value``, which the accumulation reads in place of
+    # ``max_d``, so the gated rounds record and replay like the others. The CPU device reads the
+    # median back (its rounds are issued from the host below).
+    device_gate = max_distance_factor is not None and wp.get_device(device).is_cuda
+    gate_value = _zero_length(wp.float32, device)
+    select_scratch = None
+    median_rank, median_fraction = 0, 0.0
+    if device_gate:
+        gate_value = _launch.empty(1, dtype=wp.float32, device=device)
+        select_scratch = radix_select_scratch(device)
+        middle = 0.5 * (n - 1)
+        median_rank = math.floor(middle)
+        median_fraction = middle - median_rank
 
     def accumulate(close: bool) -> None:
         # ``close``: the launch's last block also closes the round
@@ -1015,6 +1032,7 @@ def icp_point_to_plane(
                 distance,
                 triangle_id,
                 wp.float32(max_d),
+                gate_value,
                 wp.int32(kind),
                 wp.float32(scale_value if scale_value is not None else 0.0),
                 stride,
@@ -1028,22 +1046,45 @@ def icp_point_to_plane(
 
     def gate() -> None:
         # ``max_distance_factor``'s gate for the correspondences the last search wrote: the
-        # factor times their median distance, read back (the gate is a launch argument).
+        # factor times their median distance, on CUDA into ``gate_value`` (``median_gate``), on
+        # the CPU read back into the launch argument.
         nonlocal max_d
-        if max_distance_factor is not None:
+        if max_distance_factor is None:
+            return
+        if select_scratch is None:
             max_d = max_distance_factor * od.reduce.median(distance)
+            return
+        state = select_scratch[0]
+        _launch.zero_(state)
+        launch_radix_select(distance, median_rank, median_fraction != 0.0, *select_scratch)
+        _launch.launch(
+            kernel_registration.median_gate,
+            dim=1,
+            inputs=[
+                state,
+                wp.int32(1 if median_fraction != 0.0 else 0),
+                wp.float64(median_fraction),
+                wp.float64(max_distance_factor),
+            ],
+            outputs=[gate_value],
+            device=device,
+        )
 
     def resolve_scale() -> None:
         # It reads the residuals back, so it runs before any recorded round.
-        nonlocal scale_value
+        nonlocal scale_value, max_d
         if kind == 0 or scale_value is not None:
             return
+        if device_gate:
+            # Readback: the first round's gate, which the scale's residuals are gated at.
+            max_d = float(read_scalar(gate_value, 0))
         scale_value = _robust_scale_from_residuals(
             current, closest, normal_table, distance, triangle_id, max_d, kind
         )
 
     def iterate() -> None:
         search(True)
+        gate()
         accumulate(close=True)
 
     # --- iteration 0, issued from the host: it may need the robust scale, a host reduction ---
@@ -1059,9 +1100,9 @@ def icp_point_to_plane(
     # returned the identity transform with ``cost=0.0`` on a cloud still offset by (1.0, 0.5, -0.3)
     # from its target.
     stepped = False
-    if max_iterations > 0 and max_distance_factor is not None:
-        # The gate moves with every round's median, a readback, so the rounds are issued from the
-        # host and none can be recorded. Each first reads the condition its predecessor's close
+    if max_iterations > 0 and max_distance_factor is not None and not device_gate:
+        # On the CPU the gate moves with every round's median, a readback, so the rounds are
+        # issued from the host. Each first reads the condition its predecessor's close
         # wrote, the only way the host learns of a stop, and a weightless first round returns the
         # seed's answer, as the recorded path's read below does.
         search(False)
@@ -1081,6 +1122,7 @@ def icp_point_to_plane(
         stepped = True
     elif max_iterations > 0:
         search(False)
+        gate()
         resolve_scale()
         accumulate(close=True)
         # --- iterations 1.., one recorded body replayed on the device with no readback ---
@@ -1132,7 +1174,7 @@ def icp_point_to_plane(
             replay = record_device_loop(
                 device, odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), iterate
             )
-        if (max_distance is not None or kind == _ROBUST_KINDS["tukey"]) and int(
+        if (max_distance is not None or device_gate or kind == _ROBUST_KINDS["tukey"]) and int(
             read_scalar(state, int(kernel_array.LOOP_ROUND))
         ) == 0:
             return total, current, math.inf

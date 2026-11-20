@@ -1181,3 +1181,73 @@ def scatter_normal_sums(
         device=device,
     )
     return None, exact.launch_pass
+
+
+def radix_select_scratch(
+    device: wp.DeviceLike,
+) -> tuple[wp.array[wp.uint64], wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    Return a zeroed radix select's ``(state, hist, ticket)``, one allocation.
+
+    The state ``kernels/reduce``'s select passes write (``SELECT_STATE_SIZE`` words), the digit
+    histogram and the passes' ticket. Each pass's last block re-zeroes the bins it read and the
+    ticket, so a select may run again over this scratch once its state is zeroed.
+    """
+    bins = kernel_reduce.RADIX_SELECT_BINS
+    state_bytes = kernel_reduce.SELECT_STATE_SIZE * 8
+    scratch = _launch.zeros(
+        kernel_reduce.SELECT_STATE_SIZE + (bins + 2) // 2, dtype=wp.uint64, device=device
+    )
+    state = _launch.view(scratch, 0, kernel_reduce.SELECT_STATE_SIZE)
+    hist = _launch.alias(scratch, wp.int32, state_bytes, bins)
+    ticket = _launch.alias(scratch, wp.int32, state_bytes + 4 * bins, 1)
+    return state, hist, ticket
+
+
+def launch_radix_select(
+    values: odt.ArrayNdScalar,
+    rank: int,
+    pair: bool,
+    state: wp.array[wp.uint64],
+    hist: wp.array[wp.int32],
+    ticket: wp.array[wp.int32],
+) -> wp.array[wp.uint64]:
+    """
+    Launch the radix select of ``values``' ``rank``-th smallest into the zeroed ``state``.
+
+    Three digit passes of a 32-bit dtype's order-preserving keys, six of a 64-bit one
+    (``kernels/reduce.RADIX_SELECT_PASS``), and with ``pair`` the pass finding the smallest key
+    above the selected one (``RADIX_SELECT_SUCCESSOR``), all on the device with no readback or
+    allocation, so a recorded loop may hold them. The scratch is
+    [`radix_select_scratch`][ordito._common.radix_select_scratch]'s. Returns ``state``: the
+    selected key, its rank within its run of equals, the run's length and the successor key
+    complemented (``kernels/reduce.SELECT_*``).
+    """
+    device = values.device
+    dtype = values.dtype
+    passes = (
+        kernel_reduce.RADIX_SELECT_PASSES_32
+        if wp.types.type_size_in_bytes(dtype) == 4
+        else kernel_reduce.RADIX_SELECT_PASSES_64
+    )
+    blocks = -(-values.size // kernel_reduce.RADIX_SELECT_ITEMS_PER_BLOCK)
+    select_pass = kernel_reduce.RADIX_SELECT_PASS[dtype]
+    seed_rank = rank
+    for shift, width in passes:
+        _launch.launch_tiled(
+            select_pass,
+            dim=[blocks],
+            inputs=[values, shift, width, seed_rank, hist, ticket, state],
+            block_dim=TILE_1D,
+            device=device,
+        )
+        seed_rank = -1
+    if pair:
+        _launch.launch_tiled(
+            kernel_reduce.RADIX_SELECT_SUCCESSOR[dtype],
+            dim=[blocks],
+            inputs=[values, state],
+            block_dim=TILE_1D,
+            device=device,
+        )
+    return state

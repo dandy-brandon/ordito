@@ -683,8 +683,12 @@ def test_icp_point_to_plane_median_gate(bench_case: BenchCase) -> None:
     """
     Point-to-plane ICP onto the surface with ``max_distance_factor``: a gate at three medians.
 
-    Each round reads its correspondences' median back, so its rounds are issued from the host
-    where ``icp_point_to_plane_mesh``'s replay on the device; the two rows together price that.
+    On CUDA each round selects its correspondences' median on the device (four radix-select
+    passes and a one-thread gate kernel) inside the replayed round, where the CPU reads it back
+    and issues its rounds from the host; the two rows together price the gate. Moving the median
+    onto the device (2026-11-20) took the call 0.89x on ``bunny`` and 0.97-0.98x on ``dragon``
+    and ``sphere_small``: the select passes, ~48 us a round on ``sphere_small``, are most of what
+    the gate still costs over an ungated round (85 us).
     ordito-only: no reference rejects by the median (MeshLib's ``farDistFactor`` scales the root
     mean square).
     """
