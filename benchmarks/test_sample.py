@@ -377,8 +377,12 @@ def test_sample_surface_in_ball(bench_case: BenchCase, method: str) -> None:
 
     ``"uniform"`` and ``"poisson_disk"`` take ``_TARGET_SAMPLES`` samples, ``"blue_noise"`` a
     spacing of a 25th of the ball's radius. ordito weights the faces meeting the ball by area and
-    draws rejection rounds over them until the count is in the ball, so its row is one area pass,
-    two to three rounds and their readbacks.
+    draws rejection rounds over them until the count is in the ball, so its row is one area pass
+    and, on CUDA, usually one round (sized for the share a flat disk through the centre covers)
+    and its readback; two on the CPU. Sizing CUDA's first round so took ``"uniform"`` to
+    0.62-0.83x on ``sphere_small`` and ``bunny`` (2026-11-20), though the bunny's curved patch
+    drew 1.7x the samples it kept; on the CPU, which pays for every draw, the same sizing cost
+    1.1x on ``bunny``, so it keeps a first round of the count.
 
     **trimesh** has no ball sampler: its row is the answer's definition, a whole-surface uniform
     draw pruned to the ball, sized outside the timed callable by a pre-draw so that about

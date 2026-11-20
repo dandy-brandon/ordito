@@ -1088,10 +1088,12 @@ def test_sample_surface_in_ball_returns_what_its_rounds_kept(
     """
     Not a library comparison: the draw's round limit, which a vanishing ball reaches.
 
-    Held to one round, a ball covering ``2.5e-3`` of its face keeps about ten of 4 000 draws: the
-    call returns those, each in the ball and on its face, rather than ``count`` samples.
+    Held to one round of at most 8 000 draws (twice the count), a ball covering ``2.5e-3`` of its
+    face keeps about twenty: the call returns those, each in the ball and on its face, rather than
+    ``count`` samples.
     """
     monkeypatch.setattr(od.sample, "_BALL_ROUNDS", 1)
+    monkeypatch.setattr(od.sample, "_BALL_ROUND_DRAW_CAP", 0)
     vertices, faces = od.creation.box(device=device)
     center_np = np.array([0.5, 0.1, 0.2])
     points_wp, face_index_wp = od.sample.sample_surface_in_ball(

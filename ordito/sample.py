@@ -1018,11 +1018,13 @@ def _draw_ball_pool(
     ``hit_area``): each round draws on, from where the last one stopped in the seeded stream, and
     appends its in-ball samples in draw order until ``target`` are kept. Draw order is independent
     of position, so the first ``target`` in-ball samples are uniform over the surface in the ball.
-    The first round draws ``target``; each later one what the kept fraction so far says is
-    missing, with ten percent and 64 to spare, so a call is two rounds and two readbacks unless the
-    ball covers a small share of its faces. The area is the kept fraction of ``hit_area``, which
-    sizes the Poisson radii. Fewer samples come back only when ``_BALL_ROUNDS`` rounds, or draws
-    past ``_BALL_EMPTY_DRAWS`` with nothing kept, do not reach ``target``.
+    On CUDA the first round draws for the share of the faces' area a flat disk through the centre
+    would cover, on the CPU device ``target``; each later one draws what the kept fraction so far
+    says is missing, with ten percent and 64 to spare, so a call on CUDA is one round and one
+    readback unless the surface inside the ball is much smaller than that disk. The area is the
+    kept fraction of ``hit_area``, which sizes the Poisson radii. Fewer samples come back only
+    when ``_BALL_ROUNDS`` rounds, or draws past ``_BALL_EMPTY_DRAWS`` with nothing kept, do not
+    reach ``target``.
     """
     device = vertices.device
     stream_seed = resolve_seed(seed)
@@ -1030,7 +1032,17 @@ def _draw_ball_pool(
     out_faces = _launch.empty(target, dtype=wp.int32, device=device)
     round_cap = max(_BALL_ROUND_DRAW_CAP, 2 * target)
     filled = kept = drawn = 0
+    # On CUDA the first round draws for the kept fraction a flat disk through the centre would
+    # give: a smooth surface crossing the ball covers at least about ``pi radius^2`` of it, so one
+    # round usually fills ``target``, and the overdraw on a curved patch costs less than a second
+    # round's launches and readback. The CPU device pays for every draw, so it draws ``target``
+    # first. Which samples are kept does not depend on the rounds' sizes (the stream is continuous
+    # and kept in draw order), only how many rounds and readbacks it takes, and the area estimate
+    # ``"poisson_disk"`` sizes its radii by.
     draw = target
+    if wp.get_device(device).is_cuda:
+        disk_share = min(1.0, math.pi * radius_sq / hit_area)
+        draw = min(max(target, math.ceil(1.1 * target / disk_share) + 64), round_cap)
     for _ in range(_BALL_ROUNDS):
         points, face_index, flags = _draw_ball_round(
             vertices, faces, cdf, hit_area, center, radius_sq, stream_seed, drawn, draw
