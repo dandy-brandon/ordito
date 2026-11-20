@@ -962,8 +962,8 @@ def chunk_dot(
     return (acc[0] + acc[1]) + (acc[2] + acc[3])
 
 
-@wp.kernel
-def forward_gather(
+@wp.func
+def forward_gather_row(
     level_rows: wp.array[wp.int32],
     rhs: wp.array[wp.float64],
     perm: wp.array[wp.int32],
@@ -973,14 +973,13 @@ def forward_gather(
     pair_values: wp.array[wp.float64],
     n: wp.int32,
     n_pairs: wp.int32,
-    start: wp.int32,
+    t: wp.int32,
+    column: wp.int32,
     out_gathered: wp.array[wp.float64],
 ) -> None:
-    # A level's rows of the forward right-hand side: the original entry plus every descendant's
-    # contribution (their solve blocks' lower rows carry the sign), summed in a fixed order. The
-    # level's entries of the level-major maps begin at ``start``, as in every solve kernel.
-    t0, column = wp.tid()
-    t = start + t0
+    # Entry ``t`` of the level-major rows of the forward right-hand side: the original entry plus
+    # every descendant's contribution (their solve blocks' lower rows carry the sign), summed in a
+    # fixed order.
     i = level_rows[t]
     value = rhs[column * n + perm[i]]
     pairs = wp.int64(column) * wp.int64(n_pairs)
@@ -991,8 +990,8 @@ def forward_gather(
     out_gathered[column * n + i] = value
 
 
-@wp.kernel
-def forward_partial(
+@wp.func
+def forward_partial_task(
     task_block: wp.array[wp.int64],
     task_stride: wp.array[wp.int32],
     task_count: wp.array[wp.int32],
@@ -1002,12 +1001,11 @@ def forward_partial(
     gathered: wp.array[wp.float64],
     n: wp.int32,
     n_parts: wp.int32,
-    start: wp.int32,
+    t: wp.int32,
+    column: wp.int32,
     out_parts: wp.array[wp.float64],
 ) -> None:
-    # One row of a solve block against ``CHUNK`` of its supernode's gathered entries.
-    t0, column = wp.tid()
-    t = start + t0
+    # Task ``t``: one row of a solve block against ``CHUNK`` of its supernode's gathered entries.
     out_parts[wp.int64(column) * wp.int64(n_parts) + wp.int64(task_slot[t])] = chunk_dot(
         blocks, task_block[t], wp.int64(task_stride[t]), gathered, column * n + task_source[t],
         task_count[t],
@@ -1031,8 +1029,8 @@ def slot_sum(
     return value
 
 
-@wp.kernel
-def forward_finalize(
+@wp.func
+def forward_finalize_row(
     row_slot: wp.array[wp.int32],
     row_stride: wp.array[wp.int32],
     row_count: wp.array[wp.int32],
@@ -1041,14 +1039,13 @@ def forward_finalize(
     n: wp.int32,
     n_parts: wp.int32,
     n_pairs: wp.int32,
-    start: wp.int32,
+    t: wp.int32,
+    column: wp.int32,
     out_forward: wp.array[wp.float64],
     out_pair_values: wp.array[wp.float64],
 ) -> None:
-    # A level's solve-block rows: their chunks summed in order. A diagonal-block row is the
-    # forward solution's entry; a lower row is a contribution to an ancestor (``-1 - pair``).
-    t0, column = wp.tid()
-    t = start + t0
+    # Solve-block row ``t``: its chunks summed in order. A diagonal-block row is the forward
+    # solution's entry; a lower row is a contribution to an ancestor (``-1 - pair``).
     value = slot_sum(
         parts, wp.int64(column) * wp.int64(n_parts), row_slot[t], row_stride[t], 0, row_count[t]
     )
@@ -1059,8 +1056,8 @@ def forward_finalize(
         out_pair_values[wp.int64(column) * wp.int64(n_pairs) + wp.int64(-1 - target)] = value
 
 
-@wp.kernel
-def backward_partial(
+@wp.func
+def backward_partial_task(
     task_block: wp.array[wp.int64],
     task_first: wp.array[wp.int32],
     task_ncol: wp.array[wp.int32],
@@ -1074,13 +1071,12 @@ def backward_partial(
     solution: wp.array[wp.float64],
     n: wp.int32,
     n_parts: wp.int32,
-    level_start: wp.int32,
+    t: wp.int32,
+    column: wp.int32,
     out_parts: wp.array[wp.float64],
 ) -> None:
-    # ``CHUNK`` entries of one solve-block column, transposed, against its supernode's forward
-    # entries and its ancestors' finished solution entries.
-    t0, column = wp.tid()
-    t = level_start + t0
+    # Task ``t``: ``CHUNK`` entries of one solve-block column, transposed, against its
+    # supernode's forward entries and its ancestors' finished solution entries.
     block = task_block[t]
     first = task_first[t]
     ncol = task_ncol[t]
@@ -1102,6 +1098,129 @@ def backward_partial(
     )
 
 
+@wp.func
+def backward_finalize_row(
+    row_slot: wp.array[wp.int32],
+    row_stride: wp.array[wp.int32],
+    row_first: wp.array[wp.int32],
+    row_count: wp.array[wp.int32],
+    row_target: wp.array[wp.int32],
+    pinned: wp.array[wp.int32],
+    parts: wp.array[wp.float64],
+    perm: wp.array[wp.int32],
+    refined: wp.array[wp.float64],
+    n: wp.int32,
+    n_parts: wp.int32,
+    t: wp.int32,
+    column: wp.int32,
+    out_correction: wp.array[wp.float64],
+) -> None:
+    # Entry ``t`` of the correction (in elimination order, which the next level's backward tasks
+    # read): its chunks summed in order. It is also added to the refined solution at its operator
+    # row: every row is finished by exactly one level, so this is the whole correction's scatter,
+    # one launch fewer per refinement round.
+    value = slot_sum(
+        parts, wp.int64(column) * wp.int64(n_parts), row_slot[t], row_stride[t], row_first[t],
+        row_count[t],
+    )  # fmt: skip
+    i = row_target[t]
+    if pinned[i] != 0:
+        value = wp.float64(0.0)
+    out_correction[column * n + i] = value
+    target = column * n + perm[i]
+    refined[target] = refined[target] + value
+
+
+# The triangular solve a level at a time: each kernel runs one level's entries of one phase
+# (``[start, start + count)`` of the level-major maps), the per-entry bodies above.
+@wp.kernel
+def forward_gather(
+    level_rows: wp.array[wp.int32],
+    rhs: wp.array[wp.float64],
+    perm: wp.array[wp.int32],
+    pinned: wp.array[wp.int32],
+    contribution_offsets: wp.array[wp.int32],
+    contribution_pair: wp.array[wp.int32],
+    pair_values: wp.array[wp.float64],
+    n: wp.int32,
+    n_pairs: wp.int32,
+    start: wp.int32,
+    out_gathered: wp.array[wp.float64],
+) -> None:
+    t0, column = wp.tid()
+    forward_gather_row(
+        level_rows, rhs, perm, pinned, contribution_offsets, contribution_pair, pair_values, n,
+        n_pairs, start + t0, column, out_gathered,
+    )  # fmt: skip
+
+
+@wp.kernel
+def forward_partial(
+    task_block: wp.array[wp.int64],
+    task_stride: wp.array[wp.int32],
+    task_count: wp.array[wp.int32],
+    task_source: wp.array[wp.int32],
+    task_slot: wp.array[wp.int32],
+    blocks: wp.array[wp.float64],
+    gathered: wp.array[wp.float64],
+    n: wp.int32,
+    n_parts: wp.int32,
+    start: wp.int32,
+    out_parts: wp.array[wp.float64],
+) -> None:
+    t0, column = wp.tid()
+    forward_partial_task(
+        task_block, task_stride, task_count, task_source, task_slot, blocks, gathered, n,
+        n_parts, start + t0, column, out_parts,
+    )  # fmt: skip
+
+
+@wp.kernel
+def forward_finalize(
+    row_slot: wp.array[wp.int32],
+    row_stride: wp.array[wp.int32],
+    row_count: wp.array[wp.int32],
+    row_target: wp.array[wp.int32],
+    parts: wp.array[wp.float64],
+    n: wp.int32,
+    n_parts: wp.int32,
+    n_pairs: wp.int32,
+    start: wp.int32,
+    out_forward: wp.array[wp.float64],
+    out_pair_values: wp.array[wp.float64],
+) -> None:
+    t0, column = wp.tid()
+    forward_finalize_row(
+        row_slot, row_stride, row_count, row_target, parts, n, n_parts, n_pairs, start + t0,
+        column, out_forward, out_pair_values,
+    )  # fmt: skip
+
+
+@wp.kernel
+def backward_partial(
+    task_block: wp.array[wp.int64],
+    task_first: wp.array[wp.int32],
+    task_ncol: wp.array[wp.int32],
+    task_size: wp.array[wp.int32],
+    task_start: wp.array[wp.int32],
+    task_rows: wp.array[wp.int32],
+    task_slot: wp.array[wp.int32],
+    rows: wp.array[wp.int32],
+    blocks: wp.array[wp.float64],
+    forward: wp.array[wp.float64],
+    solution: wp.array[wp.float64],
+    n: wp.int32,
+    n_parts: wp.int32,
+    level_start: wp.int32,
+    out_parts: wp.array[wp.float64],
+) -> None:
+    t0, column = wp.tid()
+    backward_partial_task(
+        task_block, task_first, task_ncol, task_size, task_start, task_rows, task_slot, rows,
+        blocks, forward, solution, n, n_parts, level_start + t0, column, out_parts,
+    )  # fmt: skip
+
+
 @wp.kernel
 def backward_finalize(
     row_slot: wp.array[wp.int32],
@@ -1118,22 +1237,120 @@ def backward_finalize(
     start: wp.int32,
     out_correction: wp.array[wp.float64],
 ) -> None:
-    # A level's entries of the correction (in elimination order, which the next level's
-    # ``backward_partial`` reads): their chunks summed in order. Each is also added to the refined
-    # solution at its operator row: every row is finished by exactly one level, so this is the
-    # whole correction's scatter, one launch fewer per refinement round.
     t0, column = wp.tid()
-    t = start + t0
-    value = slot_sum(
-        parts, wp.int64(column) * wp.int64(n_parts), row_slot[t], row_stride[t], row_first[t],
-        row_count[t],
+    backward_finalize_row(
+        row_slot, row_stride, row_first, row_count, row_target, pinned, parts, perm, refined, n,
+        n_parts, start + t0, column, out_correction,
     )  # fmt: skip
-    i = row_target[t]
-    if pinned[i] != 0:
-        value = wp.float64(0.0)
-    out_correction[column * n + i] = value
-    target = column * n + perm[i]
-    refined[target] = refined[target] + value
+
+
+# A level row's solve-map offsets in ``analysis_schedule`` (forward tasks, forward rows,
+# backward tasks, then the level-major rows both sweeps gather and finish): the level's entries
+# of each are ``[offset, next level's offset)``.
+LEVEL_FORWARD_TASKS = 5
+LEVEL_FORWARD_ROWS = 6
+LEVEL_BACKWARD_TASKS = 7
+LEVEL_ROWS = 8
+
+
+@wp.func
+def level_range(schedule: wp.array[wp.int32], level: wp.int32, field: wp.int32) -> wp.vec2i:
+    # ``[start, stop)`` of one solve map's entries at ``level``, from the schedule's level rows.
+    row = SCHEDULE_HEADER + level * LEVEL_FIELDS + field
+    return wp.vec2i(schedule[row], schedule[row + LEVEL_FIELDS])
+
+
+# The CPU device's triangular solve, one thread: the CPU runs a launch's threads one after
+# another, so the five launches a level buy it nothing. Every level of both sweeps runs here in
+# the launches' order, each entry through the same body, so the solve is bit-identical to them
+# (2026-11-20: solves 0.72x ``sphere_small``, 0.76x ``saddle_small``, 0.89x ``saddle_graded``,
+# 0.91x ``hemisphere``). Declined on CUDA, as one block over the levels from the root down: the
+# top of a nested dissection is no chain of narrow levels (every level, the root's dense front
+# included, holds 5 000-15 000 entries on the patch meshes), so the block ran at one SM's
+# ``float64`` rate, 5-7x the launches on 2.5 k-20 k rows and 50x at 82 k.
+@wp.kernel
+def solve_levels_serial(
+    schedule: wp.array[wp.int32],
+    n_levels: wp.int32,
+    n_columns: wp.int32,
+    rhs: wp.array[wp.float64],
+    perm: wp.array[wp.int32],
+    pinned: wp.array[wp.int32],
+    level_rows: wp.array[wp.int32],
+    contribution_offsets: wp.array[wp.int32],
+    contribution_pair: wp.array[wp.int32],
+    f_block: wp.array[wp.int64],
+    f_stride: wp.array[wp.int32],
+    f_count: wp.array[wp.int32],
+    f_source: wp.array[wp.int32],
+    f_slot: wp.array[wp.int32],
+    r_slot: wp.array[wp.int32],
+    r_stride: wp.array[wp.int32],
+    r_count: wp.array[wp.int32],
+    r_target: wp.array[wp.int32],
+    b_block: wp.array[wp.int64],
+    b_first: wp.array[wp.int32],
+    b_ncol: wp.array[wp.int32],
+    b_size: wp.array[wp.int32],
+    b_start: wp.array[wp.int32],
+    b_rows: wp.array[wp.int32],
+    b_slot: wp.array[wp.int32],
+    c_slot: wp.array[wp.int32],
+    c_stride: wp.array[wp.int32],
+    c_first: wp.array[wp.int32],
+    c_count: wp.array[wp.int32],
+    rows: wp.array[wp.int32],
+    blocks: wp.array[wp.float64],
+    n: wp.int32,
+    n_forward_parts: wp.int32,
+    n_backward_parts: wp.int32,
+    n_pairs: wp.int32,
+    refined: wp.array[wp.float64],
+    gathered: wp.array[wp.float64],
+    forward_parts: wp.array[wp.float64],
+    forward: wp.array[wp.float64],
+    pair_values: wp.array[wp.float64],
+    backward_parts: wp.array[wp.float64],
+    correction: wp.array[wp.float64],
+) -> None:
+    for h in range(n_levels):
+        c = level_range(schedule, h, LEVEL_ROWS)
+        f = level_range(schedule, h, LEVEL_FORWARD_TASKS)
+        r = level_range(schedule, h, LEVEL_FORWARD_ROWS)
+        for t in range(c[0], c[1]):
+            for column in range(n_columns):
+                forward_gather_row(
+                    level_rows, rhs, perm, pinned, contribution_offsets, contribution_pair,
+                    pair_values, n, n_pairs, t, column, gathered,
+                )  # fmt: skip
+        for t in range(f[0], f[1]):
+            for column in range(n_columns):
+                forward_partial_task(
+                    f_block, f_stride, f_count, f_source, f_slot, blocks, gathered, n,
+                    n_forward_parts, t, column, forward_parts,
+                )  # fmt: skip
+        for t in range(r[0], r[1]):
+            for column in range(n_columns):
+                forward_finalize_row(
+                    r_slot, r_stride, r_count, r_target, forward_parts, n, n_forward_parts,
+                    n_pairs, t, column, forward, pair_values,
+                )  # fmt: skip
+    for down in range(n_levels):
+        h = n_levels - 1 - down
+        b = level_range(schedule, h, LEVEL_BACKWARD_TASKS)
+        c = level_range(schedule, h, LEVEL_ROWS)
+        for t in range(b[0], b[1]):
+            for column in range(n_columns):
+                backward_partial_task(
+                    b_block, b_first, b_ncol, b_size, b_start, b_rows, b_slot, rows, blocks,
+                    forward, correction, n, n_backward_parts, t, column, backward_parts,
+                )  # fmt: skip
+        for t in range(c[0], c[1]):
+            for column in range(n_columns):
+                backward_finalize_row(
+                    c_slot, c_stride, c_first, c_count, level_rows, pinned, backward_parts, perm,
+                    refined, n, n_backward_parts, t, column, correction,
+                )  # fmt: skip
 
 
 # --------------------------------------------------------------------------------------

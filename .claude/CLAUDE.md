@@ -1093,6 +1093,12 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   ballot cost 1.07x where no row is long. Rows that crowd a warp (an `M^T M` hub's 2-ring) stay
   a lane each: the warp walking them in turn lost 1.22x.
 - **Solvers:** a single-level polynomial preconditioner wins on long solves; a Chebyshev multigrid smoother loses (no single `(degree, interval)` is robust). A small synthetic system can mislead.
+- **The factored triangular solve does not run in one block on CUDA** (2026-11-20,
+  `kernels/cholesky.solve_levels_serial`'s notes): the top of a nested dissection is no chain of
+  narrow levels (every level, the root's dense front included, 5 000-15 000 entries on the patch
+  meshes), so one block runs at one SM's `float64` rate: 5-7x the level launches on 2.5 k-20 k
+  rows, 50x at 82 k. The CPU runs both sweeps as one serial launch (solves 0.72-0.91x, calls
+  0.77-0.96x, bit-identical).
 - **Refuted, do not re-propose:** one launch a Jacobi CG round by recomputing each neighbour's
   next `u` in the mat-vec (2026-11-09, bit-identical iterates, 1.10-1.24x whole calls on
   `sphere_med` / `bunny`: a replayed node costs ~1 us, the four-vector gather ~2 us; notes in
@@ -1403,15 +1409,10 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `offset_mesh(method="meshlib")` against MeshLib's `offsetMesh`, whose extraction is ported
   (`marching_cubes(method="openvdb")`, Class A) and whose OpenVDB `meshToLevelSet` band field is
   not. Scoped, with source availability and licensing, in `reference/component-status.md` (16.0b).
-- **The low-distortion chart's coarse solve** (`parametrization._proximal_arap`): every iteration
-  is one refined `SparseCholesky.solve`, ~88 us of an iteration's ~105 us on bunny's 1 381-row
-  coarse level (150 iterations, 0.8 of the call). `solve(refine=False)` (2026-11-20) drops the
-  residual tests (`refine_start`, two `residual_test`, two `refine_advance`) for a loop that
-  iterates to its own fixpoint; `slim` takes it (its held-factor solve ~230 -> ~206 us on
-  `saddle_small`, calls 0.95-0.96x CUDA, CPU at par, charts within 1.2e-7), and so does the
-  coarse level (bunny 0.81x, dragon 0.86x CUDA; the full-mesh loops keep refinement, declined at
-  `_proximal_arap`). Open: a one-block triangular solve for a small factor, nearly all of the
-  solve now: 7
-  forward and 7 backward levels of two or three latency-bound kernels. `slim`'s replayed solves
-  are 5.4 of 15 ms on `saddle_small` and 22 of 58 ms on a 164 k-face hemisphere. Numbers in
-  `reference/component-status.md` ("Post-0.3.0 sweep").
+- **The factored solve's level launches on CUDA** (`SparseCholesky.solve`'s triangular solve): a
+  solve is ~5 launches a level of the nested dissection (6-13 levels on the patch meshes), each a
+  few us of latency, ~94 us a solve on `saddle_small` and most of `slim`'s and the coarse ARAP
+  loop's time (`slim`: 5.4 of 15 ms there). One block is refuted (§14); what is left is a
+  persistent grid of resident blocks crossing levels at a device-wide barrier, which Warp does not
+  spell (§12.2: an atomic counter and spin in a `wp.func_native`, co-residency to guarantee).
+  Expected at most the launch gaps (~1.5-2x a solve); not attempted.

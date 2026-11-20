@@ -575,8 +575,8 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # The multifrontal factorization works in place: ``fronts`` holds each front's operator
     # entries, then its factor and the Schur complement its parent extends; ``blocks`` the solve
     # blocks each panel's update rewrites. The refinement loop's ``state`` / ``rhs_scale`` are its
-    # condition, round and scale words, read and rewritten every round; the solution is corrected
-    # (``backward_finalize``'s ``refined``) and shifted (``null_space_shift``) in place. A panel's
+    # condition, round and scale words, read and rewritten every round; the solution is shifted
+    # (``null_space_shift``) in place. A panel's
     # tiled factor stages its diagonal block in ``scratch`` and flags a bad pivot in ``status``.
     # ``remove_non_manifold_faces(method="meshlab")``'s round state, rewritten in place by every
     # commit: each face's fate, the live face count of each crowded edge, and the kept mask the
@@ -605,7 +605,6 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("cholesky", "update_panel_tiles"): frozenset({"fronts", "blocks"}),
     ("cholesky", "refine_start"): frozenset({"state", "rhs_scale"}),
     ("cholesky", "residual_test"): frozenset({"state"}),
-    ("cholesky", "backward_finalize"): frozenset({"refined"}),
     # The dissection's per-depth state, carried across its depths in place: the partial moments'
     # per-segment tickets and the crossing counts, each cleared by the block that reads it last,
     # and the depth's table and node / depth words its last launch clears and advances. The

@@ -1410,6 +1410,20 @@ class _Plan:
         )  # fmt: skip
         c_target, contribution_offsets, contribution_pairs, f_tasks, f_rows = self.forward_maps
         b_tasks, c_rows = self.backward_maps
+        if self.serial is not None:
+            # The CPU device: every level of both sweeps in one launch, in the launches' order.
+            _launch.launch(
+                kernel_cholesky.solve_levels_serial,
+                dim=1,
+                inputs=[self.serial[1], wp.int32(self.n_levels), wp.int32(n_columns), rhs,
+                        self.perm, numeric.pinned, c_target, contribution_offsets,
+                        contribution_pairs, *f_tasks, *f_rows, *b_tasks, *c_rows[:4], self.rows,
+                        numeric.blocks, n, nf, nb, npairs, solution, work.gathered,
+                        work.forward_parts, work.forward, work.pair_values, work.backward_parts,
+                        work.correction],
+                device=device,
+            )  # fmt: skip
+            return
         for row_start, n_rows, task_start, n_tasks, block_row_start, n_block_rows in self.forward:
             _launch.launch(
                 kernel_cholesky.forward_gather,
