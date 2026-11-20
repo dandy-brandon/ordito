@@ -6407,6 +6407,10 @@ print is checked, so the output shown is the output you will get.</p>
 <td><a class="autorefs autorefs-internal" title="submesh_from_face_mask" href="../api/ordito/selection/#ordito.selection.submesh_from_face_mask"><code>selection.submesh_from_face_mask</code></a></td>
 </tr>
 <tr>
+<td>grow a selection, or measure hops from it</td>
+<td><a class="autorefs autorefs-internal" title="expand_vertex_mask" href="../api/ordito/selection/#ordito.selection.expand_vertex_mask"><code>selection.expand_vertex_mask</code></a>, <a class="autorefs autorefs-internal" title="vertex_hop_distance" href="../api/ordito/selection/#ordito.selection.vertex_hop_distance"><code>vertex_hop_distance</code></a></td>
+</tr>
+<tr>
 <td>carry colours, UVs, labels or any per-vertex or per-face field through an edit</td>
 <td><code>return_provenance=True</code> and <a class="autorefs autorefs-internal" title="Provenance" href="../api/ordito/interpolation/#ordito.interpolation.Provenance"><code>interpolation.Provenance</code></a></td>
 </tr>
@@ -6523,6 +6527,10 @@ print is checked, so the output shown is the output you will get.</p>
 <td><a class="autorefs autorefs-internal" title="icp" href="../api/ordito/registration/#ordito.registration.icp"><code>registration.icp</code></a>, <a class="autorefs autorefs-internal" title="icp_point_to_plane" href="../api/ordito/registration/#ordito.registration.icp_point_to_plane"><code>icp_point_to_plane</code></a>, <a class="autorefs autorefs-internal" title="procrustes" href="../api/ordito/registration/#ordito.registration.procrustes"><code>procrustes</code></a></td>
 </tr>
 <tr>
+<td>fit many sets of corresponding points at once, robust to outliers</td>
+<td><a class="autorefs autorefs-internal" title="procrustes_from_offsets" href="../api/ordito/registration/#ordito.registration.procrustes_from_offsets"><code>registration.procrustes_from_offsets</code></a></td>
+</tr>
+<tr>
 <td>voxelize</td>
 <td><a class="autorefs autorefs-internal" title="voxelize_mesh" href="../api/ordito/voxels/#ordito.voxels.voxelize_mesh"><code>voxels.voxelize_mesh</code></a>, <a class="autorefs autorefs-internal" title="voxelize_points" href="../api/ordito/voxels/#ordito.voxels.voxelize_points"><code>voxelize_points</code></a></td>
 </tr>
@@ -6544,7 +6552,7 @@ print is checked, so the output shown is the output you will get.</p>
 </tr>
 <tr>
 <td>flatten to the plane (UV parametrization)</td>
-<td><a class="autorefs autorefs-internal" title="ordito.parametrization" href="../api/ordito/parametrization/#ordito.parametrization"><code>parametrization</code></a>: <a class="autorefs autorefs-internal" title="harmonic" href="../api/ordito/parametrization/#ordito.parametrization.harmonic"><code>harmonic</code></a>, <a class="autorefs autorefs-internal" title="lscm" href="../api/ordito/parametrization/#ordito.parametrization.lscm"><code>lscm</code></a>, <a class="autorefs autorefs-internal" title="arap" href="../api/ordito/parametrization/#ordito.parametrization.arap"><code>arap</code></a>, <a class="autorefs autorefs-internal" title="slim" href="../api/ordito/parametrization/#ordito.parametrization.slim"><code>slim</code></a> (least symmetric Dirichlet distortion from a start, fold-free), <a class="autorefs autorefs-internal" title="low_distortion_parametrization" href="../api/ordito/parametrization/#ordito.parametrization.low_distortion_parametrization"><code>low_distortion_parametrization</code></a> (free boundary, no pins, any topology), <a class="autorefs autorefs-internal" title="low_distortion_disk_parametrization" href="../api/ordito/parametrization/#ordito.parametrization.low_distortion_disk_parametrization"><code>low_distortion_disk_parametrization</code></a> (the same for a disk, from a classic map), <a class="autorefs autorefs-internal" title="slim_parametrization" href="../api/ordito/parametrization/#ordito.parametrization.slim_parametrization"><code>slim_parametrization</code></a> (the whole unwrap to the least symmetric Dirichlet distortion, from the free chart or a classic map; fold-free on a disk)</td>
+<td><a class="autorefs autorefs-internal" title="ordito.parametrization" href="../api/ordito/parametrization/#ordito.parametrization"><code>parametrization</code></a>: <a class="autorefs autorefs-internal" title="harmonic" href="../api/ordito/parametrization/#ordito.parametrization.harmonic"><code>harmonic</code></a>, <a class="autorefs autorefs-internal" title="lscm" href="../api/ordito/parametrization/#ordito.parametrization.lscm"><code>lscm</code></a>, <a class="autorefs autorefs-internal" title="arap" href="../api/ordito/parametrization/#ordito.parametrization.arap"><code>arap</code></a>, <a class="autorefs autorefs-internal" title="slim" href="../api/ordito/parametrization/#ordito.parametrization.slim"><code>slim</code></a> (least symmetric Dirichlet distortion from a start, fold-free), <a class="autorefs autorefs-internal" title="low_distortion_parametrization" href="../api/ordito/parametrization/#ordito.parametrization.low_distortion_parametrization"><code>low_distortion_parametrization</code></a> (free boundary, no pins, any topology), <a class="autorefs autorefs-internal" title="arap_parametrization" href="../api/ordito/parametrization/#ordito.parametrization.arap_parametrization"><code>arap_parametrization</code></a> (the same from a classic map, any surface with a boundary), <a class="autorefs autorefs-internal" title="slim_parametrization" href="../api/ordito/parametrization/#ordito.parametrization.slim_parametrization"><code>slim_parametrization</code></a> (the whole unwrap to the least symmetric Dirichlet distortion, from the free chart or a classic map; fold-free on a disk)</td>
 </tr>
 <tr>
 <td>bake or sample textures</td>

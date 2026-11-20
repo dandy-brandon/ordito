@@ -5393,10 +5393,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#ordito.parametrization.low_distortion_disk_parametrization" class="md-nav__link">
+  <a href="#ordito.parametrization.arap_parametrization" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        low_distortion_disk_parametrization
+        arap_parametrization
       </span>
     </span>
   </a>
@@ -6278,10 +6278,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#ordito.parametrization.low_distortion_disk_parametrization" class="md-nav__link">
+  <a href="#ordito.parametrization.arap_parametrization" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        low_distortion_disk_parametrization
+        arap_parametrization
       </span>
     </span>
   </a>
@@ -6354,8 +6354,8 @@ own shape, minimizing conformal rather than Dirichlet energy.
 <a class="autorefs autorefs-internal" title="low_distortion_parametrization" href="./#ordito.parametrization.low_distortion_parametrization"><code>low_distortion_parametrization</code></a>
 pins nothing and needs no start: a free-boundary chart of low ARAP distortion in the mesh's own
 units for an open surface of any topology, converged on a coarse mesh;
-<a class="autorefs autorefs-internal" title="low_distortion_disk_parametrization" href="./#ordito.parametrization.low_distortion_disk_parametrization"><code>low_distortion_disk_parametrization</code></a>
-is the same chart of a disk, refined from a harmonic, Tutte or LSCM map.
+<a class="autorefs autorefs-internal" title="arap_parametrization" href="./#ordito.parametrization.arap_parametrization"><code>arap_parametrization</code></a> is the same chart refined
+from a harmonic, Tutte or LSCM map of a surface with a boundary.
 <a class="autorefs autorefs-internal" title="slim_parametrization" href="./#ordito.parametrization.slim_parametrization"><code>slim_parametrization</code></a> unwraps in one call to the
 least symmetric Dirichlet distortion, from the free chart or a harmonic, Tutte or LSCM start.</p>
 <p><a class="autorefs autorefs-internal" title="map_vertices_to_circle" href="./#ordito.parametrization.map_vertices_to_circle"><code>map_vertices_to_circle</code></a> supplies the boundary
@@ -6483,10 +6483,10 @@ solve with no iteration.</p>
               </td>
             </tr>
             <tr class="doc-section-item">
-              <td><code><a class="autorefs autorefs-internal" title="low_distortion_disk_parametrization (ordito.parametrization.low_distortion_disk_parametrization)" href="./#ordito.parametrization.low_distortion_disk_parametrization">low_distortion_disk_parametrization</a></code></td>
+              <td><code><a class="autorefs autorefs-internal" title="arap_parametrization (ordito.parametrization.arap_parametrization)" href="./#ordito.parametrization.arap_parametrization">arap_parametrization</a></code></td>
               <td>
                 <div class="doc-md-description">
-                  <p>Free-boundary chart of low ARAP distortion of a disk, from a harmonic, Tutte or LSCM start.</p>
+                  <p>Free-boundary chart of low ARAP distortion, from a harmonic, Tutte or LSCM start.</p>
                 </div>
               </td>
             </tr>
@@ -6659,14 +6659,14 @@ refers to its mesh weakly and is unusable once the mesh is gone.</p>
 
                   <details class="mkdocstrings-source">
                     <summary>Source code in <code>ordito/parametrization.py</code></summary>
-                    <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2640</span>
-<span class="normal">2641</span>
-<span class="normal">2642</span>
-<span class="normal">2643</span>
-<span class="normal">2644</span>
-<span class="normal">2645</span>
-<span class="normal">2646</span>
-<span class="normal">2647</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+                    <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2647</span>
+<span class="normal">2648</span>
+<span class="normal">2649</span>
+<span class="normal">2650</span>
+<span class="normal">2651</span>
+<span class="normal">2652</span>
+<span class="normal">2653</span>
+<span class="normal">2654</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""Bind a solver to ``mesh``; nothing is assembled until a factorization is asked for."""</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_mesh</span> <span class="o">=</span> <span class="n">weakref</span><span class="o">.</span><span class="n">ref</span><span class="p">(</span><span class="n">mesh</span><span class="p">)</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_systems</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">int</span><span class="p">],</span> <span class="n">twl</span><span class="o">.</span><span class="n">MinQuadWithFixedData</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
@@ -6746,12 +6746,12 @@ refers to its mesh weakly and is unusable once the mesh is gone.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2654</span>
-<span class="normal">2655</span>
-<span class="normal">2656</span>
-<span class="normal">2657</span>
-<span class="normal">2658</span>
-<span class="normal">2659</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">release</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2661</span>
+<span class="normal">2662</span>
+<span class="normal">2663</span>
+<span class="normal">2664</span>
+<span class="normal">2665</span>
+<span class="normal">2666</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">release</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""Drop every kept factorization, and forget which systems could not be factored."""</span>
     <span class="k">for</span> <span class="n">system</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_systems</span><span class="o">.</span><span class="n">values</span><span class="p">():</span>
         <span class="n">system</span><span class="o">.</span><span class="n">release</span><span class="p">()</span>
@@ -6930,14 +6930,7 @@ if <code>fixed_indices</code> repeats a vertex or holds one outside <code>[0, n_
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2661</span>
-<span class="normal">2662</span>
-<span class="normal">2663</span>
-<span class="normal">2664</span>
-<span class="normal">2665</span>
-<span class="normal">2666</span>
-<span class="normal">2667</span>
-<span class="normal">2668</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2668</span>
 <span class="normal">2669</span>
 <span class="normal">2670</span>
 <span class="normal">2671</span>
@@ -6989,7 +6982,14 @@ if <code>fixed_indices</code> repeats a vertex or holds one outside <code>[0, n_
 <span class="normal">2717</span>
 <span class="normal">2718</span>
 <span class="normal">2719</span>
-<span class="normal">2720</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">factor</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">method</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">fixed_indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">k</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="normal">2720</span>
+<span class="normal">2721</span>
+<span class="normal">2722</span>
+<span class="normal">2723</span>
+<span class="normal">2724</span>
+<span class="normal">2725</span>
+<span class="normal">2726</span>
+<span class="normal">2727</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">factor</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">method</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">fixed_indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">k</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Factor ``method``'s system with ``fixed_indices`` fixed, for every later call fixing them.</span>
 
@@ -7307,14 +7307,7 @@ free values are the interior <code>x</code> coordinates:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2722</span>
-<span class="normal">2723</span>
-<span class="normal">2724</span>
-<span class="normal">2725</span>
-<span class="normal">2726</span>
-<span class="normal">2727</span>
-<span class="normal">2728</span>
-<span class="normal">2729</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2729</span>
 <span class="normal">2730</span>
 <span class="normal">2731</span>
 <span class="normal">2732</span>
@@ -7387,7 +7380,14 @@ free values are the interior <code>x</code> coordinates:</p>
 <span class="normal">2799</span>
 <span class="normal">2800</span>
 <span class="normal">2801</span>
-<span class="normal">2802</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">solve</span><span class="p">(</span>
+<span class="normal">2802</span>
+<span class="normal">2803</span>
+<span class="normal">2804</span>
+<span class="normal">2805</span>
+<span class="normal">2806</span>
+<span class="normal">2807</span>
+<span class="normal">2808</span>
+<span class="normal">2809</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">solve</span><span class="p">(</span>
     <span class="bp">self</span><span class="p">,</span>
     <span class="n">method</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
     <span class="n">fixed_mask</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
@@ -7933,9 +7933,9 @@ triangle is flipped.</p>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 7 places</summary>
+      <summary>Referenced by 8 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../seams/#ordito.seams">seams</a> › <a href="../seams/#ordito.seams.uv_seam_edges">uv_seam_edges</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.arap">arap</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.face_flipped_mask">face_flipped_mask</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.low_distortion_parametrization">low_distortion_parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.lscm">lscm</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.slim">slim</a></span></p>
+<span class="ordito-backlink"><a href="../seams/#ordito.seams">seams</a> › <a href="../seams/#ordito.seams.uv_seam_edges">uv_seam_edges</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.arap">arap</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.arap_parametrization">arap_parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.face_flipped_mask">face_flipped_mask</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.low_distortion_parametrization">low_distortion_parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.lscm">lscm</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.slim">slim</a></span></p>
     </details>
 
 
@@ -8218,7 +8218,7 @@ disk parametrization.</p>
     <details class="doc doc-backlinks ordito-backlinks">
       <summary>Referenced by 7 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.arap">arap</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.harmonic">harmonic</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.low_distortion_disk_parametrization">low_distortion_disk_parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.slim_parametrization">slim_parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.tutte">tutte</a></span></p>
+<span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.arap">arap</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.arap_parametrization">arap_parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.harmonic">harmonic</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.slim_parametrization">slim_parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.tutte">tutte</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
 <span class="ordito-backlink"><a href="../../../examples/parametrization/#parametrization-and-textures">Parametrization and textures</a> › <a href="../../../examples/parametrization/#p1">Flattening a disk: Tutte, harmonic, LSCM and ARAP</a></span></p>
     </details>
@@ -8796,7 +8796,7 @@ linearly, so it reproduces the grid:</p>
     <details class="doc doc-backlinks ordito-backlinks">
       <summary>Referenced by 18 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../seams/#ordito.seams">seams</a></span> · <span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.fixed_vertex_solver">fixed_vertex_solver</a></span> · <span class="ordito-backlink"><a href="../energies/#ordito.energies">energies</a> › <a href="../energies/#ordito.energies.k_harmonic">k_harmonic</a></span> · <span class="ordito-backlink"><a href="../laplacian/#ordito.laplacian">laplacian</a> › <a href="../laplacian/#ordito.laplacian.cotmatrix">cotmatrix</a></span> · <span class="ordito-backlink"><a href="../laplacian/#ordito.laplacian">laplacian</a> › <a href="../laplacian/#ordito.laplacian.cotmatrix_entries">cotmatrix_entries</a></span> · <span class="ordito-backlink"><a href="../linalg/#ordito.linalg">linalg</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.FixedVertexSolver">FixedVertexSolver</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization.FixedVertexSolver">FixedVertexSolver</a> › <a href="./#ordito.parametrization.FixedVertexSolver.factor">factor</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.arap">arap</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.low_distortion_disk_parametrization">low_distortion_disk_parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.lscm">lscm</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.map_vertices_to_circle">map_vertices_to_circle</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.slim_parametrization">slim_parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.tutte">tutte</a></span></p>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../seams/#ordito.seams">seams</a></span> · <span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.fixed_vertex_solver">fixed_vertex_solver</a></span> · <span class="ordito-backlink"><a href="../energies/#ordito.energies">energies</a> › <a href="../energies/#ordito.energies.k_harmonic">k_harmonic</a></span> · <span class="ordito-backlink"><a href="../laplacian/#ordito.laplacian">laplacian</a> › <a href="../laplacian/#ordito.laplacian.cotmatrix">cotmatrix</a></span> · <span class="ordito-backlink"><a href="../laplacian/#ordito.laplacian">laplacian</a> › <a href="../laplacian/#ordito.laplacian.cotmatrix_entries">cotmatrix_entries</a></span> · <span class="ordito-backlink"><a href="../linalg/#ordito.linalg">linalg</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.FixedVertexSolver">FixedVertexSolver</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization.FixedVertexSolver">FixedVertexSolver</a> › <a href="./#ordito.parametrization.FixedVertexSolver.factor">factor</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.arap">arap</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.arap_parametrization">arap_parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.lscm">lscm</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.map_vertices_to_circle">map_vertices_to_circle</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.slim_parametrization">slim_parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.tutte">tutte</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
 <span class="ordito-backlink"><a href="../../../examples/parametrization/#parametrization-and-textures">Parametrization and textures</a> › <a href="../../../examples/parametrization/#p1">Flattening a disk: Tutte, harmonic, LSCM and ARAP</a></span></p>
         <p><span class="ordito-backlinks-section">Migrating from another library</span>
@@ -9421,7 +9421,7 @@ device.</p>
     <details class="doc doc-backlinks ordito-backlinks">
       <summary>Referenced by 14 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.fixed_vertex_solver">fixed_vertex_solver</a></span> · <span class="ordito-backlink"><a href="../energies/#ordito.energies">energies</a> › <a href="../energies/#ordito.energies.k_harmonic">k_harmonic</a></span> · <span class="ordito-backlink"><a href="../laplacian/#ordito.laplacian">laplacian</a> › <a href="../laplacian/#ordito.laplacian.graph_laplacian">graph_laplacian</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.FixedVertexSolver">FixedVertexSolver</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization.FixedVertexSolver">FixedVertexSolver</a> › <a href="./#ordito.parametrization.FixedVertexSolver.factor">factor</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.arap">arap</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.harmonic">harmonic</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.low_distortion_disk_parametrization">low_distortion_disk_parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.lscm">lscm</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.map_vertices_to_circle">map_vertices_to_circle</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.slim">slim</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.slim_parametrization">slim_parametrization</a></span></p>
+<span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.fixed_vertex_solver">fixed_vertex_solver</a></span> · <span class="ordito-backlink"><a href="../energies/#ordito.energies">energies</a> › <a href="../energies/#ordito.energies.k_harmonic">k_harmonic</a></span> · <span class="ordito-backlink"><a href="../laplacian/#ordito.laplacian">laplacian</a> › <a href="../laplacian/#ordito.laplacian.graph_laplacian">graph_laplacian</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.FixedVertexSolver">FixedVertexSolver</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization.FixedVertexSolver">FixedVertexSolver</a> › <a href="./#ordito.parametrization.FixedVertexSolver.factor">factor</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.arap">arap</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.arap_parametrization">arap_parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.harmonic">harmonic</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.lscm">lscm</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.map_vertices_to_circle">map_vertices_to_circle</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.slim">slim</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.slim_parametrization">slim_parametrization</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
 <span class="ordito-backlink"><a href="../../../examples/parametrization/#parametrization-and-textures">Parametrization and textures</a> › <a href="../../../examples/parametrization/#p1">Flattening a disk: Tutte, harmonic, LSCM and ARAP</a></span></p>
     </details>
@@ -9929,7 +9929,7 @@ exactly:</p>
     <details class="doc doc-backlinks ordito-backlinks">
       <summary>Referenced by 9 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../config/#ordito.config">config</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.low_distortion_disk_parametrization">low_distortion_disk_parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.low_distortion_parametrization">low_distortion_parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.slim">slim</a></span></p>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../config/#ordito.config">config</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.arap_parametrization">arap_parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.low_distortion_parametrization">low_distortion_parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.slim">slim</a></span></p>
         <p><span class="ordito-backlinks-section">Concepts</span>
 <span class="ordito-backlink"><a href="../../../reproducibility/#reproducible-results">Reproducible results</a> › <a href="../../../reproducibility/#what-it-governs">What it governs</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
@@ -11343,8 +11343,8 @@ of local/global iterations while depending only on the coarse shape:</p>
 <p>A mesh of at most <code>single_level_vertices</code> vertices, or one whose clustering leaves fewer
 than 16 coarse faces or more clusters than half its vertices, is iterated directly as in
 step 2, from its own projection.
-<a class="autorefs autorefs-internal" title="low_distortion_disk_parametrization" href="./#ordito.parametrization.low_distortion_disk_parametrization"><code>low_distortion_disk_parametrization</code></a>
-starts a disk from a harmonic, Tutte or LSCM map instead.</p>
+<a class="autorefs autorefs-internal" title="arap_parametrization" href="./#ordito.parametrization.arap_parametrization"><code>arap_parametrization</code></a> starts from a harmonic,
+Tutte or LSCM map instead.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -11564,7 +11564,7 @@ or clusters cannot be numbered.</p>
 
 <details class="see-also" open>
   <summary>See Also</summary>
-  <p><a class="autorefs autorefs-internal" title="low_distortion_disk_parametrization" href="./#ordito.parametrization.low_distortion_disk_parametrization"><code>low_distortion_disk_parametrization</code></a>
+  <p><a class="autorefs autorefs-internal" title="arap_parametrization" href="./#ordito.parametrization.arap_parametrization"><code>arap_parametrization</code></a>
 <a class="autorefs autorefs-internal" title="arap" href="./#ordito.parametrization.arap"><code>arap</code></a>
     The pinned, warm-started ARAP map.
 <a class="autorefs autorefs-internal" title="lscm" href="./#ordito.parametrization.lscm"><code>lscm</code></a>
@@ -11604,7 +11604,7 @@ its last bits can move between calls on the CUDA device.</p>
     <details class="doc doc-backlinks ordito-backlinks">
       <summary>Referenced by 7 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.arap">arap</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.low_distortion_disk_parametrization">low_distortion_disk_parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.slim">slim</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.slim_parametrization">slim_parametrization</a></span></p>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.arap">arap</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.arap_parametrization">arap_parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.slim">slim</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.slim_parametrization">slim_parametrization</a></span></p>
         <p><span class="ordito-backlinks-section">Concepts</span>
 <span class="ordito-backlink"><a href="../../../reproducibility/#reproducible-results">Reproducible results</a> › <a href="../../../reproducibility/#what-it-governs">What it governs</a></span></p>
     </details>
@@ -11830,8 +11830,8 @@ its last bits can move between calls on the CUDA device.</p>
 <span class="sd">    A mesh of at most ``single_level_vertices`` vertices, or one whose clustering leaves fewer</span>
 <span class="sd">    than 16 coarse faces or more clusters than half its vertices, is iterated directly as in</span>
 <span class="sd">    step 2, from its own projection.</span>
-<span class="sd">    [`low_distortion_disk_parametrization`][ordito.parametrization.low_distortion_disk_parametrization]</span>
-<span class="sd">    starts a disk from a harmonic, Tutte or LSCM map instead.</span>
+<span class="sd">    [`arap_parametrization`][ordito.parametrization.arap_parametrization] starts from a harmonic,</span>
+<span class="sd">    Tutte or LSCM map instead.</span>
 
 <span class="sd">    Parameters</span>
 <span class="sd">    ----------</span>
@@ -11882,7 +11882,7 @@ its last bits can move between calls on the CUDA device.</p>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
-<span class="sd">    [`low_distortion_disk_parametrization`][ordito.parametrization.low_distortion_disk_parametrization]</span>
+<span class="sd">    [`arap_parametrization`][ordito.parametrization.arap_parametrization]</span>
 <span class="sd">    [`arap`][ordito.parametrization.arap]</span>
 <span class="sd">        The pinned, warm-started ARAP map.</span>
 <span class="sd">    [`lscm`][ordito.parametrization.lscm]</span>
@@ -11982,12 +11982,12 @@ its last bits can move between calls on the CUDA device.</p>
 <div class="doc doc-object doc-function">
 
 
-<h2 id="ordito.parametrization.low_distortion_disk_parametrization" class="doc doc-heading">
-            <span class="doc doc-object-name doc-function-name">low_distortion_disk_parametrization</span>
+<h2 id="ordito.parametrization.arap_parametrization" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">arap_parametrization</span>
 
 
 </h2>
-<div class="doc-signature highlight"><pre><span></span><code><span class="nf">low_distortion_disk_parametrization</span><span class="p">(</span>
+<div class="doc-signature highlight"><pre><span></span><code><span class="nf">arap_parametrization</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -11998,20 +11998,25 @@ its last bits can move between calls on the CUDA device.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Free-boundary chart of low ARAP distortion of a disk, from a harmonic, Tutte or LSCM start.</p>
-<p>The disk counterpart of
-<a class="autorefs autorefs-internal" title="low_distortion_parametrization" href="./#ordito.parametrization.low_distortion_parametrization"><code>low_distortion_parametrization</code></a>:
-the same pin-free element ARAP energy <code>sum_f A_f |J_f - R_f|^2</code> and free boundary, started
-from a classic map of the whole mesh instead of a coarse level, and iterated on the mesh
-itself, each global step a factored solve, until an iteration moves no vertex by more than
-<code>5e-3</code> mean edge lengths. A start's distortion is large-scale, which only whole solves
-repair.</p>
+        <p>Free-boundary chart of low ARAP distortion, from a harmonic, Tutte or LSCM start.</p>
+<p>The counterpart of
+<a class="autorefs autorefs-internal" title="low_distortion_parametrization" href="./#ordito.parametrization.low_distortion_parametrization"><code>low_distortion_parametrization</code></a>
+started from a classic map: the same pin-free element ARAP energy <code>sum_f A_f |J_f - R_f|^2</code>
+and free boundary, started from a map of the whole mesh instead of a coarse level, and iterated
+on the mesh itself, each global step a factored solve, until an iteration moves no vertex by
+more than <code>5e-3</code> mean edge lengths. A start's distortion is large-scale, which only whole
+solves repair.</p>
 <p>The start is <a class="autorefs autorefs-internal" title="harmonic" href="./#ordito.parametrization.harmonic"><code>harmonic</code></a> or
-<a class="autorefs autorefs-internal" title="tutte" href="./#ordito.parametrization.tutte"><code>tutte</code></a> with the boundary loop placed on a circle by
-<a class="autorefs autorefs-internal" title="map_vertices_to_circle" href="./#ordito.parametrization.map_vertices_to_circle"><code>map_vertices_to_circle</code></a>, or
-<a class="autorefs autorefs-internal" title="lscm" href="./#ordito.parametrization.lscm"><code>lscm</code></a> with two vertices half the loop apart pinned; it is
-scaled to the mesh's area and mirrored if its faces wind clockwise on the whole, since ARAP
-fits proper rotations and cannot unmirror it.</p>
+<a class="autorefs autorefs-internal" title="tutte" href="./#ordito.parametrization.tutte"><code>tutte</code></a> with the longest boundary loop placed on a circle by
+<a class="autorefs autorefs-internal" title="map_vertices_to_circle" href="./#ordito.parametrization.map_vertices_to_circle"><code>map_vertices_to_circle</code></a> and any other loop
+free, or <a class="autorefs autorefs-internal" title="lscm" href="./#ordito.parametrization.lscm"><code>lscm</code></a> with two vertices half that loop apart pinned;
+it is scaled to the mesh's area and mirrored if its faces wind clockwise on the whole, since
+ARAP fits proper rotations and cannot unmirror it. The same starts as
+<a class="autorefs autorefs-internal" title="slim_parametrization" href="./#ordito.parametrization.slim_parametrization"><code>slim_parametrization</code></a>'s.</p>
+<p>The mesh needs one connected component with a boundary loop, but need not be a disk. On a
+surface with a handle or several holes the start inverts some faces (a handle forces it), and
+ARAP, which has no barrier against folding, may keep some of them inverted; check with
+<a class="autorefs autorefs-internal" title="face_flipped_indices" href="./#ordito.parametrization.face_flipped_indices"><code>face_flipped_indices</code></a>.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -12050,8 +12055,8 @@ fits proper rotations and cannot unmirror it.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p><code>(3 * n_faces,)</code> triangle index buffer of a disk: one connected component with one
-boundary loop and Euler characteristic 1. Faces of no area are ignored.</p>
+                <p><code>(3 * n_faces,)</code> triangle index buffer of one connected surface with at least one
+boundary loop. Faces of no area are ignored.</p>
               </div>
             </td>
             <td>
@@ -12135,7 +12140,8 @@ faces mostly counter-clockwise; the rotation is unspecified. Empty for an empty 
               <div class="doc-md-description">
                 <p>If <code>vertices</code> is not <code>wp.vec3</code> or <code>faces</code> not <code>wp.int32</code> with a multiple of three
 entries, if <code>init</code> is not one of the three, if <code>iterations</code> is negative, if a vertex
-coordinate is not finite, if no face has a positive area, or if the mesh is not a disk.</p>
+coordinate is not finite, if no face has a positive area, or if the mesh has no boundary
+loop or more than one connected component.</p>
               </div>
             </td>
           </tr>
@@ -12156,7 +12162,9 @@ coordinate is not finite, if no face has a positive area, or if the mesh is not 
 <details class="see-also" open>
   <summary>See Also</summary>
   <p><a class="autorefs autorefs-internal" title="low_distortion_parametrization" href="./#ordito.parametrization.low_distortion_parametrization"><code>low_distortion_parametrization</code></a>
-    Any topology, from a coarse level.
+    The same energy from a coarse level, closed meshes included.
+<a class="autorefs autorefs-internal" title="slim_parametrization" href="./#ordito.parametrization.slim_parametrization"><code>slim_parametrization</code></a>
+    The least symmetric Dirichlet distortion from the same starts.
 <a class="autorefs autorefs-internal" title="arap" href="./#ordito.parametrization.arap"><code>arap</code></a>
     The pinned, warm-started ARAP map.</p>
 </details>
@@ -12185,7 +12193,7 @@ its last bits can move between calls on the CUDA device.</p>
 
 
 <span class="n">charts</span> <span class="o">=</span> <span class="p">[</span>
-    <span class="n">od</span><span class="o">.</span><span class="n">parametrization</span><span class="o">.</span><span class="n">low_distortion_disk_parametrization</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">init</span><span class="o">=</span><span class="n">init</span><span class="p">)</span>
+    <span class="n">od</span><span class="o">.</span><span class="n">parametrization</span><span class="o">.</span><span class="n">arap_parametrization</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">init</span><span class="o">=</span><span class="n">init</span><span class="p">)</span>
     <span class="k">for</span> <span class="n">init</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"harmonic"</span><span class="p">,</span> <span class="s2">"tutte"</span><span class="p">,</span> <span class="s2">"lscm"</span><span class="p">)</span>
 <span class="p">]</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">mean_edge</span><span class="p">(</span><span class="n">vertices</span><span class="o">.</span><span class="n">numpy</span><span class="p">()))</span>  <span class="c1"># 0.134</span>
@@ -12315,7 +12323,15 @@ its last bits can move between calls on the CUDA device.</p>
 <span class="normal">1666</span>
 <span class="normal">1667</span>
 <span class="normal">1668</span>
-<span class="normal">1669</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">low_distortion_disk_parametrization</span><span class="p">(</span>
+<span class="normal">1669</span>
+<span class="normal">1670</span>
+<span class="normal">1671</span>
+<span class="normal">1672</span>
+<span class="normal">1673</span>
+<span class="normal">1674</span>
+<span class="normal">1675</span>
+<span class="normal">1676</span>
+<span class="normal">1677</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">arap_parametrization</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -12323,30 +12339,36 @@ its last bits can move between calls on the CUDA device.</p>
     <span class="n">iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">150</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
-<span class="sd">    Free-boundary chart of low ARAP distortion of a disk, from a harmonic, Tutte or LSCM start.</span>
+<span class="sd">    Free-boundary chart of low ARAP distortion, from a harmonic, Tutte or LSCM start.</span>
 
-<span class="sd">    The disk counterpart of</span>
-<span class="sd">    [`low_distortion_parametrization`][ordito.parametrization.low_distortion_parametrization]:</span>
-<span class="sd">    the same pin-free element ARAP energy ``sum_f A_f |J_f - R_f|^2`` and free boundary, started</span>
-<span class="sd">    from a classic map of the whole mesh instead of a coarse level, and iterated on the mesh</span>
-<span class="sd">    itself, each global step a factored solve, until an iteration moves no vertex by more than</span>
-<span class="sd">    ``5e-3`` mean edge lengths. A start's distortion is large-scale, which only whole solves</span>
-<span class="sd">    repair.</span>
+<span class="sd">    The counterpart of</span>
+<span class="sd">    [`low_distortion_parametrization`][ordito.parametrization.low_distortion_parametrization]</span>
+<span class="sd">    started from a classic map: the same pin-free element ARAP energy ``sum_f A_f |J_f - R_f|^2``</span>
+<span class="sd">    and free boundary, started from a map of the whole mesh instead of a coarse level, and iterated</span>
+<span class="sd">    on the mesh itself, each global step a factored solve, until an iteration moves no vertex by</span>
+<span class="sd">    more than ``5e-3`` mean edge lengths. A start's distortion is large-scale, which only whole</span>
+<span class="sd">    solves repair.</span>
 
 <span class="sd">    The start is [`harmonic`][ordito.parametrization.harmonic] or</span>
-<span class="sd">    [`tutte`][ordito.parametrization.tutte] with the boundary loop placed on a circle by</span>
-<span class="sd">    [`map_vertices_to_circle`][ordito.parametrization.map_vertices_to_circle], or</span>
-<span class="sd">    [`lscm`][ordito.parametrization.lscm] with two vertices half the loop apart pinned; it is</span>
-<span class="sd">    scaled to the mesh's area and mirrored if its faces wind clockwise on the whole, since ARAP</span>
-<span class="sd">    fits proper rotations and cannot unmirror it.</span>
+<span class="sd">    [`tutte`][ordito.parametrization.tutte] with the longest boundary loop placed on a circle by</span>
+<span class="sd">    [`map_vertices_to_circle`][ordito.parametrization.map_vertices_to_circle] and any other loop</span>
+<span class="sd">    free, or [`lscm`][ordito.parametrization.lscm] with two vertices half that loop apart pinned;</span>
+<span class="sd">    it is scaled to the mesh's area and mirrored if its faces wind clockwise on the whole, since</span>
+<span class="sd">    ARAP fits proper rotations and cannot unmirror it. The same starts as</span>
+<span class="sd">    [`slim_parametrization`][ordito.parametrization.slim_parametrization]'s.</span>
+
+<span class="sd">    The mesh needs one connected component with a boundary loop, but need not be a disk. On a</span>
+<span class="sd">    surface with a handle or several holes the start inverts some faces (a handle forces it), and</span>
+<span class="sd">    ARAP, which has no barrier against folding, may keep some of them inverted; check with</span>
+<span class="sd">    [`face_flipped_indices`][ordito.parametrization.face_flipped_indices].</span>
 
 <span class="sd">    Parameters</span>
 <span class="sd">    ----------</span>
 <span class="sd">    vertices</span>
 <span class="sd">        ``(n_vertices,)`` mesh vertex positions.</span>
 <span class="sd">    faces</span>
-<span class="sd">        ``(3 * n_faces,)`` triangle index buffer of a disk: one connected component with one</span>
-<span class="sd">        boundary loop and Euler characteristic 1. Faces of no area are ignored.</span>
+<span class="sd">        ``(3 * n_faces,)`` triangle index buffer of one connected surface with at least one</span>
+<span class="sd">        boundary loop. Faces of no area are ignored.</span>
 <span class="sd">    init</span>
 <span class="sd">        The start: ``"harmonic"`` (default), ``"tutte"`` or ``"lscm"``.</span>
 <span class="sd">    iterations</span>
@@ -12363,14 +12385,17 @@ its last bits can move between calls on the CUDA device.</p>
 <span class="sd">    ValueError</span>
 <span class="sd">        If ``vertices`` is not ``wp.vec3`` or ``faces`` not ``wp.int32`` with a multiple of three</span>
 <span class="sd">        entries, if ``init`` is not one of the three, if ``iterations`` is negative, if a vertex</span>
-<span class="sd">        coordinate is not finite, if no face has a positive area, or if the mesh is not a disk.</span>
+<span class="sd">        coordinate is not finite, if no face has a positive area, or if the mesh has no boundary</span>
+<span class="sd">        loop or more than one connected component.</span>
 <span class="sd">    RuntimeError</span>
 <span class="sd">        If ``vertices`` and ``faces`` are not on one device.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
 <span class="sd">    [`low_distortion_parametrization`][ordito.parametrization.low_distortion_parametrization]</span>
-<span class="sd">        Any topology, from a coarse level.</span>
+<span class="sd">        The same energy from a coarse level, closed meshes included.</span>
+<span class="sd">    [`slim_parametrization`][ordito.parametrization.slim_parametrization]</span>
+<span class="sd">        The least symmetric Dirichlet distortion from the same starts.</span>
 <span class="sd">    [`arap`][ordito.parametrization.arap]</span>
 <span class="sd">        The pinned, warm-started ARAP map.</span>
 
@@ -12400,7 +12425,7 @@ its last bits can move between calls on the CUDA device.</p>
 
 
 <span class="sd">    charts = [</span>
-<span class="sd">        od.parametrization.low_distortion_disk_parametrization(vertices, faces, init=init)</span>
+<span class="sd">        od.parametrization.arap_parametrization(vertices, faces, init=init)</span>
 <span class="sd">        for init in ("harmonic", "tutte", "lscm")</span>
 <span class="sd">    ]</span>
 <span class="sd">    print(mean_edge(vertices.numpy()))  # 0.134</span>
@@ -12408,13 +12433,12 @@ its last bits can move between calls on the CUDA device.</p>
 <span class="sd">    print(od.parametrization.face_flipped_indices(charts[0], faces).shape)  # (0,)</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
-    <span class="n">name</span> <span class="o">=</span> <span class="s2">"low_distortion_disk_parametrization"</span>
+    <span class="n">name</span> <span class="o">=</span> <span class="s2">"arap_parametrization"</span>
     <span class="n">bounds</span> <span class="o">=</span> <span class="n">_low_distortion_bounds</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="p">((</span><span class="s2">"iterations"</span><span class="p">,</span> <span class="n">iterations</span><span class="p">),))</span>
-    <span class="k">if</span> <span class="n">init</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">_DISK_STARTS</span><span class="p">:</span>
-        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2"> init must be one of </span><span class="si">{</span><span class="n">_DISK_STARTS</span><span class="si">}</span><span class="s2">, got </span><span class="si">{</span><span class="n">init</span><span class="si">!r}</span><span class="s2">"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">init</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">_MAP_STARTS</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2"> init must be one of </span><span class="si">{</span><span class="n">_MAP_STARTS</span><span class="si">}</span><span class="s2">, got </span><span class="si">{</span><span class="n">init</span><span class="si">!r}</span><span class="s2">"</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">bounds</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">vertices</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">loop</span> <span class="o">=</span> <span class="n">_disk_boundary</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
     <span class="n">settled</span> <span class="o">=</span> <span class="n">_TWO_LEVEL_SETTLED</span> <span class="o">*</span> <span class="n">_DEFAULT_CELL_EDGES</span> <span class="o">*</span> <span class="n">od</span><span class="o">.</span><span class="n">edges</span><span class="o">.</span><span class="n">mean_edge_length</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
     <span class="n">vertex_faces</span><span class="p">,</span> <span class="n">offsets</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">adjacency</span><span class="o">.</span><span class="n">vertex_face_adjacency</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="n">vertices</span><span class="o">.</span><span class="n">size</span><span class="p">)</span>
     <span class="n">chart</span> <span class="o">=</span> <span class="n">_proximal_arap</span><span class="p">(</span>
@@ -12425,7 +12449,7 @@ its last bits can move between calls on the CUDA device.</p>
         <span class="n">offsets</span><span class="p">,</span>
         <span class="n">iterations</span><span class="p">,</span>
         <span class="n">settled</span><span class="p">,</span>
-        <span class="n">start</span><span class="o">=</span><span class="n">_start_chart</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">loop</span><span class="p">,</span> <span class="n">init</span><span class="p">),</span>
+        <span class="n">start</span><span class="o">=</span><span class="n">_start_chart</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">init</span><span class="p">),</span>
     <span class="p">)</span>
     <span class="k">return</span> <span class="n">_chart_uv</span><span class="p">(</span><span class="n">chart</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
@@ -12471,9 +12495,9 @@ start is</p>
   apart pinned;</li>
 </ul>
 <p>each of the last three scaled to the mesh's area and mirrored if it winds clockwise, as
-<a class="autorefs autorefs-internal" title="low_distortion_disk_parametrization" href="./#ordito.parametrization.low_distortion_disk_parametrization"><code>low_distortion_disk_parametrization</code></a>
-builds them. Unlike that chart this one does not need a disk: <code>slim</code> holds the faces a start
-inverts or squashes flat (a handle forces some) by an unbarriered ARAP term. Every start
+<a class="autorefs autorefs-internal" title="arap_parametrization" href="./#ordito.parametrization.arap_parametrization"><code>arap_parametrization</code></a> builds them. A start
+may invert or squash flat some faces (a handle forces some): <code>slim</code> holds those by an
+unbarriered ARAP term and keeps every other face upright. Every start
 reaches about the same distortion; they differ in time and in the layout of a long surface,
 which a Tutte or LSCM start unbends more than the free chart does.</p>
 <p>A face the start has the right way round and not squashed flat never inverts. A Tutte map of a
@@ -12623,7 +12647,8 @@ faces mostly counter-clockwise; the rotation is unspecified. Empty for an empty 
 entries, if <code>init</code> is not one of the four, if <code>max_iterations</code> is negative or
 <code>tolerance</code> negative or not finite, if a vertex coordinate is not finite, if no face has a
 positive area, if <code>init</code> is <code>"harmonic"</code>, <code>"tutte"</code> or <code>"lscm"</code> and the mesh has no
-boundary loop, or if the factorization of the proxy would exceed
+boundary loop or more than one connected component, or if the factorization of the proxy
+would exceed
 <a class="autorefs autorefs-internal" title="CHOLESKY_MEMORY_BUDGET
 
 
@@ -12652,7 +12677,7 @@ boundary loop, or if the factorization of the proxy would exceed
   <p><a class="autorefs autorefs-internal" title="slim" href="./#ordito.parametrization.slim"><code>slim</code></a>
     The iteration, from a start of the caller's.
 <a class="autorefs autorefs-internal" title="low_distortion_parametrization" href="./#ordito.parametrization.low_distortion_parametrization"><code>low_distortion_parametrization</code></a>
-<a class="autorefs autorefs-internal" title="low_distortion_disk_parametrization" href="./#ordito.parametrization.low_distortion_disk_parametrization"><code>low_distortion_disk_parametrization</code></a>
+<a class="autorefs autorefs-internal" title="arap_parametrization" href="./#ordito.parametrization.arap_parametrization"><code>arap_parametrization</code></a>
     The ARAP charts.</p>
 </details>
 
@@ -12690,23 +12715,15 @@ otherwise its last bits can move between calls on the CUDA device.</p>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 2 places</summary>
+      <summary>Referenced by 3 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a></span></p>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.arap_parametrization">arap_parametrization</a></span></p>
     </details>
 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1672</span>
-<span class="normal">1673</span>
-<span class="normal">1674</span>
-<span class="normal">1675</span>
-<span class="normal">1676</span>
-<span class="normal">1677</span>
-<span class="normal">1678</span>
-<span class="normal">1679</span>
-<span class="normal">1680</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1680</span>
 <span class="normal">1681</span>
 <span class="normal">1682</span>
 <span class="normal">1683</span>
@@ -12828,7 +12845,12 @@ otherwise its last bits can move between calls on the CUDA device.</p>
 <span class="normal">1799</span>
 <span class="normal">1800</span>
 <span class="normal">1801</span>
-<span class="normal">1802</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">slim_parametrization</span><span class="p">(</span>
+<span class="normal">1802</span>
+<span class="normal">1803</span>
+<span class="normal">1804</span>
+<span class="normal">1805</span>
+<span class="normal">1806</span>
+<span class="normal">1807</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">slim_parametrization</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -12854,9 +12876,9 @@ otherwise its last bits can move between calls on the CUDA device.</p>
 <span class="sd">      apart pinned;</span>
 
 <span class="sd">    each of the last three scaled to the mesh's area and mirrored if it winds clockwise, as</span>
-<span class="sd">    [`low_distortion_disk_parametrization`][ordito.parametrization.low_distortion_disk_parametrization]</span>
-<span class="sd">    builds them. Unlike that chart this one does not need a disk: ``slim`` holds the faces a start</span>
-<span class="sd">    inverts or squashes flat (a handle forces some) by an unbarriered ARAP term. Every start</span>
+<span class="sd">    [`arap_parametrization`][ordito.parametrization.arap_parametrization] builds them. A start</span>
+<span class="sd">    may invert or squash flat some faces (a handle forces some): ``slim`` holds those by an</span>
+<span class="sd">    unbarriered ARAP term and keeps every other face upright. Every start</span>
 <span class="sd">    reaches about the same distortion; they differ in time and in the layout of a long surface,</span>
 <span class="sd">    which a Tutte or LSCM start unbends more than the free chart does.</span>
 
@@ -12891,7 +12913,8 @@ otherwise its last bits can move between calls on the CUDA device.</p>
 <span class="sd">        entries, if ``init`` is not one of the four, if ``max_iterations`` is negative or</span>
 <span class="sd">        ``tolerance`` negative or not finite, if a vertex coordinate is not finite, if no face has a</span>
 <span class="sd">        positive area, if ``init`` is ``"harmonic"``, ``"tutte"`` or ``"lscm"`` and the mesh has no</span>
-<span class="sd">        boundary loop, or if the factorization of the proxy would exceed</span>
+<span class="sd">        boundary loop or more than one connected component, or if the factorization of the proxy</span>
+<span class="sd">        would exceed</span>
 <span class="sd">        [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET].</span>
 <span class="sd">    RuntimeError</span>
 <span class="sd">        If ``vertices`` and ``faces`` are not on one device.</span>
@@ -12901,7 +12924,7 @@ otherwise its last bits can move between calls on the CUDA device.</p>
 <span class="sd">    [`slim`][ordito.parametrization.slim]</span>
 <span class="sd">        The iteration, from a start of the caller's.</span>
 <span class="sd">    [`low_distortion_parametrization`][ordito.parametrization.low_distortion_parametrization]</span>
-<span class="sd">    [`low_distortion_disk_parametrization`][ordito.parametrization.low_distortion_disk_parametrization]</span>
+<span class="sd">    [`arap_parametrization`][ordito.parametrization.arap_parametrization]</span>
 <span class="sd">        The ARAP charts.</span>
 
 <span class="sd">    Notes</span>
@@ -12953,11 +12976,7 @@ otherwise its last bits can move between calls on the CUDA device.</p>
     <span class="k">if</span> <span class="n">init</span> <span class="o">==</span> <span class="s2">"free"</span><span class="p">:</span>
         <span class="n">start</span> <span class="o">=</span> <span class="n">low_distortion_parametrization</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
     <span class="k">else</span><span class="p">:</span>
-        <span class="k">if</span> <span class="n">loop</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="n">loop</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">boundary</span><span class="o">.</span><span class="n">longest_boundary_loop</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
-        <span class="k">if</span> <span class="n">loop</span><span class="o">.</span><span class="n">size</span> <span class="o">&lt;</span> <span class="mi">3</span><span class="p">:</span>
-            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2"> init=</span><span class="si">{</span><span class="n">init</span><span class="si">!r}</span><span class="s2"> needs a boundary loop; the mesh has none"</span><span class="p">)</span>
-        <span class="n">start</span> <span class="o">=</span> <span class="n">_chart_uv</span><span class="p">(</span><span class="n">_start_chart</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">loop</span><span class="p">,</span> <span class="n">init</span><span class="p">))</span>
+        <span class="n">start</span> <span class="o">=</span> <span class="n">_chart_uv</span><span class="p">(</span><span class="n">_start_chart</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">init</span><span class="p">,</span> <span class="n">loop</span><span class="o">=</span><span class="n">loop</span><span class="p">))</span>
     <span class="k">return</span> <span class="n">slim</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">start</span><span class="p">,</span> <span class="n">max_iterations</span><span class="o">=</span><span class="n">max_iterations</span><span class="p">,</span> <span class="n">tolerance</span><span class="o">=</span><span class="n">tolerance</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -13269,7 +13288,7 @@ LSCM recovers it:</p>
     <details class="doc doc-backlinks ordito-backlinks">
       <summary>Referenced by 16 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../seams/#ordito.seams">seams</a></span> · <span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.fixed_vertex_solver">fixed_vertex_solver</a></span> · <span class="ordito-backlink"><a href="../energies/#ordito.energies">energies</a></span> · <span class="ordito-backlink"><a href="../energies/#ordito.energies">energies</a> › <a href="../energies/#ordito.energies.lscm_hessian">lscm_hessian</a></span> · <span class="ordito-backlink"><a href="../energies/#ordito.energies">energies</a> › <a href="../energies/#ordito.energies.vector_area_matrix">vector_area_matrix</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.FixedVertexSolver">FixedVertexSolver</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization.FixedVertexSolver">FixedVertexSolver</a> › <a href="./#ordito.parametrization.FixedVertexSolver.factor">factor</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.low_distortion_disk_parametrization">low_distortion_disk_parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.low_distortion_parametrization">low_distortion_parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.slim_parametrization">slim_parametrization</a></span></p>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../seams/#ordito.seams">seams</a></span> · <span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.fixed_vertex_solver">fixed_vertex_solver</a></span> · <span class="ordito-backlink"><a href="../energies/#ordito.energies">energies</a></span> · <span class="ordito-backlink"><a href="../energies/#ordito.energies">energies</a> › <a href="../energies/#ordito.energies.lscm_hessian">lscm_hessian</a></span> · <span class="ordito-backlink"><a href="../energies/#ordito.energies">energies</a> › <a href="../energies/#ordito.energies.vector_area_matrix">vector_area_matrix</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.FixedVertexSolver">FixedVertexSolver</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization.FixedVertexSolver">FixedVertexSolver</a> › <a href="./#ordito.parametrization.FixedVertexSolver.factor">factor</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.arap_parametrization">arap_parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.low_distortion_parametrization">low_distortion_parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.slim_parametrization">slim_parametrization</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
 <span class="ordito-backlink"><a href="../../../examples/parametrization/#parametrization-and-textures">Parametrization and textures</a> › <a href="../../../examples/parametrization/#p3">Baking a field into a texture and reading it back</a></span> · <span class="ordito-backlink"><a href="../../../examples/parametrization/#parametrization-and-textures">Parametrization and textures</a> › <a href="../../../examples/parametrization/#p2">Cutting a closed surface open along seams</a></span> · <span class="ordito-backlink"><a href="../../../examples/parametrization/#parametrization-and-textures">Parametrization and textures</a> › <a href="../../../examples/parametrization/#p1">Flattening a disk: Tutte, harmonic, LSCM and ARAP</a></span></p>
         <p><span class="ordito-backlinks-section">Migrating from another library</span>
@@ -13279,14 +13298,7 @@ LSCM recovers it:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2416</span>
-<span class="normal">2417</span>
-<span class="normal">2418</span>
-<span class="normal">2419</span>
-<span class="normal">2420</span>
-<span class="normal">2421</span>
-<span class="normal">2422</span>
-<span class="normal">2423</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2423</span>
 <span class="normal">2424</span>
 <span class="normal">2425</span>
 <span class="normal">2426</span>
@@ -13434,7 +13446,14 @@ LSCM recovers it:</p>
 <span class="normal">2568</span>
 <span class="normal">2569</span>
 <span class="normal">2570</span>
-<span class="normal">2571</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">lscm</span><span class="p">(</span>
+<span class="normal">2571</span>
+<span class="normal">2572</span>
+<span class="normal">2573</span>
+<span class="normal">2574</span>
+<span class="normal">2575</span>
+<span class="normal">2576</span>
+<span class="normal">2577</span>
+<span class="normal">2578</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">lscm</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">pinned_indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
