@@ -5853,14 +5853,19 @@ def _resolved_operator(
     )
     if region is None:
         return operator
-    return _region_operator(operator, _region_weights(region), closed_ring=closed_ring)
+    return _region_operator(operator, region, closed_ring=closed_ring)
 
 
 def _region_operator(
-    operator: odt.BsrMatrix[wp.float32], weights: wp.array[wp.float32], *, closed_ring: bool
+    operator: odt.BsrMatrix[wp.float32],
+    region: wp.array[wp.bool] | wp.array[wp.float32],
+    *,
+    closed_ring: bool,
 ) -> odt.BsrMatrix[wp.float32]:
     """
-    Localize ``operator`` to per-vertex ``weights``: ``diag(w) L + diag(1 - w)``.
+    Localize ``operator`` to a ``region``'s weights ``w``: ``diag(w) L + diag(1 - w)``.
+
+    ``region`` is a filter's ``mask`` (``w`` 0 or 1) or ``weights`` (``w`` clamped to [0, 1]).
 
     An explicit pass through the result moves each vertex ``w`` of its step and a weight-0 row is
     the identity's, so every filter path that applies the operator (explicit, implicit, the CPU's
@@ -5889,7 +5894,11 @@ def _region_operator(
             operator.offsets,
             operator.columns,
             operator.values,
-            weights,
+            *(
+                (region, _launch.empty(0, dtype=wp.float32, device=device))
+                if region.dtype is wp.bool
+                else (_launch.empty(0, dtype=wp.bool, device=device), region)
+            ),
             wp.int32(1 if closed_ring else 0),
             offsets,
         ],

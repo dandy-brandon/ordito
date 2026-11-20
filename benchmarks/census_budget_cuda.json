@@ -7997,8 +7997,8 @@
  },
  "benchmarks/test_smoothing.py::test_filter_taubin_region[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 13,
-   "alloc": 6,
+   "launch": 12,
+   "alloc": 5,
    "memset": 1,
    "scan": 1
   }

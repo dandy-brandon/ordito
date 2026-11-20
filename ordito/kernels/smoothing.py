@@ -1716,6 +1716,7 @@ def region_operator_rows(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     values: wp.array[wp.float32],
+    mask: wp.array[wp.bool],
     weights: wp.array[wp.float32],
     closed_ring: wp.int32,
     region_offsets: wp.array[wp.int32],
@@ -1723,11 +1724,17 @@ def region_operator_rows(
     out_values: wp.array[wp.float32],
 ) -> None:
     # Row ``i`` of ``diag(s) L + diag(1 - s)`` (see above), written from ``region_offsets[i]``.
+    # The region is ``mask`` or ``weights``, the other empty (a warp-uniform branch), each entry
+    # read through ``region_step_weight`` here rather than converted by a ``wp.map`` first.
     i = wp.int32(wp.tid())
     start = offsets[i]
     end = offsets[i + 1]
     degree = end - start
-    share = weights[i]
+    share = wp.float32(0.0)
+    if mask.shape[0] > 0:
+        share = region_step_weight(mask[i])
+    else:
+        share = region_step_weight(weights[i])
     if closed_ring != 0:
         share = share * wp.float32(degree) / (wp.float32(degree) + wp.float32(1.0))
     share = wp.where(degree > 0, share, wp.float32(0.0))

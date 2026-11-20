@@ -7278,8 +7278,8 @@
  },
  "benchmarks/test_smoothing.py::test_filter_taubin_region[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 4,
-   "alloc": 6,
+   "launch": 3,
+   "alloc": 5,
    "scan": 1
   }
  },
