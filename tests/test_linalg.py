@@ -23,7 +23,14 @@ from ordito.kernels import array as kernel_array
 from ordito.kernels import linalg as kernel_linalg
 from ordito.kernels.algorithms import multigrid as kernel_mg
 from tests.comparisons import assert_nonconstant
-from tests.conversions import bsr_to_csr, bsr_to_dense, scipy_to_bsr, trimesh_to_pymeshlab
+from tests.conftest import saddle_graded_arrays
+from tests.conversions import (
+    bsr_to_csr,
+    bsr_to_dense,
+    numpy_to_warp,
+    scipy_to_bsr,
+    trimesh_to_pymeshlab,
+)
 
 
 class _CgOptions(TypedDict):
@@ -1318,6 +1325,58 @@ def test_solve_spd_settled_marches_an_operator_too_large_to_factor(
     assert len(settled) == (0 if probed else 1)
     assert np.array_equal(answers[0], answers[1])
     assert np.all(np.abs(answers[0] - expected_np) <= 1e-6 * np.abs(expected_np))
+
+
+def test_a_slow_march_band_escalates_to_a_v_cycle(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Class A, against ``scipy.sparse.linalg.spsolve``: a march whose bands escalate stays exact.
+
+    On CUDA a band of ``_MARCH_MULTIGRID_FROM`` rows or more is solved under the adaptive Jacobi
+    probe, escalating warm to a multigrid V-cycle, and once one band of the march has escalated
+    its later large bands start under the V-cycle. The gate is lowered to nothing so the graded
+    saddle's heat system, whose bands Jacobi takes several hundred rounds over, runs that path
+    past the budget: a band must escalate, a later one must start escalated, and every entry must
+    be within ``1e-6`` of itself of the direct solve. The CPU keeps Jacobi bands (the gate is
+    CUDA's), and its answer is held to the same bound (measured 5.2e-10 on CUDA). Mutation probe:
+    the bands solved to ``1e-10`` instead of the march's ``1e-14`` miss by 1.2e-4.
+    """
+    vertices_np, faces_np = saddle_graded_arrays()
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, np.ravel(faces_np), device)
+    system_wp = od.heat.heat_operators(vertices_wp, faces_wp)[0]
+    n = vertices_wp.size
+    rhs_np = np.zeros(n)
+    rhs_np[0] = 1.0
+    expected_np = spla.spsolve(bsr_to_csr(system_wp).tocsc(), rhs_np)
+    assert expected_np.min() < 1e-15 * expected_np.max()
+    monkeypatch.setattr(od.cholesky, "CHOLESKY_MEMORY_BUDGET", 1024)
+    monkeypatch.setattr(od.linalg, "_MARCH_MULTIGRID_FROM", 0)
+    bands: list[tuple[bool, int]] = []
+    large = od.linalg._solve_large_band
+
+    def spying(system: Any, rhs: Any, x: Any, escalated: bool) -> int:
+        rounds = large(system, rhs, x, escalated)
+        bands.append((escalated, rounds))
+        return rounds
+
+    monkeypatch.setattr(od.linalg, "_solve_large_band", spying)
+    solution_wp = wp.zeros(n, dtype=wp.float64, device=device)
+    od.linalg.solve_spd_settled(
+        system_wp,
+        wp.array(rhs_np, dtype=wp.float64, device=device),
+        solution_wp,
+        check_rounds=16,
+        change_tolerance=1e-6,
+        settle_rounds=192,
+    )
+    if wp.get_device(device).is_cuda:
+        probe = od.linalg.CG_CHEBYSHEV_PROBE_ITERATIONS
+        assert any(not escalated and rounds > probe for escalated, rounds in bands)
+        assert any(escalated for escalated, _ in bands)
+    else:
+        assert bands == []
+    assert np.all(np.abs(solution_wp.numpy() - expected_np) <= 1e-6 * np.abs(expected_np))
 
 
 def test_solve_spd_warns_only_when_it_runs_out_of_iterations(device: str) -> None:

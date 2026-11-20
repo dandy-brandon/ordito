@@ -1282,6 +1282,23 @@ def backward_error_exceeds(
 # threshold: at the threshold itself that rule finished the ring just under it all along the
 # front, those rows became the next band's data, and ``dragon``'s worst grew to 2e-5 (4 000 rows
 # over 1e-6, the median 17x).
+#
+# A band's preconditioner, priced 2026-11-20 over every band of three marches, each band solved once
+# (setup included), totals Jacobi / multigrid / ``solve_spd_columns(preconditioner="adaptive")``:
+# ``lucy``'s heat 6.18 / 3.01 / 3.46 s (from ~150 k rows the V-cycle wins every band, 0.35-0.55x on
+# the 1-2.7 M-row ones: 40-70 rounds against 1 100-1 800); ``dragon``'s heat 0.39 / 0.45 / 0.57 s
+# (36-75 k-row bands, where the V-cycle's ~10 ms setup is most of a band and the adaptive solve
+# escalates below 50 k rows to the Chebyshev polynomial); ``icosphere(9)``'s vector system 0.23 /
+# 1.90 / 0.24 s (bands of ~70 Jacobi rounds, which no escalation earns back). The Jacobi-Chebyshev
+# polynomial wins most small bands (0.6-0.7x) and loses the hard ones up to 2x (``dragon`` overall
+# 0.38 against 0.39 s) and every large one up to 2.5x (bandwidth-bound: more mat-vecs). So a CUDA
+# band from ``_MARCH_MULTIGRID_FROM`` rows takes the adaptive probe, and once one escalates the
+# march's later large bands start under the V-cycle (the probes were ~0.45 s of ``lucy``'s
+# 3.46 s): ``lucy``'s march 6.56 -> 3.12 s. A ``wp.mat22d`` operator's expansion keeps Jacobi: the
+# smoothed aggregation does not see its 2 x 2 rotation blocks, and on ``dragon``'s vector system
+# (indefinite) the V-cycle cut a band's rounds by under 2x at 10-20x their cost (2 330 against
+# 2 277 rounds on one band), the march 1.03 -> 4-7 s. Against factored bands every preconditioner
+# keeps rows to 1e-7 or better.
 
 
 @wp.kernel

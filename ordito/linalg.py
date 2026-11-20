@@ -187,6 +187,11 @@ _MARCH_DOMINATED = math.exp(4.0)
 # ``_MARCH_GROWTH`` up and two down: an operator's decay a hop is its own.
 _MARCH_FIRST_HOPS = 32
 _MARCH_GROWTH = 4
+# Band rows from which a CUDA band is solved under ``_solve_large_band``'s escalation to a V-cycle
+# rather than plain Jacobi. A sliver-laden scan's bands take ~1 000-1 800 Jacobi rounds, and from
+# here a V-cycle's setup costs less than the rounds it saves; below it the setup is most of a
+# band's solve (``kernels/linalg.py``'s march section prices it).
+_MARCH_MULTIGRID_FROM = 1 << 17
 # Threads of a CUDA band-growth launch, which stride a hop's entries: the hop's length is on the
 # device only.
 _MARCH_HOP_THREADS = 1 << 16
@@ -2650,7 +2655,7 @@ def solve_spd_settled(
     if holder is not None and holder.exceeds_budget():
         # Past the budget the march costs less than the settled iteration, whether the iterate
         # would pass its check or not: march at once.
-        rounds = _march_columns(scalar, rhs_flat, solution_flat, n_columns)
+        rounds = _march_columns(scalar, rhs_flat, solution_flat, n_columns, scalar_rows=width == 1)
         return _launch.full(1, rounds, dtype=wp.int32, device=rhs.device)
     solver = _cached_solver(
         scalar,
@@ -2696,7 +2701,7 @@ def solve_spd_settled(
         # Too large to factor after all (an operator denser than ``_FACTOR_ROW_BYTES`` a row
         # below the size test): march, which reaches every entry with its own precision too, and
         # so do this operator's later solves.
-        _march_columns(scalar, rhs_flat, solution_flat, n_columns)
+        _march_columns(scalar, rhs_flat, solution_flat, n_columns, scalar_rows=width == 1)
         return solver.iterations
     # From zero, not from the rejected iterate, as ``_solve_columns_verified`` refines.
     _launch.zero_(solution_flat)
@@ -2722,8 +2727,14 @@ def _march_columns(
     rhs: wp.array[wp.float64],
     solution: wp.array[wp.float64],
     n_columns: int,
+    *,
+    scalar_rows: bool,
 ) -> int:
-    """March each of ``n_columns`` flat columns of ``rhs`` into ``solution``; return the rounds."""
+    """
+    March each of ``n_columns`` flat columns of ``rhs`` into ``solution``; return the rounds.
+
+    ``scalar_rows`` says ``matrix`` is a scalar operator, not a ``wp.mat22d`` one's expansion.
+    """
     n = int(matrix.nrow)
     rounds = 0
     for column in range(n_columns):
@@ -2731,12 +2742,17 @@ def _march_columns(
             matrix,
             _launch.view(rhs, column * n, (column + 1) * n),
             _launch.view(solution, column * n, (column + 1) * n),
+            multigrid=scalar_rows,
         )
     return rounds
 
 
 def _march_settled(
-    matrix: odt.BsrMatrix[wp.float64], rhs: wp.array[wp.float64], solution: wp.array[wp.float64]
+    matrix: odt.BsrMatrix[wp.float64],
+    rhs: wp.array[wp.float64],
+    solution: wp.array[wp.float64],
+    *,
+    multigrid: bool,
 ) -> int:
     """
     Solve ``matrix x = rhs`` into ``solution`` band by band, every entry to its own precision.
@@ -2747,7 +2763,9 @@ def _march_settled(
     beyond it, scaled so its front is ``O(1)``; its rows both resolved and clear of the zero it
     stands on are finished (``kernels/linalg.march_band_commit``), and the march goes on from them
     until no unfinished row borders a finished one. Rows ``rhs`` reaches no band of stay zero.
-    Returns the band solves' rounds.
+    ``multigrid`` lets a large band escalate to a V-cycle (``_solve_large_band``), a smoothed
+    aggregation that helps a scalar operator's band and not a ``wp.mat22d`` operator's expansion
+    (``kernels/linalg.py``'s march section). Returns the band solves' rounds.
     """
     device = rhs.device
     n = int(matrix.nrow)
@@ -2769,6 +2787,8 @@ def _march_settled(
     hops = _MARCH_FIRST_HOPS
     started = False
     rounds = 0
+    # Whether a large band's Jacobi probe gave way to the V-cycle (``_solve_large_band``).
+    escalated = False
     # The length of the last band that held every unfinished row it could reach (no outer layer):
     # the next band is that band less the rows it finished, so the same length again means it
     # finished none (a non-finite solve), and the march stops rather than repeat it.
@@ -2848,10 +2868,17 @@ def _march_settled(
             device=device,
         )  # fmt: skip
         system = od.array.bsr_from_csr(m, m, band_offsets, band_columns, band_values)
-        iterations, _, _ = solve_spd(
-            system, band_rhs, x, tol=_MARCH_TOLERANCE, name="solve_spd_settled"
-        )
-        rounds += int(iterations)
+        if multigrid and cuda and m >= _MARCH_MULTIGRID_FROM:
+            # A large band takes a multigrid V-cycle once Jacobi has shown it slow: the adaptive
+            # probe escalates warm, and a march whose band escalated starts its later large bands
+            # under the V-cycle (their conditioning is the operator's).
+            iterations = _solve_large_band(system, band_rhs, x, escalated)
+            escalated = escalated or iterations > CG_CHEBYSHEV_PROBE_ITERATIONS
+        else:
+            iterations = int(
+                solve_spd(system, band_rhs, x, tol=_MARCH_TOLERANCE, name="solve_spd_settled")[0]
+            )
+        rounds += iterations
         _launch.launch(
             kernel_linalg.march_band_extremes,
             dim=m,
@@ -2899,6 +2926,33 @@ def _march_settled(
         # A band too thin to finish anything is grown from the same rows again.
         started = started or peak >= threshold
         whole = -1 if has_outer > 0.0 else m
+
+
+def _solve_large_band(
+    system: odt.BsrMatrix[wp.float64],
+    rhs: wp.array[wp.float64],
+    x: wp.array[wp.float64],
+    escalated: bool,
+) -> int:
+    """
+    Solve a large band of ``_march_settled`` into ``x`` (its guess); return the rounds.
+
+    Jacobi under the adaptive probe, escalating warm to a multigrid V-cycle (``solve_spd_columns``
+    at ``"adaptive"``, past ``CG_ADAPTIVE_MULTIGRID_FROM`` rows) -- or the V-cycle at once when an
+    earlier band of the march ``escalated``. A rounds count past ``CG_CHEBYSHEV_PROBE_ITERATIONS``
+    says this one did.
+    """
+    m = int(system.nrow)
+    iterations, _, _ = solve_spd_columns(
+        system,
+        odt.as_array2d(rhs.reshape((1, m)), wp.float64),
+        odt.as_array2d(x.reshape((1, m)), wp.float64),
+        tol=_MARCH_TOLERANCE,
+        maxiter=CG_MAXITER_FACTOR * m,
+        check_every=CG_CHECK_EVERY_FALLBACK,
+        preconditioner="multigrid" if escalated else "adaptive",
+    )
+    return int(iterations)
 
 
 class _StampedFlag:

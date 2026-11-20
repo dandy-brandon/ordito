@@ -1411,9 +1411,9 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   two or three latency-bound kernels. Open: a `solve` without refinement for such a loop (an API
   choice, outputs move by rounding), and a one-block triangular solve for a factor this small.
   Numbers in `reference/component-status.md` ("Post-0.3.0 sweep").
-- **The march's band rounds** (`linalg._march_settled`, every settled diffusion past the
-  factorization budget): a band's ~1 000 conjugate-gradient rounds on `lucy` are its Jacobi
-  conditioning (7 500 on `dragon`'s first band, ~20 on a sliver-free mesh), not its width, and
-  set the march's 6.5 s there; on `dragon` and `happy_buddha`'s indefinite vector systems the
-  march costs 0.9-1.1 s where the failing iteration took 0.14-0.18 s. Open: a better band
-  preconditioner. Status in `reference/component-status.md` (16.10).
+- **The march's vector bands** (`linalg._march_settled` on a `wp.mat22d` system's expansion):
+  scalar bands escalate to a multigrid V-cycle (`lucy`'s march 6.56 -> 3.12 s), but the smoothed
+  aggregation does not see the expansion's 2 x 2 rotation blocks, so vector bands keep Jacobi:
+  `dragon`'s and `happy_buddha`'s indefinite vector systems march in 0.9-1.1 s where their failing
+  iteration took 0.14-0.18 s, ~1 000-3 000 rounds a band. Open: a block-aware (2 x 2) aggregation
+  for the expansion. Status in `reference/component-status.md` (16.10).

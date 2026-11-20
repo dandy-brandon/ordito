@@ -3966,6 +3966,25 @@ class HeatSolver:
                     n_scalars,
                 )
             )
+        if kept.factorization.exceeds_budget():
+            # Past the budget the stack is solved by its blocks, as it is factored: the tangent
+            # field by the vector system (marched) and the scalar fields by the heat system, which
+            # may still be factored. Marched whole, its scalar rows would share the vector rows'
+            # band preconditioning, which cannot take the heat system's multigrid escalation.
+            n_vertices = rhs.size // (2 + n_scalars)
+            split = 2 * n_vertices
+            self.diffuse_tangent(
+                _launch.view_as(_launch.view(rhs, 0, split), wp.vec2d),
+                _launch.view_as(_launch.view(solution, 0, split), wp.vec2d),
+            )
+            scalar_rhs = _launch.view(rhs, split, rhs.size)
+            scalar_solution = _launch.view(solution, split, solution.size)
+            if n_scalars > 1:
+                shape = (n_scalars, n_vertices)
+                self.diffuse(scalar_rhs.reshape(shape), scalar_solution.reshape(shape))
+            else:
+                self.diffuse(scalar_rhs, scalar_solution)
+            return
         self._settle(role, kept.factorization.matrix, rhs, solution)
 
     def diffuse_tangent_pair(
