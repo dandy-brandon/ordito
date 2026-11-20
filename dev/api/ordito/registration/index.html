@@ -7846,6 +7846,7 @@ correspondences are given:</p>
     <span class="n">max_iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">20</span><span class="p">,</span>
     <span class="n">threshold</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1e-06</span><span class="p">,</span>
     <span class="n">max_distance</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">max_distance_factor</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">robust_kernel</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span>
         <span class="s2">"none"</span><span class="p">,</span> <span class="s2">"huber"</span><span class="p">,</span> <span class="s2">"tukey"</span>
     <span class="p">]</span> <span class="o">=</span> <span class="s2">"none"</span><span class="p">,</span>
@@ -8022,6 +8023,28 @@ fit improves, including Tukey's, whose weights redescend.</p>
           </tr>
           <tr class="doc-section-item">
             <td>
+                <code>max_distance_factor</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#float">float</a> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Reject correspondences farther than this factor times the median correspondence distance,
+the median taken afresh at every iteration's correspondences (and at the final pose's, for
+<code>cost</code>): a gate that follows the fit's own scale, where <code>max_distance</code> is fixed in
+the target's units. <code>None</code> (the default) for no such gate; not with <code>max_distance</code>.
+Each iteration then reads its median back to the host, so the iterations are issued from
+the host one at a time rather than run on the device. The <code>threshold</code> stop compares
+<code>cost</code> between iterations gated at their own medians.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
                 <code>robust_kernel</code>
             </td>
             <td>
@@ -8183,9 +8206,10 @@ correspondence at that pose carries weight.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If <code>robust_kernel</code> is not one of the three names, or if the target is a point cloud
-(<code>target_faces is None</code>) and <code>target_normals</code> is not provided, or does not have the
-same length as <code>target_vertices</code>.</p>
+                <p>If <code>robust_kernel</code> is not one of the three names, if both <code>max_distance</code> and
+<code>max_distance_factor</code> are given or the factor is not positive, or if the target is a
+point cloud (<code>target_faces is None</code>) and <code>target_normals</code> is not provided, or does not
+have the same length as <code>target_vertices</code>.</p>
               </div>
             </td>
           </tr>
@@ -8630,7 +8654,52 @@ a mesh target.</p>
 <span class="normal">1108</span>
 <span class="normal">1109</span>
 <span class="normal">1110</span>
-<span class="normal">1111</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">icp_point_to_plane</span><span class="p">(</span>
+<span class="normal">1111</span>
+<span class="normal">1112</span>
+<span class="normal">1113</span>
+<span class="normal">1114</span>
+<span class="normal">1115</span>
+<span class="normal">1116</span>
+<span class="normal">1117</span>
+<span class="normal">1118</span>
+<span class="normal">1119</span>
+<span class="normal">1120</span>
+<span class="normal">1121</span>
+<span class="normal">1122</span>
+<span class="normal">1123</span>
+<span class="normal">1124</span>
+<span class="normal">1125</span>
+<span class="normal">1126</span>
+<span class="normal">1127</span>
+<span class="normal">1128</span>
+<span class="normal">1129</span>
+<span class="normal">1130</span>
+<span class="normal">1131</span>
+<span class="normal">1132</span>
+<span class="normal">1133</span>
+<span class="normal">1134</span>
+<span class="normal">1135</span>
+<span class="normal">1136</span>
+<span class="normal">1137</span>
+<span class="normal">1138</span>
+<span class="normal">1139</span>
+<span class="normal">1140</span>
+<span class="normal">1141</span>
+<span class="normal">1142</span>
+<span class="normal">1143</span>
+<span class="normal">1144</span>
+<span class="normal">1145</span>
+<span class="normal">1146</span>
+<span class="normal">1147</span>
+<span class="normal">1148</span>
+<span class="normal">1149</span>
+<span class="normal">1150</span>
+<span class="normal">1151</span>
+<span class="normal">1152</span>
+<span class="normal">1153</span>
+<span class="normal">1154</span>
+<span class="normal">1155</span>
+<span class="normal">1156</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">icp_point_to_plane</span><span class="p">(</span>
     <span class="n">a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">target_vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">target_faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -8640,6 +8709,7 @@ a mesh target.</p>
     <span class="n">max_iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">20</span><span class="p">,</span>
     <span class="n">threshold</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1e-6</span><span class="p">,</span>
     <span class="n">max_distance</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">max_distance_factor</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">robust_kernel</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"none"</span><span class="p">,</span> <span class="s2">"huber"</span><span class="p">,</span> <span class="s2">"tukey"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"none"</span><span class="p">,</span>
     <span class="n">robust_scale</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">damping</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1e-6</span><span class="p">,</span>
@@ -8689,6 +8759,14 @@ a mesh target.</p>
 <span class="sd">        fit improves, including Tukey's, whose weights redescend.</span>
 <span class="sd">    max_distance</span>
 <span class="sd">        Reject correspondences farther than this. No rejection when ``None``.</span>
+<span class="sd">    max_distance_factor</span>
+<span class="sd">        Reject correspondences farther than this factor times the median correspondence distance,</span>
+<span class="sd">        the median taken afresh at every iteration's correspondences (and at the final pose's, for</span>
+<span class="sd">        ``cost``): a gate that follows the fit's own scale, where ``max_distance`` is fixed in</span>
+<span class="sd">        the target's units. ``None`` (the default) for no such gate; not with ``max_distance``.</span>
+<span class="sd">        Each iteration then reads its median back to the host, so the iterations are issued from</span>
+<span class="sd">        the host one at a time rather than run on the device. The ``threshold`` stop compares</span>
+<span class="sd">        ``cost`` between iterations gated at their own medians.</span>
 <span class="sd">    robust_kernel</span>
 <span class="sd">        M-estimator applied to residuals: ``"none"``, ``"huber"``, or ``"tukey"``.</span>
 <span class="sd">    robust_scale</span>
@@ -8733,9 +8811,10 @@ a mesh target.</p>
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
 <span class="sd">    ValueError</span>
-<span class="sd">        If ``robust_kernel`` is not one of the three names, or if the target is a point cloud</span>
-<span class="sd">        (``target_faces is None``) and ``target_normals`` is not provided, or does not have the</span>
-<span class="sd">        same length as ``target_vertices``.</span>
+<span class="sd">        If ``robust_kernel`` is not one of the three names, if both ``max_distance`` and</span>
+<span class="sd">        ``max_distance_factor`` are given or the factor is not positive, or if the target is a</span>
+<span class="sd">        point cloud (``target_faces is None``) and ``target_normals`` is not provided, or does not</span>
+<span class="sd">        have the same length as ``target_vertices``.</span>
 <span class="sd">    TypeError</span>
 <span class="sd">        If ``target_index`` is not a ``wp.Bvh`` for a point-cloud target, or not a ``wp.Mesh`` for</span>
 <span class="sd">        a mesh target.</span>
@@ -8785,6 +8864,13 @@ a mesh target.</p>
             <span class="sa">f</span><span class="s2">"robust_kernel must be one of </span><span class="si">{</span><span class="nb">list</span><span class="p">(</span><span class="n">_ROBUST_KINDS</span><span class="p">)</span><span class="si">}</span><span class="s2">, got </span><span class="si">{</span><span class="n">robust_kernel</span><span class="si">!r}</span><span class="s2">"</span>
         <span class="p">)</span>
     <span class="n">kind</span> <span class="o">=</span> <span class="n">_ROBUST_KINDS</span><span class="p">[</span><span class="n">robust_kernel</span><span class="p">]</span>
+    <span class="k">if</span> <span class="n">max_distance_factor</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">max_distance</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="s2">"icp_point_to_plane takes max_distance or max_distance_factor, not both: both set "</span>
+            <span class="s2">"the distance beyond which a correspondence is rejected."</span>
+        <span class="p">)</span>
+    <span class="k">if</span> <span class="n">max_distance_factor</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">max_distance_factor</span> <span class="o">&gt;</span> <span class="mf">0.0</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"max_distance_factor must be positive, got </span><span class="si">{</span><span class="n">max_distance_factor</span><span class="si">}</span><span class="s2">."</span><span class="p">)</span>
 
     <span class="k">if</span> <span class="ow">not</span> <span class="n">is_mesh</span> <span class="ow">and</span> <span class="n">target_normals</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
@@ -8909,6 +8995,13 @@ a mesh target.</p>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
 
+    <span class="k">def</span><span class="w"> </span><span class="nf">gate</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="c1"># ``max_distance_factor``'s gate for the correspondences the last search wrote: the</span>
+        <span class="c1"># factor times their median distance, read back (the gate is a launch argument).</span>
+        <span class="k">nonlocal</span> <span class="n">max_d</span>
+        <span class="k">if</span> <span class="n">max_distance_factor</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">max_d</span> <span class="o">=</span> <span class="n">max_distance_factor</span> <span class="o">*</span> <span class="n">od</span><span class="o">.</span><span class="n">reduce</span><span class="o">.</span><span class="n">median</span><span class="p">(</span><span class="n">distance</span><span class="p">)</span>
+
     <span class="k">def</span><span class="w"> </span><span class="nf">resolve_scale</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="c1"># It reads the residuals back, so it runs before any recorded round.</span>
         <span class="k">nonlocal</span> <span class="n">scale_value</span>
@@ -8935,7 +9028,27 @@ a mesh target.</p>
     <span class="c1"># returned the identity transform with ``cost=0.0`` on a cloud still offset by (1.0, 0.5, -0.3)</span>
     <span class="c1"># from its target.</span>
     <span class="n">stepped</span> <span class="o">=</span> <span class="kc">False</span>
-    <span class="k">if</span> <span class="n">max_iterations</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+    <span class="k">if</span> <span class="n">max_iterations</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">max_distance_factor</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="c1"># The gate moves with every round's median, a readback, so the rounds are issued from the</span>
+        <span class="c1"># host and none can be recorded. Each first reads the condition its predecessor's close</span>
+        <span class="c1"># wrote, the only way the host learns of a stop, and a weightless first round returns the</span>
+        <span class="c1"># seed's answer, as the recorded path's read below does.</span>
+        <span class="n">search</span><span class="p">(</span><span class="kc">False</span><span class="p">)</span>
+        <span class="n">gate</span><span class="p">()</span>
+        <span class="n">resolve_scale</span><span class="p">()</span>
+        <span class="n">accumulate</span><span class="p">(</span><span class="n">close</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+        <span class="c1"># Readback: did the first round keep a step (see the weightless stop above).</span>
+        <span class="k">if</span> <span class="nb">int</span><span class="p">(</span><span class="n">read_scalar</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="nb">int</span><span class="p">(</span><span class="n">kernel_array</span><span class="o">.</span><span class="n">LOOP_ROUND</span><span class="p">)))</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">total</span><span class="p">,</span> <span class="n">current</span><span class="p">,</span> <span class="n">math</span><span class="o">.</span><span class="n">inf</span>
+        <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">max_iterations</span> <span class="o">-</span> <span class="mi">1</span><span class="p">):</span>
+            <span class="c1"># Readback: the host-issued loop's stop, which the device decided.</span>
+            <span class="k">if</span> <span class="nb">int</span><span class="p">(</span><span class="n">read_scalar</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="nb">int</span><span class="p">(</span><span class="n">kernel_array</span><span class="o">.</span><span class="n">LOOP_CONDITION</span><span class="p">)))</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+                <span class="k">break</span>
+            <span class="n">search</span><span class="p">(</span><span class="kc">True</span><span class="p">)</span>
+            <span class="n">gate</span><span class="p">()</span>
+            <span class="n">accumulate</span><span class="p">(</span><span class="n">close</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+        <span class="n">stepped</span> <span class="o">=</span> <span class="kc">True</span>
+    <span class="k">elif</span> <span class="n">max_iterations</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
         <span class="n">search</span><span class="p">(</span><span class="kc">False</span><span class="p">)</span>
         <span class="n">resolve_scale</span><span class="p">()</span>
         <span class="n">accumulate</span><span class="p">(</span><span class="n">close</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
@@ -9003,6 +9116,7 @@ a mesh target.</p>
     <span class="c1"># (``close_point_to_plane_round``), so this pass finds the same correspondences, sums zero</span>
     <span class="c1"># weight again and reports ``inf`` -- the stop costs no readback of its own.</span>
     <span class="n">search</span><span class="p">(</span><span class="n">stepped</span><span class="p">)</span>
+    <span class="n">gate</span><span class="p">()</span>
     <span class="n">resolve_scale</span><span class="p">()</span>
     <span class="n">accumulate</span><span class="p">(</span><span class="n">close</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
     <span class="n">cost</span><span class="p">,</span> <span class="n">weight_sum</span> <span class="o">=</span> <span class="n">read_values</span><span class="p">(</span><span class="n">acc</span><span class="p">,</span> <span class="nb">int</span><span class="p">(</span><span class="n">kernel_registration</span><span class="o">.</span><span class="n">ICP_COST</span><span class="p">),</span> <span class="mi">2</span><span class="p">)</span>

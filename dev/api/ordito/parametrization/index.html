@@ -6594,14 +6594,14 @@ refers to its mesh weakly and is unusable once the mesh is gone.</p>
 
                   <details class="mkdocstrings-source">
                     <summary>Source code in <code>ordito/parametrization.py</code></summary>
-                    <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2112</span>
-<span class="normal">2113</span>
-<span class="normal">2114</span>
-<span class="normal">2115</span>
-<span class="normal">2116</span>
-<span class="normal">2117</span>
-<span class="normal">2118</span>
-<span class="normal">2119</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+                    <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2126</span>
+<span class="normal">2127</span>
+<span class="normal">2128</span>
+<span class="normal">2129</span>
+<span class="normal">2130</span>
+<span class="normal">2131</span>
+<span class="normal">2132</span>
+<span class="normal">2133</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""Bind a solver to ``mesh``; nothing is assembled until a factorization is asked for."""</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_mesh</span> <span class="o">=</span> <span class="n">weakref</span><span class="o">.</span><span class="n">ref</span><span class="p">(</span><span class="n">mesh</span><span class="p">)</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_systems</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">int</span><span class="p">],</span> <span class="n">twl</span><span class="o">.</span><span class="n">MinQuadWithFixedData</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
@@ -6681,12 +6681,12 @@ refers to its mesh weakly and is unusable once the mesh is gone.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2126</span>
-<span class="normal">2127</span>
-<span class="normal">2128</span>
-<span class="normal">2129</span>
-<span class="normal">2130</span>
-<span class="normal">2131</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">release</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2140</span>
+<span class="normal">2141</span>
+<span class="normal">2142</span>
+<span class="normal">2143</span>
+<span class="normal">2144</span>
+<span class="normal">2145</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">release</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""Drop every kept factorization, and forget which systems could not be factored."""</span>
     <span class="k">for</span> <span class="n">system</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_systems</span><span class="o">.</span><span class="n">values</span><span class="p">():</span>
         <span class="n">system</span><span class="o">.</span><span class="n">release</span><span class="p">()</span>
@@ -6865,21 +6865,7 @@ if <code>fixed_indices</code> repeats a vertex or holds one outside <code>[0, n_
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2133</span>
-<span class="normal">2134</span>
-<span class="normal">2135</span>
-<span class="normal">2136</span>
-<span class="normal">2137</span>
-<span class="normal">2138</span>
-<span class="normal">2139</span>
-<span class="normal">2140</span>
-<span class="normal">2141</span>
-<span class="normal">2142</span>
-<span class="normal">2143</span>
-<span class="normal">2144</span>
-<span class="normal">2145</span>
-<span class="normal">2146</span>
-<span class="normal">2147</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2147</span>
 <span class="normal">2148</span>
 <span class="normal">2149</span>
 <span class="normal">2150</span>
@@ -6924,7 +6910,21 @@ if <code>fixed_indices</code> repeats a vertex or holds one outside <code>[0, n_
 <span class="normal">2189</span>
 <span class="normal">2190</span>
 <span class="normal">2191</span>
-<span class="normal">2192</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">factor</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">method</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">fixed_indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">k</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="normal">2192</span>
+<span class="normal">2193</span>
+<span class="normal">2194</span>
+<span class="normal">2195</span>
+<span class="normal">2196</span>
+<span class="normal">2197</span>
+<span class="normal">2198</span>
+<span class="normal">2199</span>
+<span class="normal">2200</span>
+<span class="normal">2201</span>
+<span class="normal">2202</span>
+<span class="normal">2203</span>
+<span class="normal">2204</span>
+<span class="normal">2205</span>
+<span class="normal">2206</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">factor</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">method</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">fixed_indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">k</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Factor ``method``'s system with ``fixed_indices`` fixed, for every later call fixing them.</span>
 
@@ -7242,21 +7242,7 @@ free values are the interior <code>x</code> coordinates:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2194</span>
-<span class="normal">2195</span>
-<span class="normal">2196</span>
-<span class="normal">2197</span>
-<span class="normal">2198</span>
-<span class="normal">2199</span>
-<span class="normal">2200</span>
-<span class="normal">2201</span>
-<span class="normal">2202</span>
-<span class="normal">2203</span>
-<span class="normal">2204</span>
-<span class="normal">2205</span>
-<span class="normal">2206</span>
-<span class="normal">2207</span>
-<span class="normal">2208</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2208</span>
 <span class="normal">2209</span>
 <span class="normal">2210</span>
 <span class="normal">2211</span>
@@ -7321,7 +7307,22 @@ free values are the interior <code>x</code> coordinates:</p>
 <span class="normal">2270</span>
 <span class="normal">2271</span>
 <span class="normal">2272</span>
-<span class="normal">2273</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">solve</span><span class="p">(</span>
+<span class="normal">2273</span>
+<span class="normal">2274</span>
+<span class="normal">2275</span>
+<span class="normal">2276</span>
+<span class="normal">2277</span>
+<span class="normal">2278</span>
+<span class="normal">2279</span>
+<span class="normal">2280</span>
+<span class="normal">2281</span>
+<span class="normal">2282</span>
+<span class="normal">2283</span>
+<span class="normal">2284</span>
+<span class="normal">2285</span>
+<span class="normal">2286</span>
+<span class="normal">2287</span>
+<span class="normal">2288</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">solve</span><span class="p">(</span>
     <span class="bp">self</span><span class="p">,</span>
     <span class="n">method</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
     <span class="n">fixed_mask</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
@@ -7400,6 +7401,7 @@ free values are the interior <code>x</code> coordinates:</p>
 <span class="sd">    print(np.allclose(solution.numpy()[0], x[~mask]))  # True</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
+    <span class="n">_require_fixed_vertex_method</span><span class="p">(</span><span class="n">method</span><span class="p">,</span> <span class="n">k</span><span class="p">,</span> <span class="s2">"FixedVertexSolver.solve"</span><span class="p">)</span>
     <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_solve</span><span class="p">(</span><span class="n">method</span><span class="p">,</span> <span class="n">fixed_mask</span><span class="p">,</span> <span class="n">fixed_values</span><span class="p">,</span> <span class="n">k</span><span class="p">,</span> <span class="n">solver</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -8359,6 +8361,7 @@ disk parametrization.</p>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">k</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span>
     <span class="n">solver</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"auto"</span><span class="p">,</span> <span class="s2">"direct"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"auto"</span><span class="p">,</span>
+    <span class="n">nonnegative_weights</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">]</span>
 </code></pre></div><div class="doc-signature highlight"><pre><span></span><code><span class="nf">harmonic</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">],</span>
@@ -8369,6 +8372,7 @@ disk parametrization.</p>
     <span class="n">k</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">solver</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"auto"</span><span class="p">,</span> <span class="s2">"direct"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"auto"</span><span class="p">,</span>
+    <span class="n">nonnegative_weights</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">]</span>
 </code></pre></div>          </div>
 <div class="doc-signature highlight"><pre><span></span><code><span class="nf">harmonic</span><span class="p">(</span>
@@ -8382,6 +8386,7 @@ disk parametrization.</p>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">solver</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"auto"</span><span class="p">,</span> <span class="s2">"direct"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"auto"</span><span class="p">,</span>
+    <span class="n">nonnegative_weights</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">]</span>
 </code></pre></div>
 
@@ -8527,6 +8532,27 @@ the second such call; a one-shot call is usually faster under <code>"auto"</code
             </td>
             <td>
                   <code>&#39;auto&#39;</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>nonnegative_weights</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#bool">bool</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Build the Laplacian from cotangent weights clamped at zero
+(<a class="autorefs autorefs-internal" title="cotmatrix" href="../laplacian/#ordito.laplacian.cotmatrix"><code>cotmatrix</code></a>'s <code>nonnegative_weights</code>). At <code>k == 1</code> each
+free vertex is then a convex combination of its neighbors, so with the boundary on a
+convex polygon the map is an embedding (Tutte's and Floater's theorem) whatever the mesh's
+obtuse angles, where the signed weights can fold triangles; the map is no longer exactly
+harmonic. A <code>Trimesh</code> keeps this system's factorization apart from the signed one's.</p>
+              </div>
+            </td>
+            <td>
+                  <code>False</code>
             </td>
           </tr>
       </tbody>
@@ -8703,9 +8729,9 @@ linearly, so it reproduces the grid:</p>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 16 places</summary>
+      <summary>Referenced by 17 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../seams/#ordito.seams">seams</a></span> · <span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.fixed_vertex_solver">fixed_vertex_solver</a></span> · <span class="ordito-backlink"><a href="../energies/#ordito.energies">energies</a> › <a href="../energies/#ordito.energies.k_harmonic">k_harmonic</a></span> · <span class="ordito-backlink"><a href="../laplacian/#ordito.laplacian">laplacian</a> › <a href="../laplacian/#ordito.laplacian.cotmatrix">cotmatrix</a></span> · <span class="ordito-backlink"><a href="../linalg/#ordito.linalg">linalg</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.FixedVertexSolver">FixedVertexSolver</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization.FixedVertexSolver">FixedVertexSolver</a> › <a href="./#ordito.parametrization.FixedVertexSolver.factor">factor</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.arap">arap</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.low_distortion_disk_parametrization">low_distortion_disk_parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.lscm">lscm</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.map_vertices_to_circle">map_vertices_to_circle</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.tutte">tutte</a></span></p>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../seams/#ordito.seams">seams</a></span> · <span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.fixed_vertex_solver">fixed_vertex_solver</a></span> · <span class="ordito-backlink"><a href="../energies/#ordito.energies">energies</a> › <a href="../energies/#ordito.energies.k_harmonic">k_harmonic</a></span> · <span class="ordito-backlink"><a href="../laplacian/#ordito.laplacian">laplacian</a> › <a href="../laplacian/#ordito.laplacian.cotmatrix">cotmatrix</a></span> · <span class="ordito-backlink"><a href="../laplacian/#ordito.laplacian">laplacian</a> › <a href="../laplacian/#ordito.laplacian.cotmatrix_entries">cotmatrix_entries</a></span> · <span class="ordito-backlink"><a href="../linalg/#ordito.linalg">linalg</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.FixedVertexSolver">FixedVertexSolver</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization.FixedVertexSolver">FixedVertexSolver</a> › <a href="./#ordito.parametrization.FixedVertexSolver.factor">factor</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.arap">arap</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.low_distortion_disk_parametrization">low_distortion_disk_parametrization</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.lscm">lscm</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.map_vertices_to_circle">map_vertices_to_circle</a></span> · <span class="ordito-backlink"><a href="./#ordito.parametrization">parametrization</a> › <a href="./#ordito.parametrization.tutte">tutte</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
 <span class="ordito-backlink"><a href="../../../examples/parametrization/#parametrization-and-textures">Parametrization and textures</a> › <a href="../../../examples/parametrization/#p1">Flattening a disk: Tutte, harmonic, LSCM and ARAP</a></span></p>
         <p><span class="ordito-backlinks-section">Migrating from another library</span>
@@ -8715,9 +8741,7 @@ linearly, so it reproduces the grid:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">359</span>
-<span class="normal">360</span>
-<span class="normal">361</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">361</span>
 <span class="normal">362</span>
 <span class="normal">363</span>
 <span class="normal">364</span>
@@ -8875,7 +8899,17 @@ linearly, so it reproduces the grid:</p>
 <span class="normal">516</span>
 <span class="normal">517</span>
 <span class="normal">518</span>
-<span class="normal">519</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">harmonic</span><span class="p">(</span>
+<span class="normal">519</span>
+<span class="normal">520</span>
+<span class="normal">521</span>
+<span class="normal">522</span>
+<span class="normal">523</span>
+<span class="normal">524</span>
+<span class="normal">525</span>
+<span class="normal">526</span>
+<span class="normal">527</span>
+<span class="normal">528</span>
+<span class="normal">529</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">harmonic</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">boundary_indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -8884,6 +8918,7 @@ linearly, so it reproduces the grid:</p>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">solver</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"auto"</span><span class="p">,</span> <span class="s2">"direct"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"auto"</span><span class="p">,</span>
+    <span class="n">nonnegative_weights</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Harmonic parametrization with fixed boundary.</span>
@@ -8921,6 +8956,13 @@ linearly, so it reproduces the grid:</p>
 <span class="sd">        given a `Trimesh`, the factorization is kept on it, so every later call fixing the same</span>
 <span class="sd">        vertices -- whatever their values -- is a factored solve with no iteration. Pays from about</span>
 <span class="sd">        the second such call; a one-shot call is usually faster under ``"auto"``.</span>
+<span class="sd">    nonnegative_weights</span>
+<span class="sd">        Build the Laplacian from cotangent weights clamped at zero</span>
+<span class="sd">        ([`cotmatrix`][ordito.laplacian.cotmatrix]'s ``nonnegative_weights``). At ``k == 1`` each</span>
+<span class="sd">        free vertex is then a convex combination of its neighbors, so with the boundary on a</span>
+<span class="sd">        convex polygon the map is an embedding (Tutte's and Floater's theorem) whatever the mesh's</span>
+<span class="sd">        obtuse angles, where the signed weights can fold triangles; the map is no longer exactly</span>
+<span class="sd">        harmonic. A `Trimesh` keeps this system's factorization apart from the signed one's.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -9030,7 +9072,7 @@ linearly, so it reproduces the grid:</p>
     <span class="k">return</span> <span class="n">_fixed_boundary_map</span><span class="p">(</span>
         <span class="n">bound</span><span class="p">,</span>
         <span class="n">owned</span><span class="p">,</span>
-        <span class="s2">"harmonic"</span><span class="p">,</span>
+        <span class="n">_HARMONIC_NONNEGATIVE</span> <span class="k">if</span> <span class="n">nonnegative_weights</span> <span class="k">else</span> <span class="s2">"harmonic"</span><span class="p">,</span>
         <span class="n">cast</span><span class="p">(</span><span class="s2">"wp.array[wp.int32]"</span><span class="p">,</span> <span class="n">arguments</span><span class="p">[</span><span class="mi">0</span><span class="p">]),</span>
         <span class="n">cast</span><span class="p">(</span><span class="s2">"wp.array[wp.vec2]"</span><span class="p">,</span> <span class="n">arguments</span><span class="p">[</span><span class="mi">1</span><span class="p">]),</span>
         <span class="n">cast</span><span class="p">(</span><span class="s2">"int"</span><span class="p">,</span> <span class="n">arguments</span><span class="p">[</span><span class="mi">2</span><span class="p">]),</span>
@@ -9322,17 +9364,7 @@ device.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">543</span>
-<span class="normal">544</span>
-<span class="normal">545</span>
-<span class="normal">546</span>
-<span class="normal">547</span>
-<span class="normal">548</span>
-<span class="normal">549</span>
-<span class="normal">550</span>
-<span class="normal">551</span>
-<span class="normal">552</span>
-<span class="normal">553</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">553</span>
 <span class="normal">554</span>
 <span class="normal">555</span>
 <span class="normal">556</span>
@@ -9415,7 +9447,17 @@ device.</p>
 <span class="normal">633</span>
 <span class="normal">634</span>
 <span class="normal">635</span>
-<span class="normal">636</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">tutte</span><span class="p">(</span>
+<span class="normal">636</span>
+<span class="normal">637</span>
+<span class="normal">638</span>
+<span class="normal">639</span>
+<span class="normal">640</span>
+<span class="normal">641</span>
+<span class="normal">642</span>
+<span class="normal">643</span>
+<span class="normal">644</span>
+<span class="normal">645</span>
+<span class="normal">646</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">tutte</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">boundary_indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -9834,17 +9876,7 @@ exactly:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">689</span>
-<span class="normal">690</span>
-<span class="normal">691</span>
-<span class="normal">692</span>
-<span class="normal">693</span>
-<span class="normal">694</span>
-<span class="normal">695</span>
-<span class="normal">696</span>
-<span class="normal">697</span>
-<span class="normal">698</span>
-<span class="normal">699</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">699</span>
 <span class="normal">700</span>
 <span class="normal">701</span>
 <span class="normal">702</span>
@@ -10089,7 +10121,17 @@ exactly:</p>
 <span class="normal">941</span>
 <span class="normal">942</span>
 <span class="normal">943</span>
-<span class="normal">944</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">arap</span><span class="p">(</span>
+<span class="normal">944</span>
+<span class="normal">945</span>
+<span class="normal">946</span>
+<span class="normal">947</span>
+<span class="normal">948</span>
+<span class="normal">949</span>
+<span class="normal">950</span>
+<span class="normal">951</span>
+<span class="normal">952</span>
+<span class="normal">953</span>
+<span class="normal">954</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">arap</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">fixed_indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
@@ -10668,17 +10710,7 @@ its last bits can move between calls on the CUDA device.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1010</span>
-<span class="normal">1011</span>
-<span class="normal">1012</span>
-<span class="normal">1013</span>
-<span class="normal">1014</span>
-<span class="normal">1015</span>
-<span class="normal">1016</span>
-<span class="normal">1017</span>
-<span class="normal">1018</span>
-<span class="normal">1019</span>
-<span class="normal">1020</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1020</span>
 <span class="normal">1021</span>
 <span class="normal">1022</span>
 <span class="normal">1023</span>
@@ -10848,7 +10880,17 @@ its last bits can move between calls on the CUDA device.</p>
 <span class="normal">1187</span>
 <span class="normal">1188</span>
 <span class="normal">1189</span>
-<span class="normal">1190</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">low_distortion_parametrization</span><span class="p">(</span>
+<span class="normal">1190</span>
+<span class="normal">1191</span>
+<span class="normal">1192</span>
+<span class="normal">1193</span>
+<span class="normal">1194</span>
+<span class="normal">1195</span>
+<span class="normal">1196</span>
+<span class="normal">1197</span>
+<span class="normal">1198</span>
+<span class="normal">1199</span>
+<span class="normal">1200</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">low_distortion_parametrization</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -11259,17 +11301,7 @@ its last bits can move between calls on the CUDA device.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1193</span>
-<span class="normal">1194</span>
-<span class="normal">1195</span>
-<span class="normal">1196</span>
-<span class="normal">1197</span>
-<span class="normal">1198</span>
-<span class="normal">1199</span>
-<span class="normal">1200</span>
-<span class="normal">1201</span>
-<span class="normal">1202</span>
-<span class="normal">1203</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1203</span>
 <span class="normal">1204</span>
 <span class="normal">1205</span>
 <span class="normal">1206</span>
@@ -11371,7 +11403,17 @@ its last bits can move between calls on the CUDA device.</p>
 <span class="normal">1302</span>
 <span class="normal">1303</span>
 <span class="normal">1304</span>
-<span class="normal">1305</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">low_distortion_disk_parametrization</span><span class="p">(</span>
+<span class="normal">1305</span>
+<span class="normal">1306</span>
+<span class="normal">1307</span>
+<span class="normal">1308</span>
+<span class="normal">1309</span>
+<span class="normal">1310</span>
+<span class="normal">1311</span>
+<span class="normal">1312</span>
+<span class="normal">1313</span>
+<span class="normal">1314</span>
+<span class="normal">1315</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">low_distortion_disk_parametrization</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -11804,17 +11846,7 @@ LSCM recovers it:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1892</span>
-<span class="normal">1893</span>
-<span class="normal">1894</span>
-<span class="normal">1895</span>
-<span class="normal">1896</span>
-<span class="normal">1897</span>
-<span class="normal">1898</span>
-<span class="normal">1899</span>
-<span class="normal">1900</span>
-<span class="normal">1901</span>
-<span class="normal">1902</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1902</span>
 <span class="normal">1903</span>
 <span class="normal">1904</span>
 <span class="normal">1905</span>
@@ -11959,7 +11991,17 @@ LSCM recovers it:</p>
 <span class="normal">2044</span>
 <span class="normal">2045</span>
 <span class="normal">2046</span>
-<span class="normal">2047</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">lscm</span><span class="p">(</span>
+<span class="normal">2047</span>
+<span class="normal">2048</span>
+<span class="normal">2049</span>
+<span class="normal">2050</span>
+<span class="normal">2051</span>
+<span class="normal">2052</span>
+<span class="normal">2053</span>
+<span class="normal">2054</span>
+<span class="normal">2055</span>
+<span class="normal">2056</span>
+<span class="normal">2057</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">lscm</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">pinned_indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>

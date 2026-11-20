@@ -4990,6 +4990,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#ordito.sample.sample_surface_in_ball" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        sample_surface_in_ball
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#ordito.sample.sample_volume" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -6101,6 +6112,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#ordito.sample.sample_surface_in_ball" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        sample_surface_in_ball
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#ordito.sample.sample_volume" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -6155,7 +6177,9 @@
 <p>Everything here <em>creates</em> points -- uniformly over the faces
 (<a class="autorefs autorefs-internal" title="sample_surface" href="./#ordito.sample.sample_surface"><code>sample_surface</code></a>), spaced at least <code>radius</code> apart
 (<a class="autorefs autorefs-internal" title="sample_surface_poisson_disk" href="./#ordito.sample.sample_surface_poisson_disk"><code>sample_surface_poisson_disk</code></a>,
-<a class="autorefs autorefs-internal" title="sample_surface_blue_noise" href="./#ordito.sample.sample_surface_blue_noise"><code>sample_surface_blue_noise</code></a>), inside a watertight solid
+<a class="autorefs autorefs-internal" title="sample_surface_blue_noise" href="./#ordito.sample.sample_surface_blue_noise"><code>sample_surface_blue_noise</code></a>), any of the three over
+only the part of the surface inside a ball
+(<a class="autorefs autorefs-internal" title="sample_surface_in_ball" href="./#ordito.sample.sample_surface_in_ball"><code>sample_surface_in_ball</code></a>), inside a watertight solid
 (<a class="autorefs autorefs-internal" title="sample_volume" href="./#ordito.sample.sample_volume"><code>sample_volume</code></a>), or over a sphere, hemisphere or cone as a
 low-discrepancy Fibonacci lattice (the <code>sample_fibonacci_*</code> family, which take a count and no
 mesh at all).</p>
@@ -6240,6 +6264,14 @@ subset of anything the caller passed.</p>
               <td>
                 <div class="doc-md-description">
                   <p>Sample points on a triangle mesh surface with a blue-noise (Poisson-disk) distribution.</p>
+                </div>
+              </td>
+            </tr>
+            <tr class="doc-section-item">
+              <td><code><a class="autorefs autorefs-internal" title="sample_surface_in_ball (ordito.sample.sample_surface_in_ball)" href="./#ordito.sample.sample_surface_in_ball">sample_surface_in_ball</a></code></td>
+              <td>
+                <div class="doc-md-description">
+                  <p>Sample the part of a triangle mesh surface that lies inside a ball.</p>
                 </div>
               </td>
             </tr>
@@ -6395,18 +6427,7 @@ more even than independent random sampling for the same <code>count</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/sample.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 65</span>
-<span class="normal"> 66</span>
-<span class="normal"> 67</span>
-<span class="normal"> 68</span>
-<span class="normal"> 69</span>
-<span class="normal"> 70</span>
-<span class="normal"> 71</span>
-<span class="normal"> 72</span>
-<span class="normal"> 73</span>
-<span class="normal"> 74</span>
-<span class="normal"> 75</span>
-<span class="normal"> 76</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 76</span>
 <span class="normal"> 77</span>
 <span class="normal"> 78</span>
 <span class="normal"> 79</span>
@@ -6435,7 +6456,18 @@ more even than independent random sampling for the same <code>count</code>.</p>
 <span class="normal">102</span>
 <span class="normal">103</span>
 <span class="normal">104</span>
-<span class="normal">105</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_fibonacci_sphere</span><span class="p">(</span><span class="n">count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
+<span class="normal">105</span>
+<span class="normal">106</span>
+<span class="normal">107</span>
+<span class="normal">108</span>
+<span class="normal">109</span>
+<span class="normal">110</span>
+<span class="normal">111</span>
+<span class="normal">112</span>
+<span class="normal">113</span>
+<span class="normal">114</span>
+<span class="normal">115</span>
+<span class="normal">116</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_fibonacci_sphere</span><span class="p">(</span><span class="n">count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Generate near-uniform unit vectors on the sphere via the Fibonacci spiral.</span>
 
@@ -6601,18 +6633,7 @@ directions.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/sample.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">108</span>
-<span class="normal">109</span>
-<span class="normal">110</span>
-<span class="normal">111</span>
-<span class="normal">112</span>
-<span class="normal">113</span>
-<span class="normal">114</span>
-<span class="normal">115</span>
-<span class="normal">116</span>
-<span class="normal">117</span>
-<span class="normal">118</span>
-<span class="normal">119</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">119</span>
 <span class="normal">120</span>
 <span class="normal">121</span>
 <span class="normal">122</span>
@@ -6640,7 +6661,18 @@ directions.</p>
 <span class="normal">144</span>
 <span class="normal">145</span>
 <span class="normal">146</span>
-<span class="normal">147</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_fibonacci_hemisphere</span><span class="p">(</span><span class="n">count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
+<span class="normal">147</span>
+<span class="normal">148</span>
+<span class="normal">149</span>
+<span class="normal">150</span>
+<span class="normal">151</span>
+<span class="normal">152</span>
+<span class="normal">153</span>
+<span class="normal">154</span>
+<span class="normal">155</span>
+<span class="normal">156</span>
+<span class="normal">157</span>
+<span class="normal">158</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_fibonacci_hemisphere</span><span class="p">(</span><span class="n">count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Generate near-uniform unit vectors on the positive-``z`` hemisphere.</span>
 
@@ -6849,18 +6881,7 @@ reproduces <a class="autorefs autorefs-internal" title="sample_fibonacci_sphere"
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/sample.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">150</span>
-<span class="normal">151</span>
-<span class="normal">152</span>
-<span class="normal">153</span>
-<span class="normal">154</span>
-<span class="normal">155</span>
-<span class="normal">156</span>
-<span class="normal">157</span>
-<span class="normal">158</span>
-<span class="normal">159</span>
-<span class="normal">160</span>
-<span class="normal">161</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">161</span>
 <span class="normal">162</span>
 <span class="normal">163</span>
 <span class="normal">164</span>
@@ -6905,7 +6926,18 @@ reproduces <a class="autorefs autorefs-internal" title="sample_fibonacci_sphere"
 <span class="normal">203</span>
 <span class="normal">204</span>
 <span class="normal">205</span>
-<span class="normal">206</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_fibonacci_cone</span><span class="p">(</span>
+<span class="normal">206</span>
+<span class="normal">207</span>
+<span class="normal">208</span>
+<span class="normal">209</span>
+<span class="normal">210</span>
+<span class="normal">211</span>
+<span class="normal">212</span>
+<span class="normal">213</span>
+<span class="normal">214</span>
+<span class="normal">215</span>
+<span class="normal">216</span>
+<span class="normal">217</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_fibonacci_cone</span><span class="p">(</span>
     <span class="n">count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">half_angle</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -7237,9 +7269,9 @@ is on (the default).</p>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 10 places</summary>
+      <summary>Referenced by 11 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.sample">sample</a></span> · <span class="ordito-backlink"><a href="../interpolation/#ordito.interpolation">interpolation</a> › <a href="../interpolation/#ordito.interpolation.interpolate_barycentric">interpolate_barycentric</a></span> · <span class="ordito-backlink"><a href="./#ordito.sample">sample</a></span> · <span class="ordito-backlink"><a href="./#ordito.sample">sample</a> › <a href="./#ordito.sample.resolve_seed">resolve_seed</a></span></p>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.sample">sample</a></span> · <span class="ordito-backlink"><a href="../interpolation/#ordito.interpolation">interpolation</a> › <a href="../interpolation/#ordito.interpolation.interpolate_barycentric">interpolate_barycentric</a></span> · <span class="ordito-backlink"><a href="./#ordito.sample">sample</a></span> · <span class="ordito-backlink"><a href="./#ordito.sample">sample</a> › <a href="./#ordito.sample.resolve_seed">resolve_seed</a></span> · <span class="ordito-backlink"><a href="./#ordito.sample">sample</a> › <a href="./#ordito.sample.sample_surface_in_ball">sample_surface_in_ball</a></span></p>
         <p><span class="ordito-backlinks-section">Concepts</span>
 <span class="ordito-backlink"><a href="../../../reproducibility/#reproducible-results">Reproducible results</a> › <a href="../../../reproducibility/#what-it-costs">What it costs</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
@@ -7251,18 +7283,7 @@ is on (the default).</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/sample.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">264</span>
-<span class="normal">265</span>
-<span class="normal">266</span>
-<span class="normal">267</span>
-<span class="normal">268</span>
-<span class="normal">269</span>
-<span class="normal">270</span>
-<span class="normal">271</span>
-<span class="normal">272</span>
-<span class="normal">273</span>
-<span class="normal">274</span>
-<span class="normal">275</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">275</span>
 <span class="normal">276</span>
 <span class="normal">277</span>
 <span class="normal">278</span>
@@ -7349,7 +7370,18 @@ is on (the default).</p>
 <span class="normal">359</span>
 <span class="normal">360</span>
 <span class="normal">361</span>
-<span class="normal">362</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_surface</span><span class="p">(</span>
+<span class="normal">362</span>
+<span class="normal">363</span>
+<span class="normal">364</span>
+<span class="normal">365</span>
+<span class="normal">366</span>
+<span class="normal">367</span>
+<span class="normal">368</span>
+<span class="normal">369</span>
+<span class="normal">370</span>
+<span class="normal">371</span>
+<span class="normal">372</span>
+<span class="normal">373</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_surface</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
@@ -7677,9 +7709,9 @@ is chosen.</p>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 4 places</summary>
+      <summary>Referenced by 5 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="./#ordito.sample">sample</a></span> · <span class="ordito-backlink"><a href="./#ordito.sample">sample</a> › <a href="./#ordito.sample.sample_surface_blue_noise">sample_surface_blue_noise</a></span></p>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="./#ordito.sample">sample</a></span> · <span class="ordito-backlink"><a href="./#ordito.sample">sample</a> › <a href="./#ordito.sample.sample_surface_blue_noise">sample_surface_blue_noise</a></span> · <span class="ordito-backlink"><a href="./#ordito.sample">sample</a> › <a href="./#ordito.sample.sample_surface_in_ball">sample_surface_in_ball</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
 <span class="ordito-backlink"><a href="../../../examples/points/#point-clouds">Point clouds</a> › <a href="../../../examples/points/#pc2">Surface sampling: uniform, Poisson disk and blue noise</a></span></p>
     </details>
@@ -7687,18 +7719,7 @@ is chosen.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/sample.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">365</span>
-<span class="normal">366</span>
-<span class="normal">367</span>
-<span class="normal">368</span>
-<span class="normal">369</span>
-<span class="normal">370</span>
-<span class="normal">371</span>
-<span class="normal">372</span>
-<span class="normal">373</span>
-<span class="normal">374</span>
-<span class="normal">375</span>
-<span class="normal">376</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">376</span>
 <span class="normal">377</span>
 <span class="normal">378</span>
 <span class="normal">379</span>
@@ -7791,115 +7812,7 @@ is chosen.</p>
 <span class="normal">466</span>
 <span class="normal">467</span>
 <span class="normal">468</span>
-<span class="normal">469</span>
-<span class="normal">470</span>
-<span class="normal">471</span>
-<span class="normal">472</span>
-<span class="normal">473</span>
-<span class="normal">474</span>
-<span class="normal">475</span>
-<span class="normal">476</span>
-<span class="normal">477</span>
-<span class="normal">478</span>
-<span class="normal">479</span>
-<span class="normal">480</span>
-<span class="normal">481</span>
-<span class="normal">482</span>
-<span class="normal">483</span>
-<span class="normal">484</span>
-<span class="normal">485</span>
-<span class="normal">486</span>
-<span class="normal">487</span>
-<span class="normal">488</span>
-<span class="normal">489</span>
-<span class="normal">490</span>
-<span class="normal">491</span>
-<span class="normal">492</span>
-<span class="normal">493</span>
-<span class="normal">494</span>
-<span class="normal">495</span>
-<span class="normal">496</span>
-<span class="normal">497</span>
-<span class="normal">498</span>
-<span class="normal">499</span>
-<span class="normal">500</span>
-<span class="normal">501</span>
-<span class="normal">502</span>
-<span class="normal">503</span>
-<span class="normal">504</span>
-<span class="normal">505</span>
-<span class="normal">506</span>
-<span class="normal">507</span>
-<span class="normal">508</span>
-<span class="normal">509</span>
-<span class="normal">510</span>
-<span class="normal">511</span>
-<span class="normal">512</span>
-<span class="normal">513</span>
-<span class="normal">514</span>
-<span class="normal">515</span>
-<span class="normal">516</span>
-<span class="normal">517</span>
-<span class="normal">518</span>
-<span class="normal">519</span>
-<span class="normal">520</span>
-<span class="normal">521</span>
-<span class="normal">522</span>
-<span class="normal">523</span>
-<span class="normal">524</span>
-<span class="normal">525</span>
-<span class="normal">526</span>
-<span class="normal">527</span>
-<span class="normal">528</span>
-<span class="normal">529</span>
-<span class="normal">530</span>
-<span class="normal">531</span>
-<span class="normal">532</span>
-<span class="normal">533</span>
-<span class="normal">534</span>
-<span class="normal">535</span>
-<span class="normal">536</span>
-<span class="normal">537</span>
-<span class="normal">538</span>
-<span class="normal">539</span>
-<span class="normal">540</span>
-<span class="normal">541</span>
-<span class="normal">542</span>
-<span class="normal">543</span>
-<span class="normal">544</span>
-<span class="normal">545</span>
-<span class="normal">546</span>
-<span class="normal">547</span>
-<span class="normal">548</span>
-<span class="normal">549</span>
-<span class="normal">550</span>
-<span class="normal">551</span>
-<span class="normal">552</span>
-<span class="normal">553</span>
-<span class="normal">554</span>
-<span class="normal">555</span>
-<span class="normal">556</span>
-<span class="normal">557</span>
-<span class="normal">558</span>
-<span class="normal">559</span>
-<span class="normal">560</span>
-<span class="normal">561</span>
-<span class="normal">562</span>
-<span class="normal">563</span>
-<span class="normal">564</span>
-<span class="normal">565</span>
-<span class="normal">566</span>
-<span class="normal">567</span>
-<span class="normal">568</span>
-<span class="normal">569</span>
-<span class="normal">570</span>
-<span class="normal">571</span>
-<span class="normal">572</span>
-<span class="normal">573</span>
-<span class="normal">574</span>
-<span class="normal">575</span>
-<span class="normal">576</span>
-<span class="normal">577</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_surface_poisson_disk</span><span class="p">(</span>
+<span class="normal">469</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_surface_poisson_disk</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
@@ -7992,126 +7905,7 @@ is chosen.</p>
         <span class="n">_</span><span class="p">,</span> <span class="n">areas</span> <span class="o">=</span> <span class="n">face_normals_and_areas</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
         <span class="n">surface_area</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">cast</span><span class="p">(</span><span class="s2">"float"</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">utils</span><span class="o">.</span><span class="n">array_sum</span><span class="p">(</span><span class="n">areas</span><span class="p">)))</span>
 
-    <span class="c1"># 3. Poisson disk radii (Öztireli &amp; Gross 2012 constants)</span>
-    <span class="c1">#</span>
-    <span class="c1"># Plain Python floats, not ``wp.float32``: these are *host* arithmetic, and a Warp scalar's</span>
-    <span class="c1"># operators route through Warp's Python-scope builtin dispatch, hundreds of times a plain</span>
-    <span class="c1"># float's (see ``kernels/array.py``'s slot views). The wrapping</span>
-    <span class="c1"># bought nothing even numerically, since ``wp.float32(x)`` only stores ``x`` and rounds when it</span>
-    <span class="c1"># is marshalled into a launch, which ``wp.launch`` does for a plain float anyway.</span>
-    <span class="n">alpha</span> <span class="o">=</span> <span class="mf">8.0</span>
-    <span class="n">beta</span> <span class="o">=</span> <span class="mf">0.65</span>
-    <span class="n">gamma</span> <span class="o">=</span> <span class="mf">1.5</span>
-    <span class="n">ratio</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">count</span><span class="p">)</span> <span class="o">/</span> <span class="nb">float</span><span class="p">(</span><span class="n">init_count</span><span class="p">)</span>
-    <span class="n">r_max</span> <span class="o">=</span> <span class="mf">2.0</span> <span class="o">*</span> <span class="n">math</span><span class="o">.</span><span class="n">sqrt</span><span class="p">((</span><span class="n">surface_area</span> <span class="o">/</span> <span class="n">count</span><span class="p">)</span> <span class="o">/</span> <span class="p">(</span><span class="mf">2.0</span> <span class="o">*</span> <span class="n">math</span><span class="o">.</span><span class="n">sqrt</span><span class="p">(</span><span class="mf">3.0</span><span class="p">)))</span>
-    <span class="n">r_min</span> <span class="o">=</span> <span class="n">r_max</span> <span class="o">*</span> <span class="n">beta</span> <span class="o">*</span> <span class="p">(</span><span class="mf">1.0</span> <span class="o">-</span> <span class="n">ratio</span><span class="o">**</span><span class="n">gamma</span><span class="p">)</span>
-
-    <span class="c1"># 4. Neighbor lists (GPU, computed once for the full initial pool)</span>
-    <span class="n">nbr_idx</span><span class="p">,</span> <span class="n">nbr_dists</span><span class="p">,</span> <span class="n">offsets</span> <span class="o">=</span> <span class="n">query_ball_with_offsets</span><span class="p">(</span><span class="n">init_points</span><span class="p">,</span> <span class="n">init_points</span><span class="p">,</span> <span class="n">r_max</span><span class="p">)</span>
-
-    <span class="c1"># 5. Initial per-point weights (parallel)</span>
-    <span class="n">alive</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">ones</span><span class="p">(</span><span class="n">init_count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="c1"># Every weight is written by the pass below.</span>
-    <span class="n">weights</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">init_count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_sample</span><span class="o">.</span><span class="n">compute_poisson_weights</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">init_count</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">nbr_idx</span><span class="p">,</span> <span class="n">nbr_dists</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">alive</span><span class="p">,</span> <span class="n">r_max</span><span class="p">,</span> <span class="n">r_min</span><span class="p">,</span> <span class="n">alpha</span><span class="p">,</span> <span class="n">weights</span><span class="p">],</span>
-        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-    <span class="p">)</span>
-
-    <span class="c1"># 6. Parallel round-based elimination, as one device loop: a round's maxima count decides</span>
-    <span class="c1"># whether it deletes them all and whether another round runs, so it stays on the device and the</span>
-    <span class="c1"># rounds replay as one conditional graph on CUDA with no per-round readback.</span>
-    <span class="k">if</span> <span class="n">init_count</span> <span class="o">&gt;</span> <span class="n">count</span><span class="p">:</span>
-        <span class="n">is_max</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">init_count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-        <span class="n">state</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">pattern</span><span class="p">(</span>
-            <span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">init_count</span><span class="p">]</span> <span class="o">+</span> <span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">*</span> <span class="p">(</span><span class="n">kernel_sample</span><span class="o">.</span><span class="n">POISSON_STATE_SIZE</span> <span class="o">-</span> <span class="mi">3</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span>
-        <span class="p">)</span>
-        <span class="n">ticket</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">kernel_sample</span><span class="o">.</span><span class="n">POISSON_TICKET</span><span class="p">,</span> <span class="n">kernel_sample</span><span class="o">.</span><span class="n">POISSON_TICKET</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span>
-        <span class="c1"># On CUDA the floor is selected a digit a pass (``floor_digit``) in a histogram zeroed once</span>
-        <span class="c1"># (each pass's last block re-zeroes what it read); the passes launch tiled at the default</span>
-        <span class="c1"># launch width (256), so the module is built once, a block owning</span>
-        <span class="c1"># ``FLOOR_ITEMS_PER_BLOCK`` points its lanes stride over. The CPU device sorts the keys</span>
-        <span class="c1"># instead, cheaper there (``floor_from_sorted``), in the radix sort's double-width buffers.</span>
-        <span class="n">floor_blocks</span> <span class="o">=</span> <span class="o">-</span><span class="p">(</span><span class="o">-</span><span class="n">init_count</span> <span class="o">//</span> <span class="n">kernel_sample</span><span class="o">.</span><span class="n">FLOOR_ITEMS_PER_BLOCK</span><span class="p">)</span>
-        <span class="n">hist</span> <span class="o">=</span> <span class="kc">None</span>
-        <span class="n">sort_keys</span> <span class="o">=</span> <span class="kc">None</span>
-        <span class="k">if</span> <span class="n">wp</span><span class="o">.</span><span class="n">get_device</span><span class="p">(</span><span class="n">device</span><span class="p">)</span><span class="o">.</span><span class="n">is_cpu</span><span class="p">:</span>
-            <span class="n">sort_keys</span> <span class="o">=</span> <span class="p">[</span>
-                <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">init_count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
-                <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">init_count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
-            <span class="p">]</span>
-        <span class="k">else</span><span class="p">:</span>
-            <span class="n">hist</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">kernel_reduce</span><span class="o">.</span><span class="n">RADIX_SELECT_BINS</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-        <span class="c1"># The survivors' weights subtract their deleted neighbours in row order rather than by</span>
-        <span class="c1"># float atomics in arrival order; the CPU device runs the scatter's threads one after</span>
-        <span class="c1"># another, so its order is fixed already.</span>
-        <span class="n">gather</span> <span class="o">=</span> <span class="n">is_deterministic</span><span class="p">()</span> <span class="ow">and</span> <span class="n">sort_keys</span> <span class="ow">is</span> <span class="kc">None</span>
-        <span class="n">delete</span> <span class="o">=</span> <span class="n">kernel_sample</span><span class="o">.</span><span class="n">gather_deletions</span> <span class="k">if</span> <span class="n">gather</span> <span class="k">else</span> <span class="n">kernel_sample</span><span class="o">.</span><span class="n">apply_deletions</span>
-        <span class="n">deletion_inputs</span> <span class="o">=</span> <span class="p">[</span><span class="n">nbr_idx</span><span class="p">,</span> <span class="n">nbr_dists</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">r_max</span><span class="p">,</span> <span class="n">r_min</span><span class="p">,</span> <span class="n">alpha</span><span class="p">,</span> <span class="n">count</span><span class="p">]</span>
-
-        <span class="k">def</span><span class="w"> </span><span class="nf">elimination_round</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="c1"># Only a point at least as heavy as the ``excess``-th heaviest alive one may go this</span>
-            <span class="c1"># round, so the deletions follow the global weight order the elimination is defined</span>
-            <span class="c1"># by; it is left in ``state`` for ``find_local_maxima``.</span>
-            <span class="k">if</span> <span class="n">sort_keys</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-                <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-                    <span class="n">kernel_sample</span><span class="o">.</span><span class="n">alive_negated_weight_keys</span><span class="p">,</span>
-                    <span class="n">dim</span><span class="o">=</span><span class="n">init_count</span><span class="p">,</span>
-                    <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">weights</span><span class="p">,</span> <span class="n">alive</span><span class="p">],</span>
-                    <span class="n">outputs</span><span class="o">=</span><span class="n">sort_keys</span><span class="p">,</span>
-                    <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-                <span class="p">)</span>
-                <span class="n">_launch</span><span class="o">.</span><span class="n">radix_sort_pairs</span><span class="p">(</span><span class="o">*</span><span class="n">sort_keys</span><span class="p">,</span> <span class="n">count</span><span class="o">=</span><span class="n">init_count</span><span class="p">)</span>
-                <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-                    <span class="n">kernel_sample</span><span class="o">.</span><span class="n">floor_from_sorted</span><span class="p">,</span>
-                    <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
-                    <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">sort_keys</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">count</span><span class="p">,</span> <span class="n">state</span><span class="p">],</span>
-                    <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-                <span class="p">)</span>
-            <span class="k">else</span><span class="p">:</span>
-                <span class="k">for</span> <span class="n">shift</span><span class="p">,</span> <span class="n">width</span> <span class="ow">in</span> <span class="n">kernel_reduce</span><span class="o">.</span><span class="n">RADIX_SELECT_PASSES_32</span><span class="p">:</span>
-                    <span class="n">_launch</span><span class="o">.</span><span class="n">launch_tiled</span><span class="p">(</span>
-                        <span class="n">kernel_sample</span><span class="o">.</span><span class="n">floor_digit</span><span class="p">,</span>
-                        <span class="n">dim</span><span class="o">=</span><span class="p">[</span><span class="n">floor_blocks</span><span class="p">],</span>
-                        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">weights</span><span class="p">,</span> <span class="n">alive</span><span class="p">,</span> <span class="n">count</span><span class="p">,</span> <span class="n">shift</span><span class="p">,</span> <span class="n">width</span><span class="p">,</span> <span class="n">hist</span><span class="p">,</span> <span class="n">ticket</span><span class="p">,</span> <span class="n">state</span><span class="p">],</span>
-                        <span class="n">block_dim</span><span class="o">=</span><span class="mi">256</span><span class="p">,</span>
-                        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-                    <span class="p">)</span>
-            <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-                <span class="n">kernel_sample</span><span class="o">.</span><span class="n">find_local_maxima</span><span class="p">,</span>
-                <span class="n">dim</span><span class="o">=</span><span class="n">init_count</span><span class="p">,</span>
-                <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">weights</span><span class="p">,</span> <span class="n">alive</span><span class="p">,</span> <span class="n">nbr_idx</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">state</span><span class="p">],</span>
-                <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">is_max</span><span class="p">],</span>
-                <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-            <span class="p">)</span>
-            <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-                <span class="n">delete</span><span class="p">,</span>
-                <span class="n">dim</span><span class="o">=</span><span class="n">init_count</span><span class="p">,</span>
-                <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">is_max</span><span class="p">,</span> <span class="o">*</span><span class="n">deletion_inputs</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">alive</span><span class="p">,</span> <span class="n">weights</span><span class="p">,</span> <span class="n">state</span><span class="p">],</span>
-                <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-            <span class="p">)</span>
-
-        <span class="n">run_device_loop</span><span class="p">(</span>
-            <span class="n">device</span><span class="p">,</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">state</span><span class="p">[</span><span class="n">kernel_array</span><span class="o">.</span><span class="n">LOOP_CONDITION_VIEW</span><span class="p">]),</span> <span class="n">elimination_round</span>
-        <span class="p">)</span>
-        <span class="c1"># Host readback: the last round's alive and maxima counts tell whether it deleted its</span>
-        <span class="c1"># maxima or left the host a terminal round to cut to ``excess``.</span>
-        <span class="n">alive_count</span><span class="p">,</span> <span class="n">n_max</span> <span class="o">=</span> <span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">value</span><span class="p">)</span> <span class="k">for</span> <span class="n">value</span> <span class="ow">in</span> <span class="n">read_values</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">))</span>
-        <span class="n">excess</span> <span class="o">=</span> <span class="n">alive_count</span> <span class="o">-</span> <span class="n">count</span>
-        <span class="k">if</span> <span class="ow">not</span> <span class="mi">0</span> <span class="o">&lt;</span> <span class="n">n_max</span> <span class="o">&lt;=</span> <span class="n">excess</span><span class="p">:</span>
-            <span class="n">_cut_terminal_round</span><span class="p">(</span><span class="n">weights</span><span class="p">,</span> <span class="n">alive</span><span class="p">,</span> <span class="n">is_max</span><span class="p">,</span> <span class="n">n_max</span><span class="p">,</span> <span class="n">excess</span><span class="p">)</span>
-            <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-                <span class="n">delete</span><span class="p">,</span>
-                <span class="n">dim</span><span class="o">=</span><span class="n">init_count</span><span class="p">,</span>
-                <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">is_max</span><span class="p">,</span> <span class="o">*</span><span class="n">deletion_inputs</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">alive</span><span class="p">,</span> <span class="n">weights</span><span class="p">,</span> <span class="n">state</span><span class="p">],</span>
-                <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-            <span class="p">)</span>
-
-    <span class="c1"># 7. Compaction: the 0/1 alive flags are scanned in place (the loop is done with them) and one</span>
-    <span class="c1"># launch writes the survivors and their faces.</span>
-    <span class="k">return</span> <span class="n">_emit_kept_samples</span><span class="p">(</span><span class="n">alive</span><span class="p">,</span> <span class="n">init_points</span><span class="p">,</span> <span class="n">init_face_indices</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">_eliminate_to_count</span><span class="p">(</span><span class="n">init_points</span><span class="p">,</span> <span class="n">init_face_indices</span><span class="p">,</span> <span class="n">count</span><span class="p">,</span> <span class="n">surface_area</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -8316,9 +8110,9 @@ usually chosen from. Ask for a <em>count</em> with
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 6 places</summary>
+      <summary>Referenced by 7 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.sample">sample</a></span> · <span class="ordito-backlink"><a href="../points/#ordito.points">points</a> › <a href="../points/#ordito.points.farthest_point_sample">farthest_point_sample</a></span> · <span class="ordito-backlink"><a href="./#ordito.sample">sample</a></span></p>
+<span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.sample">sample</a></span> · <span class="ordito-backlink"><a href="../points/#ordito.points">points</a> › <a href="../points/#ordito.points.farthest_point_sample">farthest_point_sample</a></span> · <span class="ordito-backlink"><a href="./#ordito.sample">sample</a></span> · <span class="ordito-backlink"><a href="./#ordito.sample">sample</a> › <a href="./#ordito.sample.sample_surface_in_ball">sample_surface_in_ball</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
 <span class="ordito-backlink"><a href="../../../examples/points/#point-clouds">Point clouds</a> › <a href="../../../examples/points/#pc1">Down-sampling: voxel grid, farthest point and blue noise</a></span> · <span class="ordito-backlink"><a href="../../../examples/points/#point-clouds">Point clouds</a> › <a href="../../../examples/points/#pc2">Surface sampling: uniform, Poisson disk and blue noise</a></span> · <span class="ordito-backlink"><a href="../../../examples/reconstruction/#reconstruction-and-registration">Reconstruction and registration</a> › <a href="../../../examples/reconstruction/#rr7">From a bare scan: normals, then Poisson or ball pivoting</a></span></p>
     </details>
@@ -8326,103 +8120,94 @@ usually chosen from. Ask for a <em>count</em> with
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/sample.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">659</span>
-<span class="normal">660</span>
-<span class="normal">661</span>
-<span class="normal">662</span>
-<span class="normal">663</span>
-<span class="normal">664</span>
-<span class="normal">665</span>
-<span class="normal">666</span>
-<span class="normal">667</span>
-<span class="normal">668</span>
-<span class="normal">669</span>
-<span class="normal">670</span>
-<span class="normal">671</span>
-<span class="normal">672</span>
-<span class="normal">673</span>
-<span class="normal">674</span>
-<span class="normal">675</span>
-<span class="normal">676</span>
-<span class="normal">677</span>
-<span class="normal">678</span>
-<span class="normal">679</span>
-<span class="normal">680</span>
-<span class="normal">681</span>
-<span class="normal">682</span>
-<span class="normal">683</span>
-<span class="normal">684</span>
-<span class="normal">685</span>
-<span class="normal">686</span>
-<span class="normal">687</span>
-<span class="normal">688</span>
-<span class="normal">689</span>
-<span class="normal">690</span>
-<span class="normal">691</span>
-<span class="normal">692</span>
-<span class="normal">693</span>
-<span class="normal">694</span>
-<span class="normal">695</span>
-<span class="normal">696</span>
-<span class="normal">697</span>
-<span class="normal">698</span>
-<span class="normal">699</span>
-<span class="normal">700</span>
-<span class="normal">701</span>
-<span class="normal">702</span>
-<span class="normal">703</span>
-<span class="normal">704</span>
-<span class="normal">705</span>
-<span class="normal">706</span>
-<span class="normal">707</span>
-<span class="normal">708</span>
-<span class="normal">709</span>
-<span class="normal">710</span>
-<span class="normal">711</span>
-<span class="normal">712</span>
-<span class="normal">713</span>
-<span class="normal">714</span>
-<span class="normal">715</span>
-<span class="normal">716</span>
-<span class="normal">717</span>
-<span class="normal">718</span>
-<span class="normal">719</span>
-<span class="normal">720</span>
-<span class="normal">721</span>
-<span class="normal">722</span>
-<span class="normal">723</span>
-<span class="normal">724</span>
-<span class="normal">725</span>
-<span class="normal">726</span>
-<span class="normal">727</span>
-<span class="normal">728</span>
-<span class="normal">729</span>
-<span class="normal">730</span>
-<span class="normal">731</span>
-<span class="normal">732</span>
-<span class="normal">733</span>
-<span class="normal">734</span>
-<span class="normal">735</span>
-<span class="normal">736</span>
-<span class="normal">737</span>
-<span class="normal">738</span>
-<span class="normal">739</span>
-<span class="normal">740</span>
-<span class="normal">741</span>
-<span class="normal">742</span>
-<span class="normal">743</span>
-<span class="normal">744</span>
-<span class="normal">745</span>
-<span class="normal">746</span>
-<span class="normal">747</span>
-<span class="normal">748</span>
-<span class="normal">749</span>
-<span class="normal">750</span>
-<span class="normal">751</span>
-<span class="normal">752</span>
-<span class="normal">753</span>
-<span class="normal">754</span>
-<span class="normal">755</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_surface_blue_noise</span><span class="p">(</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">472</span>
+<span class="normal">473</span>
+<span class="normal">474</span>
+<span class="normal">475</span>
+<span class="normal">476</span>
+<span class="normal">477</span>
+<span class="normal">478</span>
+<span class="normal">479</span>
+<span class="normal">480</span>
+<span class="normal">481</span>
+<span class="normal">482</span>
+<span class="normal">483</span>
+<span class="normal">484</span>
+<span class="normal">485</span>
+<span class="normal">486</span>
+<span class="normal">487</span>
+<span class="normal">488</span>
+<span class="normal">489</span>
+<span class="normal">490</span>
+<span class="normal">491</span>
+<span class="normal">492</span>
+<span class="normal">493</span>
+<span class="normal">494</span>
+<span class="normal">495</span>
+<span class="normal">496</span>
+<span class="normal">497</span>
+<span class="normal">498</span>
+<span class="normal">499</span>
+<span class="normal">500</span>
+<span class="normal">501</span>
+<span class="normal">502</span>
+<span class="normal">503</span>
+<span class="normal">504</span>
+<span class="normal">505</span>
+<span class="normal">506</span>
+<span class="normal">507</span>
+<span class="normal">508</span>
+<span class="normal">509</span>
+<span class="normal">510</span>
+<span class="normal">511</span>
+<span class="normal">512</span>
+<span class="normal">513</span>
+<span class="normal">514</span>
+<span class="normal">515</span>
+<span class="normal">516</span>
+<span class="normal">517</span>
+<span class="normal">518</span>
+<span class="normal">519</span>
+<span class="normal">520</span>
+<span class="normal">521</span>
+<span class="normal">522</span>
+<span class="normal">523</span>
+<span class="normal">524</span>
+<span class="normal">525</span>
+<span class="normal">526</span>
+<span class="normal">527</span>
+<span class="normal">528</span>
+<span class="normal">529</span>
+<span class="normal">530</span>
+<span class="normal">531</span>
+<span class="normal">532</span>
+<span class="normal">533</span>
+<span class="normal">534</span>
+<span class="normal">535</span>
+<span class="normal">536</span>
+<span class="normal">537</span>
+<span class="normal">538</span>
+<span class="normal">539</span>
+<span class="normal">540</span>
+<span class="normal">541</span>
+<span class="normal">542</span>
+<span class="normal">543</span>
+<span class="normal">544</span>
+<span class="normal">545</span>
+<span class="normal">546</span>
+<span class="normal">547</span>
+<span class="normal">548</span>
+<span class="normal">549</span>
+<span class="normal">550</span>
+<span class="normal">551</span>
+<span class="normal">552</span>
+<span class="normal">553</span>
+<span class="normal">554</span>
+<span class="normal">555</span>
+<span class="normal">556</span>
+<span class="normal">557</span>
+<span class="normal">558</span>
+<span class="normal">559</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_surface_blue_noise</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">radius</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">seed</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -8503,22 +8288,637 @@ usually chosen from. Ask for a <em>count</em> with
     <span class="c1"># The surface area is the total of the area CDF the pool is drawn from below; the vertices' box,</span>
     <span class="c1"># read back with it, encloses the pool and anchors the dart loop's grid.</span>
     <span class="n">cdf</span><span class="p">,</span> <span class="n">surface_area</span><span class="p">,</span> <span class="n">box</span> <span class="o">=</span> <span class="n">_face_cdf_and_vertex_box</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
-    <span class="n">expected</span> <span class="o">=</span> <span class="n">surface_area</span> <span class="o">*</span> <span class="p">(</span><span class="n">math</span><span class="o">.</span><span class="n">pi</span> <span class="o">*</span> <span class="n">math</span><span class="o">.</span><span class="n">sqrt</span><span class="p">(</span><span class="mf">3.0</span><span class="p">)</span> <span class="o">/</span> <span class="mf">6.0</span><span class="p">)</span> <span class="o">/</span> <span class="p">(</span><span class="n">math</span><span class="o">.</span><span class="n">pi</span> <span class="o">*</span> <span class="n">radius</span> <span class="o">*</span> <span class="n">radius</span> <span class="o">/</span> <span class="mf">4.0</span><span class="p">)</span>
-    <span class="n">nx</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="nb">int</span><span class="p">(</span><span class="mf">30.0</span> <span class="o">*</span> <span class="n">expected</span><span class="p">))</span>
-
-    <span class="c1"># The pool draw and the dart-throw priority draw both key off the same point index (``tid``</span>
-    <span class="c1"># here, ``i`` in ``random_priorities``) at the same pool size, so a shared seed would give</span>
-    <span class="c1"># ``wp.rand_init(seed, i)`` the identical initial state in both kernels -- ``sample_cdf``'s</span>
-    <span class="c1"># first draw and ``random_priorities``'s only draw are then the exact same ``rand_pcg`` step,</span>
-    <span class="c1"># making each point's dart-throw priority an exact, monotonic function of the very draw that</span>
-    <span class="c1"># picked its face. A distinct, seed-derived salt for the priority draw removes that</span>
-    <span class="c1"># correlation while staying a deterministic function of the caller's own seed.</span>
-    <span class="n">pool_seed</span> <span class="o">=</span> <span class="n">resolve_seed</span><span class="p">(</span><span class="n">seed</span><span class="p">)</span>
-    <span class="n">priority_seed</span> <span class="o">=</span> <span class="p">(</span><span class="n">pool_seed</span> <span class="o">^</span> <span class="mh">0x2545F491</span><span class="p">)</span> <span class="o">&amp;</span> <span class="mh">0x7FFFFFFF</span>
+    <span class="k">if</span> <span class="n">surface_area</span> <span class="o">&lt;=</span> <span class="mf">0.0</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">"total face weight must be positive"</span><span class="p">)</span>
+    <span class="n">pool_size</span><span class="p">,</span> <span class="n">pool_seed</span><span class="p">,</span> <span class="n">priority_seed</span> <span class="o">=</span> <span class="n">_blue_noise_pool</span><span class="p">(</span><span class="n">surface_area</span><span class="p">,</span> <span class="n">radius</span><span class="p">,</span> <span class="n">seed</span><span class="p">)</span>
     <span class="n">init_points</span><span class="p">,</span> <span class="n">init_face_indices</span> <span class="o">=</span> <span class="n">_draw_surface_samples</span><span class="p">(</span>
-        <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">cdf</span><span class="p">,</span> <span class="n">surface_area</span><span class="p">,</span> <span class="n">nx</span><span class="p">,</span> <span class="n">pool_seed</span>
+        <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">cdf</span><span class="p">,</span> <span class="n">surface_area</span><span class="p">,</span> <span class="n">pool_size</span><span class="p">,</span> <span class="n">pool_seed</span>
     <span class="p">)</span>
     <span class="k">return</span> <span class="n">_dart_throw_blue_noise</span><span class="p">(</span><span class="n">init_points</span><span class="p">,</span> <span class="n">init_face_indices</span><span class="p">,</span> <span class="n">radius</span><span class="p">,</span> <span class="n">priority_seed</span><span class="p">,</span> <span class="n">box</span><span class="p">)</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h2 id="ordito.sample.sample_surface_in_ball" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">sample_surface_in_ball</span>
+
+
+</h2>
+<div class="doc-signature highlight"><pre><span></span><code><span class="nf">sample_surface_in_ball</span><span class="p">(</span>
+    <span class="n">vertices</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">],</span>
+    <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
+    <span class="n">center</span><span class="p">:</span> <span class="n">vec3</span><span class="p">,</span>
+    <span class="n">radius</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
+    <span class="n">count</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span>
+        <span class="s2">"uniform"</span><span class="p">,</span> <span class="s2">"poisson_disk"</span><span class="p">,</span> <span class="s2">"blue_noise"</span>
+    <span class="p">]</span> <span class="o">=</span> <span class="s2">"uniform"</span><span class="p">,</span>
+    <span class="n">spacing</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">init_factor</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">5.0</span><span class="p">,</span>
+    <span class="n">seed</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Sample the part of a triangle mesh surface that lies inside a ball.</p>
+<p>The samples cover exactly the surface within <code>radius</code> of <code>center</code>, faces crossing the
+sphere included: every face whose closest point to <code>center</code> lies in the ball is drawn from,
+even when all its corners and its centroid lie outside, and the samples landing outside the
+ball are discarded. No submesh is built; the faces outside the ball get zero weight in the
+draw.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>vertices</code>
+            </td>
+            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.vec3">vec3</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(n_vertices,)</code> vertex positions.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>faces</code>
+            </td>
+            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.int32">int32</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(3 * n_faces,)</code> flat triangle indices, <code>(i0, i1, i2)</code> per face.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>center</code>
+            </td>
+            <td>
+                  <code><span title="warp.vec3">vec3</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Center of the ball.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>radius</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#float">float</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Radius of the ball (closed: a sample at distance <code>radius</code> is inside).</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>count</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#int">int</a> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Number of samples, for <code>"uniform"</code> and <code>"poisson_disk"</code>. Must be <code>None</code> for
+<code>"blue_noise"</code>, whose count follows from <code>spacing</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>method</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" title="typing.Literal" href="https://docs.python.org/3/library/typing.html#typing.Literal">Literal</a>[&#39;uniform&#39;, &#39;poisson_disk&#39;, &#39;blue_noise&#39;]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>How the samples are spread over the surface in the ball:</p>
+<ul>
+<li><code>"uniform"</code> (default): <code>count</code> independent, uniformly distributed samples, as
+  <a class="autorefs autorefs-internal" title="sample_surface" href="./#ordito.sample.sample_surface"><code>sample_surface</code></a> draws over a whole mesh.</li>
+<li><code>"poisson_disk"</code>: <code>count</code> samples by weighted sample elimination of a uniform pool
+  of <code>init_factor * count</code> samples in the ball, as
+  <a class="autorefs autorefs-internal" title="sample_surface_poisson_disk" href="./#ordito.sample.sample_surface_poisson_disk"><code>sample_surface_poisson_disk</code></a>.</li>
+<li><code>"blue_noise"</code>: a maximal set of samples no two closer than <code>spacing</code>, as
+  <a class="autorefs autorefs-internal" title="sample_surface_blue_noise" href="./#ordito.sample.sample_surface_blue_noise"><code>sample_surface_blue_noise</code></a>.</li>
+</ul>
+              </div>
+            </td>
+            <td>
+                  <code>&#39;uniform&#39;</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>spacing</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#float">float</a> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Minimum distance between samples, for <code>"blue_noise"</code> only.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>init_factor</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#float">float</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Over-sampling factor of the <code>"poisson_disk"</code> pool. Must satisfy <code>init_factor &gt;= 1</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>5.0</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>seed</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#int">int</a> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>RNG seed. If <code>None</code>, a random seed is chosen. With a seed the output is reproducible.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code>samples</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(m,)</code> sampled positions on the surface inside the ball: <code>m</code> is <code>count</code> for
+<code>"uniform"</code> and <code>"poisson_disk"</code> (see Notes), and follows from <code>spacing</code> and the
+area inside the ball for <code>"blue_noise"</code>.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code>face_index</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(m,)</code> triangle index for each sample.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#ValueError">ValueError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>method</code> is not one of the options, if <code>radius</code> is not positive, if <code>count</code> is
+missing or negative for <code>"uniform"</code> / <code>"poisson_disk"</code>, if <code>spacing</code> is missing or
+not positive for <code>"blue_noise"</code>, if the argument the method does not take is given, or
+if <code>init_factor &lt; 1</code> for <code>"poisson_disk"</code>.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#RuntimeError">RuntimeError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>vertices</code> and <code>faces</code> are not on one device.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="note" open>
+  <summary>Notes</summary>
+  <p>A ball that meets no face, or meets the surface in a set of no area, returns two empty arrays.
+The uniform pool is drawn over the faces meeting the ball and the samples outside it rejected,
+so its cost grows with the area of those faces against the area inside the ball; a ball
+covering less than about one part in <code>2**24</code> of the faces it meets can return fewer than
+<code>count</code> samples.</p>
+</details>
+
+<p><span class="doc-section-title">Examples:</span></p>
+    <p>A ball of radius 0.1 centred on a face of the unit cube, away from every vertex:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
+
+<span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">creation</span><span class="o">.</span><span class="n">box</span><span class="p">()</span>
+<span class="n">center</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="mf">0.5</span><span class="p">,</span> <span class="mf">0.1</span><span class="p">,</span> <span class="mf">0.2</span><span class="p">)</span>
+<span class="n">samples</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">sample</span><span class="o">.</span><span class="n">sample_surface_in_ball</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">center</span><span class="p">,</span> <span class="mf">0.1</span><span class="p">,</span> <span class="mi">500</span><span class="p">,</span> <span class="n">seed</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">samples</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span>  <span class="c1"># (500,)</span>
+<span class="n">offsets</span> <span class="o">=</span> <span class="n">samples</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span> <span class="o">-</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">0.5</span><span class="p">,</span> <span class="mf">0.1</span><span class="p">,</span> <span class="mf">0.2</span><span class="p">])</span>
+<span class="nb">print</span><span class="p">(</span><span class="nb">bool</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">linalg</span><span class="o">.</span><span class="n">norm</span><span class="p">(</span><span class="n">offsets</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span><span class="o">.</span><span class="n">max</span><span class="p">()</span> <span class="o">&lt;=</span> <span class="mf">0.1</span><span class="p">))</span>  <span class="c1"># True</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">abs</span><span class="p">(</span><span class="n">offsets</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">])</span><span class="o">.</span><span class="n">max</span><span class="p">()</span><span class="o">.</span><span class="n">round</span><span class="p">(</span><span class="mi">4</span><span class="p">))</span>  <span class="c1"># 0.0</span>
+</code></pre></div>
+
+          
+    <details class="doc doc-backlinks ordito-backlinks">
+      <summary>Referenced by 2 places</summary>
+        <p><span class="ordito-backlinks-section">API Reference</span>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="./#ordito.sample">sample</a></span></p>
+    </details>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>ordito/sample.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">562</span>
+<span class="normal">563</span>
+<span class="normal">564</span>
+<span class="normal">565</span>
+<span class="normal">566</span>
+<span class="normal">567</span>
+<span class="normal">568</span>
+<span class="normal">569</span>
+<span class="normal">570</span>
+<span class="normal">571</span>
+<span class="normal">572</span>
+<span class="normal">573</span>
+<span class="normal">574</span>
+<span class="normal">575</span>
+<span class="normal">576</span>
+<span class="normal">577</span>
+<span class="normal">578</span>
+<span class="normal">579</span>
+<span class="normal">580</span>
+<span class="normal">581</span>
+<span class="normal">582</span>
+<span class="normal">583</span>
+<span class="normal">584</span>
+<span class="normal">585</span>
+<span class="normal">586</span>
+<span class="normal">587</span>
+<span class="normal">588</span>
+<span class="normal">589</span>
+<span class="normal">590</span>
+<span class="normal">591</span>
+<span class="normal">592</span>
+<span class="normal">593</span>
+<span class="normal">594</span>
+<span class="normal">595</span>
+<span class="normal">596</span>
+<span class="normal">597</span>
+<span class="normal">598</span>
+<span class="normal">599</span>
+<span class="normal">600</span>
+<span class="normal">601</span>
+<span class="normal">602</span>
+<span class="normal">603</span>
+<span class="normal">604</span>
+<span class="normal">605</span>
+<span class="normal">606</span>
+<span class="normal">607</span>
+<span class="normal">608</span>
+<span class="normal">609</span>
+<span class="normal">610</span>
+<span class="normal">611</span>
+<span class="normal">612</span>
+<span class="normal">613</span>
+<span class="normal">614</span>
+<span class="normal">615</span>
+<span class="normal">616</span>
+<span class="normal">617</span>
+<span class="normal">618</span>
+<span class="normal">619</span>
+<span class="normal">620</span>
+<span class="normal">621</span>
+<span class="normal">622</span>
+<span class="normal">623</span>
+<span class="normal">624</span>
+<span class="normal">625</span>
+<span class="normal">626</span>
+<span class="normal">627</span>
+<span class="normal">628</span>
+<span class="normal">629</span>
+<span class="normal">630</span>
+<span class="normal">631</span>
+<span class="normal">632</span>
+<span class="normal">633</span>
+<span class="normal">634</span>
+<span class="normal">635</span>
+<span class="normal">636</span>
+<span class="normal">637</span>
+<span class="normal">638</span>
+<span class="normal">639</span>
+<span class="normal">640</span>
+<span class="normal">641</span>
+<span class="normal">642</span>
+<span class="normal">643</span>
+<span class="normal">644</span>
+<span class="normal">645</span>
+<span class="normal">646</span>
+<span class="normal">647</span>
+<span class="normal">648</span>
+<span class="normal">649</span>
+<span class="normal">650</span>
+<span class="normal">651</span>
+<span class="normal">652</span>
+<span class="normal">653</span>
+<span class="normal">654</span>
+<span class="normal">655</span>
+<span class="normal">656</span>
+<span class="normal">657</span>
+<span class="normal">658</span>
+<span class="normal">659</span>
+<span class="normal">660</span>
+<span class="normal">661</span>
+<span class="normal">662</span>
+<span class="normal">663</span>
+<span class="normal">664</span>
+<span class="normal">665</span>
+<span class="normal">666</span>
+<span class="normal">667</span>
+<span class="normal">668</span>
+<span class="normal">669</span>
+<span class="normal">670</span>
+<span class="normal">671</span>
+<span class="normal">672</span>
+<span class="normal">673</span>
+<span class="normal">674</span>
+<span class="normal">675</span>
+<span class="normal">676</span>
+<span class="normal">677</span>
+<span class="normal">678</span>
+<span class="normal">679</span>
+<span class="normal">680</span>
+<span class="normal">681</span>
+<span class="normal">682</span>
+<span class="normal">683</span>
+<span class="normal">684</span>
+<span class="normal">685</span>
+<span class="normal">686</span>
+<span class="normal">687</span>
+<span class="normal">688</span>
+<span class="normal">689</span>
+<span class="normal">690</span>
+<span class="normal">691</span>
+<span class="normal">692</span>
+<span class="normal">693</span>
+<span class="normal">694</span>
+<span class="normal">695</span>
+<span class="normal">696</span>
+<span class="normal">697</span>
+<span class="normal">698</span>
+<span class="normal">699</span>
+<span class="normal">700</span>
+<span class="normal">701</span>
+<span class="normal">702</span>
+<span class="normal">703</span>
+<span class="normal">704</span>
+<span class="normal">705</span>
+<span class="normal">706</span>
+<span class="normal">707</span>
+<span class="normal">708</span>
+<span class="normal">709</span>
+<span class="normal">710</span>
+<span class="normal">711</span>
+<span class="normal">712</span>
+<span class="normal">713</span>
+<span class="normal">714</span>
+<span class="normal">715</span>
+<span class="normal">716</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_surface_in_ball</span><span class="p">(</span>
+    <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
+    <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
+    <span class="n">center</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span>
+    <span class="n">radius</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
+    <span class="n">count</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"uniform"</span><span class="p">,</span> <span class="s2">"poisson_disk"</span><span class="p">,</span> <span class="s2">"blue_noise"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"uniform"</span><span class="p">,</span>
+    <span class="n">spacing</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">init_factor</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">5.0</span><span class="p">,</span>
+    <span class="n">seed</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
+<span class="w">    </span><span class="sd">"""</span>
+<span class="sd">    Sample the part of a triangle mesh surface that lies inside a ball.</span>
+
+<span class="sd">    The samples cover exactly the surface within ``radius`` of ``center``, faces crossing the</span>
+<span class="sd">    sphere included: every face whose closest point to ``center`` lies in the ball is drawn from,</span>
+<span class="sd">    even when all its corners and its centroid lie outside, and the samples landing outside the</span>
+<span class="sd">    ball are discarded. No submesh is built; the faces outside the ball get zero weight in the</span>
+<span class="sd">    draw.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    vertices</span>
+<span class="sd">        ``(n_vertices,)`` vertex positions.</span>
+<span class="sd">    faces</span>
+<span class="sd">        ``(3 * n_faces,)`` flat triangle indices, ``(i0, i1, i2)`` per face.</span>
+<span class="sd">    center</span>
+<span class="sd">        Center of the ball.</span>
+<span class="sd">    radius</span>
+<span class="sd">        Radius of the ball (closed: a sample at distance ``radius`` is inside).</span>
+<span class="sd">    count</span>
+<span class="sd">        Number of samples, for ``"uniform"`` and ``"poisson_disk"``. Must be ``None`` for</span>
+<span class="sd">        ``"blue_noise"``, whose count follows from ``spacing``.</span>
+<span class="sd">    method</span>
+<span class="sd">        How the samples are spread over the surface in the ball:</span>
+
+<span class="sd">        - ``"uniform"`` (default): ``count`` independent, uniformly distributed samples, as</span>
+<span class="sd">          [`sample_surface`][ordito.sample.sample_surface] draws over a whole mesh.</span>
+<span class="sd">        - ``"poisson_disk"``: ``count`` samples by weighted sample elimination of a uniform pool</span>
+<span class="sd">          of ``init_factor * count`` samples in the ball, as</span>
+<span class="sd">          [`sample_surface_poisson_disk`][ordito.sample.sample_surface_poisson_disk].</span>
+<span class="sd">        - ``"blue_noise"``: a maximal set of samples no two closer than ``spacing``, as</span>
+<span class="sd">          [`sample_surface_blue_noise`][ordito.sample.sample_surface_blue_noise].</span>
+<span class="sd">    spacing</span>
+<span class="sd">        Minimum distance between samples, for ``"blue_noise"`` only.</span>
+<span class="sd">    init_factor</span>
+<span class="sd">        Over-sampling factor of the ``"poisson_disk"`` pool. Must satisfy ``init_factor &gt;= 1``.</span>
+<span class="sd">    seed</span>
+<span class="sd">        RNG seed. If ``None``, a random seed is chosen. With a seed the output is reproducible.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    samples</span>
+<span class="sd">        ``(m,)`` sampled positions on the surface inside the ball: ``m`` is ``count`` for</span>
+<span class="sd">        ``"uniform"`` and ``"poisson_disk"`` (see Notes), and follows from ``spacing`` and the</span>
+<span class="sd">        area inside the ball for ``"blue_noise"``.</span>
+<span class="sd">    face_index</span>
+<span class="sd">        ``(m,)`` triangle index for each sample.</span>
+
+<span class="sd">    Raises</span>
+<span class="sd">    ------</span>
+<span class="sd">    ValueError</span>
+<span class="sd">        If ``method`` is not one of the options, if ``radius`` is not positive, if ``count`` is</span>
+<span class="sd">        missing or negative for ``"uniform"`` / ``"poisson_disk"``, if ``spacing`` is missing or</span>
+<span class="sd">        not positive for ``"blue_noise"``, if the argument the method does not take is given, or</span>
+<span class="sd">        if ``init_factor &lt; 1`` for ``"poisson_disk"``.</span>
+<span class="sd">    RuntimeError</span>
+<span class="sd">        If ``vertices`` and ``faces`` are not on one device.</span>
+
+<span class="sd">    Notes</span>
+<span class="sd">    -----</span>
+<span class="sd">    A ball that meets no face, or meets the surface in a set of no area, returns two empty arrays.</span>
+<span class="sd">    The uniform pool is drawn over the faces meeting the ball and the samples outside it rejected,</span>
+<span class="sd">    so its cost grows with the area of those faces against the area inside the ball; a ball</span>
+<span class="sd">    covering less than about one part in ``2**24`` of the faces it meets can return fewer than</span>
+<span class="sd">    ``count`` samples.</span>
+
+<span class="sd">    Examples</span>
+<span class="sd">    --------</span>
+<span class="sd">    A ball of radius 0.1 centred on a face of the unit cube, away from every vertex:</span>
+
+<span class="sd">    ```python</span>
+<span class="sd">    import numpy as np</span>
+<span class="sd">    import warp as wp</span>
+
+<span class="sd">    import ordito as od</span>
+
+<span class="sd">    vertices, faces = od.creation.box()</span>
+<span class="sd">    center = wp.vec3(0.5, 0.1, 0.2)</span>
+<span class="sd">    samples, _ = od.sample.sample_surface_in_ball(vertices, faces, center, 0.1, 500, seed=0)</span>
+<span class="sd">    print(samples.shape)  # (500,)</span>
+<span class="sd">    offsets = samples.numpy() - np.array([0.5, 0.1, 0.2])</span>
+<span class="sd">    print(bool(np.linalg.norm(offsets, axis=1).max() &lt;= 0.1))  # True</span>
+<span class="sd">    print(np.abs(offsets[:, 0]).max().round(4))  # 0.0</span>
+<span class="sd">    ```</span>
+<span class="sd">    """</span>
+    <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">)</span>
+    <span class="n">device</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">device</span>
+    <span class="k">if</span> <span class="n">method</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">_BALL_METHODS</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"method must be one of </span><span class="si">{</span><span class="n">_BALL_METHODS</span><span class="si">}</span><span class="s2">, got </span><span class="si">{</span><span class="n">method</span><span class="si">!r}</span><span class="s2">"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">radius</span> <span class="o">&gt;</span> <span class="mf">0.0</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"radius must be &gt; 0, got </span><span class="si">{</span><span class="n">radius</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">method</span> <span class="o">==</span> <span class="s2">"blue_noise"</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">spacing</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">spacing</span> <span class="o">&gt;</span> <span class="mf">0.0</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"method='blue_noise' takes a spacing &gt; 0, got </span><span class="si">{</span><span class="n">spacing</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">count</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                <span class="s2">"method='blue_noise' derives its count from spacing; count must be None"</span>
+            <span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">count</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="n">count</span> <span class="o">&lt;</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"method=</span><span class="si">{</span><span class="n">method</span><span class="si">!r}</span><span class="s2"> takes a count &gt;= 0, got </span><span class="si">{</span><span class="n">count</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">spacing</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"method=</span><span class="si">{</span><span class="n">method</span><span class="si">!r}</span><span class="s2"> takes a count; spacing must be None"</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">method</span> <span class="o">==</span> <span class="s2">"poisson_disk"</span> <span class="ow">and</span> <span class="n">init_factor</span> <span class="o">&lt;</span> <span class="mf">1.0</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"init_factor must be &gt;= 1, got </span><span class="si">{</span><span class="n">init_factor</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+
+    <span class="n">empty</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
+    <span class="p">)</span>
+    <span class="k">if</span> <span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">or</span> <span class="n">count</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">empty</span>
+    <span class="n">radius_sq</span> <span class="o">=</span> <span class="n">radius</span> <span class="o">*</span> <span class="n">radius</span>
+    <span class="c1"># The faces reaching into the ball weighted by area, every other face by zero, and the total:</span>
+    <span class="c1"># the area the draws cover, of which the part inside the ball is what they keep.</span>
+    <span class="n">cdf</span><span class="p">,</span> <span class="n">hit_area</span><span class="p">,</span> <span class="n">box</span> <span class="o">=</span> <span class="n">_face_cdf_and_vertex_box</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">center</span><span class="p">,</span> <span class="n">radius_sq</span><span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">hit_area</span> <span class="o">&gt;</span> <span class="mf">0.0</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">empty</span>
+
+    <span class="k">if</span> <span class="n">method</span> <span class="o">==</span> <span class="s2">"blue_noise"</span><span class="p">:</span>
+        <span class="k">assert</span> <span class="n">spacing</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+        <span class="c1"># The pool at the whole-surface sampler's density over the faces meeting the ball, pruned</span>
+        <span class="c1"># to the ball: the dart throw then packs the surface inside the ball alone, its border</span>
+        <span class="c1"># included. The grid only has to enclose the pruned pool: the vertices' box cut to the</span>
+        <span class="c1"># ball's.</span>
+        <span class="n">pool_size</span><span class="p">,</span> <span class="n">pool_seed</span><span class="p">,</span> <span class="n">priority_seed</span> <span class="o">=</span> <span class="n">_blue_noise_pool</span><span class="p">(</span><span class="n">hit_area</span><span class="p">,</span> <span class="n">spacing</span><span class="p">,</span> <span class="n">seed</span><span class="p">)</span>
+        <span class="n">points</span><span class="p">,</span> <span class="n">face_index</span><span class="p">,</span> <span class="n">flags</span> <span class="o">=</span> <span class="n">_draw_ball_round</span><span class="p">(</span>
+            <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">cdf</span><span class="p">,</span> <span class="n">hit_area</span><span class="p">,</span> <span class="n">center</span><span class="p">,</span> <span class="n">radius_sq</span><span class="p">,</span> <span class="n">pool_seed</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">pool_size</span>
+        <span class="p">)</span>
+        <span class="n">points</span><span class="p">,</span> <span class="n">face_index</span> <span class="o">=</span> <span class="n">_emit_kept_samples</span><span class="p">(</span><span class="n">flags</span><span class="p">,</span> <span class="n">points</span><span class="p">,</span> <span class="n">face_index</span><span class="p">)</span>
+        <span class="n">lower</span><span class="p">,</span> <span class="n">upper</span> <span class="o">=</span> <span class="n">box</span>
+        <span class="n">lower</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="o">*</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="nb">float</span><span class="p">(</span><span class="n">lower</span><span class="p">[</span><span class="n">a</span><span class="p">]),</span> <span class="nb">float</span><span class="p">(</span><span class="n">center</span><span class="p">[</span><span class="n">a</span><span class="p">])</span> <span class="o">-</span> <span class="n">radius</span><span class="p">)</span> <span class="k">for</span> <span class="n">a</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">3</span><span class="p">)))</span>
+        <span class="n">upper</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="o">*</span><span class="p">(</span><span class="nb">min</span><span class="p">(</span><span class="nb">float</span><span class="p">(</span><span class="n">upper</span><span class="p">[</span><span class="n">a</span><span class="p">]),</span> <span class="nb">float</span><span class="p">(</span><span class="n">center</span><span class="p">[</span><span class="n">a</span><span class="p">])</span> <span class="o">+</span> <span class="n">radius</span><span class="p">)</span> <span class="k">for</span> <span class="n">a</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">3</span><span class="p">)))</span>
+        <span class="k">return</span> <span class="n">_dart_throw_blue_noise</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">face_index</span><span class="p">,</span> <span class="n">spacing</span><span class="p">,</span> <span class="n">priority_seed</span><span class="p">,</span> <span class="p">(</span><span class="n">lower</span><span class="p">,</span> <span class="n">upper</span><span class="p">))</span>
+
+    <span class="k">assert</span> <span class="n">count</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+    <span class="n">target</span> <span class="o">=</span> <span class="n">count</span> <span class="k">if</span> <span class="n">method</span> <span class="o">==</span> <span class="s2">"uniform"</span> <span class="k">else</span> <span class="nb">max</span><span class="p">(</span><span class="n">math</span><span class="o">.</span><span class="n">ceil</span><span class="p">(</span><span class="n">init_factor</span> <span class="o">*</span> <span class="n">count</span><span class="p">),</span> <span class="n">count</span><span class="p">)</span>
+    <span class="n">points</span><span class="p">,</span> <span class="n">face_index</span><span class="p">,</span> <span class="n">area</span> <span class="o">=</span> <span class="n">_draw_ball_pool</span><span class="p">(</span>
+        <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">cdf</span><span class="p">,</span> <span class="n">hit_area</span><span class="p">,</span> <span class="n">center</span><span class="p">,</span> <span class="n">radius_sq</span><span class="p">,</span> <span class="n">target</span><span class="p">,</span> <span class="n">seed</span>
+    <span class="p">)</span>
+    <span class="k">if</span> <span class="n">method</span> <span class="o">==</span> <span class="s2">"uniform"</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">points</span><span class="p">,</span> <span class="n">face_index</span>
+    <span class="k">return</span> <span class="n">_eliminate_to_count</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">face_index</span><span class="p">,</span> <span class="n">count</span><span class="p">,</span> <span class="n">area</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -8719,133 +9119,133 @@ e.g. a torus), or the mesh has no faces and <code>count &gt; 0</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/sample.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1148</span>
-<span class="normal">1149</span>
-<span class="normal">1150</span>
-<span class="normal">1151</span>
-<span class="normal">1152</span>
-<span class="normal">1153</span>
-<span class="normal">1154</span>
-<span class="normal">1155</span>
-<span class="normal">1156</span>
-<span class="normal">1157</span>
-<span class="normal">1158</span>
-<span class="normal">1159</span>
-<span class="normal">1160</span>
-<span class="normal">1161</span>
-<span class="normal">1162</span>
-<span class="normal">1163</span>
-<span class="normal">1164</span>
-<span class="normal">1165</span>
-<span class="normal">1166</span>
-<span class="normal">1167</span>
-<span class="normal">1168</span>
-<span class="normal">1169</span>
-<span class="normal">1170</span>
-<span class="normal">1171</span>
-<span class="normal">1172</span>
-<span class="normal">1173</span>
-<span class="normal">1174</span>
-<span class="normal">1175</span>
-<span class="normal">1176</span>
-<span class="normal">1177</span>
-<span class="normal">1178</span>
-<span class="normal">1179</span>
-<span class="normal">1180</span>
-<span class="normal">1181</span>
-<span class="normal">1182</span>
-<span class="normal">1183</span>
-<span class="normal">1184</span>
-<span class="normal">1185</span>
-<span class="normal">1186</span>
-<span class="normal">1187</span>
-<span class="normal">1188</span>
-<span class="normal">1189</span>
-<span class="normal">1190</span>
-<span class="normal">1191</span>
-<span class="normal">1192</span>
-<span class="normal">1193</span>
-<span class="normal">1194</span>
-<span class="normal">1195</span>
-<span class="normal">1196</span>
-<span class="normal">1197</span>
-<span class="normal">1198</span>
-<span class="normal">1199</span>
-<span class="normal">1200</span>
-<span class="normal">1201</span>
-<span class="normal">1202</span>
-<span class="normal">1203</span>
-<span class="normal">1204</span>
-<span class="normal">1205</span>
-<span class="normal">1206</span>
-<span class="normal">1207</span>
-<span class="normal">1208</span>
-<span class="normal">1209</span>
-<span class="normal">1210</span>
-<span class="normal">1211</span>
-<span class="normal">1212</span>
-<span class="normal">1213</span>
-<span class="normal">1214</span>
-<span class="normal">1215</span>
-<span class="normal">1216</span>
-<span class="normal">1217</span>
-<span class="normal">1218</span>
-<span class="normal">1219</span>
-<span class="normal">1220</span>
-<span class="normal">1221</span>
-<span class="normal">1222</span>
-<span class="normal">1223</span>
-<span class="normal">1224</span>
-<span class="normal">1225</span>
-<span class="normal">1226</span>
-<span class="normal">1227</span>
-<span class="normal">1228</span>
-<span class="normal">1229</span>
-<span class="normal">1230</span>
-<span class="normal">1231</span>
-<span class="normal">1232</span>
-<span class="normal">1233</span>
-<span class="normal">1234</span>
-<span class="normal">1235</span>
-<span class="normal">1236</span>
-<span class="normal">1237</span>
-<span class="normal">1238</span>
-<span class="normal">1239</span>
-<span class="normal">1240</span>
-<span class="normal">1241</span>
-<span class="normal">1242</span>
-<span class="normal">1243</span>
-<span class="normal">1244</span>
-<span class="normal">1245</span>
-<span class="normal">1246</span>
-<span class="normal">1247</span>
-<span class="normal">1248</span>
-<span class="normal">1249</span>
-<span class="normal">1250</span>
-<span class="normal">1251</span>
-<span class="normal">1252</span>
-<span class="normal">1253</span>
-<span class="normal">1254</span>
-<span class="normal">1255</span>
-<span class="normal">1256</span>
-<span class="normal">1257</span>
-<span class="normal">1258</span>
-<span class="normal">1259</span>
-<span class="normal">1260</span>
-<span class="normal">1261</span>
-<span class="normal">1262</span>
-<span class="normal">1263</span>
-<span class="normal">1264</span>
-<span class="normal">1265</span>
-<span class="normal">1266</span>
-<span class="normal">1267</span>
-<span class="normal">1268</span>
-<span class="normal">1269</span>
-<span class="normal">1270</span>
-<span class="normal">1271</span>
-<span class="normal">1272</span>
-<span class="normal">1273</span>
-<span class="normal">1274</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_volume</span><span class="p">(</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1457</span>
+<span class="normal">1458</span>
+<span class="normal">1459</span>
+<span class="normal">1460</span>
+<span class="normal">1461</span>
+<span class="normal">1462</span>
+<span class="normal">1463</span>
+<span class="normal">1464</span>
+<span class="normal">1465</span>
+<span class="normal">1466</span>
+<span class="normal">1467</span>
+<span class="normal">1468</span>
+<span class="normal">1469</span>
+<span class="normal">1470</span>
+<span class="normal">1471</span>
+<span class="normal">1472</span>
+<span class="normal">1473</span>
+<span class="normal">1474</span>
+<span class="normal">1475</span>
+<span class="normal">1476</span>
+<span class="normal">1477</span>
+<span class="normal">1478</span>
+<span class="normal">1479</span>
+<span class="normal">1480</span>
+<span class="normal">1481</span>
+<span class="normal">1482</span>
+<span class="normal">1483</span>
+<span class="normal">1484</span>
+<span class="normal">1485</span>
+<span class="normal">1486</span>
+<span class="normal">1487</span>
+<span class="normal">1488</span>
+<span class="normal">1489</span>
+<span class="normal">1490</span>
+<span class="normal">1491</span>
+<span class="normal">1492</span>
+<span class="normal">1493</span>
+<span class="normal">1494</span>
+<span class="normal">1495</span>
+<span class="normal">1496</span>
+<span class="normal">1497</span>
+<span class="normal">1498</span>
+<span class="normal">1499</span>
+<span class="normal">1500</span>
+<span class="normal">1501</span>
+<span class="normal">1502</span>
+<span class="normal">1503</span>
+<span class="normal">1504</span>
+<span class="normal">1505</span>
+<span class="normal">1506</span>
+<span class="normal">1507</span>
+<span class="normal">1508</span>
+<span class="normal">1509</span>
+<span class="normal">1510</span>
+<span class="normal">1511</span>
+<span class="normal">1512</span>
+<span class="normal">1513</span>
+<span class="normal">1514</span>
+<span class="normal">1515</span>
+<span class="normal">1516</span>
+<span class="normal">1517</span>
+<span class="normal">1518</span>
+<span class="normal">1519</span>
+<span class="normal">1520</span>
+<span class="normal">1521</span>
+<span class="normal">1522</span>
+<span class="normal">1523</span>
+<span class="normal">1524</span>
+<span class="normal">1525</span>
+<span class="normal">1526</span>
+<span class="normal">1527</span>
+<span class="normal">1528</span>
+<span class="normal">1529</span>
+<span class="normal">1530</span>
+<span class="normal">1531</span>
+<span class="normal">1532</span>
+<span class="normal">1533</span>
+<span class="normal">1534</span>
+<span class="normal">1535</span>
+<span class="normal">1536</span>
+<span class="normal">1537</span>
+<span class="normal">1538</span>
+<span class="normal">1539</span>
+<span class="normal">1540</span>
+<span class="normal">1541</span>
+<span class="normal">1542</span>
+<span class="normal">1543</span>
+<span class="normal">1544</span>
+<span class="normal">1545</span>
+<span class="normal">1546</span>
+<span class="normal">1547</span>
+<span class="normal">1548</span>
+<span class="normal">1549</span>
+<span class="normal">1550</span>
+<span class="normal">1551</span>
+<span class="normal">1552</span>
+<span class="normal">1553</span>
+<span class="normal">1554</span>
+<span class="normal">1555</span>
+<span class="normal">1556</span>
+<span class="normal">1557</span>
+<span class="normal">1558</span>
+<span class="normal">1559</span>
+<span class="normal">1560</span>
+<span class="normal">1561</span>
+<span class="normal">1562</span>
+<span class="normal">1563</span>
+<span class="normal">1564</span>
+<span class="normal">1565</span>
+<span class="normal">1566</span>
+<span class="normal">1567</span>
+<span class="normal">1568</span>
+<span class="normal">1569</span>
+<span class="normal">1570</span>
+<span class="normal">1571</span>
+<span class="normal">1572</span>
+<span class="normal">1573</span>
+<span class="normal">1574</span>
+<span class="normal">1575</span>
+<span class="normal">1576</span>
+<span class="normal">1577</span>
+<span class="normal">1578</span>
+<span class="normal">1579</span>
+<span class="normal">1580</span>
+<span class="normal">1581</span>
+<span class="normal">1582</span>
+<span class="normal">1583</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_volume</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">seed</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -9093,57 +9493,57 @@ rule on its own.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/sample.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1306</span>
-<span class="normal">1307</span>
-<span class="normal">1308</span>
-<span class="normal">1309</span>
-<span class="normal">1310</span>
-<span class="normal">1311</span>
-<span class="normal">1312</span>
-<span class="normal">1313</span>
-<span class="normal">1314</span>
-<span class="normal">1315</span>
-<span class="normal">1316</span>
-<span class="normal">1317</span>
-<span class="normal">1318</span>
-<span class="normal">1319</span>
-<span class="normal">1320</span>
-<span class="normal">1321</span>
-<span class="normal">1322</span>
-<span class="normal">1323</span>
-<span class="normal">1324</span>
-<span class="normal">1325</span>
-<span class="normal">1326</span>
-<span class="normal">1327</span>
-<span class="normal">1328</span>
-<span class="normal">1329</span>
-<span class="normal">1330</span>
-<span class="normal">1331</span>
-<span class="normal">1332</span>
-<span class="normal">1333</span>
-<span class="normal">1334</span>
-<span class="normal">1335</span>
-<span class="normal">1336</span>
-<span class="normal">1337</span>
-<span class="normal">1338</span>
-<span class="normal">1339</span>
-<span class="normal">1340</span>
-<span class="normal">1341</span>
-<span class="normal">1342</span>
-<span class="normal">1343</span>
-<span class="normal">1344</span>
-<span class="normal">1345</span>
-<span class="normal">1346</span>
-<span class="normal">1347</span>
-<span class="normal">1348</span>
-<span class="normal">1349</span>
-<span class="normal">1350</span>
-<span class="normal">1351</span>
-<span class="normal">1352</span>
-<span class="normal">1353</span>
-<span class="normal">1354</span>
-<span class="normal">1355</span>
-<span class="normal">1356</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">resolve_seed</span><span class="p">(</span><span class="n">seed</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1615</span>
+<span class="normal">1616</span>
+<span class="normal">1617</span>
+<span class="normal">1618</span>
+<span class="normal">1619</span>
+<span class="normal">1620</span>
+<span class="normal">1621</span>
+<span class="normal">1622</span>
+<span class="normal">1623</span>
+<span class="normal">1624</span>
+<span class="normal">1625</span>
+<span class="normal">1626</span>
+<span class="normal">1627</span>
+<span class="normal">1628</span>
+<span class="normal">1629</span>
+<span class="normal">1630</span>
+<span class="normal">1631</span>
+<span class="normal">1632</span>
+<span class="normal">1633</span>
+<span class="normal">1634</span>
+<span class="normal">1635</span>
+<span class="normal">1636</span>
+<span class="normal">1637</span>
+<span class="normal">1638</span>
+<span class="normal">1639</span>
+<span class="normal">1640</span>
+<span class="normal">1641</span>
+<span class="normal">1642</span>
+<span class="normal">1643</span>
+<span class="normal">1644</span>
+<span class="normal">1645</span>
+<span class="normal">1646</span>
+<span class="normal">1647</span>
+<span class="normal">1648</span>
+<span class="normal">1649</span>
+<span class="normal">1650</span>
+<span class="normal">1651</span>
+<span class="normal">1652</span>
+<span class="normal">1653</span>
+<span class="normal">1654</span>
+<span class="normal">1655</span>
+<span class="normal">1656</span>
+<span class="normal">1657</span>
+<span class="normal">1658</span>
+<span class="normal">1659</span>
+<span class="normal">1660</span>
+<span class="normal">1661</span>
+<span class="normal">1662</span>
+<span class="normal">1663</span>
+<span class="normal">1664</span>
+<span class="normal">1665</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">resolve_seed</span><span class="p">(</span><span class="n">seed</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Concrete non-negative ``int32``-range RNG seed, drawn at random when none was given.</span>
 
