@@ -1267,7 +1267,13 @@ def level_range(schedule: wp.array[wp.int32], level: wp.int32, field: wp.int32) 
 # 0.91x ``hemisphere``). Declined on CUDA, as one block over the levels from the root down: the
 # top of a nested dissection is no chain of narrow levels (every level, the root's dense front
 # included, holds 5 000-15 000 entries on the patch meshes), so the block ran at one SM's
-# ``float64`` rate, 5-7x the launches on 2.5 k-20 k rows and 50x at 82 k.
+# ``float64`` rate, 5-7x the launches on 2.5 k-20 k rows and 50x at 82 k. Declined too: one
+# launch of resident blocks (at most one an SM) crossing phases at a device-wide spin barrier
+# (an atomic counter, lane 0 a block spinning): bit-identical, but 1.02-1.09x the replayed
+# launches on the patch meshes and 1.30x at 82 k rows with two columns, at every grid from 8 to
+# 170 blocks. In a replayed graph a dependent launch's gap is ~0.6 us (30 empty launches in
+# 18.5 us) and the barrier costs ~0.7-0.9 us, so the gaps are ~18 of ``saddle_small``'s ~98 us a
+# solve and the rest is each phase's own latency.
 @wp.kernel
 def solve_levels_serial(
     schedule: wp.array[wp.int32],

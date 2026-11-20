@@ -1097,8 +1097,11 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   `kernels/cholesky.solve_levels_serial`'s notes): the top of a nested dissection is no chain of
   narrow levels (every level, the root's dense front included, 5 000-15 000 entries on the patch
   meshes), so one block runs at one SM's `float64` rate: 5-7x the level launches on 2.5 k-20 k
-  rows, 50x at 82 k. The CPU runs both sweeps as one serial launch (solves 0.72-0.91x, calls
-  0.77-0.96x, bit-identical).
+  rows, 50x at 82 k. Nor as one launch of resident blocks behind a device-wide spin barrier:
+  1.02-1.30x at every grid of 8-170 blocks, since a replayed graph's dependent-launch gap (~0.6 us)
+  is no larger than the barrier (~0.7-0.9 us); the launch gaps are ~18 of ~98 us a solve on
+  `saddle_small`, the rest each phase's latency. The CPU runs both sweeps as one serial launch
+  (solves 0.72-0.91x, calls 0.77-0.96x, bit-identical).
 - **Refuted, do not re-propose:** one launch a Jacobi CG round by recomputing each neighbour's
   next `u` in the mat-vec (2026-11-09, bit-identical iterates, 1.10-1.24x whole calls on
   `sphere_med` / `bunny`: a replayed node costs ~1 us, the four-vector gather ~2 us; notes in
@@ -1409,10 +1412,3 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `offset_mesh(method="meshlib")` against MeshLib's `offsetMesh`, whose extraction is ported
   (`marching_cubes(method="openvdb")`, Class A) and whose OpenVDB `meshToLevelSet` band field is
   not. Scoped, with source availability and licensing, in `reference/component-status.md` (16.0b).
-- **The factored solve's level launches on CUDA** (`SparseCholesky.solve`'s triangular solve): a
-  solve is ~5 launches a level of the nested dissection (6-13 levels on the patch meshes), each a
-  few us of latency, ~94 us a solve on `saddle_small` and most of `slim`'s and the coarse ARAP
-  loop's time (`slim`: 5.4 of 15 ms there). One block is refuted (§14); what is left is a
-  persistent grid of resident blocks crossing levels at a device-wide barrier, which Warp does not
-  spell (§12.2: an atomic counter and spin in a `wp.func_native`, co-residency to guarantee).
-  Expected at most the launch gaps (~1.5-2x a solve); not attempted.
