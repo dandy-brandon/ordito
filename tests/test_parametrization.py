@@ -1840,6 +1840,198 @@ def test_low_distortion_parametrization_cpu_matches_cuda():
     assert np.allclose(uv["cpu"], uv["cuda:0"], rtol=0, atol=1e-5)
 
 
+_SLIM_STARTS = ["free", "harmonic", "tutte", "lscm"]
+
+
+def _slim_start(mesh_wp: wp.Mesh, init: str) -> wp.array[wp.vec2]:
+    """Return the start ``slim_parametrization`` documents for ``init``, on a disk."""
+    if init == "free":
+        return od.parametrization.low_distortion_parametrization(mesh_wp.points, mesh_wp.indices)
+    return od.parametrization.low_distortion_disk_parametrization(
+        mesh_wp.points,
+        mesh_wp.indices,
+        init=init,  # pyright: ignore[reportArgumentType]
+        iterations=0,
+    )
+
+
+@pytest.mark.parametrize("init", _SLIM_STARTS)
+def test_slim_parametrization_is_slim_from_its_start(
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh], init: str
+):
+    """
+    Ordito against ordito: each ``init`` is ``slim`` from the start its docstring names.
+
+    The free start is ``low_distortion_parametrization``'s chart and the disk starts are
+    ``low_distortion_disk_parametrization``'s scaled starts (``iterations=0``); ``slim``'s own
+    oracle is libigl (``test_slim_matches_igl``). Bit for bit under the deterministic setting, and
+    the chart moved off its start.
+    """
+    _, mesh_wp = saddle_graded
+    arguments = (mesh_wp.points, mesh_wp.indices)
+    start_wp = _slim_start(mesh_wp, init)
+
+    uv_np = od.parametrization.slim_parametrization(
+        *arguments,
+        init=init,  # pyright: ignore[reportArgumentType]
+    ).numpy()
+
+    assert np.array_equal(uv_np, od.parametrization.slim(*arguments, start_wp).numpy())
+    assert np.abs(uv_np - start_wp.numpy()).max() > 1e-3
+
+
+@pytest.mark.parametrize(
+    ("mesh_name", "init"),
+    [("saddle_graded", "tutte"), ("torus_irregular_holes", "free")],
+    ids=["disk", "handle_and_holes"],
+)
+def test_slim_parametrization_starts_from_tutte_on_a_disk_only(
+    request: pytest.FixtureRequest, mesh_name: str, init: str
+):
+    """
+    Ordito against ordito: the default start is Tutte on a disk and the free chart otherwise.
+
+    ``saddle_graded`` is a disk; ``torus_irregular_holes`` has a handle and three boundary loops.
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    arguments = (mesh_wp.points, mesh_wp.indices)
+
+    default_np = od.parametrization.slim_parametrization(*arguments).numpy()
+
+    assert np.array_equal(
+        default_np,
+        od.parametrization.slim_parametrization(
+            *arguments,
+            init=init,  # pyright: ignore[reportArgumentType]
+        ).numpy(),
+    )
+
+
+@pytest.mark.parametrize(
+    ("mesh_name", "gain"),
+    [("saddle_graded", 1.0), ("sphere_irregular_cap", 0.995)],
+    ids=["needles", "bumpy"],
+)
+def test_slim_parametrization_unwraps_a_disk_with_no_fold(
+    request: pytest.FixtureRequest, mesh_name: str, gain: float
+):
+    """
+    Not a library comparison: from its default Tutte start a disk's chart folds no face.
+
+    The Tutte start inverts no face, so neither does the chart, on ``saddle_graded``'s needles too;
+    and its symmetric Dirichlet energy is below the ARAP chart's from the same start (the energy it
+    minimizes): 1.5 % on the bumpy cap, a few parts in a million on the nearly developable saddle,
+    where only no rise is asserted.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_np, faces_np = mesh_igl(mesh_tm)
+    arguments = (mesh_wp.points, mesh_wp.indices)
+
+    uv_np = od.parametrization.slim_parametrization(*arguments).numpy().astype(np.float64)
+    start_np = _slim_start(mesh_wp, "tutte").numpy().astype(np.float64)
+    arap_np = (
+        od.parametrization.low_distortion_disk_parametrization(*arguments, init="tutte")
+        .numpy()
+        .astype(np.float64)
+    )
+
+    assert (_signed_chart_areas(start_np, faces_np) > 0).all()
+    assert (_signed_chart_areas(uv_np, faces_np) > 0).all()
+    assert (
+        _symmetric_dirichlet(vertices_np, faces_np, uv_np).sum()
+        < gain * _symmetric_dirichlet(vertices_np, faces_np, arap_np).sum()
+    )
+
+
+@pytest.mark.parametrize("init", _SLIM_STARTS)
+def test_slim_parametrization_unwraps_a_surface_with_a_handle_from_every_start(
+    torus_irregular_holes: tuple[tm.Trimesh, wp.Mesh], init: str
+):
+    """
+    Not a library comparison: every start of a surface that is not a disk reaches the same chart.
+
+    ``torus_irregular_holes`` has a handle and three boundary loops, which no chart lays flat
+    without folding: the free start keeps 81 % of its faces upright, the rim starts 75-79 % (the
+    Tutte start alone inverts 266). Every start must keep 70 % upright and reach the free start's
+    distortion within a tenth, in both the area and the shape strain (measured 0.62-0.70 and
+    0.68-0.72, both devices); the Tutte start itself is far off it.
+    """
+    mesh_tm, mesh_wp = torus_irregular_holes
+    vertices_np, faces_np = mesh_igl(mesh_tm)
+    arguments = (mesh_wp.points, mesh_wp.indices)
+
+    uv_np = (
+        od.parametrization.slim_parametrization(
+            *arguments,
+            init=init,  # pyright: ignore[reportArgumentType]
+        )
+        .numpy()
+        .astype(np.float64)
+    )
+    free_np = (
+        od.parametrization.slim_parametrization(*arguments, init="free").numpy().astype(np.float64)
+    )
+
+    area_strain, shape_strain, signed = _strains(vertices_np, faces_np, uv_np)
+    free_area_strain, free_shape_strain, _ = _strains(vertices_np, faces_np, free_np)
+    assert (signed > 0).mean() > 0.7
+    assert abs(area_strain / free_area_strain - 1) < 0.1
+    assert abs(shape_strain / free_shape_strain - 1) < 0.1
+
+
+@pytest.mark.parametrize("init", ["harmonic", "tutte", "lscm"])
+def test_slim_parametrization_needs_a_boundary_for_a_rim_start(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], init: str
+):
+    """Not a library comparison: a closed mesh has no rim, so only the free start runs on it."""
+    _, mesh_wp = sphere_irregular
+    arguments = (mesh_wp.points, mesh_wp.indices)
+
+    with pytest.raises(ValueError, match="needs a boundary loop"):
+        od.parametrization.slim_parametrization(
+            *arguments,
+            init=init,  # pyright: ignore[reportArgumentType]
+        )
+    assert od.parametrization.slim_parametrization(*arguments).size == mesh_wp.points.size
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("unknown_init", "init must be one of"),
+        ("negative_iterations", "max_iterations"),
+        ("nan_tolerance", "tolerance"),
+        ("float_faces", "wp.vec3 vertices"),
+    ],
+)
+def test_slim_parametrization_rejects_malformed_inputs(device: str, case: str, message: str):
+    """Not a library comparison: each malformed input raises a ``ValueError`` naming it."""
+    vertices = wp.array(np.eye(3, dtype=np.float32), dtype=wp.vec3, device=device)
+    faces = wp.array([0, 1, 2], dtype=wp.int32, device=device)
+    options: dict[str, Any] = {}
+    if case == "unknown_init":
+        options["init"] = "spectral"
+    elif case == "negative_iterations":
+        options["max_iterations"] = -1
+    elif case == "nan_tolerance":
+        options["tolerance"] = float("nan")
+    elif case == "float_faces":
+        faces = wp.array([0.0, 1.0, 2.0], dtype=wp.float32, device=device)
+
+    with pytest.raises(ValueError, match=message):
+        od.parametrization.slim_parametrization(vertices, faces, **options)
+
+
+def test_slim_parametrization_on_an_empty_mesh(device: str):
+    """Not a library comparison: no vertices give an empty chart rather than a raise."""
+    uv_wp = od.parametrization.slim_parametrization(
+        warp_empty(0, wp.vec3, device), warp_empty(0, wp.int32, device)
+    )
+
+    assert uv_wp.shape == (0,)
+    assert uv_wp.device == wp.get_device(device)
+
+
 @pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular_band"])
 @pytest.mark.parity("lscm", "igl")
 def test_lscm_matches_igl(request: pytest.FixtureRequest, mesh_name: str):

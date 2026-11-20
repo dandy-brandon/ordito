@@ -17,6 +17,8 @@ pins nothing and needs no start: a free-boundary chart of low ARAP distortion in
 units for an open surface of any topology, converged on a coarse mesh;
 [`low_distortion_disk_parametrization`][ordito.parametrization.low_distortion_disk_parametrization]
 is the same chart of a disk, refined from a harmonic, Tutte or LSCM map.
+[`slim_parametrization`][ordito.parametrization.slim_parametrization] unwraps in one call to the
+least symmetric Dirichlet distortion, from the free chart or a harmonic, Tutte or LSCM start.
 
 [`map_vertices_to_circle`][ordito.parametrization.map_vertices_to_circle] supplies the boundary
 condition the fixed-boundary three need, and
@@ -107,6 +109,8 @@ _MAX_PACKED_CLUSTERS = (1 << 21) - 1
 # ``low_distortion_disk_parametrization``'s starts, and the default ``coarse_cell`` in mean edge
 # lengths (the disk chart's stop is a thousandth of it too).
 _DISK_STARTS = ("harmonic", "tutte", "lscm")
+# ``slim_parametrization``'s starts: the free ARAP chart, or one of the disk starts.
+_SLIM_STARTS = ("free", *_DISK_STARTS)
 _DEFAULT_CELL_EDGES = 5.0
 
 _LOGGER = logging.getLogger(__name__)
@@ -1665,6 +1669,139 @@ def low_distortion_disk_parametrization(
     return _chart_uv(chart)
 
 
+def slim_parametrization(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    init: Literal["free", "harmonic", "tutte", "lscm"] | None = None,
+    max_iterations: int = 100,
+    tolerance: float = 1e-3,
+) -> wp.array[wp.vec2]:
+    """
+    Free-boundary chart of least symmetric Dirichlet distortion, from a start it builds (SLIM).
+
+    The whole unwrap in one call: a start, then [`slim`][ordito.parametrization.slim] from it to
+    the least ``sum_f A_f (s1^2 + s2^2 + s1^-2 + s2^-2)``, with a free boundary and no pins. The
+    start is
+
+    - ``"free"``: the ARAP chart of
+      [`low_distortion_parametrization`][ordito.parametrization.low_distortion_parametrization],
+      for any topology, closed meshes included, and already near the answer;
+    - ``"harmonic"`` or ``"tutte"``: the [`harmonic`][ordito.parametrization.harmonic] or
+      [`tutte`][ordito.parametrization.tutte] map with the longest boundary loop on a circle
+      ([`map_vertices_to_circle`][ordito.parametrization.map_vertices_to_circle]), any other
+      loop free;
+    - ``"lscm"``: [`lscm`][ordito.parametrization.lscm] with two vertices half the longest loop
+      apart pinned;
+
+    each of the last three scaled to the mesh's area and mirrored if it winds clockwise, as
+    [`low_distortion_disk_parametrization`][ordito.parametrization.low_distortion_disk_parametrization]
+    builds them. Unlike that chart this one does not need a disk: ``slim`` holds the faces a start
+    inverts or squashes flat (a handle forces some) by an unbarriered ARAP term. Every start
+    reaches about the same distortion; they differ in time and in the layout of a long surface,
+    which a Tutte or LSCM start unbends more than the free chart does.
+
+    A face the start has the right way round and not squashed flat never inverts. A Tutte map of a
+    disk inverts none (its boundary is convex), so on a disk the default start is Tutte, and the
+    chart folds no face unless the start squashed one a thousandfold.
+
+    Parameters
+    ----------
+    vertices
+        ``(n_vertices,)`` mesh vertex positions.
+    faces
+        ``(3 * n_faces,)`` triangle index buffer. Faces of no area are ignored.
+    init
+        The start: ``"free"``, ``"harmonic"``, ``"tutte"`` or ``"lscm"``. ``None`` takes
+        ``"tutte"`` for a disk (one connected component with one boundary loop and Euler
+        characteristic 1) and ``"free"`` otherwise.
+    max_iterations, tolerance
+        Forwarded to [`slim`][ordito.parametrization.slim]. ``max_iterations=0`` returns the
+        start.
+
+    Returns
+    -------
+    wp.array[wp.vec2]
+        ``(n_vertices,)`` UV coordinates on ``vertices.device``, in the mesh's units, with the
+        faces mostly counter-clockwise; the rotation is unspecified. Empty for an empty mesh.
+
+    Raises
+    ------
+    ValueError
+        If ``vertices`` is not ``wp.vec3`` or ``faces`` not ``wp.int32`` with a multiple of three
+        entries, if ``init`` is not one of the four, if ``max_iterations`` is negative or
+        ``tolerance`` negative or not finite, if a vertex coordinate is not finite, if no face has a
+        positive area, if ``init`` is ``"harmonic"``, ``"tutte"`` or ``"lscm"`` and the mesh has no
+        boundary loop, or if the factorization of the proxy would exceed
+        [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET].
+    RuntimeError
+        If ``vertices`` and ``faces`` are not on one device.
+
+    See Also
+    --------
+    [`slim`][ordito.parametrization.slim]
+        The iteration, from a start of the caller's.
+    [`low_distortion_parametrization`][ordito.parametrization.low_distortion_parametrization]
+    [`low_distortion_disk_parametrization`][ordito.parametrization.low_distortion_disk_parametrization]
+        The ARAP charts.
+
+    Notes
+    -----
+    Under [`is_deterministic`][ordito.config.is_deterministic] the chart repeats bit for bit;
+    otherwise its last bits can move between calls on the CUDA device.
+
+    Examples
+    --------
+    Every start of a cap lands on the same fold-free chart:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.sphere_cap(angle=1.4, subdivisions=4)
+    corners = faces.numpy().reshape(-1, 3)
+
+
+    def mean_edge(points: np.ndarray) -> str:
+        triangles = points[corners]
+        lengths = np.linalg.norm(triangles - np.roll(triangles, 1, axis=1), axis=2)
+        return f"{lengths.mean():.3f}"
+
+
+    charts = [
+        od.parametrization.slim_parametrization(vertices, faces, init=init)
+        for init in ("free", "harmonic", "tutte", "lscm")
+    ]
+    print(mean_edge(vertices.numpy()))  # 0.091
+    print([mean_edge(uv.numpy()) for uv in charts])  # ['0.091', '0.091', '0.091', '0.091']
+    flipped = [od.parametrization.face_flipped_indices(uv, faces).size for uv in charts]
+    print(flipped)  # [0, 0, 0, 0]
+    ```
+    """
+    name = "slim_parametrization"
+    bounds = _low_distortion_bounds(name, vertices, faces, (("max_iterations", max_iterations),))
+    if init is not None and init not in _SLIM_STARTS:
+        raise ValueError(f"{name} init must be one of {_SLIM_STARTS}, got {init!r}")
+    if not (math.isfinite(tolerance) and tolerance >= 0.0):
+        raise ValueError(f"{name} tolerance must be finite and >= 0, got {tolerance}")
+    if bounds is None:
+        return _launch.empty(0, dtype=wp.vec2, device=vertices.device)
+    loop = None
+    if init is None:
+        loop, _ = _disk_loop(vertices, faces)
+        init = "free" if loop is None else "tutte"
+    if init == "free":
+        start = low_distortion_parametrization(vertices, faces)
+    else:
+        if loop is None:
+            loop = od.boundary.longest_boundary_loop(vertices, faces)
+        if loop.size < 3:
+            raise ValueError(f"{name} init={init!r} needs a boundary loop; the mesh has none")
+        start = _chart_uv(_start_chart(vertices, faces, loop, init))
+    return slim(vertices, faces, start, max_iterations=max_iterations, tolerance=tolerance)
+
+
 def _disk_boundary(
     name: str, vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
 ) -> wp.array[wp.int32]:
@@ -1677,6 +1814,23 @@ def _disk_boundary(
         Unless the mesh is one connected component with one boundary loop and Euler
         characteristic 1.
     """
+    loop, reason = _disk_loop(vertices, faces)
+    if loop is None:
+        raise ValueError(
+            f"{name} needs a disk: one connected component with one boundary loop and Euler "
+            f"characteristic 1, got {reason}"
+        )
+    return loop
+
+
+def _disk_loop(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
+) -> tuple[wp.array[wp.int32] | None, str]:
+    """
+    Return a disk's boundary loop and ``""``, or ``None`` and what the mesh has instead.
+
+    A disk is one connected component with one boundary loop and Euler characteristic 1.
+    """
     n_vertices = vertices.size
     euler = od.measures.euler_characteristic(faces, n_vertices=n_vertices)
     loops, loop_offsets = od.boundary.boundary_loops_with_offsets(vertices, faces)
@@ -1685,14 +1839,12 @@ def _disk_boundary(
     # Each component is labelled by its smallest face, so one component is every label 0; the
     # count is formed only for the message.
     connected = od.reduce.max(labels) == 0
-    if euler != 1 or n_loops != 1 or not connected:
-        n_components = 1 if connected else od.grouping.unique_1d(labels).size
-        raise ValueError(
-            f"{name} needs a disk: one connected component with one boundary loop and Euler "
-            f"characteristic 1, got {n_components} components, {n_loops} boundary loops and "
-            f"Euler characteristic {euler}"
-        )
-    return loops
+    if euler == 1 and n_loops == 1 and connected:
+        return loops, ""
+    n_components = 1 if connected else od.grouping.unique_1d(labels).size
+    return None, (
+        f"{n_components} components, {n_loops} boundary loops and Euler characteristic {euler}"
+    )
 
 
 def _low_distortion_bounds(

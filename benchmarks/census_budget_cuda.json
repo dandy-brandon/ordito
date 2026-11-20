@@ -5591,6 +5591,98 @@
    "sort": 22
   }
  },
+ "benchmarks/test_parametrization.py::test_slim_parametrization[hemisphere-ordito-cuda-free]": {
+  "counts": {
+   "launch": 1371,
+   "alloc": 164,
+   "memset": 66,
+   "d2d": 3,
+   "d2h": 23,
+   "scan": 48,
+   "sort": 41
+  }
+ },
+ "benchmarks/test_parametrization.py::test_slim_parametrization[hemisphere-ordito-cuda-harmonic]": {
+  "counts": {
+   "launch": 1068,
+   "alloc": 98,
+   "memset": 46,
+   "d2d": 4,
+   "d2h": 14,
+   "scan": 30,
+   "sort": 26
+  }
+ },
+ "benchmarks/test_parametrization.py::test_slim_parametrization[hemisphere-ordito-cuda-lscm]": {
+  "counts": {
+   "launch": 1509,
+   "alloc": 133,
+   "memset": 59,
+   "d2d": 3,
+   "h2d": 2,
+   "d2h": 18,
+   "sync": 2,
+   "scan": 50,
+   "sort": 45
+  }
+ },
+ "benchmarks/test_parametrization.py::test_slim_parametrization[hemisphere-ordito-cuda-tutte]": {
+  "counts": {
+   "launch": 1068,
+   "alloc": 98,
+   "memset": 45,
+   "d2d": 4,
+   "d2h": 14,
+   "scan": 30,
+   "sort": 26
+  }
+ },
+ "benchmarks/test_parametrization.py::test_slim_parametrization[saddle_small-ordito-cuda-free]": {
+  "counts": {
+   "launch": 1018,
+   "alloc": 134,
+   "memset": 62,
+   "d2d": 3,
+   "d2h": 18,
+   "scan": 44,
+   "sort": 40
+  }
+ },
+ "benchmarks/test_parametrization.py::test_slim_parametrization[saddle_small-ordito-cuda-harmonic]": {
+  "counts": {
+   "launch": 828,
+   "alloc": 98,
+   "memset": 46,
+   "d2d": 6,
+   "d2h": 18,
+   "scan": 28,
+   "sort": 24
+  }
+ },
+ "benchmarks/test_parametrization.py::test_slim_parametrization[saddle_small-ordito-cuda-lscm]": {
+  "counts": {
+   "launch": 1041,
+   "alloc": 133,
+   "memset": 59,
+   "d2d": 3,
+   "h2d": 2,
+   "d2h": 18,
+   "sync": 2,
+   "scan": 46,
+   "sort": 41
+  }
+ },
+ "benchmarks/test_parametrization.py::test_slim_parametrization[saddle_small-ordito-cuda-tutte]": {
+  "counts": {
+   "launch": 778,
+   "alloc": 98,
+   "memset": 45,
+   "d2d": 5,
+   "d2h": 16,
+   "scan": 28,
+   "sort": 24
+  }
+ },
  "benchmarks/test_parametrization.py::test_tutte[hemisphere-ordito-cuda]": {
   "counts": {
    "launch": 14,

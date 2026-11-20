@@ -435,6 +435,28 @@ def test_low_distortion_disk_parametrization(bench_case: BenchCase, init: str) -
     assert uv.size == vertices.size
 
 
+@pytest.mark.benchmark(group="slim_parametrization")
+@pytest.mark.benchaxis("patch")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("init", ["free", "harmonic", "tutte", "lscm"])
+def test_slim_parametrization(bench_case: BenchCase, init: str) -> None:
+    """
+    The whole SLIM unwrap: the start built from the mesh, then ``slim`` from it, timed together.
+
+    libigl's SLIM takes a start rather than building one; the ``slim`` group compares the
+    iteration itself against it. ordito's only row.
+    """
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    uv = bench_case.run(
+        lambda: od.parametrization.slim_parametrization(
+            vertices,
+            faces,
+            init=init,  # pyright: ignore[reportArgumentType]
+        )
+    )
+    assert uv.size == vertices.size
+
+
 @pytest.mark.benchmark(group="lscm")
 @pytest.mark.benchaxis("patch")
 @pytest.mark.benchlibs("ordito", "igl", "pymeshlab")
