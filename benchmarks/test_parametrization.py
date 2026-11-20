@@ -324,6 +324,78 @@ def test_arap(bench_case: BenchCase, iterations: int) -> None:
         assert uv_igl.shape[0] == vertices_np.shape[0]
 
 
+_SLIM_IGL_ITERATIONS = 20
+_slim_start_cache: dict[str, np.ndarray] = {}
+
+
+def _slim_start(bench_case: BenchCase) -> np.ndarray:
+    """
+    Return SLIM's start, a Tutte disk scaled to the surface's area, per mesh, as ``float32`` values.
+
+    libigl's uniform Laplacian with the rim on the unit circle (the ``tutte`` row's reference), so
+    the reference rows, which hold no device, build it too; both libraries start from these values.
+    """
+    if bench_case.mesh_name not in _slim_start_cache:
+        vertices_np, faces_np, loop_np = _igl_boundary(bench_case)
+        circle_np = igl.map_vertices_to_circle(vertices_np, loop_np)
+        adjacency = cast("sp.csc_matrix[np.int64]", igl.adjacency_matrix(faces_np))
+        degree = sp.diags(np.asarray(adjacency.sum(axis=1)).ravel().astype(np.float64))
+        disk_np = np.asarray(
+            igl.min_quad_with_fixed(
+                (degree - adjacency).tocsc(),
+                np.zeros((vertices_np.shape[0], 2)),
+                loop_np,
+                circle_np,
+            )
+        )
+        surface = 0.5 * np.asarray(igl.doublearea(vertices_np, faces_np)).sum()
+        chart = 0.5 * np.abs(np.asarray(igl.doublearea(disk_np, faces_np))).sum()
+        _slim_start_cache[bench_case.mesh_name] = (disk_np * np.sqrt(surface / chart)).astype(
+            np.float32
+        )
+    return _slim_start_cache[bench_case.mesh_name]
+
+
+@pytest.mark.benchmark(group="slim")
+@pytest.mark.benchaxis("patch")
+@pytest.mark.benchlibs("ordito", "igl")
+def test_slim(bench_case: BenchCase) -> None:
+    """
+    Free-boundary symmetric Dirichlet SLIM from a Tutte disk scaled to the surface's area.
+
+    ordito runs at its default tolerance, refactoring its proxy every eight iterations; libigl runs
+    ``_SLIM_IGL_ITERATIONS`` iterations, each a factorization, from the same start, precomputation
+    included as ordito builds its pattern on every call. Twenty is the count that lands as close
+    to the converged chart as ordito's default stop (after a rigid alignment: 6e-4 to 7e-3 mean
+    edges against 2e-3 to 1.6e-2 on the three patches; ten land 2e-2 to 6e-2 away).
+    """
+    start_np = _slim_start(bench_case)
+    if bench_case.kind == "ordito":
+        vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+        start = wp.array(start_np, dtype=wp.vec2, device=bench_case.device)
+        uv = bench_case.run(lambda: od.parametrization.slim(vertices, faces, start))
+        assert uv.size == vertices.size
+    else:
+        vertices_np = np.asfortranarray(bench_case.vertices_np, dtype=np.float64)
+        faces_np = np.asfortranarray(bench_case.faces_np.reshape(-1, 3), dtype=np.int32)
+        start_f64 = np.asfortranarray(start_np, dtype=np.float64)
+
+        def run() -> np.ndarray:
+            data = igl.slim_precompute(
+                vertices_np,
+                faces_np,
+                start_f64,
+                igl.MappingEnergyType.SYMMETRIC_DIRICHLET,
+                np.zeros(0, dtype=np.int32),
+                np.zeros((0, 2), dtype=np.float64, order="F"),
+                0.0,
+            )
+            return np.asarray(igl.slim_solve(data, _SLIM_IGL_ITERATIONS))
+
+        uv_igl = bench_case.run(run)
+        assert uv_igl.shape[0] == vertices_np.shape[0]
+
+
 @pytest.mark.benchmark(group="low_distortion_parametrization")
 @pytest.mark.benchaxis("patch")
 @pytest.mark.benchlibs("ordito")

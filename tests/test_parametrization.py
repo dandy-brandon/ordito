@@ -724,6 +724,327 @@ def test_arap_pattern_changes_no_answer(saddle_graded: tuple[tm.Trimesh, wp.Mesh
     assert np.array_equal(od.parametrization.arap(*arguments, pattern=pattern).numpy(), plain_np)
 
 
+def _signed_chart_areas(uv_np: np.ndarray, faces_np: np.ndarray) -> np.ndarray:
+    """Every face's signed area in the chart."""
+    a = uv_np[faces_np[:, 1]] - uv_np[faces_np[:, 0]]
+    b = uv_np[faces_np[:, 2]] - uv_np[faces_np[:, 0]]
+    return 0.5 * (a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0])
+
+
+def _area_scaled_tutte(mesh_wp: wp.Mesh) -> wp.array[wp.vec2]:
+    """Return a Tutte disk on the unit circle scaled to the surface's area: a fold-free start."""
+    boundary_wp, boundary_uv_wp = _circle_boundary(mesh_wp)
+    disk_np = (
+        od.parametrization.tutte(mesh_wp.points, mesh_wp.indices, boundary_wp, boundary_uv_wp)
+        .numpy()
+        .astype(np.float64)
+    )
+    faces_np = mesh_wp.indices.numpy().reshape(-1, 3)
+    surface = float(
+        od.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)[1].numpy().sum()
+    )
+    scale = np.sqrt(surface / np.abs(_signed_chart_areas(disk_np, faces_np)).sum())
+    return points_to_warp_uv(disk_np * scale, mesh_wp.device)
+
+
+def _symmetric_dirichlet(
+    vertices_np: np.ndarray, faces_np: np.ndarray, uv_np: np.ndarray
+) -> np.ndarray:
+    """Every face's ``s1^2 + s2^2 + s1^-2 + s2^-2`` (``inf`` once inverted), times its area."""
+    first = vertices_np[faces_np[:, 1]] - vertices_np[faces_np[:, 0]]
+    second = vertices_np[faces_np[:, 2]] - vertices_np[faces_np[:, 0]]
+    areas = 0.5 * np.linalg.norm(np.cross(first, second), axis=1)
+    length = np.linalg.norm(first, axis=1)
+    along, height = (second * first).sum(1) / length, 2 * areas / length
+    a = uv_np[faces_np[:, 1]] - uv_np[faces_np[:, 0]]
+    b = uv_np[faces_np[:, 2]] - uv_np[faces_np[:, 0]]
+    jacobian = np.stack(
+        (a / length[:, None], (b - a * (along / length)[:, None]) / height[:, None]), axis=2
+    )
+    sigma = np.linalg.svd(jacobian, compute_uv=False)
+    energy = (sigma**2).sum(1) + (sigma**-2.0).sum(1)
+    return np.where(np.linalg.det(jacobian) > 0, areas * energy, np.inf)
+
+
+def _slim_igl(
+    vertices_np: np.ndarray, faces_np: np.ndarray, uv_init_np: np.ndarray, iterations: int
+) -> np.ndarray:
+    """``igl::slim`` with ``SYMMETRIC_DIRICHLET`` and no constraints, from ``uv_init_np``."""
+    data = igl.slim_precompute(
+        np.asfortranarray(vertices_np, dtype=np.float64),
+        np.asfortranarray(faces_np, dtype=np.int32),
+        np.asfortranarray(uv_init_np, dtype=np.float64),
+        igl.MappingEnergyType.SYMMETRIC_DIRICHLET,
+        np.zeros(0, dtype=np.int32),
+        np.zeros((0, 2), dtype=np.float64, order="F"),
+        0.0,
+    )
+    return np.asarray(igl.slim_solve(data, iterations))[:, :2]
+
+
+def _rigidly_aligned(source_np: np.ndarray, target_np: np.ndarray) -> np.ndarray:
+    """Return ``source_np`` moved by the rigid motion that best fits it to ``target_np``."""
+    source_mean, target_mean = source_np.mean(0), target_np.mean(0)
+    u, _, vt = np.linalg.svd((source_np - source_mean).T @ (target_np - target_mean))
+    rotation = u @ np.diag([1.0, np.sign(np.linalg.det(u @ vt))]) @ vt
+    return (source_np - source_mean) @ rotation + target_mean
+
+
+@pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular_cap"])
+@pytest.mark.parity("slim", "igl")
+def test_slim_matches_igl(request: pytest.FixtureRequest, mesh_name: str):
+    """
+    Class B: both converge from the same fold-free start to one chart, up to a rigid motion.
+
+    The start is a Tutte disk scaled to the surface's area, the same ``float32`` values on both
+    sides. The energy does not see the chart's rotation and position, which nothing pins, so the
+    two trajectories (libigl refactors every iteration, ordito every eight) leave the converged
+    chart in slightly different places (a rotation of ~3e-3 on ``saddle_graded``): ordito's chart
+    is rigidly aligned to libigl's, the gauge fix, and compared at the standard tolerance. Both
+    run to a standstill. The start is far from the answer (the comparison is not vacuous), and
+    neither chart inverts a face.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_np, faces_np = mesh_igl(mesh_tm)
+    uv_init_wp = _area_scaled_tutte(mesh_wp)
+    uv_init_np = uv_init_wp.numpy().astype(np.float64)
+
+    uv_wp = od.parametrization.slim(
+        mesh_wp.points, mesh_wp.indices, uv_init_wp, max_iterations=400, tolerance=0.0
+    )
+    uv_igl = _slim_igl(vertices_np, faces_np, uv_init_np, 300)
+
+    assert np.abs(uv_igl - uv_init_np).max() > 1e-2
+    assert (_signed_chart_areas(uv_igl, faces_np) > 0).all()
+    assert (_signed_chart_areas(uv_wp.numpy().astype(np.float64), faces_np) > 0).all()
+    aligned_np = _rigidly_aligned(uv_wp.numpy().astype(np.float64), uv_igl)
+    assert np.allclose(aligned_np, uv_igl, rtol=1e-5, atol=1e-5)
+
+
+def test_slim_lays_a_stretched_flat_sheet_out_isometrically(device: str):
+    """
+    Not a library comparison: a flat sheet's least symmetric Dirichlet chart is an isometry.
+
+    Started from the sheet sheared and stretched (every face ``|log s|`` up to ~0.45), the chart
+    must come back with every side its surface length: the energy's unique minimum up to a rigid
+    motion. A chart left anywhere short of it keeps sides off by the shear's few percent.
+    """
+    vertices_np, faces_np = _sheet(24, 3.0, 0.0)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    stretched_np = vertices_np[:, :2] @ np.array([[1.5, 0.4], [0.0, 0.7]])
+    start_wp = points_to_warp_uv(stretched_np, device)
+
+    uv_np = (
+        od.parametrization.slim(vertices_wp, faces_wp, start_wp, max_iterations=200, tolerance=0.0)
+        .numpy()
+        .astype(np.float64)
+    )
+
+    lengths_np = _edge_lengths(vertices_np, faces_np)
+    assert np.abs(_edge_lengths(stretched_np, faces_np) / lengths_np - 1).max() > 0.3
+    assert np.allclose(_edge_lengths(uv_np, faces_np), lengths_np, rtol=1e-5, atol=1e-5)
+
+
+def test_slim_keeps_every_face_the_start_had_the_right_way_round(
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
+):
+    """
+    Not a library comparison: the rule for faces inverted in the start is ordito's own.
+
+    Six interior vertices of a fold-free start are pushed past a neighbour, inverting the faces
+    around them. ``slim`` must invert none of the others, may right the folded ones (they take the
+    unbarriered ARAP term), and must lower the energy of the faces it barriers by a tenth.
+    """
+    mesh_tm, mesh_wp = saddle_graded
+    vertices_np, faces_np = mesh_igl(mesh_tm)
+    start_np = _area_scaled_tutte(mesh_wp).numpy().astype(np.float64)
+    boundary_np = od.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices).numpy()
+    interior_np = np.setdiff1d(np.arange(len(start_np)), boundary_np)
+    rng = np.random.default_rng(3)
+    for v in rng.choice(interior_np, size=6, replace=False):
+        neighbour = faces_np[np.flatnonzero((faces_np == v).any(1))[0]]
+        other = neighbour[neighbour != v][0]
+        start_np[v] += 2.5 * (start_np[other] - start_np[v])
+    start_np = start_np.astype(np.float32).astype(np.float64)
+    inverted_before = _signed_chart_areas(start_np, faces_np) <= 0
+    assert 6 <= inverted_before.sum()
+
+    uv_np = (
+        od.parametrization.slim(
+            mesh_wp.points, mesh_wp.indices, points_to_warp_uv(start_np, mesh_wp.device)
+        )
+        .numpy()
+        .astype(np.float64)
+    )
+
+    inverted_after = _signed_chart_areas(uv_np, faces_np) <= 0
+    assert not (inverted_after & ~inverted_before).any()
+    upright = ~inverted_before
+    assert (
+        _symmetric_dirichlet(vertices_np, faces_np[upright], uv_np).sum()
+        < 0.9 * _symmetric_dirichlet(vertices_np, faces_np[upright], start_np).sum()
+    )
+
+
+def test_slim_returns_a_clockwise_start_with_its_winding(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
+    """
+    Ordito against ordito: a mirrored start is refined as the start and mirrored back.
+
+    The barrier holds every face's orientation, so a clockwise start is refined mirrored; the
+    mirror is exact, so the two charts are each other's reflections bit for bit.
+    """
+    _, mesh_wp = saddle_graded
+    start_np = _area_scaled_tutte(mesh_wp).numpy()
+    mirror = np.array([1.0, -1.0], dtype=np.float32)
+    arguments = (mesh_wp.points, mesh_wp.indices)
+
+    uv_np = od.parametrization.slim(*arguments, points_to_warp_uv(start_np, mesh_wp.device)).numpy()
+    mirrored_np = od.parametrization.slim(
+        *arguments, points_to_warp_uv(start_np * mirror, mesh_wp.device)
+    ).numpy()
+
+    assert not np.array_equal(uv_np, start_np)
+    assert np.array_equal(mirrored_np * mirror, uv_np)
+
+
+def test_slim_stops_once_eight_iterations_lower_the_energy_by_less_than_the_tolerance(
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
+):
+    """
+    Ordito against ordito: the stop test reads the energy every eight iterations.
+
+    A tolerance no decrease meets stops after the first eight, which is the chart of a budget of
+    eight; with no tolerance the iterations run on and move the chart further.
+    """
+    _, mesh_wp = saddle_graded
+    arguments = (mesh_wp.points, mesh_wp.indices, _area_scaled_tutte(mesh_wp))
+
+    stopped_np = od.parametrization.slim(*arguments, tolerance=1e9).numpy()
+    eight_np = od.parametrization.slim(*arguments, max_iterations=8, tolerance=0.0).numpy()
+    sixteen_np = od.parametrization.slim(*arguments, max_iterations=16, tolerance=0.0).numpy()
+
+    assert np.array_equal(stopped_np, eight_np)
+    assert not np.array_equal(sixteen_np, eight_np)
+
+
+def test_slim_is_reproducible_when_deterministic(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
+    """
+    Not a parity assert: under the deterministic setting repeated calls agree bit for bit.
+
+    The trial energies are block sums, whose arrival order decides the line search's comparisons
+    on CUDA with the setting off; the chart then agrees with the deterministic one to round-off.
+    """
+    _, mesh_wp = saddle_graded
+    arguments = (mesh_wp.points, mesh_wp.indices, _area_scaled_tutte(mesh_wp))
+
+    uv_np = od.parametrization.slim(*arguments).numpy()
+    for _ in range(3):
+        assert np.array_equal(od.parametrization.slim(*arguments).numpy(), uv_np)
+    with od.config.deterministic(False):
+        arrival_wp = od.parametrization.slim(*arguments)
+    assert np.allclose(arrival_wp.numpy(), uv_np, rtol=1e-5, atol=1e-5)
+
+
+def test_slim_cpu_matches_cuda():
+    """
+    Class A: the CPU chart is the CUDA one.
+
+    They differ only in floating-point contraction and summation order, below the ``float32``
+    chart's resolution.
+    """
+    if not wp.is_cuda_available():
+        pytest.skip("needs both devices to compare them")
+    vertices_np, faces_np = _sheet(30, 3.0, 1.5)
+    stretched_np = vertices_np[:, :2] @ np.array([[1.2, 0.3], [0.0, 0.9]])
+
+    uv = {}
+    for device in ("cpu", "cuda:0"):
+        vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+        uv[device] = od.parametrization.slim(
+            vertices_wp, faces_wp, points_to_warp_uv(stretched_np, device)
+        ).numpy()
+
+    assert np.isfinite(uv["cpu"]).all()
+    assert np.allclose(uv["cpu"], uv["cuda:0"], rtol=0, atol=1e-5)
+
+
+def test_slim_with_no_iterations_returns_its_start(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
+    """Not a library comparison: a budget of zero iterations returns the start unchanged."""
+    _, mesh_wp = saddle_graded
+    start_wp = _area_scaled_tutte(mesh_wp)
+
+    uv_wp = od.parametrization.slim(mesh_wp.points, mesh_wp.indices, start_wp, max_iterations=0)
+
+    assert uv_wp.ptr != start_wp.ptr
+    assert np.array_equal(uv_wp.numpy(), start_wp.numpy())
+
+
+def test_slim_on_an_empty_mesh(device: str):
+    """Not a library comparison: no vertices give an empty chart rather than a raise."""
+    uv_wp = od.parametrization.slim(
+        warp_empty(0, wp.vec3, device),
+        warp_empty(0, wp.int32, device),
+        warp_empty(0, wp.vec2, device),
+    )
+
+    assert uv_wp.shape == (0,)
+    assert uv_wp.device == wp.get_device(device)
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("plane_vertices", "wp.vec3 vertices"),
+        ("float_faces", "wp.vec3 vertices"),
+        ("ragged_faces", "wp.vec3 vertices"),
+        ("space_uv", "wp.vec3 vertices"),
+        ("short_uv", "wp.vec3 vertices"),
+        ("negative_iterations", "max_iterations"),
+        ("negative_tolerance", "tolerance"),
+        ("nan_tolerance", "tolerance"),
+    ],
+)
+def test_slim_rejects_malformed_inputs(device: str, case: str, message: str):
+    """Not a library comparison: each malformed input raises a ``ValueError`` naming it."""
+    vertices = wp.array(np.eye(3, dtype=np.float32), dtype=wp.vec3, device=device)
+    faces = wp.array([0, 1, 2], dtype=wp.int32, device=device)
+    uv_init = wp.array(np.eye(3, 2, dtype=np.float32), dtype=wp.vec2, device=device)
+    iterations, tolerance = 100, 1e-3
+    if case == "plane_vertices":
+        vertices = wp.zeros(3, dtype=wp.vec2, device=device)
+    elif case == "float_faces":
+        faces = wp.array([0.0, 1.0, 2.0], dtype=wp.float32, device=device)
+    elif case == "ragged_faces":
+        faces = wp.array([0, 1, 2, 0], dtype=wp.int32, device=device)
+    elif case == "space_uv":
+        uv_init = wp.zeros(3, dtype=wp.vec3, device=device)
+    elif case == "short_uv":
+        uv_init = wp.zeros(2, dtype=wp.vec2, device=device)
+    elif case == "negative_iterations":
+        iterations = -1
+    elif case == "negative_tolerance":
+        tolerance = -1e-3
+    elif case == "nan_tolerance":
+        tolerance = float("nan")
+
+    with pytest.raises(ValueError, match=message):
+        od.parametrization.slim(
+            vertices, faces, uv_init, max_iterations=iterations, tolerance=tolerance
+        )
+
+
+def test_slim_rejects_arrays_on_two_devices():
+    """Not a library comparison: inputs on two devices raise rather than launch."""
+    if not wp.is_cuda_available():
+        pytest.skip("needs two devices")
+    vertices = wp.array(np.eye(3, dtype=np.float32), dtype=wp.vec3, device="cpu")
+    faces = wp.array([0, 1, 2], dtype=wp.int32, device="cuda:0")
+    uv_init = wp.zeros(3, dtype=wp.vec2, device="cpu")
+
+    with pytest.raises(RuntimeError):
+        od.parametrization.slim(vertices, faces, uv_init)
+
+
 def _sheet(steps: int, half_size: float, height: float) -> tuple[np.ndarray, np.ndarray]:
     """Return the patch ``z = height * exp(-r^2 / 30)`` over ``[-half_size, half_size]^2``."""
     axis = np.linspace(-half_size, half_size, steps + 1)

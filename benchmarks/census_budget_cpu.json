@@ -5059,6 +5059,26 @@
    "alloc": 1
   }
  },
+ "benchmarks/test_parametrization.py::test_slim[hemisphere-ordito-cpu]": {
+  "counts": {
+   "launch": 1246,
+   "alloc": 74,
+   "h2h": 3,
+   "readback": 8,
+   "scan": 25,
+   "sort": 24
+  }
+ },
+ "benchmarks/test_parametrization.py::test_slim[saddle_small-ordito-cpu]": {
+  "counts": {
+   "launch": 1427,
+   "alloc": 74,
+   "h2h": 4,
+   "readback": 10,
+   "scan": 23,
+   "sort": 22
+  }
+ },
  "benchmarks/test_parametrization.py::test_tutte[hemisphere-ordito-cpu]": {
   "counts": {
    "launch": 166,

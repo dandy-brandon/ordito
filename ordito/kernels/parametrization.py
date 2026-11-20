@@ -556,6 +556,359 @@ def arap_rhs(
     out_b[1, ri] = rhs_const[1, ri] + rotated[1]
 
 
+# ``slim``: symmetric Dirichlet ``sum_f A_f (s1^2 + s2^2 + s1^-2 + s2^-2)`` by scalable locally
+# injective maps (Rabinovich et al. 2017). Each face's proxy is the reweighted ARAP term
+# ``A_f |W_f (J_f - R_f)|^2`` with ``W_f = U diag(w) U^T``, ``w_i^2 = (s_i - s_i^-3) / (s_i - 1)``,
+# whose gradient at the current chart is the energy's own; its Hessian over the vertices is the
+# ``wp.mat22d`` operator ``sum_f A_f (G_f G_f^T) (x) W_f^2`` over the stiffness pattern, plus the
+# proximal anchor. A step solves that operator against the energy's gradient (a Newton step on the
+# proxy); the operator is refactored every few steps and the steps between take the held factor,
+# against the exact gradient, so the line search still descends. Charts are ``(n,)`` ``wp.vec2d``,
+# the interleaved unknowns of the operator's scalar expansion. Every per-vertex and per-entry sum
+# is a gather in a fixed order; the trial energies fold through ``store_block_total``.
+SLIM_TRIALS = 8
+# The proxy's squared weight is 4 at rest and grows as ``s^-3`` as a face collapses; capped so the
+# operator stays factorable (a face of ``s ~ 1e-8`` gave ``1e24`` and an indefinite pivot). The
+# energy and the barrier are exact whatever the cap.
+SLIM_WEIGHT_CAP = wp.float64(1.0e6)
+# Of the largest step that inverts no face, the line search tries this fraction and its halvings.
+SLIM_STEP_FRACTION = wp.float64(0.9)
+SLIM_NO_BOUND = wp.float64(1.0e30)
+slim_trials_vector = wp.types.vector(length=SLIM_TRIALS + 1, dtype=wp.float64)
+
+
+@wp.func
+def slim_jacobian(
+    uv0: wp.vec2d, uv1: wp.vec2d, uv2: wp.vec2d, g0: wp.vec2d, g1: wp.vec2d, g2: wp.vec2d
+) -> wp.mat22d:
+    # A face's Jacobian from its isometric frame to the chart, ``J[r, c] = sum_k uv_k[r] g_k[c]``.
+    return wp.outer(uv0, g0) + wp.outer(uv1, g1) + wp.outer(uv2, g2)
+
+
+@wp.func
+def chart_jacobian(
+    chart: wp.array[wp.vec2d],
+    faces: wp.array[wp.int32],
+    gradients: wp.array2d[wp.vec2d],
+    f: wp.int32,
+) -> wp.mat22d:
+    # Face ``f``'s ``slim_jacobian`` on a ``wp.vec2d`` chart.
+    i0, i1, i2 = corner_triple(faces, f)
+    return slim_jacobian(
+        chart[i0], chart[i1], chart[i2], gradients[f, 0], gradients[f, 1], gradients[f, 2]
+    )
+
+
+@wp.func
+def signed_svd2(j: wp.mat22d) -> wp.vec4d:
+    # ``J = Rot(phi) diag(s1, s2) Rot(theta)`` in closed form, ``s1 >= |s2|`` and ``s2`` carrying
+    # ``det J``'s sign: ``(s1, s2, phi, rotation)``, where ``theta = rotation - phi`` and
+    # ``Rot(rotation) = U V^T`` is the proper rotation nearest ``J``.
+    half = wp.float64(0.5)
+    e = (j[0, 0] + j[1, 1]) * half
+    f = (j[0, 0] - j[1, 1]) * half
+    g = (j[1, 0] + j[0, 1]) * half
+    h = (j[1, 0] - j[0, 1]) * half
+    q = wp.sqrt(e * e + h * h)
+    r = wp.sqrt(f * f + g * g)
+    a1 = wp.atan2(g, f)
+    a2 = wp.atan2(h, e)
+    return wp.vec4d(q + r, q - r, (a2 + a1) * half, a2)
+
+
+@wp.func
+def rotation2(angle: wp.float64) -> wp.mat22d:
+    c = wp.cos(angle)
+    s = wp.sin(angle)
+    return wp.mat22d(c, -s, s, c)
+
+
+@wp.func
+def slim_weight_squared(s: wp.float64) -> wp.float64:
+    # The symmetric Dirichlet proxy weight ``(s - s^-3) / (s - 1)``, 4 at ``s = 1``, capped.
+    one = wp.float64(1.0)
+    x = wp.max(wp.abs(s), wp.float64(1.0e-8))
+    if wp.abs(x - one) < wp.float64(1.0e-6):
+        return wp.float64(4.0)
+    return wp.min((x - one / (x * x * x)) / (x - one), SLIM_WEIGHT_CAP)
+
+
+@wp.func
+def slim_face_energy(j: wp.mat22d, inverted: wp.int32) -> wp.float64:
+    # A face's energy less its rest value: ``|J|^2 (1 + det^-2) - 4``, infinite once inverted (the
+    # barrier); a face inverted in the start takes ``4 |J - R|^2``, the proxy at rest, unbarriered.
+    squared = wp.ddot(j, j)
+    if inverted != 0:
+        nearest = wp.float64(0.5) * wp.sqrt(
+            (j[0, 0] + j[1, 1]) * (j[0, 0] + j[1, 1]) + (j[1, 0] - j[0, 1]) * (j[1, 0] - j[0, 1])
+        )
+        return wp.float64(4.0) * (squared - wp.float64(4.0) * nearest + wp.float64(2.0))
+    det = wp.determinant(j)
+    if det <= wp.float64(0.0):
+        return wp.float64(wp.inf)
+    return squared * (wp.float64(1.0) + wp.float64(1.0) / (det * det)) - wp.float64(4.0)
+
+
+@wp.kernel
+def slim_start(
+    uv: wp.array[wp.vec2],
+    faces: wp.array[wp.int32],
+    gradients: wp.array2d[wp.vec2d],
+    areas: wp.array[wp.float64],
+    start_areas: wp.array[wp.vec3d],
+    out_chart: wp.array[wp.vec2d],
+    out_inverted: wp.array[wp.int32],
+) -> None:
+    # Over ``max(n_vertices, n_faces)``: the start as a ``float64`` chart, mirrored in v when its
+    # faces wind clockwise on the whole (``start_chart_areas``' signed area), since the barrier
+    # keeps every face's orientation; and each face's flag, set for a face of no area or one
+    # inverted in the (mirrored) start, which the barrier then leaves free.
+    t = wp.int32(wp.tid())
+    mirror = wp.where(start_areas[0][2] < wp.float64(0.0), wp.float64(-1.0), wp.float64(1.0))
+    if t < uv.shape[0]:
+        p = uv[t]
+        out_chart[t] = wp.vec2d(wp.float64(p[0]), mirror * wp.float64(p[1]))
+    if t < faces.shape[0] // 3:
+        i0, i1, i2 = corner_triple(faces, t)
+        u0 = uv[i0]
+        u1 = uv[i1]
+        u2 = uv[i2]
+        j = slim_jacobian(
+            wp.vec2d(wp.float64(u0[0]), wp.float64(u0[1])),
+            wp.vec2d(wp.float64(u1[0]), wp.float64(u1[1])),
+            wp.vec2d(wp.float64(u2[0]), wp.float64(u2[1])),
+            gradients[t, 0], gradients[t, 1], gradients[t, 2],
+        )  # fmt: skip
+        out_inverted[t] = wp.where(
+            areas[t] == wp.float64(0.0) or mirror * wp.determinant(j) <= wp.float64(0.0), 1, 0
+        )
+
+
+@wp.kernel
+def slim_face_terms(
+    chart: wp.array[wp.vec2d],
+    faces: wp.array[wp.int32],
+    gradients: wp.array2d[wp.vec2d],
+    areas: wp.array[wp.float64],
+    inverted: wp.array[wp.int32],
+    out_metric: wp.array[wp.mat22d],
+    out_force: wp.array[wp.mat22d],
+) -> None:
+    # A face's proxy metric ``A W^2`` (the Hessian block's factor) and its energy gradient factor
+    # ``A U diag(s - s^-3) V^T`` (half ``d energy / d J``; a vertex's gradient is the sum of its
+    # faces' factor times the corner's shape gradient). A start-inverted face takes the ARAP
+    # proxy, ``4 A I`` and ``4 A (J - R)``.
+    f = wp.int32(wp.tid())
+    area = areas[f]
+    j = chart_jacobian(chart, faces, gradients, f)
+    svd = signed_svd2(j)
+    if inverted[f] != 0:
+        out_metric[f] = wp.float64(4.0) * area * wp.identity(n=2, dtype=wp.float64)
+        out_force[f] = wp.float64(4.0) * area * (j - rotation2(svd[3]))
+        return
+    s1 = svd[0]
+    s2 = svd[1]
+    w1 = slim_weight_squared(s1)
+    w2 = slim_weight_squared(s2)
+    u = rotation2(svd[2])
+    vt = rotation2(svd[3] - svd[2])
+    out_metric[f] = area * (u * wp.diag(wp.vec2d(w1, w2)) * wp.transpose(u))
+    d1 = s1 - wp.float64(1.0) / (s1 * s1 * s1)
+    d2 = s2 - wp.float64(1.0) / (s2 * s2 * s2)
+    out_force[f] = area * (u * wp.diag(wp.vec2d(d1, d2)) * vt)
+
+
+@wp.kernel
+def slim_block_values(
+    offsets: wp.array[wp.int32],
+    starts: wp.array[wp.int32],
+    order: wp.array[wp.int32],
+    gradients: wp.array2d[wp.vec2d],
+    metric: wp.array[wp.mat22d],
+    anchor: wp.array[wp.float64],
+    n_rows: wp.int32,
+    out_values: wp.array[wp.mat22d],
+) -> None:
+    # Each stored block of the proxy Hessian ``sum_f (g_a . g_b) A W^2 + epsilon I`` over the
+    # stiffness pattern (``chart_stiffness_setup``'s keys), its contributions added in key order
+    # as ``chart_stiffness_values`` adds the scalar stiffness's. Launched over the key count.
+    e = wp.int32(wp.tid())
+    if e >= offsets[n_rows]:
+        return
+    face_keys = TWO_LEVEL_FACE_KEYS * gradients.shape[0]
+    value = wp.mat22d()
+    for s in range(starts[e], starts[e + 1]):
+        payload = order[s]
+        if payload >= face_keys:
+            value += anchor[0] * wp.identity(n=2, dtype=wp.float64)
+        else:
+            f = payload // TWO_LEVEL_FACE_KEYS
+            a = (payload // 3) % 3
+            b = payload % 3
+            value += wp.dot(gradients[f, a], gradients[f, b]) * metric[f]
+    out_values[e] = value
+
+
+@wp.kernel
+def slim_rhs(
+    faces: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    vertex_offsets: wp.array[wp.int32],
+    gradients: wp.array2d[wp.vec2d],
+    force: wp.array[wp.mat22d],
+    out_rhs: wp.array[wp.vec2d],
+) -> None:
+    # Minus half the energy's gradient at each vertex, ``-sum_f F_f g_k``, gathered over the
+    # adjacency row in its order: the step's right-hand side.
+    v = wp.int32(wp.tid())
+    total = wp.vec2d()
+    for s in range(vertex_offsets[v], vertex_offsets[v + 1]):
+        f = vertex_faces[s]
+        total += force[f] * gradients[f, face_corner(faces, f, v)]
+    out_rhs[v] = -total
+
+
+@wp.func
+def slim_face_bound(j: wp.mat22d, d: wp.mat22d) -> wp.float64:
+    # The least positive ``t`` with ``det(J + t D) = 0``, ``SLIM_NO_BOUND`` if none: the step past
+    # which this face inverts. ``det(J + t D) = det J + t c + t^2 det D``.
+    a2 = wp.determinant(d)
+    a1 = j[0, 0] * d[1, 1] + j[1, 1] * d[0, 0] - j[0, 1] * d[1, 0] - j[1, 0] * d[0, 1]
+    a0 = wp.determinant(j)
+    root = SLIM_NO_BOUND
+    if wp.abs(a2) <= wp.float64(1.0e-14) * wp.abs(a1):
+        if a1 < wp.float64(0.0):
+            root = -a0 / a1
+    else:
+        discriminant = a1 * a1 - wp.float64(4.0) * a2 * a0
+        if discriminant >= wp.float64(0.0):
+            sq = wp.sqrt(discriminant)
+            for r in range(2):
+                sign = wp.where(r == 0, wp.float64(-1.0), wp.float64(1.0))
+                t = (-a1 + sign * sq) / (wp.float64(2.0) * a2)
+                if t > wp.float64(0.0):
+                    root = wp.min(root, t)
+    return root
+
+
+@wp.kernel
+def slim_step_bound(
+    chart: wp.array[wp.vec2d],
+    step: wp.array[wp.vec2d],
+    faces: wp.array[wp.int32],
+    gradients: wp.array2d[wp.vec2d],
+    inverted: wp.array[wp.int32],
+    iteration: wp.int32,
+    out_bounds: wp.array[wp.float64],
+) -> None:
+    # The largest step inverting no barriered face into ``out_bounds[iteration]`` (filled with
+    # ``SLIM_NO_BOUND``), lane-strided: a block minimum, then ``atomic_min``, exact in any order.
+    block, lane = wp.tid()
+    offset, count = block_chunk_1d(faces.shape[0] // 3, block)
+    least = SLIM_NO_BOUND
+    for k in range(lane, count, wp.block_dim()):
+        f = offset + k
+        if inverted[f] == 0:
+            least = wp.min(
+                least,
+                slim_face_bound(
+                    chart_jacobian(chart, faces, gradients, f),
+                    chart_jacobian(step, faces, gradients, f),
+                ),
+            )
+    block_least = block_min(least)
+    if lane == 0 and block_least < SLIM_NO_BOUND:
+        wp.atomic_min(out_bounds, iteration, block_least)
+
+
+@wp.func
+def slim_trial_step(bound: wp.float64, k: wp.int32) -> wp.float64:
+    # Trial ``k``'s step: ``SLIM_STEP_FRACTION`` of the bound (at most a full step) halved ``k``
+    # times; trial ``SLIM_TRIALS`` stays put.
+    if k == SLIM_TRIALS:
+        return wp.float64(0.0)
+    first = wp.min(wp.float64(1.0), SLIM_STEP_FRACTION * bound)
+    return first * wp.pow(wp.float64(0.5), wp.float64(k))
+
+
+@wp.kernel
+def slim_trial_energies(
+    chart: wp.array[wp.vec2d],
+    step: wp.array[wp.vec2d],
+    faces: wp.array[wp.int32],
+    gradients: wp.array2d[wp.vec2d],
+    areas: wp.array[wp.float64],
+    inverted: wp.array[wp.int32],
+    bounds: wp.array[wp.float64],
+    iteration: wp.int32,
+    out_partials: wp.array[slim_trials_vector],
+) -> None:
+    # The energy at every trial step at once, lane-strided over the faces into slot 0 of a
+    # ``_launch.block_partials`` buffer: one launch and no readback for the whole line search.
+    block, lane = wp.tid()
+    offset, count = block_chunk_1d(faces.shape[0] // 3, block)
+    bound = bounds[iteration]
+    sums = slim_trials_vector()
+    for k in range(lane, count, wp.block_dim()):
+        f = offset + k
+        area = areas[f]
+        if area > wp.float64(0.0):
+            j = chart_jacobian(chart, faces, gradients, f)
+            d = chart_jacobian(step, faces, gradients, f)
+            flag = inverted[f]
+            for trial in range(SLIM_TRIALS + 1):
+                sums[trial] += area * slim_face_energy(j + slim_trial_step(bound, trial) * d, flag)
+    store_block_total(block, lane, sums, out_partials, 0, 1, last_ticket_vector)
+
+
+@wp.kernel
+def slim_accept(
+    partials: wp.array[slim_trials_vector],
+    bounds: wp.array[wp.float64],
+    iteration: wp.int32,
+    out_steps: wp.array[wp.float64],
+    out_energies: wp.array[wp.float64],
+) -> None:
+    # One thread: the longest trial step whose energy is at most the current one (0 if none), into
+    # ``out_steps[iteration]``, and the energy before and after it into
+    # ``out_energies[2 * iteration]`` and ``[2 * iteration + 1]``: the stop test reads a period's.
+    energies = partials[0]
+    accepted = wp.float64(0.0)
+    reached = energies[SLIM_TRIALS]
+    found = wp.int32(0)
+    for trial in range(SLIM_TRIALS):
+        if found == 0 and energies[trial] <= energies[SLIM_TRIALS]:
+            found = 1
+            accepted = slim_trial_step(bounds[iteration], trial)
+            reached = energies[trial]
+    out_steps[iteration] = accepted
+    out_energies[2 * iteration] = energies[SLIM_TRIALS]
+    out_energies[2 * iteration + 1] = reached
+
+
+@wp.kernel
+def slim_advance(
+    step: wp.array[wp.vec2d],
+    steps: wp.array[wp.float64],
+    iteration: wp.int32,
+    chart: wp.array[wp.vec2d],
+) -> None:
+    # Move the chart by the accepted fraction of the step, in place.
+    v = wp.int32(wp.tid())
+    chart[v] = chart[v] + steps[iteration] * step[v]
+
+
+@wp.kernel
+def slim_uv(
+    chart: wp.array[wp.vec2d], start_areas: wp.array[wp.vec3d], out_uv: wp.array[wp.vec2]
+) -> None:
+    # The chart narrowed to ``float32`` UV, mirrored back to the start's winding.
+    v = wp.int32(wp.tid())
+    mirror = wp.where(start_areas[0][2] < wp.float64(0.0), wp.float64(-1.0), wp.float64(1.0))
+    p = chart[v]
+    out_uv[v] = wp.vec2(wp.float32(p[0]), wp.float32(mirror * p[1]))
+
+
 # The low-distortion charts: pin-free element ARAP from a coarse level or a classic map's start,
 # on the shared pieces above. Their per-vertex sums are gathers too (Jacobians, stiffness rows).
 
@@ -817,7 +1170,7 @@ def plane_projection_block(
 
 
 @wp.kernel
-def proximal_system_setup(
+def chart_stiffness_setup(
     points: wp.array[wp.vec3d],
     faces: wp.array[wp.int32],
     out_gradients: wp.array2d[wp.vec2d],
@@ -826,7 +1179,9 @@ def proximal_system_setup(
     out_order: wp.array[wp.int32],
     out_partials: wp.array[wp.float64],
 ) -> None:
-    # The proximal ARAP level's one-time inputs, lane-strided over ``max(n_faces, n_points)``:
+    # The stiffness pattern's one-time inputs, for the proximal ARAP level and ``slim`` (whose
+    # ``wp.mat22d`` operator is stored over this scalar pattern), lane-strided over
+    # ``max(n_faces, n_points)``:
     # each face's gradients and area, its nine stiffness keys ``(i_a, i_b)`` (payload
     # ``9 f + 3 a + b``), one diagonal key per point (payload ``9 n_faces + i``, so the anchor
     # sorts after a row's face terms and every row has a diagonal, a point of no face too), and the
@@ -859,7 +1214,7 @@ def proximal_system_setup(
 
 
 @wp.kernel
-def proximal_system_values(
+def chart_stiffness_values(
     offsets: wp.array[wp.int32],
     starts: wp.array[wp.int32],
     order: wp.array[wp.int32],
@@ -870,7 +1225,8 @@ def proximal_system_values(
     out_values: wp.array[wp.float64],
     out_anchor: wp.array[wp.float64],
 ) -> None:
-    # Each stored entry of ``K + epsilon I``, ``K = sum_f A_f G_f G_f^T``: its contributions added
+    # Each stored entry of ``K + epsilon I``, ``K = sum_f A_f G_f G_f^T`` (the proximal system, and
+    # the scalar operator ``slim``'s analysis is built over): its contributions added
     # in the order the keys were written (a row's face terms in face order, then the anchor),
     # ``epsilon`` being ``TWO_LEVEL_ANCHOR`` times the mean of ``K``'s diagonal over every row.
     # Launched over the key count, an upper bound on the entries.

@@ -1,12 +1,14 @@
 """
-Flatten a mesh into the plane: harmonic, Tutte, ARAP and LSCM parametrizations.
+Flatten a mesh into the plane: harmonic, Tutte, ARAP, SLIM and LSCM parametrizations.
 
-Six maps, differing in what they hold fixed and what they minimize. The first three pin the
+Seven maps, differing in what they hold fixed and what they minimize. The first three pin the
 boundary and solve for the interior:
 [`harmonic`][ordito.parametrization.harmonic] minimizes Dirichlet energy with cotangent weights,
 [`tutte`][ordito.parametrization.tutte] is the same solve with uniform weights (guaranteeing an
 injective map for a convex boundary), and [`arap`][ordito.parametrization.arap] alternates local
 rotation fits with a global solve to trade conformality for low area distortion.
+[`slim`][ordito.parametrization.slim] frees the boundary and refines a start toward the least
+symmetric Dirichlet distortion, never inverting a face the start had the right way round.
 [`lscm`][ordito.parametrization.lscm] instead pins only two vertices and lets the boundary find its
 own shape, minimizing conformal rather than Dirichlet energy.
 [`low_distortion_parametrization`][ordito.parametrization.low_distortion_parametrization]
@@ -74,6 +76,12 @@ _FACTOR_K1_FROM_VERTICES_CPU = 5_000
 # not pay (1.04-1.08x).
 _ARAP_FACTOR_FROM_ROUNDS_CUDA = 300
 _ARAP_FACTOR_FROM_ROUNDS_CPU = 16
+
+# ``slim`` refactors its proxy every this many iterations; the iterations between solve against
+# the held factor with the current gradient, and the energy is read back once per period for the
+# stop test. On jaw scans (80 k-190 k vertices) refactoring every iteration took 3.6x the time of
+# every eight to the same charts (every two 2.1x, every four 1.4x).
+_SLIM_REFACTOR_EVERY = 8
 
 # Loops up to this many vertices are mapped onto the circle by one block, a chunk of the scan at
 # a time, in one launch; longer ones on CUDA by a length launch, a device-wide scan and a position
@@ -1017,6 +1025,343 @@ def _scatter_constraints(
     return fixed_mask, fixed_values
 
 
+def slim(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    uv_init: wp.array[wp.vec2],
+    *,
+    max_iterations: int = 100,
+    tolerance: float = 1e-3,
+) -> wp.array[wp.vec2]:
+    """
+    Free-boundary chart of least symmetric Dirichlet distortion, refined from a start (SLIM).
+
+    Minimizes ``sum_f A_f (s1^2 + s2^2 + s1^-2 + s2^-2)`` over the chart, ``s1`` and ``s2`` each
+    face's singular values, by scalable locally injective maps: each iteration solves the
+    energy's reweighted ARAP proxy, whose gradient at the current chart is the energy's own, and
+    moves along that step only as far as no face inverts and the energy does not rise. The energy
+    grows without bound as a face collapses, so it trades stretch against compression evenly and
+    never folds a face the start had the right way round. No vertex is pinned and the boundary is
+    free; the chart keeps the start's position and rotation up to the drift of its optimization.
+
+    The start must be a chart of the mesh in its own units (a free chart such as
+    [`low_distortion_parametrization`][ordito.parametrization.low_distortion_parametrization], or a
+    disk map such as [`tutte`][ordito.parametrization.tutte] scaled to the surface's area): the
+    energy is not scale-invariant, and its minimum is an isometry wherever one exists. A start
+    winding clockwise on the whole is refined mirrored and returned with its winding. A face
+    inverted in the start, as a surface with a handle forces somewhere, is held by the ARAP term
+    ``4 A_f |J_f - R_f|^2`` instead, which has no barrier and may right it.
+
+    Parameters
+    ----------
+    vertices
+        ``(n_vertices,)`` mesh vertex positions.
+    faces
+        ``(3 * n_faces,)`` triangle index buffer. Faces of no area are ignored.
+    uv_init
+        ``(n_vertices,)`` start chart in the mesh's units. Never mutated.
+    max_iterations
+        Iteration budget. ``0`` returns the start.
+    tolerance
+        The iterations stop once eight of them lower the energy above its rest value by less than
+        this fraction of it.
+
+    Returns
+    -------
+    wp.array[wp.vec2]
+        ``(n_vertices,)`` UV coordinates on ``vertices.device``. A vertex no face uses keeps its
+        start. Empty for an empty mesh.
+
+    Raises
+    ------
+    ValueError
+        If ``vertices`` is not ``wp.vec3``, ``faces`` not ``wp.int32`` with a multiple of three
+        entries or ``uv_init`` not ``wp.vec2`` with one entry per vertex, if ``max_iterations`` is
+        negative or ``tolerance`` negative or not finite, or if the factorization of the proxy
+        would exceed [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET].
+    RuntimeError
+        If ``vertices``, ``faces`` and ``uv_init`` are not on one device.
+
+    See Also
+    --------
+    [`low_distortion_parametrization`][ordito.parametrization.low_distortion_parametrization]
+        A start for any topology.
+    [`arap`][ordito.parametrization.arap]
+        The pinned ARAP map.
+    [`face_flipped_indices`][ordito.parametrization.face_flipped_indices]
+
+    Notes
+    -----
+    Ports ``igl::slim`` with ``SYMMETRIC_DIRICHLET`` and no constraints, which converges to the
+    same chart from a fold-free start. Each proxy is a ``wp.mat22d`` operator over the vertices,
+    factored by [`sparse_cholesky`][ordito.cholesky.sparse_cholesky] (device memory of the order of
+    its fill-in, held until the call returns); it is refactored every eight iterations and the
+    iterations between solve against the held factor with the current gradient, which the line
+    search keeps descending; libigl refactors every iteration. The proxy's weights are capped
+    where a face nears collapse,
+    which bounds the operator's conditioning and leaves the energy and the barrier exact.
+
+    The iteration runs in ``float64``. Under [`is_deterministic`][ordito.config.is_deterministic]
+    the chart repeats bit for bit; otherwise its last bits can move between calls on the CUDA
+    device.
+
+    Examples
+    --------
+    A cap started from a Tutte disk scaled to its area relaxes toward an isometry and stays
+    fold-free:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.sphere_cap(angle=1.4, subdivisions=4)
+    corners = faces.numpy().reshape(-1, 3)
+    surface = float(od.triangles.face_normals_and_areas(vertices, faces)[1].numpy().sum())
+
+
+    def chart_area(uv: np.ndarray) -> float:
+        e1 = uv[corners[:, 1]] - uv[corners[:, 0]]
+        e2 = uv[corners[:, 2]] - uv[corners[:, 0]]
+        return float(np.abs(e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0]).sum() / 2)
+
+
+    boundary = od.boundary.longest_boundary_loop(vertices, faces)
+    circle = od.parametrization.map_vertices_to_circle(vertices, boundary)
+    disk = od.parametrization.tutte(
+        vertices=vertices, faces=faces, boundary_indices=boundary, boundary_uv=circle
+    ).numpy()
+    start = wp.array(disk * np.sqrt(surface / chart_area(disk)), dtype=wp.vec2)
+    uv = od.parametrization.slim(vertices, faces, start)
+    print(od.parametrization.face_flipped_indices(uv, faces).shape)  # (0,)
+    print(f"{chart_area(uv.numpy()) / surface:.2f}")  # 1.01
+    ```
+    """
+    require_same_device(vertices=vertices, faces=faces, uv_init=uv_init)
+    if (
+        vertices.dtype is not wp.vec3
+        or faces.dtype is not wp.int32
+        or faces.size % 3 != 0
+        or uv_init.dtype is not wp.vec2
+        or uv_init.size != vertices.size
+    ):
+        raise ValueError(
+            "slim takes wp.vec3 vertices, a flat wp.int32 faces buffer of 3 * n_faces entries and "
+            f"a wp.vec2 uv_init of one entry per vertex, got {vertices.size} "
+            f"{vertices.dtype.__name__} vertices, {faces.size} {faces.dtype.__name__} faces and "
+            f"{uv_init.size} {uv_init.dtype.__name__} uv_init"
+        )
+    if max_iterations < 0:
+        raise ValueError(f"slim max_iterations must be >= 0, got {max_iterations}")
+    if not (math.isfinite(tolerance) and tolerance >= 0.0):
+        raise ValueError(f"slim tolerance must be finite and >= 0, got {tolerance}")
+    device = vertices.device
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
+    out_uv = _launch.empty(n_vertices, dtype=wp.vec2, device=device)
+    if n_vertices == 0:
+        return out_uv
+    if max_iterations == 0 or n_faces == 0:
+        wp.copy(out_uv, uv_init)
+        return out_uv
+
+    gradients, areas, pattern, held = _slim_system(vertices, faces)
+    offsets, columns, starts, order, anchor = pattern
+    n_keys = _TWO_LEVEL_FACE_KEYS * n_faces + n_vertices
+    analysis: od.cholesky.SparseCholesky | None = held
+    face_blocks = kernel_reduce.blocks_1d(n_faces)
+    start_areas, _ = _launch.block_partials(face_blocks, 1, wp.vec3d, device)
+    _launch.launch_tiled(
+        kernel_parametrization.start_chart_areas,
+        dim=face_blocks,
+        inputs=[vertices, faces, uv_init],
+        outputs=[start_areas],
+        block_dim=TILE_1D,
+        device=device,
+    )
+    chart = _launch.empty(n_vertices, dtype=wp.vec2d, device=device)
+    inverted = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_parametrization.slim_start,
+        dim=max(n_vertices, n_faces),
+        inputs=[uv_init, faces, gradients, areas, start_areas],
+        outputs=[chart, inverted],
+        device=device,
+    )
+
+    # The loop's buffers, none allocated inside it: the face terms, the proxy's blocks over the
+    # stiffness pattern, the step and its right-hand side, and a slot (or partials buffer) per
+    # iteration for the step bound, the trial energies, the accepted step and its energy.
+    vertex_faces, vertex_offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
+    metric = _launch.empty(n_faces, dtype=wp.mat22d, device=device)
+    force = _launch.empty(n_faces, dtype=wp.mat22d, device=device)
+    blocks = od.array.bsr_from_csr(
+        n_vertices,
+        n_vertices,
+        offsets,
+        columns,
+        _launch.empty(n_keys, dtype=wp.mat22d, device=device),
+    )
+    rhs = _launch.empty(n_vertices, dtype=wp.vec2d, device=device)
+    step = _launch.zeros(n_vertices, dtype=wp.vec2d, device=device)
+    rhs_flat = rhs.view(wp.float64).flatten()
+    step_flat = step.view(wp.float64).flatten()
+    bounds = _launch.full(
+        max_iterations, float(kernel_parametrization.SLIM_NO_BOUND), dtype=wp.float64, device=device
+    )
+    steps = _launch.zeros(3 * max_iterations, dtype=wp.float64, device=device)
+    accepted, energies = (
+        _launch.view(steps, 0, max_iterations),
+        _launch.view(steps, max_iterations, 3 * max_iterations),
+    )
+    partial_size = _launch.block_partials_size(face_blocks, 1)
+    partials = _launch.zeros(
+        partial_size * max_iterations,
+        dtype=kernel_parametrization.slim_trials_vector,
+        device=device,
+    )
+    factorization: od.cholesky.SparseCholesky | None = None
+    for iteration in range(max_iterations):
+        _launch.launch(
+            kernel_parametrization.slim_face_terms,
+            dim=n_faces,
+            inputs=[chart, faces, gradients, areas, inverted],
+            outputs=[metric, force],
+            device=device,
+        )
+        if iteration % _SLIM_REFACTOR_EVERY == 0:
+            _launch.launch(
+                kernel_parametrization.slim_block_values,
+                dim=n_keys,
+                inputs=[offsets, starts, order, gradients, metric, anchor, wp.int32(n_vertices)],
+                outputs=[blocks.values],
+                device=device,
+            )
+            expanded = od.array.scalar_expansion(blocks)
+            if factorization is None:
+                assert analysis is not None
+                factorization = analysis.with_expanded_operator(expanded)
+                # The scalar analysis has served: the proxy's factorization holds its own.
+                analysis = None
+                # Every iteration solves into the same two buffers: recorded once, replayed.
+                factorization.records_at_once = True
+            else:
+                factorization.refactor(expanded)
+        assert factorization is not None
+        _launch.launch(
+            kernel_parametrization.slim_rhs,
+            dim=n_vertices,
+            inputs=[faces, vertex_faces, vertex_offsets, gradients, force],
+            outputs=[rhs],
+            device=device,
+        )
+        factorization.solve(rhs_flat, step_flat)
+        _launch.launch_tiled(
+            kernel_parametrization.slim_step_bound,
+            dim=face_blocks,
+            inputs=[chart, step, faces, gradients, inverted, wp.int32(iteration)],
+            outputs=[bounds],
+            block_dim=TILE_1D,
+            device=device,
+        )
+        trial_partials = _launch.view(
+            partials, iteration * partial_size, (iteration + 1) * partial_size
+        )
+        _launch.launch_tiled(
+            kernel_parametrization.slim_trial_energies,
+            dim=face_blocks,
+            inputs=[chart, step, faces, gradients, areas, inverted, bounds, wp.int32(iteration)],
+            outputs=[trial_partials],
+            block_dim=TILE_1D,
+            device=device,
+        )
+        _launch.launch(
+            kernel_parametrization.slim_accept,
+            dim=1,
+            inputs=[trial_partials, bounds, wp.int32(iteration)],
+            outputs=[accepted, energies],
+            device=device,
+        )
+        _launch.launch(
+            kernel_parametrization.slim_advance,
+            dim=n_vertices,
+            inputs=[step, accepted, wp.int32(iteration), chart],
+            device=device,
+        )
+        if (iteration + 1) % _SLIM_REFACTOR_EVERY == 0 and iteration + 1 < max_iterations:
+            # Read back: whether the period's iterations still lowered the energy decides whether
+            # to issue more (read where the next refactor reads its pivots anyway).
+            first = 2 * (iteration + 1 - _SLIM_REFACTOR_EVERY)
+            period = read_values(energies, first, 2 * _SLIM_REFACTOR_EVERY)
+            if float(period[0]) - float(period[-1]) <= tolerance * float(period[-1]):
+                break
+    _launch.launch(
+        kernel_parametrization.slim_uv,
+        dim=n_vertices,
+        inputs=[chart, start_areas],
+        outputs=[out_uv],
+        device=device,
+    )
+    return out_uv
+
+
+def _slim_system(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
+) -> tuple[
+    wp.array[wp.vec2d, Literal[2]],
+    wp.array[wp.float64],
+    tuple[
+        wp.array[wp.int32],
+        wp.array[wp.int32],
+        wp.array[wp.int32],
+        wp.array[wp.int32],
+        wp.array[wp.float64],
+    ],
+    od.cholesky.SparseCholesky,
+]:
+    """
+    Return ``slim``'s fixed inputs: the faces' gradients and areas, the pattern and its analysis.
+
+    The pattern is the proximal stiffness's, ``(offsets, columns, starts, order, anchor)`` from
+    ``kernels/parametrization.chart_stiffness_setup`` and ``csr_from_keys``, over which the proxy's
+    ``wp.mat22d`` blocks are stored. The analysis is a factorization of that scalar stiffness
+    built ``expandable``: the proxy's derives its own from it, ordering the vertices rather than
+    their twice as many unknowns.
+    """
+    device = vertices.device
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
+    points = cast("wp.array[wp.vec3d]", od.array.astype(vertices, wp.vec3d))
+    n_keys = _TWO_LEVEL_FACE_KEYS * n_faces + n_vertices
+    keys, order = od.array.csr_key_buffers(n_keys, device)
+    gradients = odt.empty_2d((n_faces, 3), wp.vec2d, device=device)
+    areas = _launch.empty(n_faces, dtype=wp.float64, device=device)
+    setup_blocks = kernel_reduce.blocks_1d(max(n_faces, n_vertices))
+    trace, _ = _launch.block_partials(setup_blocks, 1, wp.float64, device)
+    _launch.launch_tiled(
+        kernel_parametrization.chart_stiffness_setup,
+        dim=setup_blocks,
+        inputs=[points, faces],
+        outputs=[gradients, areas, keys, order, trace],
+        block_dim=TILE_1D,
+        device=device,
+    )
+    offsets, columns, starts = od.array.csr_from_keys(keys, order, n_keys, n_vertices, n_vertices)
+    values = _launch.empty(n_keys, dtype=wp.float64, device=device)
+    anchor = _launch.empty(1, dtype=wp.float64, device=device)
+    _launch.launch(
+        kernel_parametrization.chart_stiffness_values,
+        dim=n_keys,
+        inputs=[offsets, starts, order, gradients, areas, trace, wp.int32(n_vertices)],
+        outputs=[values, anchor],
+        device=device,
+    )
+    stiffness = od.array.bsr_from_csr(n_vertices, n_vertices, offsets, columns, values)
+    analysis = od.cholesky.sparse_cholesky(stiffness, vertices, expandable=True)
+    return gradients, areas, (offsets, columns, starts, order, anchor), analysis
+
+
 def low_distortion_parametrization(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -1676,7 +2021,7 @@ def _proximal_arap(
     setup_blocks = kernel_reduce.blocks_1d(max(n_faces, n_points))
     trace, _ = _launch.block_partials(setup_blocks, 1, wp.float64, device)
     _launch.launch_tiled(
-        kernel_parametrization.proximal_system_setup,
+        kernel_parametrization.chart_stiffness_setup,
         dim=setup_blocks,
         inputs=[points, faces],
         outputs=[gradients, areas, keys, order, trace],
@@ -1687,7 +2032,7 @@ def _proximal_arap(
     values = _launch.empty(n_keys, dtype=wp.float64, device=device)
     anchor = _launch.empty(1, dtype=wp.float64, device=device)
     _launch.launch(
-        kernel_parametrization.proximal_system_values,
+        kernel_parametrization.chart_stiffness_values,
         dim=n_keys,
         inputs=[offsets, starts, order, gradients, areas, trace, wp.int32(n_points)],
         outputs=[values, anchor],

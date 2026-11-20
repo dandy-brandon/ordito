@@ -742,6 +742,8 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # bucket starts going in and is advanced to their ends, which the pairing kernel then reads as
     # bounds. The answer is ``out_buckets``.
     ("halfedge", "scatter_edge_buckets"): frozenset({"cursors"}),
+    # ``slim``'s chart moves in place by the accepted step: every kernel of the iteration reads it.
+    ("parametrization", "slim_advance"): frozenset({"chart"}),
     # ``min_distance_sq`` is the farthest-point sampler's running distance-to-the-chosen-set:
     # caller-allocated scratch the persistent block initializes and folds down one selection per
     # round. The answer is ``out_selected``; this buffer is the sweep's state.
