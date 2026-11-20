@@ -1224,7 +1224,9 @@ def slim(
         _launch.view(steps, 0, max_iterations),
         _launch.view(steps, max_iterations, 3 * max_iterations),
     )
-    partial_size = _launch.block_partials_size(face_blocks, 1)
+    # The step bound and the trial energies fold a face a lane where the device allows.
+    trial_width, trial_blocks = kernel_reduce.spanned_blocks_1d(n_faces, device)
+    partial_size = _launch.block_partials_size(trial_blocks, 1)
     partials = _launch.zeros(
         partial_size * max_iterations,
         dtype=kernel_parametrization.slim_trials_vector,
@@ -1268,8 +1270,8 @@ def slim(
         factorization.solve(rhs_flat, step_flat)
         _launch.launch_tiled(
             kernel_parametrization.slim_step_bound,
-            dim=face_blocks,
-            inputs=[chart, step, faces, gradients, inverted, wp.int32(iteration)],
+            dim=trial_blocks,
+            inputs=[chart, step, faces, gradients, inverted, iteration, trial_width],
             outputs=[bounds],
             block_dim=TILE_1D,
             device=device,
@@ -1279,8 +1281,8 @@ def slim(
         )
         _launch.launch_tiled(
             kernel_parametrization.slim_trial_energies,
-            dim=face_blocks,
-            inputs=[chart, step, faces, gradients, areas, inverted, bounds, wp.int32(iteration)],
+            dim=trial_blocks,
+            inputs=[chart, step, faces, gradients, areas, inverted, bounds, iteration, trial_width],
             outputs=[trial_partials],
             block_dim=TILE_1D,
             device=device,

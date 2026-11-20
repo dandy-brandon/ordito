@@ -821,12 +821,14 @@ def slim_step_bound(
     gradients: wp.array2d[wp.vec2d],
     inverted: wp.array[wp.int32],
     iteration: wp.int32,
+    width: wp.int32,
     out_bounds: wp.array[wp.float64],
 ) -> None:
     # The largest step inverting no barriered face into ``out_bounds[iteration]`` (filled with
-    # ``SLIM_NO_BOUND``), lane-strided: a block minimum, then ``atomic_min``, exact in any order.
+    # ``SLIM_NO_BOUND``), lane-strided over ``width`` faces a block (``spanned_blocks_1d``, as
+    # ``slim_trial_energies``): a block minimum, then ``atomic_min``, exact in any order.
     block, lane = wp.tid()
-    offset, count = block_chunk_1d(faces.shape[0] // 3, block)
+    offset, count = block_chunk(faces.shape[0] // 3, block, width)
     least = SLIM_NO_BOUND
     for k in range(lane, count, wp.block_dim()):
         f = offset + k
@@ -863,12 +865,16 @@ def slim_trial_energies(
     inverted: wp.array[wp.int32],
     bounds: wp.array[wp.float64],
     iteration: wp.int32,
+    width: wp.int32,
     out_partials: wp.array[slim_trials_vector],
 ) -> None:
     # The energy at every trial step at once, lane-strided over the faces into slot 0 of a
     # ``_launch.block_partials`` buffer: one launch and no readback for the whole line search.
+    # ``width`` faces a block (``reduce.spanned_blocks_1d``): a face is nine ``float64`` energies
+    # in a chain, so a lane walking the standard fold's sixteen held the launch at ~230 us from
+    # 9 k to 164 k faces (2026-11-20).
     block, lane = wp.tid()
-    offset, count = block_chunk_1d(faces.shape[0] // 3, block)
+    offset, count = block_chunk(faces.shape[0] // 3, block, width)
     bound = bounds[iteration]
     sums = slim_trials_vector()
     for k in range(lane, count, wp.block_dim()):
