@@ -1299,6 +1299,18 @@ def backward_error_exceeds(
 # (indefinite) the V-cycle cut a band's rounds by under 2x at 10-20x their cost (2 330 against
 # 2 277 rounds on one band), the march 1.03 -> 4-7 s. Against factored bands every preconditioner
 # keeps rows to 1e-7 or better.
+#
+# A block-aware coarse space for those vector bands was priced and declined (2026-11-20). Its best
+# case, every vertex rotated into a transport gauge so the expansion's blocks read ``-c I`` and the
+# scalar aggregation sees two decoupled Laplacians: the gauge needs each edge's weight sign (the
+# block's polar factor gives ``-R`` on a negative cotangent weight, ~10 % of ``dragon``'s edges,
+# which left a residual rotation of pi on 27-30 % of a band's edges), and with the heat weights'
+# signs only the holonomy seams remain (4-8 % of edges past 0.1 rad). The V-cycle then takes
+# 150-470 rounds against Jacobi's 740-2 200, at ~11x a Jacobi round's cost: 47-183 ms against
+# 14-59 ms a band on ``dragon`` and ``happy_buddha``, 3x on the hardest. Even scalar bands of that
+# size lose to Jacobi under the V-cycle (``dragon``'s heat 0.45 against 0.39 s), the meshes whose
+# bands are large enough either converge in ~70 Jacobi rounds (icospheres) or have no vector heat
+# system (``lucy`` is not edge-manifold), so no march would take it.
 
 
 @wp.kernel
