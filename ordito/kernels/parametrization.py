@@ -420,6 +420,43 @@ def face_rotation(
 
 
 @wp.func
+def chart_face_rotation(
+    faces: wp.array[wp.int32],
+    gradients: wp.array2d[wp.vec2d],
+    chart: wp.array2d[wp.float64],
+    fixed_mask: wp.array[wp.bool],
+    free_map: wp.array[wp.int32],
+    solution: wp.array2d[wp.float64],
+    f: wp.int32,
+) -> wp.vec2d:
+    # Face ``f``'s rotation fitted to the UV ``chart_vertex`` reads: the local step.
+    i0, i1, i2 = corner_triple(faces, f)
+    return face_rotation(
+        chart_vertex(chart, fixed_mask, free_map, solution, i0),
+        chart_vertex(chart, fixed_mask, free_map, solution, i1),
+        chart_vertex(chart, fixed_mask, free_map, solution, i2),
+        gradients[f, 1], gradients[f, 2],
+    )  # fmt: skip
+
+
+@wp.func
+def rotated_gradient(
+    faces: wp.array[wp.int32],
+    gradients: wp.array2d[wp.vec2d],
+    areas: wp.array[wp.float64],
+    rotation: wp.vec2d,
+    f: wp.int32,
+    v: wp.int32,
+) -> wp.vec2d:
+    # Face ``f``'s term of vertex ``v``'s ``rotation_row``: its ``rotation`` applied to the
+    # gradient at ``v``'s corner, times its area.
+    g = gradients[f, face_corner(faces, f, v)]
+    return areas[f] * wp.vec2d(
+        g[0] * rotation[0] - g[1] * rotation[1], g[0] * rotation[1] + g[1] * rotation[0]
+    )
+
+
+@wp.func
 def rotation_row(
     faces: wp.array[wp.int32],
     vertex_faces: wp.array[wp.int32],
@@ -436,21 +473,36 @@ def rotation_row(
     # face's rotation fitted to the UV ``chart_vertex`` reads (the local step, recomputed by each of
     # its corners) applied to the gradient at ``v``'s corner, in the adjacency row's order. For an
     # isometric flattening ``P`` of the face, ``A G G^T P = A g_k``: the rotated rest edges
-    # ``sum_e c_e R (P_i - P_j)`` libigl's element ARAP scatters, gathered per vertex.
+    # ``sum_e c_e R (P_i - P_j)`` libigl's element ARAP scatters, gathered per vertex. The proximal
+    # loop reads a table instead (``rotation_row_from_table``); ``arap_rhs`` and
+    # ``smoothing_start`` keep the refit, their launches 2 % of ``arap``'s device time on
+    # ``saddle`` and ``hemisphere`` and of a ``dragon`` chart (2026-11-20). Walking the row four
+    # faces a step (``array.row_chunk_entries``) cost the proximal step 1.2x: the step is
+    # ``float64``-bound, not load-bound.
     total = wp.vec2d()
     for s in range(vertex_offsets[v], vertex_offsets[v + 1]):
         f = vertex_faces[s]
-        i0, i1, i2 = corner_triple(faces, f)
-        rotation = face_rotation(
-            chart_vertex(chart, fixed_mask, free_map, solution, i0),
-            chart_vertex(chart, fixed_mask, free_map, solution, i1),
-            chart_vertex(chart, fixed_mask, free_map, solution, i2),
-            gradients[f, 1], gradients[f, 2],
-        )  # fmt: skip
-        g = gradients[f, face_corner(faces, f, v)]
-        total += areas[f] * wp.vec2d(
-            g[0] * rotation[0] - g[1] * rotation[1], g[0] * rotation[1] + g[1] * rotation[0]
-        )
+        rotation = chart_face_rotation(faces, gradients, chart, fixed_mask, free_map, solution, f)
+        total += rotated_gradient(faces, gradients, areas, rotation, f, v)
+    return total
+
+
+@wp.func
+def rotation_row_from_table(
+    faces: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    vertex_offsets: wp.array[wp.int32],
+    gradients: wp.array2d[wp.vec2d],
+    areas: wp.array[wp.float64],
+    rotations: wp.array[wp.vec2d],
+    v: wp.int32,
+) -> wp.vec2d:
+    # ``rotation_row`` with each face's rotation read from ``rotations`` (``face_rotations``),
+    # formed once a face rather than once a corner.
+    total = wp.vec2d()
+    for s in range(vertex_offsets[v], vertex_offsets[v + 1]):
+        f = vertex_faces[s]
+        total += rotated_gradient(faces, gradients, areas, rotations[f], f, v)
     return total
 
 
@@ -843,34 +895,59 @@ def proximal_system_values(
 
 
 @wp.kernel
-def proximal_rhs(
+def proximal_rotations(
     faces: wp.array[wp.int32],
-    vertex_faces: wp.array[wp.int32],
-    vertex_offsets: wp.array[wp.int32],
     gradients: wp.array2d[wp.vec2d],
-    areas: wp.array[wp.float64],
-    anchor: wp.array[wp.float64],
     moves: wp.array[wp.float64],
     iteration: wp.int32,
     settled: wp.float64,
     no_mask: wp.array[wp.bool],
     no_map: wp.array[wp.int32],
     chart: wp.array2d[wp.float64],
+    out_rotations: wp.array[wp.vec2d],
+) -> None:
+    # The proximal iteration's local step, a face a thread: each face's rotation, which
+    # ``proximal_rhs`` reads at every corner. A thread a vertex refitting each incident face's
+    # rotation itself spent its time in ``float64`` square roots and divisions three times over,
+    # on as few warps as the coarse mesh has vertices: the two launches take 0.43x the one's
+    # device time on bunny's coarse level (2026-11-20). Skipped once the loop has settled, as
+    # ``proximal_rhs`` is.
+    f = wp.int32(wp.tid())
+    if iteration > 0:
+        if moves[iteration - 1] <= settled:
+            return
+    out_rotations[f] = chart_face_rotation(faces, gradients, chart, no_mask, no_map, chart, f)
+
+
+@wp.kernel
+def proximal_rhs(
+    faces: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    vertex_offsets: wp.array[wp.int32],
+    gradients: wp.array2d[wp.vec2d],
+    areas: wp.array[wp.float64],
+    rotations: wp.array[wp.vec2d],
+    anchor: wp.array[wp.float64],
+    moves: wp.array[wp.float64],
+    iteration: wp.int32,
+    settled: wp.float64,
+    chart: wp.array2d[wp.float64],
     out_rhs: wp.array2d[wp.float64],
     out_previous: wp.array2d[wp.float64],
 ) -> None:
     # The proximal global step's right-hand side ``B + epsilon U``, with ``U`` kept in
-    # ``out_previous`` for the move test. Once an iteration has moved no vertex by more than
-    # ``settled`` the loop has converged and every later iteration leaves both buffers as they
-    # are: the solve then returns the chart unchanged and ``proximal_moves`` repeats the settled
-    # move, so the host may read the moves only every few iterations and still stop exactly.
+    # ``out_previous`` for the move test; ``B`` is ``rotation_row`` over ``proximal_rotations``'
+    # table. Once an iteration has moved no vertex by more than ``settled`` the loop has converged
+    # and every later iteration leaves both buffers as they are: the solve then returns the chart
+    # unchanged and ``proximal_moves`` repeats the settled move, so the host may read the moves
+    # only every few iterations and still stop exactly.
     v = wp.int32(wp.tid())
     if iteration > 0:
         if moves[iteration - 1] <= settled:
             return
     uv = chart_point(chart, v)
-    rotated = rotation_row(
-        faces, vertex_faces, vertex_offsets, gradients, areas, chart, no_mask, no_map, chart, v
+    rotated = rotation_row_from_table(
+        faces, vertex_faces, vertex_offsets, gradients, areas, rotations, v
     )
     store_chart_point(out_rhs, v, rotated + anchor[0] * uv)
     store_chart_point(out_previous, v, uv)
@@ -881,12 +958,14 @@ def proximal_moves(
     chart: wp.array2d[wp.float64],
     previous: wp.array2d[wp.float64],
     iteration: wp.int32,
+    width: wp.int32,
     out_moves: wp.array[wp.float64],
 ) -> None:
     # The largest coordinate move of the iteration, ``max |U_new - U_old|``, into the zeroed
-    # ``out_moves[iteration]`` (``atomic_max`` of non-negative values: exact in any order).
+    # ``out_moves[iteration]`` (``atomic_max`` of non-negative values: exact in any order), over
+    # blocks of ``width`` points (``reduce.spanned_blocks_1d``).
     block, lane = wp.tid()
-    offset, count = block_chunk_1d(chart.shape[1], block)
+    offset, count = block_chunk(chart.shape[1], block, width)
     largest = wp.float64(0.0)
     for k in range(lane, count, wp.block_dim()):
         i = offset + k

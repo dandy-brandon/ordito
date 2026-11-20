@@ -1700,15 +1700,24 @@ def _proximal_arap(
         _launch.empty((2, n_points), dtype=wp.float64, device=device), wp.float64
     )
     moves = _launch.zeros(iterations, dtype=wp.float64, device=device)
-    move_blocks = kernel_reduce.blocks_1d(n_points)
+    move_width, move_blocks = kernel_reduce.spanned_blocks_1d(n_points, device)
     # Every vertex is solved: no pinned mask for the local step's reader.
     no_mask, no_map = _no_pins(device)
+    rotations = _launch.empty(n_faces, dtype=wp.vec2d, device=device)
     for iteration in range(iterations):
+        _launch.launch(
+            kernel_parametrization.proximal_rotations,
+            dim=n_faces,
+            inputs=[faces, gradients, moves, wp.int32(iteration), wp.float64(settled), no_mask,
+                    no_map, chart],
+            outputs=[rotations],
+            device=device,
+        )  # fmt: skip
         _launch.launch(
             kernel_parametrization.proximal_rhs,
             dim=n_points,
-            inputs=[faces, vertex_faces, vertex_offsets, gradients, areas, anchor, moves,
-                    wp.int32(iteration), wp.float64(settled), no_mask, no_map, chart],
+            inputs=[faces, vertex_faces, vertex_offsets, gradients, areas, rotations, anchor,
+                    moves, wp.int32(iteration), wp.float64(settled), chart],
             outputs=[rhs, previous],
             device=device,
         )  # fmt: skip
@@ -1716,7 +1725,7 @@ def _proximal_arap(
         _launch.launch_tiled(
             kernel_parametrization.proximal_moves,
             dim=move_blocks,
-            inputs=[chart, previous, wp.int32(iteration)],
+            inputs=[chart, previous, wp.int32(iteration), wp.int32(move_width)],
             outputs=[moves],
             block_dim=TILE_1D,
             device=device,
