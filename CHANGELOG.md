@@ -22,6 +22,73 @@ from the one matching its tag — so prose sections do not belong between them.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-20
+
+### Added
+
+- `parametrization.slim_parametrization`: a whole unwrap to the least symmetric Dirichlet
+  distortion in one call, from a start it builds (`"free"`, `"harmonic"`, `"tutte"` or
+  `"lscm"`); any topology from the free start, closed meshes included. `parametrization.slim`
+  refines a chart you already have (scalable locally injective maps, as `igl::slim`): a face the
+  start has the right way round never folds.
+- `parametrization.low_distortion_parametrization`: a pin-free ARAP chart in the mesh's units for
+  any topology (handles, several boundary loops, several components), and
+  `parametrization.arap_parametrization`, ARAP iterated to convergence from a harmonic, Tutte or
+  LSCM start on any connected surface with a boundary.
+- `Trimesh` carries named per-vertex and per-face attributes (`vertex_attributes=`,
+  `face_attributes=`, `with_attributes`); `Trimesh.with_edit` carries them through any edit called
+  with `return_provenance=True`, and `submesh`, `split`, `+` and the transforms keep them.
+  `Trimesh` prints a summary of its sizes, device, attributes and cached values.
+- `Trimesh.with_vertices(refit=True)` refits the existing BVH for moved vertices instead of
+  building a new one.
+- `mask=` / `weights=` on `smoothing.filter_laplacian`, `filter_humphrey`, `filter_taubin`,
+  `filter_neighborhood_average` and `filter_scalar_laplacian`: smooth only a region, or blend
+  per vertex; a vertex of weight 0 stays in place.
+- `texture.rasterize_face_indices`: the face covering every pixel of a window of UV space (a
+  visibility buffer), with an optional per-face priority for overlaps.
+- `ray.first_hits`: every ray's first hit densely (location, distance, face, barycentrics),
+  optionally cast both ways.
+- `proximity.signed_distance_on_mesh(sign_mode="pseudonormal")`: signs by the angle-weighted
+  pseudonormal, as libigl's `PSEUDONORMAL`, so an open surface gets a meaningful sign; and
+  `proximity.closest_point_on_mesh(return_barycentric=True)`.
+- `registration.procrustes_from_offsets`: many weighted similarity fits over packed point sets in
+  one launch, with optional Huber reweighting rounds.
+- `registration.icp_point_to_plane(max_distance_factor=)`: rejects correspondences beyond a
+  multiple of each round's median distance.
+- `neighbors.query_ball_sum`: a per-query sum over each ball's neighbours (a value, or the
+  neighbours' offsets along a direction), storing no pair list.
+- `sample.sample_surface_in_ball`: uniform, Poisson-disk or blue-noise samples of the part of a
+  surface inside a ball, with no submesh.
+- `selection.vertex_hop_distance`: breadth-first hop counts from a vertex mask.
+- `polyline.polyline_resample(interpolation="catmull_rom")` (the centripetal curve) and
+  `polyline.polyline_upsample_count`.
+- `nonnegative_weights=` on `laplacian.cotmatrix_entries`, `laplacian.cotmatrix` and
+  `parametrization.harmonic`: clamps obtuse angles' cotangent weights at zero.
+- `cholesky.factorization_nbytes`: the peak memory a factorization would take, from the analysis
+  alone; `linalg.OperatorFactorization.exceeds_budget` and `iterate_rejected`.
+- `cholesky.SparseCholesky.solve(refine=False)`: one triangular solve with no refinement rounds,
+  for a caller that iterates to its own fixpoint.
+
+### Changed
+
+- **Breaking:** the boolean `region` argument of `smoothing.relax_keep_volume`, `relax_approx`
+  and `equalize_triangle_areas` is renamed `mask` (same position; a keyword call must be renamed).
+- A settled heat diffusion too large to factor within the memory budget is now solved band by
+  band outward from its source, every entry to its own precision, instead of returning a
+  far field that failed its accuracy check: `heat.heat_geodesic` and `log_map` are accurate on
+  very large meshes, and the 0.3.0 warning for that case is gone.
+- `parametrization.arap` charts move by rounding (within `3e-7`); it now shares the new charts'
+  ARAP pieces.
+- Faster sparse Cholesky solves on the CPU device (the whole triangular solve in one launch), and
+  so the heat, parametrization and hole-fill calls built on them.
+
+### Fixed
+
+- `polyline.polyline_upsample` no longer overflows `int32` on a very fine step (the CPU returned
+  a two-point answer, CUDA a shape error); a non-positive or non-finite `step_size` raises.
+- `reduce.quantile` and `median` (and every sort of float keys) rank NaN above `+inf` on CUDA as
+  on the CPU, where CUDA ranked it below `-inf`.
+
 ## [0.3.1] - 2026-11-17
 
 ### Fixed
@@ -221,7 +288,8 @@ The first public release.
 - Runs on CUDA when available and on Warp's CPU backend otherwise; see
   [Platform support](https://lucagrementieri.github.io/ordito/getting-started/#platform-support).
 
-[Unreleased]: https://github.com/lucagrementieri/ordito/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/lucagrementieri/ordito/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/lucagrementieri/ordito/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/lucagrementieri/ordito/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/lucagrementieri/ordito/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/lucagrementieri/ordito/compare/v0.1.0...v0.2.0
