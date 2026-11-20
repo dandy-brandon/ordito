@@ -1410,4 +1410,7 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   iterating to its own fixpoint does not need; the rest is the triangular solve's 14 levels of
   two or three latency-bound kernels. Open: a `solve` without refinement for such a loop (an API
   choice, outputs move by rounding), and a one-block triangular solve for a factor this small.
-  Numbers in `reference/component-status.md` ("Post-0.3.0 sweep").
+  Numbers in `reference/component-status.md` ("Post-0.3.0 sweep"). `slim`'s held-factor steps
+  are the same solve: since its line search folds a face a lane (2026-11-20) the replayed solves
+  are 6 of 16 ms on `saddle_small` (~230 us each, 24 iterations) and 24 of 60 ms on a 164 k-face
+  hemisphere, the refactors another ~15 ms there; its own kernels are the rest.
