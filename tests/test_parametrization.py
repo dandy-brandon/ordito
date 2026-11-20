@@ -886,6 +886,83 @@ def test_slim_keeps_every_face_the_start_had_the_right_way_round(
     )
 
 
+def test_slim_moves_a_start_with_faces_squashed_nearly_flat(
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
+):
+    """
+    Not a library comparison: a start whose faces are crushed but not inverted still descends.
+
+    Six interior vertices of a fold-free start are moved 99.9999 % of the way to a neighbour, so
+    the faces around them keep their orientation but are squashed a millionfold, as a Tutte map
+    of a surface with a handle squashes some. Barriered with the energy's own gradient against a
+    capped stiffness, such a face's step bound held every step to ~1e-16 and the chart stood
+    still; either the collapsed-face rule or the capped gradient keeps it moving, and the chart's
+    energy must fall by orders of magnitude.
+    """
+    mesh_tm, mesh_wp = saddle_graded
+    vertices_np, faces_np = mesh_igl(mesh_tm)
+    start_np = _area_scaled_tutte(mesh_wp).numpy().astype(np.float64)
+    boundary_np = od.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices).numpy()
+    interior_np = np.setdiff1d(np.arange(len(start_np)), boundary_np)
+    for v in np.random.default_rng(5).choice(interior_np, size=6, replace=False):
+        neighbour = faces_np[np.flatnonzero((faces_np == v).any(1))[0]]
+        other = neighbour[neighbour != v][0]
+        start_np[v] += 0.999999 * (start_np[other] - start_np[v])
+    assert (_signed_chart_areas(start_np.astype(np.float32).astype(np.float64), faces_np) > 0).all()
+    start_wp = points_to_warp_uv(start_np, mesh_wp.device)
+
+    uv_np = (
+        od.parametrization.slim(mesh_wp.points, mesh_wp.indices, start_wp)
+        .numpy()
+        .astype(np.float64)
+    )
+
+    start_energy = _symmetric_dirichlet(vertices_np, faces_np, start_wp.numpy().astype(np.float64))
+    assert np.abs(uv_np - start_np).max() > 1e-2
+    assert _symmetric_dirichlet(vertices_np, faces_np, uv_np).sum() < 1e-3 * start_energy.sum()
+
+
+def test_slim_opens_a_band_the_start_squashes_flat(
+    sphere_irregular_cap: tuple[tm.Trimesh, wp.Mesh],
+):
+    """
+    Not a library comparison: faces the start squashes past ``SLIM_COLLAPSED`` are unbarriered.
+
+    A fold-free Tutte start whose middle band is compressed a hundred-thousandfold across its
+    width, the rest shifted to stay attached: every face keeps its orientation, as when a Tutte
+    map of a jaw scan crushes a whole arm of the arch. Barriered, those faces' capped stiffness
+    lets each step crush them while their bound cuts the step to nothing: the chart moved 0.025
+    and its energy stayed ~5e9 (CPU and CUDA). Held like inverted faces they open up, and the
+    chart reaches the energy a clean Tutte start reaches (95.4; 95.8 here).
+    """
+    mesh_tm, mesh_wp = sphere_irregular_cap
+    vertices_np, faces_np = mesh_igl(mesh_tm)
+    start_np = _area_scaled_tutte(mesh_wp).numpy().astype(np.float64)
+    x = start_np[:, 0]
+    centre = np.median(x)
+    band = np.abs(x - centre) < 0.15 * np.ptp(x)
+    low, high = x[band].min(), x[band].max()
+    squash = 1e-5
+    start_np[:, 0] = np.where(
+        band,
+        centre + (x - centre) * squash,
+        np.where(x > centre, x - (high - centre) * (1 - squash), x + (centre - low) * (1 - squash)),
+    )
+    start_wp = points_to_warp_uv(start_np, mesh_wp.device)
+    start_used = start_wp.numpy().astype(np.float64)
+    assert (_signed_chart_areas(start_used, faces_np) > 0).all()
+
+    uv_np = (
+        od.parametrization.slim(mesh_wp.points, mesh_wp.indices, start_wp)
+        .numpy()
+        .astype(np.float64)
+    )
+
+    energy = _symmetric_dirichlet(vertices_np, faces_np, uv_np)
+    assert _symmetric_dirichlet(vertices_np, faces_np, start_used).sum() > 1e11
+    assert energy[np.isfinite(energy)].sum() < 200.0
+
+
 def test_slim_returns_a_clockwise_start_with_its_winding(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
     """
     Ordito against ordito: a mirrored start is refined as the start and mirrored back.

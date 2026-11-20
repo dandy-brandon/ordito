@@ -561,19 +561,29 @@ def arap_rhs(
 # ``A_f |W_f (J_f - R_f)|^2`` with ``W_f = U diag(w) U^T``, ``w_i^2 = (s_i - s_i^-3) / (s_i - 1)``,
 # whose gradient at the current chart is the energy's own; its Hessian over the vertices is the
 # ``wp.mat22d`` operator ``sum_f A_f (G_f G_f^T) (x) W_f^2`` over the stiffness pattern, plus the
-# proximal anchor. A step solves that operator against the energy's gradient (a Newton step on the
-# proxy); the operator is refactored every few steps and the steps between take the held factor,
-# against the exact gradient, so the line search still descends. Charts are ``(n,)`` ``wp.vec2d``,
+# proximal anchor. A step solves that operator against the proxy's gradient (a Newton step on the
+# proxy, the energy's own gradient wherever the weight is uncapped); the operator is refactored
+# every few steps and the steps between take the held factor against the current gradient, so the
+# line search still descends. Charts are ``(n,)`` ``wp.vec2d``,
 # the interleaved unknowns of the operator's scalar expansion. Every per-vertex and per-entry sum
 # is a gather in a fixed order; the trial energies fold through ``store_block_total``.
 SLIM_TRIALS = 8
 # The proxy's squared weight is 4 at rest and grows as ``s^-3`` as a face collapses; capped so the
-# operator stays factorable (a face of ``s ~ 1e-8`` gave ``1e24`` and an indefinite pivot). The
-# energy and the barrier are exact whatever the cap.
-SLIM_WEIGHT_CAP = wp.float64(1.0e6)
+# operator stays factorable (a face of ``s ~ 1e-8`` gave ``1e24`` and an indefinite pivot), and
+# the step's gradient with it (``slim_face_terms``). The energy and the barrier are exact whatever
+# the cap.
+SLIM_WEIGHT_CAP = wp.float64(1.0e9)
 # Of the largest step that inverts no face, the line search tries this fraction and its halvings.
 SLIM_STEP_FRACTION = wp.float64(0.9)
 SLIM_NO_BOUND = wp.float64(1.0e30)
+# A face of the start squashed below this singular value, where its weight would pass the cap
+# (``SLIM_WEIGHT_CAP ** (-1 / 3)``), is held like an inverted one, by the unbarriered ARAP term.
+# Barriered, its capped stiffness lets the step crush it while its bound cuts the step to nothing:
+# SLIM from Tutte, harmonic and LSCM starts of jaw scans with handles stopped where it began on 4
+# of 32 runs (2026-11-20, 8 crops); tying the threshold to the cap ended every stall, at 1e-3
+# with fewer unbarriered faces (inverted after: Tutte median 69, against 85 at 1e-2 with a cap of
+# 1e6). A cap of 1e6 alone left 1e-4 and 1e-3 thresholds stalling.
+SLIM_COLLAPSED = wp.float64(1.0e-3)
 slim_trials_vector = wp.types.vector(length=SLIM_TRIALS + 1, dtype=wp.float64)
 
 
@@ -661,8 +671,9 @@ def slim_start(
 ) -> None:
     # Over ``max(n_vertices, n_faces)``: the start as a ``float64`` chart, mirrored in v when its
     # faces wind clockwise on the whole (``start_chart_areas``' signed area), since the barrier
-    # keeps every face's orientation; and each face's flag, set for a face of no area or one
-    # inverted in the (mirrored) start, which the barrier then leaves free.
+    # keeps every face's orientation; and each face's flag, set for a face of no area, one
+    # inverted in the (mirrored) start or one squashed past ``SLIM_COLLAPSED``, which the barrier
+    # then leaves free.
     t = wp.int32(wp.tid())
     mirror = wp.where(start_areas[0][2] < wp.float64(0.0), wp.float64(-1.0), wp.float64(1.0))
     if t < uv.shape[0]:
@@ -679,8 +690,13 @@ def slim_start(
             wp.vec2d(wp.float64(u2[0]), wp.float64(u2[1])),
             gradients[t, 0], gradients[t, 1], gradients[t, 2],
         )  # fmt: skip
+        squashed = wp.abs(signed_svd2(j)[1]) < SLIM_COLLAPSED
         out_inverted[t] = wp.where(
-            areas[t] == wp.float64(0.0) or mirror * wp.determinant(j) <= wp.float64(0.0), 1, 0
+            areas[t] == wp.float64(0.0)
+            or mirror * wp.determinant(j) <= wp.float64(0.0)
+            or squashed,
+            1,
+            0,
         )
 
 
@@ -694,10 +710,11 @@ def slim_face_terms(
     out_metric: wp.array[wp.mat22d],
     out_force: wp.array[wp.mat22d],
 ) -> None:
-    # A face's proxy metric ``A W^2`` (the Hessian block's factor) and its energy gradient factor
-    # ``A U diag(s - s^-3) V^T`` (half ``d energy / d J``; a vertex's gradient is the sum of its
-    # faces' factor times the corner's shape gradient). A start-inverted face takes the ARAP
-    # proxy, ``4 A I`` and ``4 A (J - R)``.
+    # A face's proxy metric ``A W^2`` (the Hessian block's factor) and its gradient factor
+    # ``A U diag(w^2 (s - 1)) V^T`` (half ``d proxy / d J``, the energy's ``A U diag(s - s^-3) V^T``
+    # where the weight is uncapped; a vertex's gradient is the sum of its faces' factor times the
+    # corner's shape gradient). A start-inverted face takes the ARAP proxy, ``4 A I`` and
+    # ``4 A (J - R)``.
     f = wp.int32(wp.tid())
     area = areas[f]
     j = chart_jacobian(chart, faces, gradients, f)
@@ -713,9 +730,14 @@ def slim_face_terms(
     u = rotation2(svd[2])
     vt = rotation2(svd[3] - svd[2])
     out_metric[f] = area * (u * wp.diag(wp.vec2d(w1, w2)) * wp.transpose(u))
-    d1 = s1 - wp.float64(1.0) / (s1 * s1 * s1)
-    d2 = s2 - wp.float64(1.0) / (s2 * s2 * s2)
-    out_force[f] = area * (u * wp.diag(wp.vec2d(d1, d2)) * vt)
+    # The proxy's gradient ``w^2 (s - 1)``: the energy's own ``s - s^-3`` wherever the weight is
+    # uncapped, and capped with it near collapse. The energy's own there (``~s^-3``) against the
+    # capped stiffness made a nearly collapsed face's step ~1e18 too long, which the step bound
+    # then cut to nothing for the whole chart (a Tutte start of a jaw scan with handles did not
+    # move). A start's collapsed faces are now unbarriered (``SLIM_COLLAPSED``), so this matters
+    # for a face that collapses during the iteration.
+    one = wp.float64(1.0)
+    out_force[f] = area * (u * wp.diag(wp.vec2d(w1 * (s1 - one), w2 * (s2 - one))) * vt)
 
 
 @wp.kernel
@@ -758,7 +780,7 @@ def slim_rhs(
     force: wp.array[wp.mat22d],
     out_rhs: wp.array[wp.vec2d],
 ) -> None:
-    # Minus half the energy's gradient at each vertex, ``-sum_f F_f g_k``, gathered over the
+    # Minus half the proxy's gradient at each vertex, ``-sum_f F_f g_k``, gathered over the
     # adjacency row in its order: the step's right-hand side.
     v = wp.int32(wp.tid())
     total = wp.vec2d()

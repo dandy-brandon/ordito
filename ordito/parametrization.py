@@ -8,7 +8,8 @@ boundary and solve for the interior:
 injective map for a convex boundary), and [`arap`][ordito.parametrization.arap] alternates local
 rotation fits with a global solve to trade conformality for low area distortion.
 [`slim`][ordito.parametrization.slim] frees the boundary and refines a start toward the least
-symmetric Dirichlet distortion, never inverting a face the start had the right way round.
+symmetric Dirichlet distortion, never inverting a face the start had the right way round and
+not squashed flat.
 [`lscm`][ordito.parametrization.lscm] instead pins only two vertices and lets the boundary find its
 own shape, minimizing conformal rather than Dirichlet energy.
 [`low_distortion_parametrization`][ordito.parametrization.low_distortion_parametrization]
@@ -1041,7 +1042,8 @@ def slim(
     energy's reweighted ARAP proxy, whose gradient at the current chart is the energy's own, and
     moves along that step only as far as no face inverts and the energy does not rise. The energy
     grows without bound as a face collapses, so it trades stretch against compression evenly and
-    never folds a face the start had the right way round. No vertex is pinned and the boundary is
+    never folds a face the start had the right way round (and not squashed flat, below). No vertex
+    is pinned and the boundary is
     free; the chart keeps the start's position and rotation up to the drift of its optimization.
 
     The start must be a chart of the mesh in its own units (a free chart such as
@@ -1050,7 +1052,9 @@ def slim(
     energy is not scale-invariant, and its minimum is an isometry wherever one exists. A start
     winding clockwise on the whole is refined mirrored and returned with its winding. A face
     inverted in the start, as a surface with a handle forces somewhere, is held by the ARAP term
-    ``4 A_f |J_f - R_f|^2`` instead, which has no barrier and may right it.
+    ``4 A_f |J_f - R_f|^2`` instead, which has no barrier and may right it; so is a face the start
+    squashes by more than a thousandfold, which the barrier, held at the edge of ``float64``,
+    would freeze.
 
     Parameters
     ----------
@@ -1098,8 +1102,9 @@ def slim(
     its fill-in, held until the call returns); it is refactored every eight iterations and the
     iterations between solve against the held factor with the current gradient, which the line
     search keeps descending; libigl refactors every iteration. The proxy's weights are capped
-    where a face nears collapse,
-    which bounds the operator's conditioning and leaves the energy and the barrier exact.
+    where a face nears collapse, and its gradient with them, which bounds the operator's
+    conditioning and keeps a nearly collapsed face of the start (as a Tutte map of a surface with
+    a handle has) from cutting every step to nothing; the energy and the barrier stay exact.
 
     The iteration runs in ``float64``. Under [`is_deterministic`][ordito.config.is_deterministic]
     the chart repeats bit for bit; otherwise its last bits can move between calls on the CUDA
