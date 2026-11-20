@@ -521,11 +521,14 @@ def ordered_float_bits(x: wp.float32) -> wp.uint32:
     ``-0.0`` maps onto ``+0.0`` and every ``NaN`` onto the one quiet ``NaN``, above ``+inf``: the
     order ``numpy.sort`` gives, with equal values tying.
     """
+    # A NaN takes the key of the positive quiet NaN directly: ``wp.nan`` carries the sign bit on
+    # CUDA (``0xffc00000``) and not on the CPU (``0x7fc00000``), so a key formed from it ranked
+    # every NaN below ``-inf`` on CUDA alone.
+    if wp.isnan(x):
+        return wp.uint32(0xFFC00000)
     value = x
     if value == wp.float32(0.0):
         value = wp.float32(0.0)
-    if wp.isnan(value):
-        value = wp.float32(wp.nan)
     bits = wp.cast(value, wp.uint32)
     if (bits & UINT32_SIGN_BIT) != wp.uint32(0):
         return ~bits
@@ -534,13 +537,13 @@ def ordered_float_bits(x: wp.float32) -> wp.uint32:
 
 @wp.func
 def ordered_double_bits(x: wp.float64) -> wp.uint64:
-    # ``ordered_float_bits`` for a ``float64``: ``-0.0`` onto ``+0.0``, every ``NaN`` onto the quiet
-    # one above ``+inf``.
+    # ``ordered_float_bits`` for a ``float64``: ``-0.0`` onto ``+0.0``, every ``NaN`` onto the
+    # positive quiet one above ``+inf`` (taken directly, as there: ``wp.nan``'s sign is per device).
+    if wp.isnan(x):
+        return wp.uint64(0xFFF8000000000000)
     value = x
     if value == wp.float64(0.0):
         value = wp.float64(0.0)
-    if wp.isnan(value):
-        value = wp.float64(wp.nan)
     bits = wp.cast(value, wp.uint64)
     sign = wp.uint64(1) << wp.uint64(63)
     if (bits & sign) != wp.uint64(0):

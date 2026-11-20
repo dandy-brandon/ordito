@@ -1359,7 +1359,9 @@ def quantile(array: odt.ArrayNdScalar, q: float) -> float:
     Finds the two order statistics around the fractional rank ``q * (n - 1)`` on the device (a
     radix select, or a radix sort of a copy) and interpolates linearly between them, as NumPy's
     default method does, so ``q = 0`` is the minimum, ``q = 1`` the maximum and ``q = 0.5`` the
-    [`median`][ordito.reduce.median]. The result is always a Python ``float``.
+    [`median`][ordito.reduce.median]. The result is always a Python ``float``. A ``NaN`` ranks
+    above every number, where [`numpy.sort`][] places it, so a quantile whose order statistics
+    are numbers is theirs (``numpy.quantile`` returns ``NaN`` for any quantile of such an array).
 
     Parameters
     ----------

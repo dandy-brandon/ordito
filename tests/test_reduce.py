@@ -1668,6 +1668,35 @@ def test_reduce_quantile_matches_numpy(
         assert np.isclose(od_reduce.median(values_wp), np.median(values_np), rtol=1e-5, atol=1e-5)
 
 
+# 9 002 values take the CUDA radix select, 37 the sort (as in the test above).
+@pytest.mark.parametrize("n", [37, 9002])
+@pytest.mark.parametrize("dtype_np", [np.float32, np.float64])
+def test_reduce_quantile_ranks_nan_last(device: str, dtype_np: type, n: int) -> None:
+    """
+    Class B: ``reduce.quantile`` of an array holding ``NaN`` reads ``numpy.sort``'s order.
+
+    ``numpy.sort`` puts ``NaN`` last; the named transform is reading the quantile off that order,
+    since ``np.quantile`` itself returns ``NaN`` for every quantile here. About a tenth of the
+    values are ``NaN``, so the low quantiles are numbers and the top one is ``NaN``. The bug this
+    excludes: a ``NaN`` key formed from ``wp.nan``, which carries the sign bit on CUDA and so
+    ranked every ``NaN`` below ``-inf`` there (``kernels/array.ordered_float_bits``): the CUDA
+    select returned ``NaN`` for the 2 % quantile while the CPU returned the number.
+    """
+    rng = np.random.default_rng(93)
+    values_np = rng.standard_normal(n).astype(dtype_np)
+    values_np[rng.permutation(n)[: n // 10]] = np.nan
+    sorted_np = np.sort(values_np).astype(np.float64)
+    values_wp = wp.array(values_np, device=device)
+    for q in (0.0, 0.02, 0.5, 0.85):
+        rank = q * (n - 1)
+        low = int(np.floor(rank))
+        high = min(low + 1, n - 1)
+        expected = sorted_np[low] + (rank - low) * (sorted_np[high] - sorted_np[low])
+        assert np.isfinite(expected)
+        assert np.isclose(od_reduce.quantile(values_wp, q), expected, rtol=1e-5, atol=1e-5)
+    assert np.isnan(od_reduce.quantile(values_wp, 1.0))
+
+
 @pytest.mark.parametrize("n", [1, 6, 7])
 def test_reduce_median_is_the_half_quantile(device: str, n: int) -> None:
     """Ordito against ordito: ``median`` is ``quantile(0.5)`` bit for bit, ``n = 1`` included."""
