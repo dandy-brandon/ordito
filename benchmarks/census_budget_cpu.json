@@ -7495,6 +7495,30 @@
    "readback": 1
   }
  },
+ "benchmarks/test_texture.py::test_rasterize_face_indices[sphere_small-ordito-cpu-index-2048]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 3
+  }
+ },
+ "benchmarks/test_texture.py::test_rasterize_face_indices[sphere_small-ordito-cpu-index-512]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 3
+  }
+ },
+ "benchmarks/test_texture.py::test_rasterize_face_indices[sphere_small-ordito-cpu-priority-2048]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 3
+  }
+ },
+ "benchmarks/test_texture.py::test_rasterize_face_indices[sphere_small-ordito-cpu-priority-512]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 3
+  }
+ },
  "benchmarks/test_texture.py::test_remap_attribute_from_uv_linear[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 1,

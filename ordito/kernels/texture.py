@@ -4,6 +4,7 @@ from ordito.kernels.array import (
     declare_map_signatures,
     map_probe,
     map_probe_single,
+    ordered_float_bits,
     update_argmax_lowest_index,
 )
 from ordito.kernels.predicates import barycentric_2d
@@ -125,6 +126,13 @@ def _pixel_barycentric(
 
 
 @wp.func
+def _pixel_covered(q0: wp.vec2, q1: wp.vec2, q2: wp.vec2, row: wp.int32, col: wp.int32) -> wp.bool:
+    """Return whether pixel ``(row, col)``'s centre lies in the pixel-space triangle."""
+    bary = barycentric_2d(q0, q1, q2, wp.vec2(wp.float32(col), wp.float32(row)))
+    return _covered(bary)
+
+
+@wp.func
 def _claim_pixel(
     q0: wp.vec2,
     q1: wp.vec2,
@@ -135,12 +143,11 @@ def _claim_pixel(
     out_owner: wp.array2d[wp.int32],
 ) -> None:
     """Bid face ``f`` for pixel ``(row, col)`` when its pixel-space triangle covers the centre."""
-    bary = barycentric_2d(q0, q1, q2, wp.vec2(wp.float32(col), wp.float32(row)))
     # A bare ``wp.atomic_min``, its result unread, is issued and not waited on. Reading the owner
     # first to skip a beaten bid (``kernels/array.atomic_min_unless_below``) waits on that load at
     # every covered pixel: 1.1-1.25x the pass on ``sphere_small`` to ``happy_buddha``, 1.7-1.8x on
     # ``lucy`` at 2048-4096, whose projection stacks dozens of faces a pixel.
-    if _covered(bary):
+    if _pixel_covered(q0, q1, q2, row, col):
         wp.atomic_min(out_owner, row, col, f)
 
 
@@ -214,6 +221,31 @@ OWNER_SLICE_WIDTHS = 2.0
 OWNER_MAX_SLICES_LOG2 = 6
 
 
+@wp.func
+def _first_slice_pixel(
+    lane: wp.int32, row_lo: wp.int32, col_lo: wp.int32, col_hi: wp.int32
+) -> tuple[wp.int32, wp.int32]:
+    """Return a raster window's ``lane``-th pixel, row-major: where a sliced pass starts."""
+    width = col_hi - col_lo + 1
+    return row_lo + lane // width, col_lo + lane % width
+
+
+@wp.func
+def _next_slice_pixel(
+    row: wp.int32, col: wp.int32, slices: wp.int32, col_lo: wp.int32, col_hi: wp.int32
+) -> tuple[wp.int32, wp.int32]:
+    """Return the pixel ``slices`` places on from ``(row, col)`` in the window's row-major order."""
+    # Stepping the pixel position beats a ``//`` and ``%`` of a running index a pixel (1.1-1.2x)
+    # and a lane grid of nested row and column loops (1.05-1.1x).
+    width = col_hi - col_lo + 1
+    next_row = row
+    next_col = col + slices
+    while next_col > col_hi:
+        next_col -= width
+        next_row += 1
+    return next_row, next_col
+
+
 @wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
 def rasterize_owner_sliced(
     uv: wp.array[wp.vec2],
@@ -237,18 +269,10 @@ def rasterize_owner_sliced(
     if t < (faces.shape[0] // 3) * slices:
         f = t // slices
         q0, q1, q2, row_lo, row_hi, col_lo, col_hi = _face_pixel_window(uv, faces, f, resolution)
-        width = col_hi - col_lo + 1
-        lane = t - f * slices
-        # Stepping the pixel position beats a ``//`` and ``%`` of a running index a pixel (1.1-1.2x)
-        # and a lane grid of nested row and column loops (1.05-1.1x).
-        row = row_lo + lane // width
-        col = col_lo + lane % width
+        row, col = _first_slice_pixel(t - f * slices, row_lo, col_lo, col_hi)
         while row <= row_hi:
             _claim_pixel(q0, q1, q2, row, col, f, out_owner)
-            col += slices
-            while col > col_hi:
-                col -= width
-                row += 1
+            row, col = _next_slice_pixel(row, col, slices, col_lo, col_hi)
     if t < uv.shape[0]:
         _check_vertex(uv, labels, t, out_flags)
 
@@ -317,6 +341,171 @@ def rasterize_label_pixels(
     update_argmax_lowest_index(best_weight, best_label, s1, l1)
     update_argmax_lowest_index(best_weight, best_label, s2, l2)
     out_labels[row, col] = best_label
+
+
+# ``rasterize_face_indices``: a visibility buffer over any axis-aligned window of UV space. Its
+# owner pass is ``rasterize_owner``'s walk and coverage rule (``_pixel_covered``, edge-inclusive
+# pixel centres), and differs from it in three ways that keep them two kernels: the pixel frame is
+# the caller's window, formed in ``float64`` a vertex ahead of it (``window_pixel``), where the
+# texture's is ``[0, 1]`` at ``resolution`` and flipped, so the texture images keep their bits;
+# the bid is a ``uint64`` key whose high word orders the face's priority, where the texture's is
+# the face index alone; and it checks no input range, since a window takes UV in any units.
+NO_FACE_KEY = wp.uint64(0xFFFFFFFFFFFFFFFF)
+"""Key of a pixel no face covers: above every face's key, so ``wp.atomic_min`` replaces it."""
+
+
+@wp.func
+def window_pixel(
+    uv: wp.vec2, origin: wp.vec2d, inverse_pixel_size: wp.float64, rows: wp.float64
+) -> wp.vec2:
+    """
+    Map a UV into a window's pixel frame, pixel ``(i, j)``'s centre at ``(j, i)``.
+
+    ``origin`` is the window's lower-left corner and row ``0`` its top, as in ``_uv_to_pixel``'s
+    ``[0, 1]`` frame (``row = (1 - v) * H - 0.5``): ``row = rows - (v - v0) / pixel_size - 0.5``.
+    """
+    # Formed in float64 and rounded once, so the float32 the coverage test works in is relative to
+    # the window, not to the UV origin, and a UV far from it keeps its sub-pixel position. Mapped a
+    # vertex at a time ahead of the face pass (``wp.map``): formed in the face pass, a corner a
+    # thread a slice, the float64 work held it at 2.4x (multiplying by the reciprocal) to 6x
+    # (dividing by the pixel size) its float32-frame time on a projected icosphere(8) at 2048.
+    return wp.vec2(
+        wp.float32((wp.float64(uv[0]) - origin[0]) * inverse_pixel_size - wp.float64(0.5)),
+        wp.float32(rows - (wp.float64(uv[1]) - origin[1]) * inverse_pixel_size - wp.float64(0.5)),
+    )
+
+
+@wp.func
+def _finite_point(q: wp.vec2) -> wp.bool:
+    return wp.isfinite(q[0]) and wp.isfinite(q[1])
+
+
+@wp.func
+def _window_span(
+    lower: wp.float32, upper: wp.float32, count: wp.int32
+) -> tuple[wp.int32, wp.int32]:
+    """Return the centres ``[lo, hi]`` of ``count`` an interval may cover, ``hi < lo`` if none."""
+    # Bounded in float before the integer conversion, which is undefined past the int32 range.
+    lo = wp.floor(lower)
+    hi = wp.ceil(upper)
+    if hi < wp.float32(0.0) or lo > wp.float32(count - 1):
+        return wp.int32(0), wp.int32(-1)
+    return (wp.int32(wp.max(lo, wp.float32(0.0))), wp.int32(wp.min(hi, wp.float32(count - 1))))
+
+
+@wp.func
+def _face_window_pixels(
+    pixels: wp.array[wp.vec2],
+    faces: wp.array[wp.int32],
+    f: wp.int32,
+    rows: wp.int32,
+    columns: wp.int32,
+) -> tuple[wp.vec2, wp.vec2, wp.vec2, wp.int32, wp.int32, wp.int32, wp.int32]:
+    """
+    Face ``f``'s corners in the window's pixel frame and the pixels to test for it.
+
+    ``pixels`` holds every vertex in that frame (``window_pixel``). The span is
+    ``(row_lo, row_hi, col_lo, col_hi)``, empty (``row_hi < row_lo``, one column so a sliced
+    pass's width stays positive) for a face off the window or with a non-finite corner, which
+    covers nothing.
+    """
+    q0, q1, q2 = face_vertices(pixels, faces, f)
+    if not (_finite_point(q0) and _finite_point(q1) and _finite_point(q2)):
+        return q0, q1, q2, wp.int32(0), wp.int32(-1), wp.int32(0), wp.int32(0)
+    lower = wp.min(q0, wp.min(q1, q2))
+    upper = wp.max(q0, wp.max(q1, q2))
+    row_lo, row_hi = _window_span(lower[1], upper[1], rows)
+    col_lo, col_hi = _window_span(lower[0], upper[0], columns)
+    if col_hi < col_lo:
+        return q0, q1, q2, wp.int32(0), wp.int32(-1), wp.int32(0), wp.int32(0)
+    return q0, q1, q2, row_lo, row_hi, col_lo, col_hi
+
+
+@wp.func
+def _face_key(priority: wp.array[wp.float32], f: wp.int32) -> wp.uint64:
+    """
+    Face ``f``'s bid: its priority's ordered bits above its index, so the least pair wins.
+
+    With no priorities (``priority`` empty) the high word is zero and the lowest face wins.
+    ``ordered_float_bits`` ties ``-0.0`` with ``+0.0`` and ranks every ``NaN`` above ``+inf``.
+    """
+    high = wp.uint64(0)
+    if priority.shape[0] > 0:
+        high = wp.uint64(ordered_float_bits(priority[f]))
+    return (high << wp.uint64(32)) | wp.uint64(f)
+
+
+@wp.func
+def _claim_window_pixel(
+    q0: wp.vec2,
+    q1: wp.vec2,
+    q2: wp.vec2,
+    row: wp.int32,
+    col: wp.int32,
+    key: wp.uint64,
+    out_keys: wp.array2d[wp.uint64],
+) -> None:
+    """Bid ``key`` for pixel ``(row, col)`` when the triangle covers its centre."""
+    if _pixel_covered(q0, q1, q2, row, col):
+        wp.atomic_min(out_keys, row, col, key)
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def rasterize_face_keys(
+    pixels: wp.array[wp.vec2],
+    faces: wp.array[wp.int32],
+    priority: wp.array[wp.float32],
+    out_keys: wp.array2d[wp.uint64],
+) -> None:
+    """
+    Bid every face's key for the window pixels its triangle covers, a face a thread.
+
+    ``pixels`` holds the vertices in the window's pixel frame (``window_pixel``).
+
+    ``rasterize_face_keys_sliced`` deals each face's pixels to several threads; the keys are the
+    same whatever the split.
+    """
+    f = wp.int32(wp.tid())
+    q0, q1, q2, row_lo, row_hi, col_lo, col_hi = _face_window_pixels(
+        pixels, faces, f, out_keys.shape[0], out_keys.shape[1]
+    )
+    key = _face_key(priority, f)
+    for row in range(row_lo, row_hi + 1):
+        for col in range(col_lo, col_hi + 1):
+            _claim_window_pixel(q0, q1, q2, row, col, key, out_keys)
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def rasterize_face_keys_sliced(
+    pixels: wp.array[wp.vec2],
+    faces: wp.array[wp.int32],
+    priority: wp.array[wp.float32],
+    slices: wp.int32,
+    out_keys: wp.array2d[wp.uint64],
+) -> None:
+    """
+    ``rasterize_face_keys`` with each face's window dealt to ``slices`` threads.
+
+    Over ``n_faces * slices``, the pixels dealt as ``rasterize_owner_sliced`` deals them.
+    """
+    t = wp.int32(wp.tid())
+    f = t // slices
+    q0, q1, q2, row_lo, row_hi, col_lo, col_hi = _face_window_pixels(
+        pixels, faces, f, out_keys.shape[0], out_keys.shape[1]
+    )
+    key = _face_key(priority, f)
+    row, col = _first_slice_pixel(t - f * slices, row_lo, col_lo, col_hi)
+    while row <= row_hi:
+        _claim_window_pixel(q0, q1, q2, row, col, key, out_keys)
+        row, col = _next_slice_pixel(row, col, slices, col_lo, col_hi)
+
+
+@wp.func
+def face_of_key(key: wp.uint64) -> wp.int32:
+    """Return the face a pixel's key names (its low word), ``-1`` for ``NO_FACE_KEY``."""
+    if key == NO_FACE_KEY:
+        return wp.int32(-1)
+    return wp.int32(key & wp.uint64(0xFFFFFFFF))
 
 
 SAMPLE_NEAREST = wp.int32(0)
@@ -423,13 +612,23 @@ def _declare_map_kernels() -> None:
     Pre-declare this module's forking ``wp.map`` signatures so each builds one module, not three.
 
     See ``kernels/array.py::declare_map_signatures``. ``snap_uv`` is ``wp.map``'d from
-    ``texture.py`` over the UV buffer, which a one-vertex buffer makes a length-1 array.
+    ``texture.py`` over the UV buffer, which a one-vertex buffer makes a length-1 array;
+    ``window_pixel`` over the UV buffer likewise; ``face_of_key`` over a window's flat key buffer,
+    which a one-pixel window makes one.
     """
     dense, single = map_probe, map_probe_single
     declare_map_signatures(
         [
             (snap_uv, (dense(wp.vec2), wp.float32(1.0)), wp.vec2),
             (snap_uv, (single(wp.vec2), wp.float32(1.0)), wp.vec2),
+            (window_pixel, (dense(wp.vec2), wp.vec2d(), wp.float64(1.0), wp.float64(1.0)), wp.vec2),
+            (
+                window_pixel,
+                (single(wp.vec2), wp.vec2d(), wp.float64(1.0), wp.float64(1.0)),
+                wp.vec2,
+            ),
+            (face_of_key, (dense(wp.uint64),), wp.int32),
+            (face_of_key, (single(wp.uint64),), wp.int32),
         ]
     )
 

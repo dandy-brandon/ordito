@@ -101,6 +101,72 @@ def _rasterize_attribute_gl(
     return np.concatenate(out_parts, axis=-1) if len(out_parts) > 1 else out_parts[0].copy()
 
 
+def _rasterize_face_indices_gl(
+    ctx: moderngl.Context,
+    uv: npt.NDArray[np.float32],
+    faces: npt.NDArray[np.int32],
+    origin: tuple[float, float],
+    pixel_size: float,
+    shape: tuple[int, int],
+    face_priority: npt.NDArray[np.float32] | None,
+) -> npt.NDArray[np.int64]:
+    """
+    OpenGL reference: the face covering every pixel of a UV window, ``-1`` where none does.
+
+    The faces are drawn unindexed so ``gl_PrimitiveID`` is the face index, with depth carrying
+    the priority (spread over ``[-0.9, 0.9]``) under a ``<`` depth test, so the lowest priority
+    wins and the first face drawn between equals. The window is mapped to clip space in float64.
+    OpenGL reads rows back bottom-up; they are flipped so row ``0`` is the window's top, as the
+    function under test returns them.
+    """
+    rows, columns = shape
+    window = np.array([columns, rows], dtype=np.float64) * pixel_size
+    xy = (uv.astype(np.float64)[faces] - np.asarray(origin)) / window * 2.0 - 1.0
+    n_faces = faces.shape[0]
+    depth = np.zeros(n_faces)
+    if face_priority is not None and np.ptp(face_priority) > 0:
+        priority = face_priority.astype(np.float64)
+        depth = (priority - priority.min()) / np.ptp(priority) * 1.8 - 0.9
+    corners = np.concatenate([xy, np.broadcast_to(depth[:, None, None], (n_faces, 3, 1))], axis=-1)
+
+    program = ctx.program(
+        vertex_shader=textwrap.dedent(
+            """
+            #version 330 core
+            in vec3 in_position;
+            void main() { gl_Position = vec4(in_position, 1.0); }
+            """
+        ),
+        fragment_shader=textwrap.dedent(
+            """
+            #version 330 core
+            out float face;
+            void main() { face = float(gl_PrimitiveID + 1); }
+            """
+        ),
+    )
+    position_buffer = ctx.buffer(corners.astype(np.float32).tobytes())
+    face_texture = ctx.texture((columns, rows), 1, dtype="f4")
+    depth_texture = ctx.depth_texture((columns, rows))
+    frame_buffer = ctx.framebuffer(color_attachments=[face_texture], depth_attachment=depth_texture)
+    vertex_array = ctx.vertex_array(program, [(position_buffer, "3f", "in_position")])
+    try:
+        with ctx.scope(frame_buffer, enable_only=moderngl.DEPTH_TEST):
+            ctx.depth_func = "<"
+            frame_buffer.clear(0.0, 0.0, 0.0, 0.0, depth=1.0)
+            vertex_array.render(moderngl.TRIANGLES)
+            raw = face_texture.read()
+    finally:
+        vertex_array.release()
+        frame_buffer.release()
+        depth_texture.release()
+        face_texture.release()
+        position_buffer.release()
+        program.release()
+    image = np.flipud(np.frombuffer(raw, dtype=np.float32).reshape(rows, columns))
+    return np.rint(image).astype(np.int64) - 1
+
+
 def _remap_attribute_scipy(
     uv: npt.NDArray[np.float32], image: npt.NDArray[np.float32], order: Literal[0, 1]
 ) -> npt.NDArray[np.float32]:
@@ -186,6 +252,38 @@ def _anisotropic_grid_uv_mesh() -> tuple[npt.NDArray[np.float32], npt.NDArray[np
     squeeze = np.array([1.0, 0.7], dtype=np.float32)
     lift = np.array([0.0, 0.1], dtype=np.float32)
     return (uv_np * squeeze + lift).astype(np.float32), faces_np
+
+
+def _layered_uv_mesh() -> tuple[npt.NDArray[np.float32], npt.NDArray[np.int32], int]:
+    """
+    Two copies of ``_anisotropic_grid_uv_mesh``, the second shifted by ``(0.21, 0.13)``.
+
+    They overlap over about three quarters of the second, so the overlap's owner is decided by
+    the face index or the priority. Returns the UVs, the ``(n_faces, 3)`` faces and the first
+    face of the second copy.
+    """
+    uv_np, faces_np = _anisotropic_grid_uv_mesh()
+    faces_np = faces_np.reshape(-1, 3)
+    shifted = uv_np + np.array([0.21, 0.13], dtype=np.float32)
+    layered_faces = np.concatenate([faces_np, faces_np + uv_np.shape[0]]).astype(np.int32)
+    return np.concatenate([uv_np, shifted]).astype(np.float32), layered_faces, faces_np.shape[0]
+
+
+def _edge_distances(
+    uv_np: npt.NDArray[np.float32],
+    faces_np: npt.NDArray[np.int32],
+    face: npt.NDArray[np.int64],
+    points: npt.NDArray[np.float64],
+) -> npt.NDArray[np.float64]:
+    """Distance of each point to the nearest edge of its face, in UV units."""
+    corners = uv_np.astype(np.float64)[faces_np[face]]  # (m, 3, 2)
+    distances = np.full(points.shape[0], np.inf)
+    for a, b in ((0, 1), (1, 2), (2, 0)):
+        start, edge = corners[:, a], corners[:, b] - corners[:, a]
+        t = np.clip(((points - start) * edge).sum(1) / (edge * edge).sum(1), 0.0, 1.0)
+        distance = np.linalg.norm(points - (start + t[:, None] * edge), axis=1)
+        distances = np.minimum(distances, distance)
+    return distances
 
 
 def _interior_mask(n: int) -> npt.NDArray[np.bool_]:
@@ -362,6 +460,105 @@ def test_rasterize_discrete_attribute_matches_opengl(
     tied = covered_gl & (top_two[:, :, 1] - top_two[:, :, 0] < 1e-5)
     assert np.array_equal(snapped_wp >= 0, covered_gl)
     assert np.array_equal(snapped_wp[covered_gl & ~tied], class_gl[covered_gl & ~tied])
+
+
+@pytest.mark.parity(
+    "rasterize_face_indices",
+    "moderngl",
+    benchmarked=False,
+    reason="same decline as the attribute rasterizers above: an OpenGL row prices driver dispatch, "
+    "a depth-tested FBO and a readback rather than an algorithm. benchmarks/test_texture.py "
+    "carries that decline.",
+)
+@pytest.mark.parametrize("prioritized", [False, True], ids=["index", "priority"])
+@pytest.mark.parametrize(
+    ("origin", "pixel_size", "shape"),
+    [((0.1, 0.05), 0.009, (90, 120)), ((0.1, 0.05), 0.00227, (360, 480))],
+)
+def test_rasterize_face_indices_matches_opengl(
+    gl_context: moderngl.Context,
+    device: str,
+    prioritized: bool,
+    origin: tuple[float, float],
+    pixel_size: float,
+    shape: tuple[int, int],
+) -> None:
+    """
+    Class B: OpenGL's face image, equal outside the driver's sub-pixel snapping band of an edge.
+
+    The fixture is two overlapping copies of the anisotropic lattice (``_layered_uv_mesh``) seen
+    through a window that starts off the origin, is not square and runs past both, so the image
+    holds uncovered pixels, pixels of either copy alone, and an overlap decided by the face index
+    (the first copy) or by priority (the second, of lower priority). Both sides take the lowest
+    ``(priority, face index)`` covering a pixel centre: OpenGL by its ``<`` depth test in draw
+    order.
+
+    They part only on a pixel centre lying on an edge shared by two faces: OpenGL snaps the
+    vertices to 1/256 of a pixel (8 bits, ``_gl_subpixel_bits``) and gives such a centre to one
+    face by its fill rule, ordito tests it unsnapped against both. So every disagreeing pixel must
+    lie within ``2 ** -8`` pixel of an edge of *both* answers' faces, and at most 20 may. Measured:
+    no disagreement at 90 x 120; 9 at 360 x 480 by face index, all on the lattice's diagonals at
+    1.8e-4 pixel, and none by priority; coverage equal everywhere, on both devices.
+
+    Mutation probes at 360 x 480 (142 297 covered pixels, 105 205 of them the second copy's):
+    rows flipped 157 706 pixels apart, the priority ignored or reversed 66 880, the window moved by
+    half a pixel in ``u`` 2 494. The bug class this excludes: a flipped or transposed window, a
+    pixel-centre offset, a wrong window scale, priorities ignored or compared the wrong way, and a
+    tie broken towards the highest face.
+    """
+    uv_np, faces_np, second = _layered_uv_mesh()
+    priority_np = (
+        (np.arange(faces_np.shape[0]) < second).astype(np.float32) if prioritized else None
+    )
+    face_gl = _rasterize_face_indices_gl(
+        gl_context, uv_np, faces_np, origin, pixel_size, shape, priority_np
+    )
+
+    uv_wp, faces_wp = _upload_uv_mesh(uv_np, faces_np.reshape(-1), device)
+    priority_wp = None if priority_np is None else wp.array(priority_np, device=device)
+    face_wp = od.texture.rasterize_face_indices(
+        uv_wp, faces_wp, origin, pixel_size, shape, face_priority=priority_wp
+    ).numpy()
+
+    # Non-vacuous: uncovered pixels, both copies, and the overlap's owner set by the rule.
+    assert 0.2 < (face_gl >= 0).mean() < 0.95
+    assert (face_gl >= second).sum() > 0
+    assert ((face_gl >= 0) & (face_gl < second)).sum() > 0
+    assert np.array_equal(face_wp >= 0, face_gl >= 0)
+    rows, columns = np.nonzero(face_wp != face_gl)
+    assert rows.size <= 20
+    # Pixel (i, j)'s centre: row 0 is the window's top.
+    flipped_rows = shape[0] - 1 - rows
+    centres = np.asarray(origin, dtype=np.float64) + (
+        np.stack([columns, flipped_rows], axis=1).astype(np.float64) + 0.5
+    ) * np.float64(pixel_size)
+    for face in (face_gl[rows, columns], face_wp[rows, columns].astype(np.int64)):
+        assert np.all(_edge_distances(uv_np, faces_np, face, centres) < pixel_size * 2.0**-8)
+
+
+@pytest.mark.parametrize("resolution", [64, 256])
+def test_rasterize_face_indices_shares_rasterize_attribute_frame(device: str, resolution: int):
+    """
+    Ordito against ordito: over ``[0, 1]`` the face image covers what ``rasterize_attribute`` does.
+
+    Pixel for pixel, row ``0`` at ``v = 1`` in both. The anisotropic lattice puts no pixel centre
+    within rounding of its rim, so the two frames
+    (``float64`` for the window, ``float32`` for the texture) cover the same pixels; its coverage
+    is not symmetric under a flip or a transpose, so either breaks the equality (OpenGL is the
+    oracle for both functions in the tests above; this pins their agreement with each other).
+    """
+    uv_np, faces_np = _anisotropic_grid_uv_mesh()
+    uv_wp, faces_wp = _upload_uv_mesh(uv_np, faces_np, device)
+    ones_wp = _float_rows(np.ones((uv_np.shape[0], 1), dtype=np.float32), device)
+    covered_np = od.texture.rasterize_attribute(uv_wp, faces_wp, ones_wp, resolution).numpy()[
+        ..., 0
+    ]
+    face_np = od.texture.rasterize_face_indices(
+        uv_wp, faces_wp, (0.0, 0.0), 1.0 / resolution, (resolution, resolution)
+    ).numpy()
+    covered = covered_np > 0.5
+    assert not np.array_equal(covered, np.flipud(covered))
+    assert np.array_equal(face_np >= 0, covered)
 
 
 # --------------------------------------------------------------------------------------------
@@ -542,7 +739,8 @@ def test_rasterize_ignores_split_and_device(
     stacks its front and back (the lowest-face rule decides every covered pixel) and turns its
     rim faces edge-on, whose pixel centres sit within rounding of an edge: the pixels a contracted
     (FMA) coverage test settles by loop shape and by device. The default split is compared with
-    one forced split per parameter, and both with the CPU's answer.
+    one forced split per parameter, and both with the CPU's answer. The face image takes each
+    face's mean ``z`` as its priority, so the front and back stack through the priority keys.
     """
     vertices_np, faces_np = sphere_irregular_arrays()
     xy = vertices_np[:, :2]
@@ -552,7 +750,11 @@ def test_rasterize_ignores_split_and_device(
     labels_np = (np.arange(uv_np.shape[0]) % 5).astype(np.int32)
     resolution = 512
 
-    def images(on: str) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.int32]]:
+    priority_np = vertices_np[faces_np, 2].mean(axis=1).astype(np.float32)
+
+    def images(
+        on: str,
+    ) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.int32], npt.NDArray[np.int32]]:
         uv_wp, faces_wp = _upload_uv_mesh(uv_np, faces_flat_np, on)
         labels_wp = wp.array(labels_np, dtype=wp.int32, device=on)
         image = od.texture.rasterize_attribute(
@@ -561,18 +763,62 @@ def test_rasterize_ignores_split_and_device(
         class_image = od.texture.rasterize_discrete_attribute(
             uv_wp, faces_wp, labels_wp, resolution
         )
-        return image.numpy(), class_image.numpy()
+        face_image = od.texture.rasterize_face_indices(
+            uv_wp,
+            faces_wp,
+            (0.0, 0.0),
+            1.0 / resolution,
+            (resolution, resolution),
+            face_priority=wp.array(priority_np, device=on),
+        )
+        return image.numpy(), class_image.numpy(), face_image.numpy()
 
-    image_np, class_np = images(device)
+    image_np, class_np, face_np = images(device)
     monkeypatch.setattr(od.texture, "_owner_slices", lambda *_: slices)
-    image_split_np, class_split_np = images(device)
+    image_split_np, class_split_np, face_split_np = images(device)
     monkeypatch.undo()
-    image_cpu_np, class_cpu_np = images("cpu")
+    image_cpu_np, class_cpu_np, face_cpu_np = images("cpu")
     assert 0 < (class_np >= 0).sum() < class_np.size
     assert np.array_equal(image_split_np, image_np)
     assert np.array_equal(class_split_np, class_np)
+    assert np.array_equal(face_split_np, face_np)
     assert np.array_equal(image_cpu_np, image_np)
     assert np.array_equal(class_cpu_np, class_np)
+    assert np.array_equal(face_cpu_np, face_np)
+
+
+@pytest.mark.parametrize(
+    ("priority", "owner"),
+    [
+        pytest.param(None, 0, id="none"),
+        pytest.param([1.0, 0.0], 1, id="lower_wins"),
+        pytest.param([2.0, 2.0], 0, id="tie_lowest_index"),
+        pytest.param([0.0, -0.0], 0, id="signed_zeros_tie"),
+        pytest.param([float("nan"), 5.0], 1, id="nan_loses"),
+        pytest.param([float("inf"), float("nan")], 0, id="nan_below_inf"),
+    ],
+)
+def test_rasterize_face_indices_priority_rule(
+    device: str, priority: list[float] | None, owner: int
+) -> None:
+    """
+    Not a library comparison: the tie rules of ``face_priority``, which OpenGL cannot state.
+
+    OpenGL's depth test compares a quantized depth, and every ``NaN`` fails it. Two copies of one
+    triangle cover the same pixels, so the rule alone picks the owner of every
+    covered pixel. A face with a non-finite corner beside them covers nothing.
+    """
+    uv_wp = _point_uv(device, [[0.1, 0.1], [0.9, 0.1], [0.1, 0.9], [float("nan"), 0.5]])
+    faces_wp = wp.array([0, 1, 2, 0, 1, 2, 0, 1, 3], dtype=wp.int32, device=device)
+    priority_wp = None
+    if priority is not None:
+        priority_wp = wp.array([*priority, -1.0], dtype=wp.float32, device=device)
+    face_np = od.texture.rasterize_face_indices(
+        uv_wp, faces_wp, (0.0, 0.0), 0.125, (8, 8), face_priority=priority_wp
+    ).numpy()
+    covered = face_np >= 0
+    assert 0 < covered.sum() < covered.size
+    assert np.all(face_np[covered] == owner)
 
 
 # --------------------------------------------------------------------------------------------
@@ -617,6 +863,10 @@ def test_empty_faces(device: str):
     assert class_image.shape == (8, 8)
     assert np.all(class_image == -1)
 
+    face_image = od.texture.rasterize_face_indices(uv_wp, faces_wp, (0.0, 0.0), 0.5, (3, 5))
+    assert face_image.shape == (3, 5)
+    assert np.all(face_image.numpy() == -1)
+
 
 def _point_uv(device: str, rows: list[list[float]]) -> wp.array[wp.vec2]:
     return points_to_warp_uv(np.array(rows, dtype=np.float32), device)
@@ -632,6 +882,19 @@ def _one_face(device: str) -> wp.array[wp.int32]:
 
 _THREE_UV = [[0.5, 0.5], [0.2, 0.2], [0.8, 0.8]]
 _OUT_OF_RANGE_UV = [[0.5, 0.5], [1.5, 0.2]]
+
+
+def _face_indices(
+    device: str,
+    origin: tuple[float, float] = (0.0, 0.0),
+    pixel_size: float = 0.1,
+    shape: tuple[int, int] = (4, 4),
+) -> odt.Array2dInt32:
+    """``rasterize_face_indices`` of one face over a window, one argument varied by the caller."""
+    return od.texture.rasterize_face_indices(
+        _point_uv(device, _THREE_UV), _one_face(device), origin, pixel_size, shape
+    )
+
 
 _VALIDATION_CASES: list[tuple[str, Callable[[str], object], str]] = [
     (
@@ -694,6 +957,40 @@ _VALIDATION_CASES: list[tuple[str, Callable[[str], object], str]] = [
             8,
         ),
         "row count mismatch",
+    ),
+    *(
+        (f"face_indices_{case_id}", call, match)
+        for case_id, call, match in (
+            ("no_rows", lambda device: _face_indices(device, shape=(0, 4)), "shape must hold"),
+            ("no_columns", lambda device: _face_indices(device, shape=(4, -1)), "shape must hold"),
+            (
+                "zero_pixel_size",
+                lambda device: _face_indices(device, pixel_size=0.0),
+                "pixel_size must be positive",
+            ),
+            (
+                "nan_pixel_size",
+                lambda device: _face_indices(device, pixel_size=float("nan")),
+                "pixel_size must be positive",
+            ),
+            (
+                "inf_origin",
+                lambda device: _face_indices(device, origin=(0.0, float("inf"))),
+                "origin must be finite",
+            ),
+        )
+    ),
+    (
+        "face_indices_priority_count",
+        lambda device: od.texture.rasterize_face_indices(
+            _point_uv(device, _THREE_UV),
+            _one_face(device),
+            (0.0, 0.0),
+            0.1,
+            (4, 4),
+            face_priority=wp.zeros(2, dtype=wp.float32, device=device),
+        ),
+        "one value a face",
     ),
     (
         "remap_uv_out_of_range",

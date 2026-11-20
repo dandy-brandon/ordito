@@ -1,7 +1,7 @@
 """
 Benchmarks for ``ordito.texture``.
 
-Two inverse pairs, with opposite cost drivers:
+Two inverse pairs, with opposite cost drivers, and the visibility buffer:
 
 * **Rasterize** (``rasterize_attribute``, ``rasterize_discrete_attribute``) — scatter: one thread
   per triangle walks the pixels its UV-space bounding box covers and interpolates barycentrically.
@@ -14,6 +14,10 @@ Two inverse pairs, with opposite cost drivers:
   essentially independent of resolution beyond cache behaviour, so these are two orders of magnitude
   cheaper and are launch-latency bound on the smaller meshes. Timing both orders isolates the
   interpolation from the gather.
+* **Face indices** (``rasterize_face_indices``) — the rasterizers' scatter over a window of UV
+  space with a ``uint64`` key a pixel (priority over face index), then one map to the face index:
+  no interpolation, so it prices the owner pass of the pair above with 64-bit atomics. Timed with
+  and without priorities; the front and back of a projection stack, so the priority decides.
 
 Axis: the **scan sweep** for the face-count half, plus a **resolution** sweep of 512 against 2048 on
 every group. Those are the module's two independent sizes and they pull in opposite directions, so
@@ -173,6 +177,31 @@ def test_rasterize_discrete_attribute(bench_case: BenchCase, resolution: int) ->
         lambda: od.texture.rasterize_discrete_attribute(uv, faces, labels, resolution)
     )
     assert class_image.shape == (resolution, resolution)
+
+
+@pytest.mark.benchmark(group="rasterize_face_indices")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("resolution", _RESOLUTIONS)
+@pytest.mark.parametrize("prioritized", [False, True], ids=["index", "priority"])
+def test_rasterize_face_indices(bench_case: BenchCase, resolution: int, prioritized: bool) -> None:
+    """The face under every pixel of the unit square, by face index or by a per-face priority."""
+    uv, faces = _uv_wp(bench_case), bench_case.faces_wp
+    priority = None
+    if prioritized:
+        # Each face's mean z: the projection's front and back overlap, and the priority orders them.
+        z_np = bench_case.vertices_np[bench_case.faces_np, 2].mean(axis=1)
+        priority = wp.array(z_np.astype(np.float32), device=bench_case.device)
+    face_image = bench_case.run(
+        lambda: od.texture.rasterize_face_indices(
+            uv,
+            faces,
+            (0.0, 0.0),
+            1.0 / resolution,
+            (resolution, resolution),
+            face_priority=priority,
+        )
+    )
+    assert face_image.shape == (resolution, resolution)
 
 
 @pytest.mark.benchmark(group="remap_attribute_from_uv_linear")

@@ -1,9 +1,10 @@
 """
 Bake per-vertex attributes into UV-space textures and sample them back.
 
-The four functions here operate on an *existing* UV map (from a disk parameterization or a
-mesh file, e.g. loaded via [`load_mesh`][ordito.io.load_mesh]): they rasterize per-vertex
-attributes into a square texture and sample a texture back to per-vertex values. They are a
+The functions here operate on an *existing* UV map (from a disk parameterization or a mesh
+file, e.g. loaded via [`load_mesh`][ordito.io.load_mesh]): they rasterize per-vertex attributes
+into a square texture and sample a texture back to per-vertex values, and rasterize which face
+covers each pixel of any window of UV space. They are a
 Warp software-rasterizer replacement for an OpenGL/moderngl pipeline, keeping all data on the
 input Warp device.
 
@@ -12,6 +13,7 @@ part of this module.
 
 See [`rasterize_attribute`][ordito.texture.rasterize_attribute],
 [`rasterize_discrete_attribute`][ordito.texture.rasterize_discrete_attribute],
+[`rasterize_face_indices`][ordito.texture.rasterize_face_indices],
 [`remap_attribute_from_uv`][ordito.texture.remap_attribute_from_uv], and
 [`remap_discrete_attribute_from_uv`][ordito.texture.remap_discrete_attribute_from_uv].
 """
@@ -19,6 +21,7 @@ See [`rasterize_attribute`][ordito.texture.rasterize_attribute],
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from typing import Literal
 
 import warp as wp
@@ -217,6 +220,140 @@ def rasterize_discrete_attribute(
     return odt.as_array2d(labels_image, wp.int32)
 
 
+def rasterize_face_indices(
+    uv: wp.array[wp.vec2],
+    faces: wp.array[wp.int32],
+    origin: Sequence[float],
+    pixel_size: float,
+    shape: tuple[int, int],
+    *,
+    face_priority: wp.array[wp.float32] | None = None,
+) -> odt.Array2dInt32:
+    """
+    Index of the face covering every pixel of a window of UV space: a visibility buffer.
+
+    The window spans ``origin`` to ``origin + (columns, rows) * pixel_size``, with row ``0`` at its
+    top (vertical flip), as in [`rasterize_attribute`][ordito.texture.rasterize_attribute]: pixel
+    ``(i, j)`` is the UV point ``origin + (j + 0.5, rows - i - 0.5) * pixel_size``. A
+    face covers a pixel when its UV triangle holds the pixel's centre, edges included, so faces
+    sharing an edge leave no gap between them. Where several faces cover a pixel, the one of
+    lowest ``face_priority`` wins, and between equal priorities (or with none given) the one of
+    lowest index.
+
+    Parameters
+    ----------
+    uv
+        ``(n_vertices,)`` per-vertex UV coordinates, in any units: not limited to ``[0, 1]``. A
+        face with a non-finite corner covers nothing.
+    faces
+        ``(3 * n_faces,)`` flat triangle index buffer.
+    origin
+        UV of the window's lower-left corner, ``(u, v)``.
+    pixel_size
+        Side of a pixel in UV units.
+    shape
+        ``(rows, columns)`` of the window.
+    face_priority
+        ``(n_faces,)`` priority of every face, the lowest winning where faces overlap; ``-0.0``
+        ties with ``0.0`` and ``NaN`` loses to every number. ``None`` lets the face index decide.
+
+    Returns
+    -------
+    Array2dInt32
+        ``(rows, columns)`` index of the face covering every pixel, ``-1`` where none does, row
+        ``0`` at the window's top, on ``uv.device``.
+
+    Raises
+    ------
+    TypeError
+        If ``face_priority`` is not a rank-1 ``wp.float32`` array.
+    ValueError
+        If ``shape`` holds no pixel, ``pixel_size`` is not positive and finite, ``origin`` is not
+        two finite numbers, or ``face_priority`` does not hold one value a face.
+    RuntimeError
+        If ``uv``, ``faces`` and ``face_priority`` are not all on one device.
+
+    See Also
+    --------
+    [`rasterize_attribute`][ordito.texture.rasterize_attribute]
+
+    Examples
+    --------
+    A window of 4 x 4 pixels over the right half of a unit-square grid and beyond: its two
+    right-hand columns lie past ``u = 1``, where no face is.
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(3, 3), center=False)
+    uv = wp.array(vertices.numpy()[:, :2], dtype=wp.vec2)
+    face_image = od.texture.rasterize_face_indices(uv, faces, (0.5, 0.0), 0.25, (4, 4))
+    print(face_image.shape)  # (4, 4)
+    print(int((face_image.numpy() < 0).sum()))  # 8
+    ```
+    """
+    require_same_device(uv=uv, faces=faces, face_priority=face_priority)
+    rows, columns = (int(count) for count in shape)
+    if rows <= 0 or columns <= 0:
+        raise ValueError(f"shape must hold pixels, got {tuple(shape)}")
+    if not (math.isfinite(pixel_size) and pixel_size > 0.0):
+        raise ValueError(f"pixel_size must be positive and finite, got {pixel_size}")
+    origin_u, origin_v = (float(coordinate) for coordinate in origin)
+    if not (math.isfinite(origin_u) and math.isfinite(origin_v)):
+        raise ValueError(f"origin must be finite, got {tuple(origin)}")
+    device = uv.device
+    n_faces = faces.size // 3
+    if face_priority is None:
+        priority = _launch.empty(0, dtype=wp.float32, device=device)
+    else:
+        odt.ensure_ndim(face_priority, 1, dtype=wp.float32)
+        if face_priority.size != n_faces:
+            raise ValueError(
+                f"face_priority must hold one value a face: {face_priority.size} for {n_faces}"
+            )
+        priority = face_priority
+    if n_faces == 0:
+        return odt.as_array2d(
+            _launch.full((rows, columns), -1, dtype=wp.int32, device=device), wp.int32
+        )
+
+    n_pixels = rows * columns
+    keys = _launch.full(n_pixels, kernel_texture.NO_FACE_KEY, dtype=wp.uint64, device=device)
+    keys_2d = keys.reshape((rows, columns))
+    # Every vertex in the window's pixel frame, formed in float64 once rather than by every thread
+    # of a face's split.
+    pixels = _launch.empty(uv.size, dtype=wp.vec2, device=device)
+    _launch.map(
+        kernel_texture.window_pixel,
+        uv,
+        wp.vec2d(origin_u, origin_v),
+        wp.float64(1.0 / pixel_size),
+        wp.float64(rows),
+        out=pixels,
+    )
+    slices = _owner_slices(n_faces, math.sqrt(n_pixels), device)
+    if slices == 1:
+        _launch.launch(
+            kernel_texture.rasterize_face_keys,
+            dim=n_faces,
+            inputs=[pixels, faces, priority, keys_2d],
+            device=device,
+        )
+    else:
+        _launch.launch(
+            kernel_texture.rasterize_face_keys_sliced,
+            dim=n_faces * slices,
+            inputs=[pixels, faces, priority, slices, keys_2d],
+            device=device,
+        )
+    # Every pixel is written by the map, covered or not.
+    face_image = _launch.empty(n_pixels, dtype=wp.int32, device=device)
+    _launch.map(kernel_texture.face_of_key, keys, out=face_image)
+    return odt.as_array2d(face_image.reshape((rows, columns)), wp.int32)
+
+
 def _snapped_uv(
     uv: wp.array[wp.vec2], resolution: int, subpixel_bits: int | None
 ) -> wp.array[wp.vec2]:
@@ -317,18 +454,19 @@ def _rasterize_owner(
     return odt.as_array2d(owner, wp.int32)
 
 
-def _owner_slices(n_faces: int, resolution: int, device: wp.DeviceLike) -> int:
+def _owner_slices(n_faces: int, pixels_across: float, device: wp.DeviceLike) -> int:
     """
     Threads the owner pass deals each face's raster window to: a power of two, ``1`` on the CPU.
 
-    A face of an atlas covers about ``resolution ** 2 / n_faces`` pixels, so its window is about
-    ``resolution / sqrt(n_faces)`` pixels wide; ``kernels/texture.OWNER_SLICE_WIDTHS`` such
-    widths a face, capped at ``2 ** kernels/texture.OWNER_MAX_SLICES_LOG2``. The CPU runs a
-    launch's threads one after another, where a split only adds work.
+    A face of an atlas ``pixels_across`` pixels on a side covers about ``pixels_across ** 2 /
+    n_faces`` pixels, so its window is about ``pixels_across / sqrt(n_faces)`` pixels wide;
+    ``kernels/texture.OWNER_SLICE_WIDTHS`` such widths a face, capped at
+    ``2 ** kernels/texture.OWNER_MAX_SLICES_LOG2``. The CPU runs a launch's threads one after
+    another, where a split only adds work.
     """
     if n_faces == 0 or wp.get_device(device).is_cpu:
         return 1
-    target = kernel_texture.OWNER_SLICE_WIDTHS * resolution / math.sqrt(n_faces)
+    target = kernel_texture.OWNER_SLICE_WIDTHS * pixels_across / math.sqrt(n_faces)
     if target < 1.0:
         return 1
     return 1 << min(round(math.log2(target)), kernel_texture.OWNER_MAX_SLICES_LOG2)

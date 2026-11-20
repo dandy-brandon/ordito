@@ -8235,6 +8235,34 @@
    "d2h": 1
   }
  },
+ "benchmarks/test_texture.py::test_rasterize_face_indices[sphere_small-ordito-cuda-index-2048]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 3,
+   "memset": 1
+  }
+ },
+ "benchmarks/test_texture.py::test_rasterize_face_indices[sphere_small-ordito-cuda-index-512]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 3,
+   "memset": 1
+  }
+ },
+ "benchmarks/test_texture.py::test_rasterize_face_indices[sphere_small-ordito-cuda-priority-2048]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 3,
+   "memset": 1
+  }
+ },
+ "benchmarks/test_texture.py::test_rasterize_face_indices[sphere_small-ordito-cuda-priority-512]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 3,
+   "memset": 1
+  }
+ },
  "benchmarks/test_texture.py::test_remap_attribute_from_uv_linear[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 1,

@@ -94,6 +94,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | geodesic distance | [`heat.heat_geodesic`][ordito.heat.heat_geodesic] (approximate, fast), [`heat.fast_marching_distance`][ordito.heat.fast_marching_distance] (first-order front, no solve), [`geodesic_walk.geodesic_path`][ordito.geodesic_walk.geodesic_path] |
 | flatten to the plane (UV parametrization) | [`parametrization`][ordito.parametrization]: [`harmonic`][ordito.parametrization.harmonic], [`lscm`][ordito.parametrization.lscm], [`arap`][ordito.parametrization.arap], [`low_distortion_parametrization`][ordito.parametrization.low_distortion_parametrization] (free boundary, no pins, any topology), [`low_distortion_disk_parametrization`][ordito.parametrization.low_distortion_disk_parametrization] (the same for a disk, from a classic map) |
 | bake or sample textures | [`texture`][ordito.texture] |
+| which face covers each pixel of a UV window (visibility buffer) | [`texture.rasterize_face_indices`][ordito.texture.rasterize_face_indices] |
 | **Arrays** | |
 | NumPy-like `unique`, `sort`, `isin`, `searchsorted`-style helpers | [`grouping`][ordito.grouping], [`array`][ordito.array] |
 | reductions (`min`, `max`, `sum`, `mean`) without a host round trip | [`reduce`][ordito.reduce] |
