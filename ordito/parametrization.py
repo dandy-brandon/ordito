@@ -1332,8 +1332,11 @@ def _disk_boundary(
     loops, loop_offsets = od.boundary.boundary_loops_with_offsets(vertices, faces)
     n_loops = loop_offsets.size - 1
     labels = od.adjacency.face_connected_component_labels(faces, n_vertices=n_vertices)
-    n_components = od.grouping.unique_1d(labels).size
-    if euler != 1 or n_loops != 1 or n_components != 1:
+    # Each component is labelled by its smallest face, so one component is every label 0; the
+    # count is formed only for the message.
+    connected = od.reduce.max(labels) == 0
+    if euler != 1 or n_loops != 1 or not connected:
+        n_components = 1 if connected else od.grouping.unique_1d(labels).size
         raise ValueError(
             f"{name} needs a disk: one connected component with one boundary loop and Euler "
             f"characteristic 1, got {n_components} components, {n_loops} boundary loops and "

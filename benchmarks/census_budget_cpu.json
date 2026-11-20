@@ -4929,58 +4929,58 @@
  },
  "benchmarks/test_parametrization.py::test_low_distortion_disk_parametrization[hemisphere-ordito-cpu-harmonic]": {
   "counts": {
-   "launch": 489,
-   "alloc": 100,
+   "launch": 487,
+   "alloc": 99,
    "readback": 14,
-   "scan": 40,
-   "sort": 41
+   "scan": 39,
+   "sort": 40
   }
  },
  "benchmarks/test_parametrization.py::test_low_distortion_disk_parametrization[hemisphere-ordito-cpu-lscm]": {
   "counts": {
-   "launch": 1056,
-   "alloc": 105,
+   "launch": 1054,
+   "alloc": 104,
    "h2h": 2,
    "readback": 16,
-   "scan": 42,
-   "sort": 42
+   "scan": 41,
+   "sort": 41
   }
  },
  "benchmarks/test_parametrization.py::test_low_distortion_disk_parametrization[hemisphere-ordito-cpu-tutte]": {
   "counts": {
-   "launch": 886,
-   "alloc": 100,
+   "launch": 884,
+   "alloc": 99,
    "readback": 15,
-   "scan": 40,
-   "sort": 41
+   "scan": 39,
+   "sort": 40
   }
  },
  "benchmarks/test_parametrization.py::test_low_distortion_disk_parametrization[saddle_small-ordito-cpu-harmonic]": {
   "counts": {
-   "launch": 704,
-   "alloc": 71,
+   "launch": 702,
+   "alloc": 70,
    "readback": 14,
-   "scan": 20,
-   "sort": 21
+   "scan": 19,
+   "sort": 20
   }
  },
  "benchmarks/test_parametrization.py::test_low_distortion_disk_parametrization[saddle_small-ordito-cpu-lscm]": {
   "counts": {
-   "launch": 496,
-   "alloc": 105,
+   "launch": 494,
+   "alloc": 104,
    "h2h": 2,
    "readback": 15,
-   "scan": 38,
-   "sort": 38
+   "scan": 37,
+   "sort": 37
   }
  },
  "benchmarks/test_parametrization.py::test_low_distortion_disk_parametrization[saddle_small-ordito-cpu-tutte]": {
   "counts": {
-   "launch": 611,
-   "alloc": 71,
+   "launch": 609,
+   "alloc": 70,
    "readback": 14,
-   "scan": 20,
-   "sort": 21
+   "scan": 19,
+   "sort": 20
   }
  },
  "benchmarks/test_parametrization.py::test_low_distortion_parametrization[hemisphere-ordito-cpu]": {
