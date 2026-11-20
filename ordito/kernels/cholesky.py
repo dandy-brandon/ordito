@@ -1173,6 +1173,29 @@ def refine_start(
             wp.atomic_max(rhs_scale, column, magnitude)
 
 
+@wp.kernel
+def unrefined_start(
+    rhs: wp.array[wp.float64],
+    sign: wp.float64,
+    n: wp.int32,
+    keep_initial: wp.int32,
+    out_residual: wp.array[wp.float64],
+    out_solution: wp.array[wp.float64],
+    out_initial: wp.array[wp.float64],
+) -> None:
+    # An unrefined solve's start: the refinement's first round from a zero guess with no test,
+    # so the factored operator's right-hand side is ``residual_test``'s from that guess, ``rhs``
+    # times ``sign``, and the solution the backward sweep adds into starts at zero (kept in
+    # ``out_initial`` with ``keep_initial`` set, for the null space's constant). ``rhs`` may be
+    # ``out_solution`` itself, each entry read and written by its own thread.
+    i, column = wp.tid()
+    k = column * n + i
+    out_residual[k] = sign * rhs[k]
+    out_solution[k] = wp.float64(0.0)
+    if keep_initial != 0:
+        out_initial[k] = wp.float64(0.0)
+
+
 @wp.func
 def refine_close(cap: wp.int32, state: wp.array[wp.int32]) -> None:
     # Close a refinement round: continue while some row is above tolerance, up to ``cap`` solves.

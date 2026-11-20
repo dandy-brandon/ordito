@@ -10,7 +10,8 @@ and with the distance information must travel across the mesh, a factorization's
 factor serves every later right-hand side and every operator of the same sparsity
 ([`refactor`][ordito.cholesky.SparseCholesky.refactor]).
 
-Every solve is refined against the operator itself until its residual passes the requested test.
+Every solve is refined against the operator itself until its residual passes the requested test,
+unless the caller asks for one solve against the factor alone.
 A solution spanning hundreds of orders of magnitude -- the heat method's diffusions -- can be
 solved *componentwise*, each entry to its own size, which no iteration controlled by a residual
 norm achieves: on an M-matrix the factor and both triangular solves add terms of one sign, so no
@@ -428,6 +429,7 @@ class SparseCholesky:
         *,
         tol: float = 1e-12,
         componentwise: bool = False,
+        refine: bool = True,
     ) -> None:
         """
         Solve the factored system for one or several right-hand sides, refined in ``float64``.
@@ -440,7 +442,7 @@ class SparseCholesky:
             Same shape as ``rhs``: the initial guess, overwritten with the answer. Refinement
             starts from it, so a guess that already passes ``tol`` costs one residual and no
             triangular solve; on a singular component it supplies the constant (see the module
-            notes).
+            notes). Ignored with ``refine=False``, which starts from zero.
         tol
             Refinement stops once every row's residual passes the backward-error test
             ``|b - A x|_i <= tol * max(s_i, max_j |b_j|)``, with ``s_i = (|A| |x| + |b|)_i`` the
@@ -452,6 +454,12 @@ class SparseCholesky:
             stands, without a warning.
         componentwise
             Refine every entry to its own size: for solutions spanning many orders of magnitude.
+        refine
+            ``False`` solves once against the factor alone, from a zero guess, with no residual
+            test (``tol`` and ``componentwise`` are then not read): the refined solve's first
+            round, for a caller whose own iteration absorbs the factor's rounding, such as a
+            descent that only needs a direction. On a singular component the constant is then
+            zero's.
 
         Raises
         ------
@@ -495,7 +503,7 @@ class SparseCholesky:
             )
         if self.n == 0 or n_columns == 0:
             return
-        key = (n_columns, float(tol), bool(componentwise))
+        key = (n_columns, float(tol), bool(componentwise), bool(refine))
         solve = self._solves.get(n_columns)
         if solve is None or solve.key != key:
             if solve is not None:
@@ -508,6 +516,7 @@ class SparseCholesky:
                 float(tol),
                 bool(componentwise),
                 -1.0 if self.negated else 1.0,
+                refine=bool(refine),
             )
             self._solves[n_columns] = solve
             self.nbytes += self._plan.solve_nbytes(n_columns)
@@ -1521,13 +1530,15 @@ class _Solve:
         tol: float,
         componentwise: bool,
         sign: float,
+        *,
+        refine: bool = True,
     ) -> None:
         device = plan.device
         self.sign = sign
         total = plan.n * n_columns
-        self.key = (n_columns, tol, componentwise)
+        self.key = (n_columns, tol, componentwise, refine)
         self.plan, self.numeric, self.matrix, self.n_columns = plan, numeric, matrix, n_columns
-        self.tol, self.componentwise = tol, componentwise
+        self.tol, self.componentwise, self.refine = tol, componentwise, refine
         # Written before any read: a recording of this storage has ``run`` copy in ``rhs`` and
         # ``solution``, ``_body`` zeroes ``rhs_scale``, ``refine_start`` writes all of ``solution``,
         # the state and (where the null space reads it) ``initial``, and every ``residual_test`` all
@@ -1586,27 +1597,39 @@ class _Solve:
             plan.triangular_solve(self.residual, self.n_columns, self.work, self.numeric, solution)
             self._test(rhs, solution)
 
-        # Refinement starts from the caller's solution: a warm start that already passes the test
-        # costs one residual and no triangular solve. ``refine_start`` keeps the guess in
-        # ``initial`` for the null space's constant, which reads it after the refinement.
-        _launch.zero_(self.rhs_scale)
-        _launch.launch(
-            kernel_cholesky.refine_start,
-            dim=(plan.n, self.n_columns),
-            inputs=[
-                rhs,
-                wp.int32(plan.n),
-                self.state,
-                self.rhs_scale,
-                wp.int32(1 if self.componentwise else 0),
-                solution,
-                wp.int32(1 if null_space else 0),
-            ],
-            outputs=[solution, self.initial],
-            device=device,
-        )
-        self._test(rhs, solution)
-        wp.capture_while(self.condition, refinement_round)
+        if not self.refine:
+            # One triangular solve from a zero guess: the refinement's first round, untested.
+            _launch.launch(
+                kernel_cholesky.unrefined_start,
+                dim=(plan.n, self.n_columns),
+                inputs=[rhs, wp.float64(self.sign), wp.int32(plan.n),
+                        wp.int32(1 if null_space else 0)],
+                outputs=[self.residual, solution, self.initial],
+                device=device,
+            )  # fmt: skip
+            plan.triangular_solve(self.residual, self.n_columns, self.work, self.numeric, solution)
+        else:
+            # Refinement starts from the caller's solution: a warm start that already passes the
+            # test costs one residual and no triangular solve. ``refine_start`` keeps the guess in
+            # ``initial`` for the null space's constant, which reads it after the refinement.
+            _launch.zero_(self.rhs_scale)
+            _launch.launch(
+                kernel_cholesky.refine_start,
+                dim=(plan.n, self.n_columns),
+                inputs=[
+                    rhs,
+                    wp.int32(plan.n),
+                    self.state,
+                    self.rhs_scale,
+                    wp.int32(1 if self.componentwise else 0),
+                    solution,
+                    wp.int32(1 if null_space else 0),
+                ],
+                outputs=[solution, self.initial],
+                device=device,
+            )
+            self._test(rhs, solution)
+            wp.capture_while(self.condition, refinement_round)
         if null_space:
             # The chunk sums and the shift run over the whole device, not a block per component:
             # a mesh's one component is every row. Between them one thread a component adds its

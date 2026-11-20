@@ -5061,7 +5061,7 @@
  },
  "benchmarks/test_parametrization.py::test_slim[hemisphere-ordito-cpu]": {
   "counts": {
-   "launch": 1246,
+   "launch": 1214,
    "alloc": 74,
    "h2h": 3,
    "readback": 8,
@@ -5071,7 +5071,7 @@
  },
  "benchmarks/test_parametrization.py::test_slim[saddle_small-ordito-cpu]": {
   "counts": {
-   "launch": 1427,
+   "launch": 1379,
    "alloc": 74,
    "h2h": 4,
    "readback": 10,
@@ -5081,7 +5081,7 @@
  },
  "benchmarks/test_parametrization.py::test_slim_parametrization[hemisphere-ordito-cpu-free]": {
   "counts": {
-   "launch": 1530,
+   "launch": 1498,
    "alloc": 160,
    "h2h": 4,
    "readback": 23,
@@ -5091,7 +5091,7 @@
  },
  "benchmarks/test_parametrization.py::test_slim_parametrization[hemisphere-ordito-cpu-harmonic]": {
   "counts": {
-   "launch": 1428,
+   "launch": 1396,
    "alloc": 128,
    "h2h": 3,
    "readback": 16,
@@ -5101,7 +5101,7 @@
  },
  "benchmarks/test_parametrization.py::test_slim_parametrization[hemisphere-ordito-cpu-lscm]": {
   "counts": {
-   "launch": 1445,
+   "launch": 1413,
    "alloc": 133,
    "h2h": 5,
    "readback": 17,
@@ -5111,7 +5111,7 @@
  },
  "benchmarks/test_parametrization.py::test_slim_parametrization[hemisphere-ordito-cpu-tutte]": {
   "counts": {
-   "launch": 1428,
+   "launch": 1396,
    "alloc": 128,
    "h2h": 3,
    "readback": 16,
@@ -5121,7 +5121,7 @@
  },
  "benchmarks/test_parametrization.py::test_slim_parametrization[saddle_small-ordito-cpu-free]": {
   "counts": {
-   "launch": 1388,
+   "launch": 1356,
    "alloc": 130,
    "h2h": 3,
    "readback": 18,
@@ -5131,7 +5131,7 @@
  },
  "benchmarks/test_parametrization.py::test_slim_parametrization[saddle_small-ordito-cpu-harmonic]": {
   "counts": {
-   "launch": 1890,
+   "launch": 1826,
    "alloc": 99,
    "h2h": 5,
    "readback": 19,
@@ -5141,7 +5141,7 @@
  },
  "benchmarks/test_parametrization.py::test_slim_parametrization[saddle_small-ordito-cpu-lscm]": {
   "counts": {
-   "launch": 1162,
+   "launch": 1130,
    "alloc": 133,
    "h2h": 5,
    "readback": 17,
@@ -5151,7 +5151,7 @@
  },
  "benchmarks/test_parametrization.py::test_slim_parametrization[saddle_small-ordito-cpu-tutte]": {
   "counts": {
-   "launch": 1455,
+   "launch": 1407,
    "alloc": 99,
    "h2h": 4,
    "readback": 17,

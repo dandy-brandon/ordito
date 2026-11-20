@@ -1213,7 +1213,7 @@ def slim(
         _launch.empty(n_keys, dtype=wp.mat22d, device=device),
     )
     rhs = _launch.empty(n_vertices, dtype=wp.vec2d, device=device)
-    step = _launch.zeros(n_vertices, dtype=wp.vec2d, device=device)
+    step = _launch.empty(n_vertices, dtype=wp.vec2d, device=device)
     rhs_flat = rhs.view(wp.float64).flatten()
     step_flat = step.view(wp.float64).flatten()
     bounds = _launch.full(
@@ -1267,7 +1267,9 @@ def slim(
             outputs=[rhs],
             device=device,
         )
-        factorization.solve(rhs_flat, step_flat)
+        # The held factor's direction is all a step needs: the line search below decides how far
+        # to move, so refining it against the proxy would buy nothing.
+        factorization.solve(rhs_flat, step_flat, refine=False)
         _launch.launch_tiled(
             kernel_parametrization.slim_step_bound,
             dim=trial_blocks,

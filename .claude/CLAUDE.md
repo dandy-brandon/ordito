@@ -1405,12 +1405,12 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   not. Scoped, with source availability and licensing, in `reference/component-status.md` (16.0b).
 - **The low-distortion chart's coarse solve** (`parametrization._proximal_arap`): every iteration
   is one refined `SparseCholesky.solve`, ~88 us of an iteration's ~105 us on bunny's 1 381-row
-  coarse level (150 iterations, 0.8 of the call). About a quarter of a solve's kernels are its
-  residual tests (`refine_start`, two `residual_test`, two `refine_advance`), which a loop
-  iterating to its own fixpoint does not need; the rest is the triangular solve's 14 levels of
-  two or three latency-bound kernels. Open: a `solve` without refinement for such a loop (an API
-  choice, outputs move by rounding), and a one-block triangular solve for a factor this small.
-  Numbers in `reference/component-status.md` ("Post-0.3.0 sweep"). `slim`'s held-factor steps
-  are the same solve: since its line search folds a face a lane (2026-11-20) the replayed solves
-  are 6 of 16 ms on `saddle_small` (~230 us each, 24 iterations) and 24 of 60 ms on a 164 k-face
-  hemisphere, the refactors another ~15 ms there; its own kernels are the rest.
+  coarse level (150 iterations, 0.8 of the call). `solve(refine=False)` (2026-11-20) drops the
+  residual tests (`refine_start`, two `residual_test`, two `refine_advance`) for a loop that
+  iterates to its own fixpoint; `slim` takes it (its held-factor solve ~230 -> ~206 us on
+  `saddle_small`, calls 0.95-0.96x CUDA, CPU at par, charts within 1.2e-7). Open: whether
+  `_proximal_arap` takes it too (outputs move by rounding; its tolerance stop reads the moves),
+  and a one-block triangular solve for a small factor, which is now nearly all of the solve: 7
+  forward and 7 backward levels of two or three latency-bound kernels. `slim`'s replayed solves
+  are 5.4 of 15 ms on `saddle_small` and 22 of 58 ms on a 164 k-face hemisphere. Numbers in
+  `reference/component-status.md` ("Post-0.3.0 sweep").

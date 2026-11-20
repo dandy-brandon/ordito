@@ -136,6 +136,39 @@ def test_sparse_cholesky_solves_columns_together(
         assert np.allclose(together.numpy()[column], alone.numpy(), rtol=1e-12, atol=1e-14)
 
 
+@pytest.mark.parametrize("system_name", ["heat", "poisson"])
+def test_sparse_cholesky_solves_unrefined(
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh], system_name: str
+) -> None:
+    """
+    Class A against ``scipy.sparse.linalg.spsolve``: ``refine=False`` from a guess it must ignore.
+
+    The heat system ``M - tL`` is nonsingular; the Poisson system is a Laplacian, singular on the
+    constant, whose consistent right-hand side SciPy cannot solve directly, so there the reference
+    is the refined solve from a zero guess (the constant an unrefined solve also takes). A guess of
+    7 everywhere would shift that constant, or start a refinement, if it were read.
+    """
+    _, mesh_wp = sphere_irregular
+    system = _heat_system(mesh_wp) if system_name == "heat" else _poisson_system(mesh_wp)
+    n = int(system.nrow)
+    rhs_np = np.random.default_rng(41).standard_normal(n)
+    if system_name == "poisson":
+        rhs_np -= rhs_np.mean()
+    rhs = wp.array(rhs_np, dtype=wp.float64, device=device)
+    factor = od.cholesky.sparse_cholesky(system, mesh_wp.points)
+    solution = wp.full(n, 7.0, dtype=wp.float64, device=device)
+    factor.solve(rhs, solution, refine=False)
+    if system_name == "heat":
+        expected_np = spla.spsolve(bsr_to_csr(system).tocsc(), rhs_np)
+    else:
+        refined = wp.zeros(n, dtype=wp.float64, device=device)
+        od.cholesky.sparse_cholesky(system, mesh_wp.points).solve(rhs, refined)
+        expected_np = refined.numpy()
+        assert abs(expected_np.mean()) < 1e-12
+    assert np.ptp(expected_np) > 1e-3
+    assert np.allclose(solution.numpy(), expected_np, rtol=1e-9, atol=1e-11)
+
+
 def test_sparse_cholesky_is_reproducible(
     device: str, saddle_graded: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
