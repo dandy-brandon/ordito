@@ -138,7 +138,12 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._common import read_array, read_scalar, read_values, require_same_device, scan_count
-from ordito.cholesky import NotPositiveDefiniteError, SparseCholesky, sparse_cholesky
+from ordito.cholesky import (
+    NotPositiveDefiniteError,
+    SparseCholesky,
+    factorization_nbytes,
+    sparse_cholesky,
+)
 from ordito.config import is_deterministic
 from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
@@ -165,6 +170,28 @@ SETTLE_BACKWARD_ERROR = 1e-6
 
 # Componentwise backward error the direct fallback refines to.
 SETTLE_DIRECT_TOLERANCE = 1e-12
+
+# The marched solve ``solve_spd_settled`` falls back to where a factorization is refused
+# (``_march_settled``; the choices are priced in ``kernels/linalg.py``'s march section). A band
+# entry is finished at ``_MARCH_RESOLVED`` e-folds or fewer below the band's peak, which a band
+# solve to ``_MARCH_TOLERANCE`` resolves, and ``_MARCH_MARGIN`` or more above its outer layer,
+# where the zero the band stands on no longer moves it.
+_MARCH_RESOLVED = 14.0
+_MARCH_MARGIN = 16.0
+_MARCH_TOLERANCE = 1e-14
+# Hops the first band grows; each band's count is rescaled from the last band's span in e-folds
+# (peak over outer layer) toward ``_MARCH_RESOLVED + _MARCH_MARGIN``, within a factor of
+# ``_MARCH_GROWTH`` up and two down: an operator's decay a hop is its own.
+_MARCH_FIRST_HOPS = 32
+_MARCH_GROWTH = 4
+# Threads of a CUDA band-growth launch, which stride a hop's entries: the hop's length is on the
+# device only.
+_MARCH_HOP_THREADS = 1 << 16
+# Bytes a row above every scalar mesh operator's factorization peak measured (the heat systems
+# need 3.6-7.7 KiB a row), so an operator of fewer than ``CHOLESKY_MEMORY_BUDGET`` over this many
+# rows fits, and ``solve_spd_settled`` asks a larger one's analysis before iterating: past the
+# budget it marches at once (``kernels/linalg.py``'s march section prices it).
+_FACTOR_ROW_BYTES = 8192
 
 # Rounds a solve holding a fallback factorization (``solve_spd_columns(factorization=...)``, which
 # every ``min_quad_with_fixed`` solve does) iterates before it stops and factors instead: the rent
@@ -2238,6 +2265,11 @@ class OperatorFactorization:
         self._refused = False
         # Whether the refusal was the operator's definiteness, not its size.
         self._indefinite = False
+        # Whether the analysis found the factorization within the budget (``_too_large``), once
+        # asked; ``None`` before.
+        self._fits: bool | None = None
+        # Whether a settled iterate of this operator failed its backward-error check.
+        self._iterate_rejected = False
         # A factored solve's device report per tolerance (``_direct_result``), built once: three
         # one-element arrays a call is three allocations on a path that costs a few launches.
         self._reports: dict[float, tuple[Any, Any, Any]] = {}
@@ -2263,6 +2295,18 @@ class OperatorFactorization:
     def refused(self) -> bool:
         """Whether ``factor`` was refused (indefinite, or past the memory budget) since release."""
         return self._refused
+
+    @property
+    def iterate_rejected(self) -> bool:
+        """
+        Whether a settled iterate of the operator failed its backward-error check.
+
+        Set by [`solve_spd_settled`][ordito.linalg.solve_spd_settled] when this holds its
+        operator, and kept through [`release`][ordito.linalg.OperatorFactorization.release]: it
+        describes the operator, not a factorization. An operator marched at once, past the memory
+        budget, never ran the iteration and leaves it unset.
+        """
+        return self._iterate_rejected
 
     def factor(
         self, sharing: OperatorFactorization | None = None, *, expandable: bool = False
@@ -2332,6 +2376,29 @@ class OperatorFactorization:
         self._refused = True
         return False
 
+    def _too_large(self) -> bool:
+        """
+        Whether this scalar operator's factorization is refused for its size, asked ahead.
+
+        An operator that could exceed the budget (``_could_exceed_budget``) is measured by its
+        analysis alone (``cholesky.factorization_nbytes``) the first time, the verdict kept; a
+        refusal found so is remembered as ``factor``'s own.
+        """
+        if self._factorization is not None:
+            return False
+        if self._refused:
+            return not self._indefinite
+        if self._fits is None:
+            if not _could_exceed_budget(int(self._matrix.nrow)):
+                return False
+            needed = factorization_nbytes(
+                cast("odt.BsrMatrix[wp.float64]", self._matrix), self._ordering_points()
+            )
+            self._fits = needed <= od.cholesky.CHOLESKY_MEMORY_BUDGET
+            if not self._fits:
+                self._refused = True
+        return not self._fits
+
     def _ordering_points(self) -> wp.array[wp.vec3] | None:
         """Return the rows' positions, formed from the partition the first time they are needed."""
         if self._partition is not None:
@@ -2377,6 +2444,7 @@ class OperatorFactorization:
         self._factorization = None
         self._refused = False
         self._indefinite = False
+        self._fits = None
 
 
 def solve_spd_settled(
@@ -2422,10 +2490,20 @@ def solve_spd_settled(
     system is solved again by a [`sparse_cholesky`][ordito.cholesky.sparse_cholesky]
     factorization, refined componentwise. The verification reads back one flag. The factorization
     is built in ``factorization`` when one is passed, where the caller keeps it; and a
-    ``factorization`` that already holds one is solved by directly, with no iteration. When no
-    factorization can be built (over
-    [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET], or not positive definite)
-    the settled iterate is returned as it is.
+    ``factorization`` that already holds one is solved by directly, with no iteration.
+
+    A scalar operator too large to factor (over
+    [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET]) is marched instead, with
+    no iteration first: solved a band at a time outward from the right-hand side's support, each
+    band by conjugate gradient with the values already finished as its boundary data and scaled
+    so its front is of order one, keeping the entries it resolves to their own precision. The
+    answer matches a direct solve's entry by entry to about ``1e-6`` of each entry, at any depth
+    below the peak, and on such an operator costs less than the settled iteration, whether that
+    iteration would pass its check or not. Whether the operator is too large is asked of its
+    analysis alone ([`factorization_nbytes`][ordito.cholesky.factorization_nbytes]) when its row
+    count says it may be, the verdict kept in ``factorization``; an operator found too large only
+    when its rejected iterate's fallback is refused is marched then. A ``wp.mat22d``-block
+    operator, or one that is not positive definite, returns its settled iterate as it is.
 
     Parameters
     ----------
@@ -2464,7 +2542,8 @@ def solve_spd_settled(
     -------
     wp.array[wp.int32]
         ``(1,)`` device array holding the rounds that took a step; zero when the solve went to a
-        held factorization directly. It belongs to the solver
+        held factorization directly, and the band solves' rounds when it marched at once. It
+        belongs to the solver
         state kept for ``matrix`` and is overwritten by the next solve against it -- or, for an
         operator rebuilt per call, against the next operator of its shape, whose solve takes the
         same state (see [`solve_spd`][ordito.linalg.solve_spd]).
@@ -2543,6 +2622,15 @@ def solve_spd_settled(
             tol=SETTLE_DIRECT_TOLERANCE, componentwise=True,
         )  # fmt: skip
         return _direct_result(factorization, SETTLE_DIRECT_TOLERANCE, 0, rhs.device)[0]
+    marchable = not odt.has_blocks(matrix, wp.mat22d)
+    holder = factorization
+    if marchable and holder is None and _could_exceed_budget(int(scalar.nrow)):
+        holder = OperatorFactorization(matrix)
+    if marchable and holder is not None and holder._too_large():  # pyright: ignore[reportPrivateUsage]
+        # Past the budget the march costs less than the settled iteration, whether the iterate
+        # would pass its check or not: march at once.
+        rounds = _march_columns(scalar, rhs_flat, solution_flat, n_columns)
+        return _launch.full(1, rounds, dtype=wp.int32, device=rhs.device)
     solver = _cached_solver(
         scalar,
         n_columns,
@@ -2575,11 +2663,19 @@ def solve_spd_settled(
     )  # fmt: skip
     if flag.verdict() == 0:
         return solver.iterations
-    fallback = factorization if factorization is not None else OperatorFactorization(matrix)
+    fallback = holder if holder is not None else OperatorFactorization(matrix)
+    fallback._iterate_rejected = True  # pyright: ignore[reportPrivateUsage]
     if not fallback.factor():
-        # No warning: the check also fails on a far field near the bottom of the ``float64``
-        # range, where the iterate's directions are right (the heat diffusions at a large ``t``),
-        # so it cannot tell the caller the answer is wrong. A caller that can is the one to say so.
+        if not marchable or fallback._indefinite:  # pyright: ignore[reportPrivateUsage]
+            # No warning: the check also fails on a far field near the bottom of the ``float64``
+            # range, where the iterate's directions are right (the heat diffusions at a large
+            # ``t``), so it cannot tell the caller the answer is wrong. A caller that can is the
+            # one to say so.
+            return solver.iterations
+        # Too large to factor after all (an operator denser than ``_FACTOR_ROW_BYTES`` a row
+        # below the size test): march, which reaches every entry with its own precision too, and
+        # so do this operator's later solves.
+        _march_columns(scalar, rhs_flat, solution_flat, n_columns)
         return solver.iterations
     # From zero, not from the rejected iterate, as ``_solve_columns_verified`` refines.
     _launch.zero_(solution_flat)
@@ -2588,6 +2684,185 @@ def solve_spd_settled(
         tol=SETTLE_DIRECT_TOLERANCE, componentwise=True,
     )  # fmt: skip
     return solver.iterations
+
+
+def _could_exceed_budget(n_rows: int) -> bool:
+    """Whether a scalar operator of ``n_rows`` rows may need more than the factorization budget."""
+    return n_rows * _FACTOR_ROW_BYTES > od.cholesky.CHOLESKY_MEMORY_BUDGET
+
+
+def _march_columns(
+    matrix: odt.BsrMatrix[wp.float64],
+    rhs: wp.array[wp.float64],
+    solution: wp.array[wp.float64],
+    n_columns: int,
+) -> int:
+    """March each of ``n_columns`` flat columns of ``rhs`` into ``solution``; return the rounds."""
+    n = int(matrix.nrow)
+    rounds = 0
+    for column in range(n_columns):
+        rounds += _march_settled(
+            matrix,
+            _launch.view(rhs, column * n, (column + 1) * n),
+            _launch.view(solution, column * n, (column + 1) * n),
+        )
+    return rounds
+
+
+def _march_settled(
+    matrix: odt.BsrMatrix[wp.float64], rhs: wp.array[wp.float64], solution: wp.array[wp.float64]
+) -> int:
+    """
+    Solve ``matrix x = rhs`` into ``solution`` band by band, every entry to its own precision.
+
+    The fallback of ``solve_spd_settled`` where an operator's factorization is refused: a band is
+    the rows not yet finished within ``hops`` hops of the finished ones (of ``rhs``'s support at
+    first), solved by conjugate gradient with the finished values as its Dirichlet data and zero
+    beyond it, scaled so its front is ``O(1)``; its rows both resolved and clear of the zero it
+    stands on are finished (``kernels/linalg.march_band_commit``), and the march goes on from them
+    until no unfinished row borders a finished one. Rows ``rhs`` reaches no band of stay zero.
+    Returns the band solves' rounds.
+    """
+    device = rhs.device
+    n = int(matrix.nrow)
+    offsets, columns, values = matrix.offsets, matrix.columns, matrix.values
+    deterministic = is_deterministic()
+    finished = _launch.zeros(n, dtype=wp.int32, device=device)
+    local = _launch.full(n, -1, dtype=wp.int32, device=device)
+    # Twice the rows under the deterministic setting: the radix sort's double buffer.
+    band = _launch.empty(2 * n if deterministic else n, dtype=wp.int32, device=device)
+    order = _launch.empty(2 * n, dtype=wp.int32, device=device) if deterministic else None
+    tentative = _launch.zeros(n, dtype=wp.float64, device=device)
+    count = _launch.zeros(1, dtype=wp.int32, device=device)
+    words = _launch.zeros(kernel_linalg.MARCH_WORDS, dtype=wp.float64, device=device)
+    _launch.zero_(solution)
+    cuda = wp.get_device(device).is_cuda
+    stride = _MARCH_HOP_THREADS if cuda else 1
+    resolved, margin = math.exp(-_MARCH_RESOLVED), math.exp(_MARCH_MARGIN)
+    span_target = _MARCH_RESOLVED + _MARCH_MARGIN
+    hops = _MARCH_FIRST_HOPS
+    started = False
+    rounds = 0
+    # The length of the last band that held every unfinished row it could reach (no outer layer):
+    # the next band is that band less the rows it finished, so the same length again means it
+    # finished none (a non-finite solve), and the march stops rather than repeat it.
+    whole = -1
+    while True:
+        bounds = _launch.zeros(hops + 2, dtype=wp.int32, device=device)
+        _launch.zero_(count)
+        if started:
+            _launch.launch(
+                kernel_linalg.march_seed_front,
+                dim=n,
+                inputs=[offsets, columns, finished],
+                outputs=[local, band, count],
+                device=device,
+            )
+        else:
+            _launch.launch(
+                kernel_linalg.march_seed_support,
+                dim=n,
+                inputs=[rhs],
+                outputs=[local, band, count],
+                device=device,
+            )
+        _launch.launch(
+            kernel_linalg.march_close_hop, dim=1, inputs=[count, 1], outputs=[bounds], device=device
+        )
+        for hop in range(1, hops + 1):
+            _launch.launch(
+                kernel_linalg.march_expand_band,
+                dim=stride,
+                inputs=[offsets, columns, finished, bounds, hop, stride],
+                outputs=[local, band, count],
+                device=device,
+            )
+            _launch.launch(
+                kernel_linalg.march_close_hop,
+                dim=1,
+                inputs=[count, hop + 1],
+                outputs=[bounds],
+                device=device,
+            )
+        # Host readback: the band's length sizes its system, and an empty band ends the march.
+        m = int(read_scalar(count, 0))
+        if m == 0 or m == whole:
+            return rounds
+        if order is not None:
+            # The claims' arrival order would number the band system's rows differently run to
+            # run; sorted, the band's rows are numbered as the operator's are.
+            _launch.radix_sort_pairs(band, order, m)
+            _launch.launch(
+                kernel_linalg.march_relabel_band,
+                dim=m,
+                inputs=[band],
+                outputs=[local],
+                device=device,
+            )
+        band_offsets = _launch.zeros(m + 1, dtype=wp.int32, device=device)
+        _launch.zero_(words)
+        _launch.launch(
+            kernel_linalg.march_band_rows,
+            dim=m,
+            inputs=[offsets, columns, band, local, finished, solution, rhs],
+            outputs=[band_offsets, words],
+            device=device,
+        )
+        nnz = scan_count(_launch.view(band_offsets, 1, m + 1))
+        band_columns = _launch.empty(nnz, dtype=wp.int32, device=device)
+        band_values = _launch.empty(nnz, dtype=wp.float64, device=device)
+        band_rhs = _launch.empty(m, dtype=wp.float64, device=device)
+        x = _launch.empty(m, dtype=wp.float64, device=device)
+        _launch.launch(
+            kernel_linalg.march_band_system,
+            dim=m,
+            inputs=[offsets, columns, values, band, local, finished, solution, rhs, tentative,
+                    words, band_offsets],
+            outputs=[band_columns, band_values, band_rhs, x],
+            device=device,
+        )  # fmt: skip
+        system = od.array.bsr_from_csr(m, m, band_offsets, band_columns, band_values)
+        iterations, _, _ = solve_spd(
+            system, band_rhs, x, tol=_MARCH_TOLERANCE, name="solve_spd_settled"
+        )
+        rounds += int(iterations)
+        _launch.launch(
+            kernel_linalg.march_band_extremes,
+            dim=m,
+            inputs=[offsets, columns, band, local, finished, x],
+            outputs=[words],
+            device=device,
+        )
+        # Host readback: the band's peak and outer layer set the rows it finishes and the next
+        # band's hops.
+        peak, outer, has_outer = (float(word) for word in read_values(words, 1, 3))
+        threshold = resolved * peak
+        if has_outer > 0.0:
+            # An outer layer the solve left below its own tolerance of the peak is unresolved,
+            # not zero.
+            outer = max(outer, _MARCH_TOLERANCE * peak)
+            threshold = max(threshold, margin * outer)
+            span = math.log(peak / outer) if peak > outer else 0.0
+            target = hops * _MARCH_GROWTH if span <= 0.0 else math.ceil(hops * span_target / span)
+            hops = min(hops * _MARCH_GROWTH, max(hops // 2, target, 1))
+        keep = _launch.empty(m, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_linalg.march_band_commit,
+            dim=m,
+            inputs=[offsets, columns, band, local, finished, x, words, threshold],
+            outputs=[solution, tentative, keep],
+            device=device,
+        )
+        _launch.launch(
+            kernel_linalg.march_band_release,
+            dim=m,
+            inputs=[band, keep],
+            outputs=[local, finished],
+            device=device,
+        )
+        # A band too thin to finish anything is grown from the same rows again.
+        started = started or peak >= threshold
+        whole = -1 if has_outer > 0.0 else m
 
 
 class _StampedFlag:

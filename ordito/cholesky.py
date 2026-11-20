@@ -696,13 +696,72 @@ def held_nbytes(factorizations: Iterable[SparseCholesky]) -> int:
     return own + sum(analyses.values())
 
 
+def factorization_nbytes(
+    matrix: odt.BsrMatrix[wp.float64], coordinates: wp.array[wp.vec3] | None = None
+) -> int:
+    """
+    Peak device memory [`sparse_cholesky`][ordito.cholesky.sparse_cholesky] would take, in bytes.
+
+    What the factorization holds once built plus the transient arena its first numeric
+    factorization works in (or a first solve's scratch, when that is larger): the figure
+    ``sparse_cholesky`` compares with
+    [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET]. Found by the ordering and
+    the symbolic analysis alone, which stop there, so asking costs most of an analysis and no
+    factorization, and is answered whatever the budget.
+
+    Parameters
+    ----------
+    matrix
+        ``(n, n)`` symmetric scalar ``float64`` operator, as ``sparse_cholesky`` takes it.
+    coordinates
+        ``(n,)`` positions of the rows for the ordering, as ``sparse_cholesky`` takes them.
+
+    Returns
+    -------
+    int
+        The bytes; ``sparse_cholesky`` refuses the operator exactly when this exceeds
+        ``CHOLESKY_MEMORY_BUDGET``.
+
+    Raises
+    ------
+    ValueError
+        If ``matrix`` is not square scalar ``float64``, or ``coordinates`` does not have ``n``
+        rows.
+    RuntimeError
+        If ``matrix`` and ``coordinates`` are not on one device.
+
+    See Also
+    --------
+    [`sparse_cholesky`][ordito.cholesky.sparse_cholesky]
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    system = od.heat.heat_operators(vertices, faces)[0]  # M - t L, float64
+    needed = od.cholesky.factorization_nbytes(system, vertices)
+    print(needed < od.cholesky.CHOLESKY_MEMORY_BUDGET)  # True
+    ```
+    """
+    require_same_device(matrix=matrix, coordinates=coordinates)
+    return _plan_cholesky(matrix, coordinates, probe=True).needed
+
+
 def _plan_cholesky(
     matrix: odt.BsrMatrix[wp.float64],
     coordinates: wp.array[wp.vec3] | None = None,
     *,
     granularity: int = 1,
+    probe: bool = False,
 ) -> _Plan:
-    """Return the symbolic half of ``sparse_cholesky``: ordering, structure, every device map."""
+    """
+    Return the symbolic half of ``sparse_cholesky``: ordering, structure, every device map.
+
+    With ``probe``, the analysis stops once it knows the factorization's peak memory
+    (``_Plan.needed``), refusing nothing and building no map.
+    """
     if matrix.values.dtype != wp.float64 or int(matrix.nrow) != int(matrix.ncol):
         raise ValueError("sparse_cholesky factors a square scalar float64 operator")
     n = int(matrix.nrow)
@@ -715,7 +774,7 @@ def _plan_cholesky(
     )
     if coordinates is None:
         coordinates = _landmark_coordinates(matrix, labels)
-    return _Plan(matrix, coordinates, labels, granularity=granularity)
+    return _Plan(matrix, coordinates, labels, granularity=granularity, probe=probe)
 
 
 class _Plan:
@@ -729,6 +788,7 @@ class _Plan:
         *,
         granularity: int = 1,
         expanding: _Plan | None = None,
+        probe: bool = False,
     ) -> None:
         """
         Analyse ``matrix``'s pattern, ordered by ``coordinates`` with components ``labels``.
@@ -737,10 +797,13 @@ class _Plan:
         ``CHOLESKY_TOP_ROWS`` rows divided by ``granularity``. With ``expanding``, ``matrix`` is
         the 2 x 2 block expansion of that plan's pattern and the analysis is derived from that
         plan's (``_expanded_structure``): ``coordinates``, ``labels`` and ``granularity`` are not
-        read.
+        read. With ``probe``, it stops at the budget test with the peak in ``needed``: an
+        unusable plan, refused for nothing.
         """
         n = int(matrix.nrow)
         device = matrix.device
+        # The first factorization's peak device memory, set at the budget test.
+        self.needed = 0
         self.n = n
         self.device = device
         self.granularity = 1 if expanding is not None else granularity
@@ -939,6 +1002,9 @@ class _Plan:
         if cpu:
             self.nbytes += 4 * sum(scratch_sizes)
         needed = self.nbytes + self.numeric_nbytes() + max(8 * front_entries, self.solve_nbytes(1))
+        self.needed = needed
+        if probe:
+            return
         if needed > CHOLESKY_MEMORY_BUDGET:
             raise ValueError(
                 f"sparse_cholesky: the factorization needs {needed} bytes, above "

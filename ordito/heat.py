@@ -477,12 +477,6 @@ def heat_geodesic(
     RuntimeError
         If ``vertices``, ``faces`` and ``sources`` are not all on one device.
 
-    Warns
-    -----
-    UserWarning
-        At the default ``t``, when the heat solve fails its accuracy check and cannot be factored
-        (see Notes).
-
     Notes
     -----
     The default time is the solver's, which on a mesh more than about 400 mean edges across is
@@ -491,9 +485,11 @@ def heat_geodesic(
     their distance stops growing far from the sources.
 
     On a mesh whose heat solve fails its accuracy check and whose system is too large to factor
-    within [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET] (tens of millions of
-    vertices), the iterate stands and the distance is unreliable far from the sources; at the
-    default time this warns.
+    within [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET] (millions of
+    vertices), the heat is marched outward from the sources a band at a time instead (see
+    [`solve_spd_settled`][ordito.linalg.solve_spd_settled]), which reaches the far field to its
+    own precision as a factorization would; the solver marches its later heat solves at once, and
+    its Poisson solve takes a multigrid hierarchy.
 
     The ``vertices, faces`` form logs at ``INFO`` on the ``ordito.heat`` logger when it built a
     factorization it is about to drop (the heat solve's verification failed on an ill-conditioned
@@ -3602,8 +3598,9 @@ class HeatSolver:
         # Set once a settled iterate of this mesh's systems fails its backward-error check: the
         # operators are ill-conditioned in places, so the Poisson solve is factored at once too.
         self._ill_conditioned = False
-        # A diffusion's check failed and its system could not be factored (past the budget): the
-        # Poisson systems, stored over its pattern, are not offered a factorization either.
+        # A diffusion's system is too large to factor (past the budget): the Poisson systems,
+        # stored over its pattern, are not offered a factorization either, and iterate under
+        # multigrid.
         self._unfactorable = False
         # The heat system pinned to zero on the rim, its preconditioner and rim mask, once built;
         # ``()`` for a mesh with no rim, which has no pinned solve to run.
@@ -4091,10 +4088,10 @@ class HeatSolver:
         if kept.factorization.factorization is not None:
             kept.factorization.solve(rhs, solution, tol=_CG_TOLERANCE)
             return
-        if self._ill_conditioned:
-            # No factorization (refused past the memory budget): the iteration is as slow as the
-            # diffusion's was, and a multigrid hierarchy's rounds, unlike the polynomial's, do not
-            # grow with the mesh. On a well-conditioned mesh the polynomial is the cheaper one.
+        if self._ill_conditioned or self._unfactorable:
+            # No factorization (refused past the memory budget): a multigrid hierarchy's rounds,
+            # unlike the polynomial's, do not grow with the mesh. On a mesh within the budget
+            # whose diffusions pass their check the polynomial is the cheaper one.
             multigrid = self._multigrid.get(role)
             if multigrid is None:
                 multigrid = self._multigrid[role] = twl.multigrid_preconditioner(
@@ -4338,15 +4335,18 @@ class HeatSolver:
                 role,
             )
         elif not held and kept.factorization.refused and not was_refused:
-            # The check failed and its fallback factorization was refused: the iterate stands.
-            self._ill_conditioned = True
+            # The system is too large to factor: a scalar one was marched band by band, to every
+            # entry's own precision (at once, or after its settled iterate failed its check); a
+            # block one's iterate failed its check and stands.
+            self._ill_conditioned = self._ill_conditioned or kept.factorization.iterate_rejected
             self._unfactorable = True
+            marched = not odt.has_blocks(matrix, wp.mat22d)
             _LOGGER.debug(
-                "HeatSolver: the %s system's settled iterate failed its backward-error check and "
-                "could not be factored",
+                "HeatSolver: the %s system is too large to factor; %s",
                 role,
+                "marched it" if marched else "its rejected settled iterate stands",
             )
-            if self.t is None:
+            if self.t is None and not marched:
                 # At the default time the field spans the float64 range by construction, so the
                 # failure is real; a caller's long ``t`` can fail it on a far field merely tiny.
                 warnings.warn(

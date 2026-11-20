@@ -61,6 +61,7 @@ from tests.conftest import (
     saddle_graded_large_arrays,
 )
 from tests.conversions import (
+    bsr_to_csr,
     bsr_to_dense,
     meshlib_scalars_to_numpy,
     numpy_to_meshlib_bitset,
@@ -3072,23 +3073,30 @@ def test_default_time_keeps_the_far_end_of_a_long_strip(
     assert np.abs(distance_np[far] - cells).max() < 0.03 * cells
 
 
+@pytest.mark.parametrize("probed", [True, False], ids=["probed", "after-a-rejected-iterate"])
 def test_an_unfactorable_ill_conditioned_mesh_solves_poisson_by_multigrid(
-    graded_saddle: GradedSaddle, monkeypatch: pytest.MonkeyPatch
+    graded_saddle: GradedSaddle, monkeypatch: pytest.MonkeyPatch, probed: bool
 ) -> None:
     """
-    Ordito against ordito: past the memory budget the Poisson solve's multigrid answer is exact.
+    Class A, against ``scipy.sparse.linalg.spsolve``: past the memory budget both solves are right.
 
-    No reference covers a factorization refused for its size. With the budget set to nothing, the
-    heat solve's iterate fails its backward-error check on ``saddle_graded`` and its fallback is
-    refused: the solver must warn and still say it is ill-conditioned (with a caller's own time,
-    only the latter), and its Poisson solve, offered no
-    factorization, must take one multigrid hierarchy (kept for the next solve) and recover a field
-    ``u`` from ``-L u`` up to its constant. Mutation probe: keying the flag on a built
-    factorization alone (the old rule) leaves ``ill_conditioned`` false and builds no hierarchy.
+    With the budget set to nothing the heat system of ``saddle_graded`` cannot be factored: its
+    analysis says so before any iteration and the heat is marched at once, or (``probed`` off, the
+    size test bypassed) its settled iterate fails its backward-error check, the fallback is refused
+    and the heat is marched then. Either way every entry is within ``1e-6`` of itself of the direct
+    solve's, with no warning, and the solver says it is ill-conditioned exactly when an iterate was
+    rejected (with a caller's own time too). Its Poisson solve, offered no factorization, must take
+    one multigrid hierarchy (kept for the next solve) and recover a field ``u`` from ``-L u`` up to
+    its constant. Mutation probes: keying multigrid on ``ill_conditioned`` alone (the old rule)
+    builds no hierarchy when probed; keying the flag on a built factorization alone leaves
+    ``ill_conditioned`` false after a rejected iterate; returning the rejected iterate (the old
+    fallback) misses the heat by up to 9 % of itself, on 954 of 1 156 vertices.
     """
     _, _, vertices_wp, faces_wp = graded_saddle
     device = vertices_wp.device
     monkeypatch.setattr(od.cholesky, "CHOLESKY_MEMORY_BUDGET", 0)
+    if not probed:
+        monkeypatch.setattr(od.linalg, "_FACTOR_ROW_BYTES", 0)
     hierarchies: list[int] = []
     multigrid = od.linalg.multigrid_preconditioner
 
@@ -3103,16 +3111,20 @@ def test_an_unfactorable_ill_conditioned_mesh_solves_poisson_by_multigrid(
     rhs_np = np.zeros(n_vertices)
     rhs_np[0] = 1.0
     heat_wp = wp.zeros(n_vertices, dtype=wp.float64, device=device)
-    with pytest.warns(UserWarning, match="too large to factor"):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
         solver.diffuse(wp.array(rhs_np, dtype=wp.float64, device=device), heat_wp)
-    assert solver.ill_conditioned
+    assert solver.ill_conditioned != probed
     assert solver.nbytes == 0
+    expected_np = spla.spsolve(bsr_to_csr(solver.operators[0]).tocsc(), rhs_np)
+    assert expected_np.min() < 1e-15 * expected_np.max()
+    assert np.all(np.abs(heat_wp.numpy() - expected_np) <= 1e-6 * np.abs(expected_np))
     # A caller's own time can fail the check on a far field merely tiny: no warning.
     timed = mesh.heat_solver(t=4.0 * od.edges.mean_unique_edge_length(vertices_wp, faces_wp) ** 2)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         timed.diffuse(wp.array(rhs_np, dtype=wp.float64, device=device), heat_wp)
-    assert timed.ill_conditioned
+    assert timed.ill_conditioned != probed
 
     poisson = solver.operators[3]
     offsets = poisson.offsets.numpy()[: n_vertices + 1]

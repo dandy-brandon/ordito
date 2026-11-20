@@ -1213,9 +1213,9 @@ def test_solve_spd_settled_falls_back_on_a_rejected_iterate(
 
     A change tolerance of ten settles after the first check, far from the solution; the
     backward-error check rejects it and a factorization answers to ``1e-12``. When the operator
-    cannot be factored (``CHOLESKY_MEMORY_BUDGET`` too small) the iterate is returned without a
-    warning (the check cannot tell a wrong iterate from a right far field near the bottom of the
-    ``float64`` range), and it is measurably not the solution.
+    cannot be factored (``CHOLESKY_MEMORY_BUDGET`` too small) the system is marched instead, to the
+    same bound and without a warning. Mutation probe: returning the rejected iterate there (the old
+    rule) leaves an error above ``1e-4``.
     """
     matrix_wp, rhs_wp, dense_np, rhs_np = _spd_system(device)
     rhs_1d = odt.as_dense(rhs_wp[0])
@@ -1231,10 +1231,93 @@ def test_solve_spd_settled_falls_back_on_a_rejected_iterate(
     error = np.abs(solution_wp.numpy() - expected_np).max()
     messages = [str(warning.message) for warning in caught]
     assert messages == []
-    if factorable:
-        assert error < 1e-12
-    else:
-        assert error > 1e-4
+    assert error < 1e-12
+
+
+def _strip_heat_system(
+    device: str, cells: int = 160
+) -> tuple[odt.BsrMatrix[wp.float64], np.ndarray]:
+    """
+    Build a ``cells x 2`` strip's heat system at ``t = 0.25`` and its vertices' ``x``.
+
+    A unit edge is two ``sqrt(t)``, so a field diffused from one end falls by about ``e^-1.8`` an
+    edge, ``1e-120`` along the strip: far below conjugate gradient's round-off, within ``float64``.
+    """
+    vertices_wp, faces_wp = od.creation.grid(
+        count=(cells + 1, 3), extents=(float(cells), 2.0), center=False, device=device
+    )
+    system = od.heat.heat_operators(vertices_wp, faces_wp, 0.25)[0]
+    return system, vertices_wp.numpy()[:, 0].astype(np.float64)
+
+
+@pytest.mark.parametrize("probed", [True, False], ids=["probed", "after-a-rejected-iterate"])
+@pytest.mark.parametrize("n_columns", [1, 2], ids=["one-column", "two-columns"])
+def test_solve_spd_settled_marches_an_operator_too_large_to_factor(
+    device: str, monkeypatch: pytest.MonkeyPatch, n_columns: int, probed: bool
+) -> None:
+    """
+    Class A, against ``scipy.sparse.linalg.spsolve``: past the budget the settled solve marches.
+
+    A strip's heat system diffused from one end (and, as a second column, from the other): the
+    field falls by ``1e-120`` along the strip, where a conjugate-gradient iterate is round-off
+    past ``1e-16`` of the peak. ``CHOLESKY_MEMORY_BUDGET`` refuses the factorization: its analysis
+    says so before any iteration and the system is marched at once, or (``probed`` off, the size
+    test bypassed) the iterate is made to fail its check (a change tolerance of ten settles at the
+    first check), the fallback is refused and the system is marched then. Either way every entry
+    is within ``1e-6`` of itself of the direct solve, a second solve through the same
+    ``OperatorFactorization`` marches at once and repeats the first bit for bit, and
+    ``iterate_rejected`` says whether an iteration ran. Mutation probes: a zero margin
+    (``_MARCH_MARGIN``) finishes rows the band's zero edge still pulls down, ``1e-2`` off;
+    ``_MARCH_RESOLVED`` at 40 finishes round-off, worse than ``1e-1``; not asking the analysis
+    first builds a settled iteration when probed; a second solve that does not march at once
+    builds a second one.
+    """
+    system_wp, xs = _strip_heat_system(device)
+    n = xs.size
+    system_sp = bsr_to_csr(system_wp)
+    rhs_np = np.zeros((n_columns, n))
+    rhs_np[0, xs == 0.0] = 1.0
+    if n_columns == 2:
+        rhs_np[1, xs == xs.max()] = 1.0
+    expected_np = np.stack([spla.spsolve(system_sp.tocsc(), column) for column in rhs_np])
+    assert expected_np.min() < 1e-100 * expected_np.max()
+    monkeypatch.setattr(od.cholesky, "CHOLESKY_MEMORY_BUDGET", 1024)
+    if not probed:
+        monkeypatch.setattr(od.linalg, "_FACTOR_ROW_BYTES", 0)
+    settled: list[object] = []
+    cached = od.linalg._cached_solver
+
+    def counting(*args: Any, **kwargs: Any) -> Any:
+        if kwargs.get("settle") is not None:
+            settled.append(kwargs["settle"])
+        return cached(*args, **kwargs)
+
+    monkeypatch.setattr(od.linalg, "_cached_solver", counting)
+    holder = od.linalg.OperatorFactorization(system_wp)
+    rhs_wp = wp.array(np.ascontiguousarray(rhs_np), dtype=wp.float64, device=device)
+    rhs_arg: odt.ArrayNd = (
+        rhs_wp.reshape((n,)) if n_columns == 1 else odt.as_array2d(rhs_wp, wp.float64)
+    )
+    answers = []
+    for _ in range(2):
+        solution_wp = wp.zeros(rhs_arg.shape, dtype=wp.float64, device=device)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            od.linalg.solve_spd_settled(
+                system_wp,
+                rhs_arg,
+                solution_wp,
+                check_rounds=1,
+                change_tolerance=10.0,
+                settle_rounds=1,
+                factorization=holder,
+            )
+        answers.append(solution_wp.numpy().reshape(n_columns, n))
+    assert holder.refused
+    assert holder.iterate_rejected != probed
+    assert len(settled) == (0 if probed else 1)
+    assert np.array_equal(answers[0], answers[1])
+    assert np.all(np.abs(answers[0] - expected_np) <= 1e-6 * np.abs(expected_np))
 
 
 def test_solve_spd_warns_only_when_it_runs_out_of_iterations(device: str) -> None:

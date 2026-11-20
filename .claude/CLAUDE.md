@@ -1411,10 +1411,9 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   two or three latency-bound kernels. Open: a `solve` without refinement for such a loop (an API
   choice, outputs move by rounding), and a one-block triangular solve for a factor this small.
   Numbers in `reference/component-status.md` ("Post-0.3.0 sweep").
-- **The heat method past the factorization budget** (`heat_geodesic` and every settled
-  diffusion on meshes of tens of millions of vertices, `lucy`): the heat system cannot be factored
-  within `CHOLESKY_MEMORY_BUDGET` (108 GB on `lucy`) and conjugate gradient's iterate fails the
-  componentwise check (its far field is round-off), so the distance sits at ~4 % of the graph
-  distance and varies by up to 50 between runs; the longer default time alone lifts it only to
-  0.3-0.5. It now warns. Open: a method that resolves the far field without a factorization.
+- **Settled diffusions past the factorization budget, what the march left** (`lucy`): a scalar
+  system is marched (`linalg._march_settled`, at once when its analysis refuses it; distance 0.97
+  of the graph distance where it was 0.04). Open: (a) a `wp.mat22d` system (vector heat,
+  Crouzeix-Raviart) is not marched and still returns its iterate with a warning; (b) a band's
+  ~1 000 rounds on `lucy` are its Jacobi conditioning, the lever a better band preconditioner.
   Status in `reference/component-status.md` (16.10).

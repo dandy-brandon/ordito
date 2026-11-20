@@ -799,6 +799,36 @@
    "alloc": 1
   }
  },
+ "benchmarks/test_cholesky.py::test_factorization_nbytes[saddle-ordito-cuda]": {
+  "counts": {
+   "launch": 111,
+   "alloc": 21,
+   "memset": 7,
+   "d2h": 2,
+   "scan": 16,
+   "sort": 17
+  }
+ },
+ "benchmarks/test_cholesky.py::test_factorization_nbytes[saddle_graded-ordito-cuda]": {
+  "counts": {
+   "launch": 111,
+   "alloc": 21,
+   "memset": 7,
+   "d2h": 2,
+   "scan": 16,
+   "sort": 17
+  }
+ },
+ "benchmarks/test_cholesky.py::test_factorization_nbytes[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 87,
+   "alloc": 21,
+   "memset": 7,
+   "d2h": 2,
+   "scan": 13,
+   "sort": 14
+  }
+ },
  "benchmarks/test_cholesky.py::test_sparse_cholesky[saddle-ordito-cuda]": {
   "counts": {
    "launch": 264,

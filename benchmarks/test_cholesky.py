@@ -51,6 +51,18 @@ def test_sparse_cholesky(bench_case: BenchCase) -> None:
     assert factor.n == bench_case.n_vertices
 
 
+@pytest.mark.benchmark(group="factorization_nbytes")
+@pytest.mark.benchmeshes("sphere_small", "sphere_med", "saddle", "saddle_graded")
+@pytest.mark.benchlibs("ordito")
+def test_factorization_nbytes(bench_case: BenchCase) -> None:
+    """The ordering and symbolic analysis up to the budget test: what a refusal costs to learn."""
+    system = _system(bench_case)
+    needed = bench_case.run(
+        lambda: od.cholesky.factorization_nbytes(system, bench_case.vertices_wp), rounds=3
+    )
+    assert needed > 0
+
+
 @pytest.mark.benchmark(group="sparse_cholesky_solve")
 @pytest.mark.benchmeshes("sphere_small", "sphere_med", "saddle", "saddle_graded")
 @pytest.mark.benchlibs("ordito")

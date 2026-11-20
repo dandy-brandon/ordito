@@ -37,6 +37,7 @@ from warp._src.types import type_is_generic
 from ordito.constants import TILE_1D
 from ordito.kernels.array import (
     OverloadTable,
+    append_slot_if,
     csr_row_long,
     declare_block_dims,
     device_is_cpu,
@@ -1247,6 +1248,287 @@ def backward_error_exceeds(
             b = rhs[offset + i]
             if lane == 0 and not (wp.abs(b - sums[0]) <= tolerance * (wp.abs(b) + sums[1])):
                 raise_backward_error_flag(out_flag, base + BACKWARD_ERROR_FAILED)
+
+
+# --------------------------------------------------------------------------------------
+# The marched settled solve (``linalg._march_settled``)
+#
+# A settled iterate that fails its backward-error check on an operator too large to factor: its
+# far field sits below conjugate gradient's round-off, and a direct solve, which reaches every
+# entry with its own precision, is refused. The march solves the same system a band at a time,
+# outward from the right-hand side's support. A band is the rows not yet finished within ``hops``
+# hops of the finished ones (of the support, at first), grown breadth first a hop a launch; its
+# system is the operator's band-by-band block, the finished neighbours' values moved to its
+# right-hand side (Dirichlet data), zero beyond it, the whole divided by the largest datum so the
+# front is ``O(1)`` and the band resolves the next few tens of e-folds whatever the scale. Entries
+# both resolved (above a fraction of the band's peak) and clear of the truncation (above a multiple
+# of the band's outer layer, where the zero stands in for the field) are finished; the rest seed
+# the next band's guess (``tentative``).
+#
+# Priced 2026-11-20 on the heat systems at ``heat_geodesic(method="meshlab")``'s default time,
+# whose fields span ~450 e-folds (``dragon``: ``float64`` underflows at its far end; ``lucy``:
+# 2e-179). A band solve's error is ~1e-15 of its peak, so an entry ``e^-14`` below it is right to
+# ~1e-9 of itself, and the zero the outer layer stands on moves an entry ``e^16`` above it by
+# ~1e-7. Against ``dragon``'s factored solve: 6.7e-7 worst, 1.4e-9 median, 34 bands; 18 resolved
+# e-folds let the worst reach 4e-5, a band tolerance of 1e-12 1.6e-4. Each band starting from the
+# last band's values (``tentative``) halved the rounds (35.6 k -> 19.4 k on ``dragon``, 83 k -> 38 k
+# on ``lucy``), and rescaling the hops from the last band's span made ``lucy``'s bands span the
+# 30 e-folds they are meant to (a mean-edge guess gave ~26, as its decay a hop varies): its march
+# 15.6 -> 7.6 s, its distance unchanged. A heat system decays by ~0.1 e-fold a hop on ``lucy``
+# (``sqrt(t)`` is ten mean edges) and ~0.7 on ``dragon``, so no fixed hop count serves both. A
+# band's rounds (~1 000 on ``lucy``) are its Jacobi-scaled conditioning, 7 500 on ``dragon``'s
+# first band where a sliver-free mesh gives ~20, not its width.
+
+
+@wp.kernel
+def march_seed_support(
+    rhs: wp.array[wp.float64],
+    out_local: wp.array[wp.int32],
+    out_band: wp.array[wp.int32],
+    out_count: wp.array[wp.int32],
+) -> None:
+    # The first band's first hop: the right-hand side's support, a row a thread.
+    v = wp.int32(wp.tid())
+    slot = append_slot_if(out_count, 0, wp.where(rhs[v] != wp.float64(0.0), 1, 0))
+    if slot >= 0:
+        out_local[v] = slot
+        out_band[slot] = v
+
+
+@wp.kernel
+def march_seed_front(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    finished: wp.array[wp.int32],
+    out_local: wp.array[wp.int32],
+    out_band: wp.array[wp.int32],
+    out_count: wp.array[wp.int32],
+) -> None:
+    # A later band's first hop: every unfinished row with a finished neighbour, a row a thread.
+    v = wp.int32(wp.tid())
+    front = wp.int32(0)
+    if finished[v] == 0:
+        for k in range(offsets[v], offsets[v + 1]):
+            if finished[columns[k]] != 0:
+                front = wp.int32(1)
+    slot = append_slot_if(out_count, 0, front)
+    if slot >= 0:
+        out_local[v] = slot
+        out_band[slot] = v
+
+
+@wp.kernel
+def march_close_hop(
+    count: wp.array[wp.int32], hop: wp.int32, out_bounds: wp.array[wp.int32]
+) -> None:
+    # The band's length once hop ``hop - 1`` is in: hop ``hop`` grows from the entries between the
+    # last two bounds.
+    out_bounds[hop] = count[0]
+
+
+@wp.kernel
+def march_expand_band(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    finished: wp.array[wp.int32],
+    bounds: wp.array[wp.int32],
+    hop: wp.int32,
+    stride: wp.int32,
+    out_local: wp.array[wp.int32],
+    out_band: wp.array[wp.int32],
+    out_count: wp.array[wp.int32],
+) -> None:
+    # Hop ``hop`` of the band's breadth-first growth: each unfinished neighbour of the last hop's
+    # entries not yet in the band joins it, claimed by a compare-and-swap so it is appended once.
+    # A lane walks the hop's entries by ``stride``, the launch's width, which the device does not
+    # know at launch: the hop's length is on the device only.
+    i = bounds[hop - 1] + wp.int32(wp.tid())
+    end = bounds[hop]
+    while i < end:
+        v = out_band[i]
+        for k in range(offsets[v], offsets[v + 1]):
+            j = columns[k]
+            if finished[j] == 0 and out_local[j] == -1:
+                if wp.atomic_cas(out_local, j, -1, -2) == -1:
+                    slot = wp.atomic_add(out_count, 0, 1)
+                    out_local[j] = slot
+                    out_band[slot] = j
+        i += stride
+
+
+@wp.kernel
+def march_relabel_band(band: wp.array[wp.int32], out_local: wp.array[wp.int32]) -> None:
+    # The band's local numbering after its list was sorted (``ordito.config``'s deterministic
+    # setting): the claims' arrival order no longer reaches the band system.
+    i = wp.int32(wp.tid())
+    out_local[band[i]] = i
+
+
+@wp.func
+def raise_to(out_words: wp.array[wp.float64], index: wp.int32, value: wp.float64) -> None:
+    # ``atomic_max`` onto one word every thread of a launch offers to, the plain read first sparing
+    # the atomic once the word is past ``value``. A float maximum is reproducible as it stands.
+    if value > out_words[index]:
+        wp.atomic_max(out_words, index, value)
+
+
+# ``march_band_rows``' and ``march_band_extremes``' words: the band's scale, its solution's peak
+# magnitude, its outer layer's, and one where the band has an outer layer at all (a band holding
+# every unfinished row it reaches has none; one whose outer layer the solve left at zero has one).
+MARCH_SCALE = wp.int32(0)
+MARCH_PEAK = wp.int32(1)
+MARCH_OUTER = wp.int32(2)
+MARCH_HAS_OUTER = wp.int32(3)
+MARCH_WORDS = 4
+
+
+@wp.kernel
+def march_band_rows(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    band: wp.array[wp.int32],
+    local: wp.array[wp.int32],
+    finished: wp.array[wp.int32],
+    solution: wp.array[wp.float64],
+    rhs: wp.array[wp.float64],
+    out_counts: wp.array[wp.int32],
+    out_words: wp.array[wp.float64],
+) -> None:
+    # A band row's entries inside the band, into ``out_counts[i + 1]`` (scanned to the band
+    # system's offsets), and the band's scale: the largest datum it reads, a right-hand side entry
+    # or a finished neighbour's value.
+    i = wp.int32(wp.tid())
+    v = band[i]
+    count = wp.int32(0)
+    top = wp.abs(rhs[v])
+    for k in range(offsets[v], offsets[v + 1]):
+        j = columns[k]
+        if local[j] >= 0:
+            count += 1
+        elif finished[j] != 0:
+            top = wp.max(top, wp.abs(solution[j]))
+    out_counts[i + 1] = count
+    raise_to(out_words, MARCH_SCALE, top)
+
+
+@wp.kernel
+def march_band_system(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    band: wp.array[wp.int32],
+    local: wp.array[wp.int32],
+    finished: wp.array[wp.int32],
+    solution: wp.array[wp.float64],
+    rhs: wp.array[wp.float64],
+    tentative: wp.array[wp.float64],
+    words: wp.array[wp.float64],
+    band_offsets: wp.array[wp.int32],
+    out_columns: wp.array[wp.int32],
+    out_values: wp.array[wp.float64],
+    out_rhs: wp.array[wp.float64],
+    out_guess: wp.array[wp.float64],
+) -> None:
+    # A band row of the band system: its in-band entries renumbered, its finished neighbours'
+    # terms moved to the right-hand side, the row divided by the band's scale (zero for a band
+    # whose data are all zero, whose solution is then zero), and its guess the last band's value
+    # where one reached it.
+    i = wp.int32(wp.tid())
+    v = band[i]
+    slot = band_offsets[i]
+    r = rhs[v]
+    for k in range(offsets[v], offsets[v + 1]):
+        j = columns[k]
+        lj = local[j]
+        if lj >= 0:
+            out_columns[slot] = lj
+            out_values[slot] = values[k]
+            slot += 1
+        elif finished[j] != 0:
+            r -= values[k] * solution[j]
+    scale = words[MARCH_SCALE]
+    inverse = wp.where(scale > wp.float64(0.0), wp.float64(1.0) / scale, wp.float64(0.0))
+    out_rhs[i] = r * inverse
+    out_guess[i] = tentative[v] * inverse
+
+
+@wp.kernel
+def march_band_extremes(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    band: wp.array[wp.int32],
+    local: wp.array[wp.int32],
+    finished: wp.array[wp.int32],
+    x: wp.array[wp.float64],
+    out_words: wp.array[wp.float64],
+) -> None:
+    # The band solution's peak magnitude, and its peak over the outer layer: the rows with an
+    # unfinished neighbour outside the band, where the zero beyond stands in for the field.
+    i = wp.int32(wp.tid())
+    v = band[i]
+    magnitude = wp.abs(x[i])
+    raise_to(out_words, MARCH_PEAK, magnitude)
+    outer = wp.int32(0)
+    for k in range(offsets[v], offsets[v + 1]):
+        j = columns[k]
+        if local[j] < 0 and finished[j] == 0:
+            outer = wp.int32(1)
+    if outer != 0:
+        raise_to(out_words, MARCH_OUTER, magnitude)
+        raise_to(out_words, MARCH_HAS_OUTER, wp.float64(1.0))
+
+
+@wp.kernel
+def march_band_commit(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    band: wp.array[wp.int32],
+    local: wp.array[wp.int32],
+    finished: wp.array[wp.int32],
+    x: wp.array[wp.float64],
+    words: wp.array[wp.float64],
+    threshold: wp.float64,
+    out_solution: wp.array[wp.float64],
+    out_tentative: wp.array[wp.float64],
+    out_keep: wp.array[wp.int32],
+) -> None:
+    # Finish the band's rows at ``threshold`` or above (resolved, and clear of the zero beyond the
+    # band), and a row whose every neighbour is finished or kept: a sign change the threshold
+    # leaves behind the front, which no later band would reach. Every row's value seeds the next
+    # band's guess.
+    i = wp.int32(wp.tid())
+    v = band[i]
+    keep = wp.where(wp.abs(x[i]) >= threshold, 1, 0)
+    if keep == 0:
+        keep = wp.int32(1)
+        for k in range(offsets[v], offsets[v + 1]):
+            j = columns[k]
+            lj = local[j]
+            if lj >= 0:
+                if j != v and not (wp.abs(x[lj]) >= threshold):
+                    keep = wp.int32(0)
+            elif finished[j] == 0:
+                keep = wp.int32(0)
+    value = x[i] * words[MARCH_SCALE]
+    out_tentative[v] = value
+    if keep != 0:
+        out_solution[v] = value
+    out_keep[i] = keep
+
+
+@wp.kernel
+def march_band_release(
+    band: wp.array[wp.int32],
+    keep: wp.array[wp.int32],
+    out_local: wp.array[wp.int32],
+    out_finished: wp.array[wp.int32],
+) -> None:
+    # Close the band: its rows leave the local numbering and its kept rows are finished.
+    i = wp.int32(wp.tid())
+    v = band[i]
+    out_local[v] = -1
+    if keep[i] != 0:
+        out_finished[v] = 1
 
 
 @wp.kernel

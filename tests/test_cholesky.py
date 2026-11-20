@@ -363,7 +363,8 @@ def test_sparse_cholesky_rejects_invalid_inputs(
     Not a library comparison: each guard raises before a factor is used.
 
     An indefinite operator, coordinates of another length, a ``float32`` or mis-sized solve, and a
-    factorization past ``CHOLESKY_MEMORY_BUDGET`` are each refused with their message.
+    factorization past ``CHOLESKY_MEMORY_BUDGET`` are each refused with their message;
+    ``factorization_nbytes`` refuses the same coordinates and a ``float32`` operator.
 
     SciPy's solvers take any pattern. The factorization reads one triangle of the pattern, so an
     entry stored on one side only (here an explicit zero, numerically symmetric) made its
@@ -377,6 +378,17 @@ def test_sparse_cholesky_rejects_invalid_inputs(
         od.cholesky.sparse_cholesky(negated, mesh_wp.points)
     with pytest.raises(ValueError, match="coordinates"):
         od.cholesky.sparse_cholesky(system, odt.as_dense(mesh_wp.points[:3]))
+    with pytest.raises(ValueError, match="coordinates"):
+        od.cholesky.factorization_nbytes(system, odt.as_dense(mesh_wp.points[:3]))
+    narrow = od.array.bsr_from_csr(
+        int(system.nrow),
+        int(system.ncol),
+        system.offsets,
+        system.columns,
+        wp.array(system.values.numpy().astype(np.float32), dtype=wp.float32, device=device),
+    )
+    with pytest.raises(ValueError, match="float64"):
+        od.cholesky.factorization_nbytes(cast("odt.BsrMatrix[wp.float64]", narrow))
     factor = od.cholesky.sparse_cholesky(system, mesh_wp.points)
     n = int(system.nrow)
     for dtype, rows, match in ((wp.float32, n, "float64"), (wp.float64, n + 1, "rows")):
@@ -743,8 +755,9 @@ def test_nbytes_is_the_memory_the_factorization_holds(
     tolerance, and after a repeated ``refactor`` keeps its operator copy and fronts arena. The
     memory budget is the first factorization's peak -- what it holds plus the larger of the
     transient fronts arena and a one-column solve's scratch, each read off the measured
-    allocations -- so a budget of exactly that admits it and one byte less refuses it. A
-    second factorization sharing the analysis holds only its own factor:
+    allocations -- so a budget of exactly that admits it and one byte less refuses it, and
+    ``factorization_nbytes`` -- the analysis alone -- is that peak to the byte, whatever the
+    budget. A second factorization sharing the analysis holds only its own factor:
     ``held_nbytes`` counts the analysis once. An estimate pricing ``float64`` entries at 4 bytes,
     or leaving out the solve scratch or the refactor storage, fails the first equality.
     """
@@ -763,6 +776,7 @@ def test_nbytes_is_the_memory_the_factorization_holds(
     built = factor.nbytes
     assert built == _held_bytes(factor) > 0
     if n == 0:
+        assert od.cholesky.factorization_nbytes(system, coordinates) == 0
         return
     rhs = wp.ones(n, dtype=wp.float64, device=device)
     factor.solve(rhs, wp.zeros_like(rhs))
@@ -784,6 +798,7 @@ def test_nbytes_is_the_memory_the_factorization_holds(
     monkeypatch.setattr(od.cholesky, "CHOLESKY_MEMORY_BUDGET", peak - 1)
     with pytest.raises(ValueError, match=f"needs {peak} bytes"):
         od.cholesky.sparse_cholesky(system, coordinates)
+    assert od.cholesky.factorization_nbytes(system, coordinates) == peak
     monkeypatch.setattr(od.cholesky, "CHOLESKY_MEMORY_BUDGET", peak)
     fresh = od.cholesky.sparse_cholesky(system, coordinates)
     assert fresh.nbytes == built
