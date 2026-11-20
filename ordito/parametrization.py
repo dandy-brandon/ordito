@@ -15,8 +15,8 @@ own shape, minimizing conformal rather than Dirichlet energy.
 [`low_distortion_parametrization`][ordito.parametrization.low_distortion_parametrization]
 pins nothing and needs no start: a free-boundary chart of low ARAP distortion in the mesh's own
 units for an open surface of any topology, converged on a coarse mesh;
-[`low_distortion_disk_parametrization`][ordito.parametrization.low_distortion_disk_parametrization]
-is the same chart of a disk, refined from a harmonic, Tutte or LSCM map.
+[`arap_parametrization`][ordito.parametrization.arap_parametrization] is the same chart refined
+from a harmonic, Tutte or LSCM map of a surface with a boundary.
 [`slim_parametrization`][ordito.parametrization.slim_parametrization] unwraps in one call to the
 least symmetric Dirichlet distortion, from the free chart or a harmonic, Tutte or LSCM start.
 
@@ -106,11 +106,11 @@ _TWO_LEVEL_FLAT_FACE = 2e-9
 # and a coarse face's ``n_clusters ** 3``.
 _MAX_PACKED_KEY = (1 << 63) - 1
 _MAX_PACKED_CLUSTERS = (1 << 21) - 1
-# ``low_distortion_disk_parametrization``'s starts, and the default ``coarse_cell`` in mean edge
-# lengths (the disk chart's stop is a thousandth of it too).
-_DISK_STARTS = ("harmonic", "tutte", "lscm")
-# ``slim_parametrization``'s starts: the free ARAP chart, or one of the disk starts.
-_SLIM_STARTS = ("free", *_DISK_STARTS)
+# ``arap_parametrization``'s starts, and the default ``coarse_cell`` in mean edge lengths (that
+# chart's stop is a thousandth of it too).
+_MAP_STARTS = ("harmonic", "tutte", "lscm")
+# ``slim_parametrization``'s starts: the free ARAP chart, or one of the classic maps.
+_SLIM_STARTS = ("free", *_MAP_STARTS)
 _DEFAULT_CELL_EDGES = 5.0
 
 _LOGGER = logging.getLogger(__name__)
@@ -1409,8 +1409,8 @@ def low_distortion_parametrization(
     A mesh of at most ``single_level_vertices`` vertices, or one whose clustering leaves fewer
     than 16 coarse faces or more clusters than half its vertices, is iterated directly as in
     step 2, from its own projection.
-    [`low_distortion_disk_parametrization`][ordito.parametrization.low_distortion_disk_parametrization]
-    starts a disk from a harmonic, Tutte or LSCM map instead.
+    [`arap_parametrization`][ordito.parametrization.arap_parametrization] starts from a harmonic,
+    Tutte or LSCM map instead.
 
     Parameters
     ----------
@@ -1461,7 +1461,7 @@ def low_distortion_parametrization(
 
     See Also
     --------
-    [`low_distortion_disk_parametrization`][ordito.parametrization.low_distortion_disk_parametrization]
+    [`arap_parametrization`][ordito.parametrization.arap_parametrization]
     [`arap`][ordito.parametrization.arap]
         The pinned, warm-started ARAP map.
     [`lscm`][ordito.parametrization.lscm]
@@ -1554,7 +1554,7 @@ def low_distortion_parametrization(
     return _chart_uv(chart)
 
 
-def low_distortion_disk_parametrization(
+def arap_parametrization(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     *,
@@ -1562,30 +1562,36 @@ def low_distortion_disk_parametrization(
     iterations: int = 150,
 ) -> wp.array[wp.vec2]:
     """
-    Free-boundary chart of low ARAP distortion of a disk, from a harmonic, Tutte or LSCM start.
+    Free-boundary chart of low ARAP distortion, from a harmonic, Tutte or LSCM start.
 
-    The disk counterpart of
-    [`low_distortion_parametrization`][ordito.parametrization.low_distortion_parametrization]:
-    the same pin-free element ARAP energy ``sum_f A_f |J_f - R_f|^2`` and free boundary, started
-    from a classic map of the whole mesh instead of a coarse level, and iterated on the mesh
-    itself, each global step a factored solve, until an iteration moves no vertex by more than
-    ``5e-3`` mean edge lengths. A start's distortion is large-scale, which only whole solves
-    repair.
+    The counterpart of
+    [`low_distortion_parametrization`][ordito.parametrization.low_distortion_parametrization]
+    started from a classic map: the same pin-free element ARAP energy ``sum_f A_f |J_f - R_f|^2``
+    and free boundary, started from a map of the whole mesh instead of a coarse level, and iterated
+    on the mesh itself, each global step a factored solve, until an iteration moves no vertex by
+    more than ``5e-3`` mean edge lengths. A start's distortion is large-scale, which only whole
+    solves repair.
 
     The start is [`harmonic`][ordito.parametrization.harmonic] or
-    [`tutte`][ordito.parametrization.tutte] with the boundary loop placed on a circle by
-    [`map_vertices_to_circle`][ordito.parametrization.map_vertices_to_circle], or
-    [`lscm`][ordito.parametrization.lscm] with two vertices half the loop apart pinned; it is
-    scaled to the mesh's area and mirrored if its faces wind clockwise on the whole, since ARAP
-    fits proper rotations and cannot unmirror it.
+    [`tutte`][ordito.parametrization.tutte] with the longest boundary loop placed on a circle by
+    [`map_vertices_to_circle`][ordito.parametrization.map_vertices_to_circle] and any other loop
+    free, or [`lscm`][ordito.parametrization.lscm] with two vertices half that loop apart pinned;
+    it is scaled to the mesh's area and mirrored if its faces wind clockwise on the whole, since
+    ARAP fits proper rotations and cannot unmirror it. The same starts as
+    [`slim_parametrization`][ordito.parametrization.slim_parametrization]'s.
+
+    The mesh needs one connected component with a boundary loop, but need not be a disk. On a
+    surface with a handle or several holes the start inverts some faces (a handle forces it), and
+    ARAP, which has no barrier against folding, may keep some of them inverted; check with
+    [`face_flipped_indices`][ordito.parametrization.face_flipped_indices].
 
     Parameters
     ----------
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        ``(3 * n_faces,)`` triangle index buffer of a disk: one connected component with one
-        boundary loop and Euler characteristic 1. Faces of no area are ignored.
+        ``(3 * n_faces,)`` triangle index buffer of one connected surface with at least one
+        boundary loop. Faces of no area are ignored.
     init
         The start: ``"harmonic"`` (default), ``"tutte"`` or ``"lscm"``.
     iterations
@@ -1602,14 +1608,17 @@ def low_distortion_disk_parametrization(
     ValueError
         If ``vertices`` is not ``wp.vec3`` or ``faces`` not ``wp.int32`` with a multiple of three
         entries, if ``init`` is not one of the three, if ``iterations`` is negative, if a vertex
-        coordinate is not finite, if no face has a positive area, or if the mesh is not a disk.
+        coordinate is not finite, if no face has a positive area, or if the mesh has no boundary
+        loop or more than one connected component.
     RuntimeError
         If ``vertices`` and ``faces`` are not on one device.
 
     See Also
     --------
     [`low_distortion_parametrization`][ordito.parametrization.low_distortion_parametrization]
-        Any topology, from a coarse level.
+        The same energy from a coarse level, closed meshes included.
+    [`slim_parametrization`][ordito.parametrization.slim_parametrization]
+        The least symmetric Dirichlet distortion from the same starts.
     [`arap`][ordito.parametrization.arap]
         The pinned, warm-started ARAP map.
 
@@ -1639,7 +1648,7 @@ def low_distortion_disk_parametrization(
 
 
     charts = [
-        od.parametrization.low_distortion_disk_parametrization(vertices, faces, init=init)
+        od.parametrization.arap_parametrization(vertices, faces, init=init)
         for init in ("harmonic", "tutte", "lscm")
     ]
     print(mean_edge(vertices.numpy()))  # 0.134
@@ -1647,13 +1656,12 @@ def low_distortion_disk_parametrization(
     print(od.parametrization.face_flipped_indices(charts[0], faces).shape)  # (0,)
     ```
     """
-    name = "low_distortion_disk_parametrization"
+    name = "arap_parametrization"
     bounds = _low_distortion_bounds(name, vertices, faces, (("iterations", iterations),))
-    if init not in _DISK_STARTS:
-        raise ValueError(f"{name} init must be one of {_DISK_STARTS}, got {init!r}")
+    if init not in _MAP_STARTS:
+        raise ValueError(f"{name} init must be one of {_MAP_STARTS}, got {init!r}")
     if bounds is None:
         return _launch.empty(0, dtype=wp.vec2, device=vertices.device)
-    loop = _disk_boundary(name, vertices, faces)
     settled = _TWO_LEVEL_SETTLED * _DEFAULT_CELL_EDGES * od.edges.mean_edge_length(vertices, faces)
     vertex_faces, offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=vertices.size)
     chart = _proximal_arap(
@@ -1664,7 +1672,7 @@ def low_distortion_disk_parametrization(
         offsets,
         iterations,
         settled,
-        start=_start_chart(vertices, faces, loop, init),
+        start=_start_chart(name, vertices, faces, init),
     )
     return _chart_uv(chart)
 
@@ -1695,9 +1703,9 @@ def slim_parametrization(
       apart pinned;
 
     each of the last three scaled to the mesh's area and mirrored if it winds clockwise, as
-    [`low_distortion_disk_parametrization`][ordito.parametrization.low_distortion_disk_parametrization]
-    builds them. Unlike that chart this one does not need a disk: ``slim`` holds the faces a start
-    inverts or squashes flat (a handle forces some) by an unbarriered ARAP term. Every start
+    [`arap_parametrization`][ordito.parametrization.arap_parametrization] builds them. A start
+    may invert or squash flat some faces (a handle forces some): ``slim`` holds those by an
+    unbarriered ARAP term and keeps every other face upright. Every start
     reaches about the same distortion; they differ in time and in the layout of a long surface,
     which a Tutte or LSCM start unbends more than the free chart does.
 
@@ -1732,7 +1740,8 @@ def slim_parametrization(
         entries, if ``init`` is not one of the four, if ``max_iterations`` is negative or
         ``tolerance`` negative or not finite, if a vertex coordinate is not finite, if no face has a
         positive area, if ``init`` is ``"harmonic"``, ``"tutte"`` or ``"lscm"`` and the mesh has no
-        boundary loop, or if the factorization of the proxy would exceed
+        boundary loop or more than one connected component, or if the factorization of the proxy
+        would exceed
         [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET].
     RuntimeError
         If ``vertices`` and ``faces`` are not on one device.
@@ -1742,7 +1751,7 @@ def slim_parametrization(
     [`slim`][ordito.parametrization.slim]
         The iteration, from a start of the caller's.
     [`low_distortion_parametrization`][ordito.parametrization.low_distortion_parametrization]
-    [`low_distortion_disk_parametrization`][ordito.parametrization.low_distortion_disk_parametrization]
+    [`arap_parametrization`][ordito.parametrization.arap_parametrization]
         The ARAP charts.
 
     Notes
@@ -1794,33 +1803,8 @@ def slim_parametrization(
     if init == "free":
         start = low_distortion_parametrization(vertices, faces)
     else:
-        if loop is None:
-            loop = od.boundary.longest_boundary_loop(vertices, faces)
-        if loop.size < 3:
-            raise ValueError(f"{name} init={init!r} needs a boundary loop; the mesh has none")
-        start = _chart_uv(_start_chart(vertices, faces, loop, init))
+        start = _chart_uv(_start_chart(name, vertices, faces, init, loop=loop))
     return slim(vertices, faces, start, max_iterations=max_iterations, tolerance=tolerance)
-
-
-def _disk_boundary(
-    name: str, vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
-) -> wp.array[wp.int32]:
-    """
-    Return a disk's boundary loop, after checking the mesh is one.
-
-    Raises
-    ------
-    ValueError
-        Unless the mesh is one connected component with one boundary loop and Euler
-        characteristic 1.
-    """
-    loop, reason = _disk_loop(vertices, faces)
-    if loop is None:
-        raise ValueError(
-            f"{name} needs a disk: one connected component with one boundary loop and Euler "
-            f"characteristic 1, got {reason}"
-        )
-    return loop
 
 
 def _disk_loop(
@@ -1938,14 +1922,37 @@ def _chart_uv(chart: odt.Array2dFloat64) -> wp.array[wp.vec2]:
 
 
 def _start_chart(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], loop: wp.array[wp.int32], init: str
+    name: str,
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    init: str,
+    *,
+    loop: wp.array[wp.int32] | None = None,
 ) -> odt.Array2dFloat64:
     """
-    Return the map ``low_distortion_disk_parametrization`` starts from, as a ``(2, n)`` chart.
+    Return the map ``arap_parametrization`` starts from, as a ``(2, n)`` chart.
 
-    Placing the disk's boundary ``loop``; scaled to the mesh's area and mirrored if its faces wind
-    clockwise on the whole.
+    Placing ``loop``, the longest boundary loop of the connected mesh, when ``None`` (a ``loop``
+    given is a disk's); scaled to the mesh's area and mirrored if its faces wind clockwise on the
+    whole.
+
+    Raises
+    ------
+    ValueError
+        If the mesh has no boundary loop, or more than one connected component: the map places
+        one loop, and a component it does not reach collapses to a point.
     """
+    if loop is None:
+        loop = od.boundary.longest_boundary_loop(vertices, faces)
+        if loop.size < 3:
+            raise ValueError(f"{name} init={init!r} needs a boundary loop; the mesh has none")
+        labels = od.adjacency.face_connected_component_labels(faces, n_vertices=vertices.size)
+        # Each component is labelled by its smallest face, so one component is every label 0.
+        if od.reduce.max(labels) != 0:
+            n_components = od.grouping.unique_1d(labels).size
+            raise ValueError(
+                f"{name} init={init!r} needs one connected component, got {n_components}"
+            )
     device = vertices.device
     n_vertices = vertices.size
     n_faces = faces.size // 3

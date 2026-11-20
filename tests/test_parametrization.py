@@ -1464,7 +1464,7 @@ def test_low_distortion_parametrization_ignores_faces_of_no_area(
     assert np.allclose(charts[0], charts[1], rtol=0, atol=1e-9)
 
 
-_DISK_STARTS = ["harmonic", "tutte", "lscm"]
+_MAP_STARTS = ["harmonic", "tutte", "lscm"]
 
 
 def _projected_edge_lengths(
@@ -1518,8 +1518,8 @@ def test_low_distortion_parametrization_projects_the_start_onto_the_normal_plane
 
 
 @pytest.mark.parametrize("reverse", [False, True], ids=["as_given", "reversed"])
-@pytest.mark.parametrize("init", _DISK_STARTS)
-def test_low_distortion_disk_parametrization_scales_its_start_to_the_surface(
+@pytest.mark.parametrize("init", _MAP_STARTS)
+def test_arap_parametrization_scales_its_start_to_the_surface(
     saddle_graded: tuple[tm.Trimesh, wp.Mesh], init: str, reverse: bool
 ):
     """
@@ -1536,7 +1536,7 @@ def test_low_distortion_disk_parametrization_scales_its_start_to_the_surface(
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, mesh_wp.device)
 
     uv_np = (
-        od.parametrization.low_distortion_disk_parametrization(
+        od.parametrization.arap_parametrization(
             vertices_wp,
             faces_wp,
             init=init,  # pyright: ignore[reportArgumentType]
@@ -1560,11 +1560,11 @@ def test_low_distortion_disk_parametrization_scales_its_start_to_the_surface(
     assert signed.sum() > 0
 
 
-@pytest.mark.parametrize("init", _DISK_STARTS)
+@pytest.mark.parametrize("init", _MAP_STARTS)
 @pytest.mark.parametrize(
     "mesh_name", ["saddle_graded", "sphere_irregular_cap", "convex_irregular_cap"]
 )
-def test_low_distortion_disk_parametrization_reaches_the_coarse_chart_from_every_start(
+def test_arap_parametrization_reaches_the_coarse_chart_from_every_start(
     request: pytest.FixtureRequest, mesh_name: str, init: str
 ):
     """
@@ -1580,7 +1580,7 @@ def test_low_distortion_disk_parametrization_reaches_the_coarse_chart_from_every
     vertices_np, faces_np = _mesh_np(mesh_wp)
 
     disk_np = (
-        od.parametrization.low_distortion_disk_parametrization(
+        od.parametrization.arap_parametrization(
             mesh_wp.points,
             mesh_wp.indices,
             init=init,  # pyright: ignore[reportArgumentType]
@@ -1601,16 +1601,82 @@ def test_low_distortion_disk_parametrization_reaches_the_coarse_chart_from_every
     assert (signed <= 0).sum() <= (coarse_signed <= 0).sum()
 
 
-@pytest.mark.parametrize("case", ["closed", "several_loops", "mobius", "disk_and_torus"])
-def test_low_distortion_disk_parametrization_refuses_a_mesh_that_is_not_a_disk(
-    request: pytest.FixtureRequest, device: str, case: str
+@pytest.mark.parametrize("init", _MAP_STARTS)
+@pytest.mark.parametrize(
+    ("mesh_name", "gap"),
+    [("torus_irregular_holes", 0.15), ("mobius", 0.01)],
+    ids=["handle_and_holes", "mobius"],
+)
+def test_arap_parametrization_charts_a_surface_that_is_not_a_disk(
+    request: pytest.FixtureRequest, mesh_name: str, gap: float, init: str
 ):
     """
-    Not a library comparison: each clause of the disk test refuses its own mesh.
+    Ordito against ordito: off a disk, every start is iterated to about the coarse chart's strain.
 
-    A closed sphere (no loop, Euler characteristic 2), a torus with three holes (three loops), a
-    Mobius strip (one loop but Euler characteristic 0) and a disk beside a closed torus (one loop
-    and Euler characteristic 1, but two components).
+    ``torus_irregular_holes`` has a handle and three boundary loops: the start inverts 225-266
+    faces and its strains are 1.3-1.9x the coarse chart's; the iterated chart reaches the coarse
+    chart's area and shape strains within 15 % (measured 1.03-1.08x on CUDA) with at most a tenth
+    more inverted faces (209-215 against 206). The Mobius strip (one loop, Euler characteristic 0)
+    lands within 1 % (0.5 % measured) from starts 3.5-10x off.
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_np, faces_np = _mesh_np(mesh_wp)
+    arguments = (mesh_wp.points, mesh_wp.indices)
+
+    start_np = (
+        od.parametrization.arap_parametrization(
+            *arguments,
+            init=init,  # pyright: ignore[reportArgumentType]
+            iterations=0,
+        )
+        .numpy()
+        .astype(np.float64)
+    )
+    uv_np = (
+        od.parametrization.arap_parametrization(
+            *arguments,
+            init=init,  # pyright: ignore[reportArgumentType]
+        )
+        .numpy()
+        .astype(np.float64)
+    )
+    coarse_np = (
+        od.parametrization.low_distortion_parametrization(*arguments).numpy().astype(np.float64)
+    )
+
+    coarse_area, coarse_shear, coarse_signed = _strains(vertices_np, faces_np, coarse_np)
+    start_area, start_shear, _ = _strains(vertices_np, faces_np, start_np)
+    area, shear, signed = _strains(vertices_np, faces_np, uv_np)
+    assert max(start_area / coarse_area, start_shear / coarse_shear) > 1 + 2 * gap
+    assert abs(area / coarse_area - 1) < gap
+    assert abs(shear / coarse_shear - 1) < gap
+    assert (signed <= 0).sum() <= 1.1 * (coarse_signed <= 0).sum() + 1
+
+
+@pytest.mark.parametrize(
+    "chart",
+    [
+        pytest.param(od.parametrization.arap_parametrization, id="arap"),
+        pytest.param(od.parametrization.slim_parametrization, id="slim"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [("closed", "needs a boundary loop"), ("disk_and_torus", "needs one connected component")],
+)
+def test_rim_starts_refuse_a_closed_or_disconnected_mesh(
+    request: pytest.FixtureRequest,
+    device: str,
+    chart: Callable[..., wp.array[wp.vec2]],
+    case: str,
+    message: str,
+):
+    """
+    Not a library comparison: a rim start needs a boundary loop that reaches the whole mesh.
+
+    A closed sphere has no loop. A disk beside a closed torus has one, but the map placing it
+    leaves the torus collapsed to a point (strain 11 after the iterations, against 1.4 for the
+    coarse chart), so both refuse it, in either chart taking these starts.
     """
     if case == "disk_and_torus":
         disk_np, disk_faces_np = saddle_graded_arrays()
@@ -1619,26 +1685,19 @@ def test_low_distortion_disk_parametrization_refuses_a_mesh_that_is_not_a_disk(
         faces_np = np.concatenate((disk_faces_np, torus_tm.faces + len(disk_np)))
         vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
     else:
-        fixture = {
-            "closed": "sphere_irregular",
-            "several_loops": "torus_irregular_holes",
-            "mobius": "mobius",
-        }[case]
-        _, mesh_wp = request.getfixturevalue(fixture)
+        _, mesh_wp = request.getfixturevalue("sphere_irregular")
         vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
 
-    with pytest.raises(ValueError, match="needs a disk"):
-        od.parametrization.low_distortion_disk_parametrization(vertices_wp, faces_wp)
+    with pytest.raises(ValueError, match=message):
+        chart(vertices_wp, faces_wp, init="tutte")
 
 
-def test_low_distortion_disk_parametrization_rejects_an_unknown_start(
-    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
-):
+def test_arap_parametrization_rejects_an_unknown_start(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
     """Not a library comparison: ``init`` outside the three starts raises, naming them."""
     _, mesh_wp = saddle_graded
 
     with pytest.raises(ValueError, match="init must be one of"):
-        od.parametrization.low_distortion_disk_parametrization(
+        od.parametrization.arap_parametrization(
             mesh_wp.points,
             mesh_wp.indices,
             init="spectral",  # pyright: ignore[reportArgumentType]
@@ -1780,7 +1839,7 @@ def test_low_distortion_parametrization_rejects_malformed_inputs(
     "chart",
     [
         pytest.param(od.parametrization.low_distortion_parametrization, id="any_topology"),
-        pytest.param(od.parametrization.low_distortion_disk_parametrization, id="disk"),
+        pytest.param(od.parametrization.arap_parametrization, id="disk"),
     ],
 )
 def test_low_distortion_parametrization_on_an_empty_mesh(
@@ -1847,7 +1906,7 @@ def _slim_start(mesh_wp: wp.Mesh, init: str) -> wp.array[wp.vec2]:
     """Return the start ``slim_parametrization`` documents for ``init``, on a disk."""
     if init == "free":
         return od.parametrization.low_distortion_parametrization(mesh_wp.points, mesh_wp.indices)
-    return od.parametrization.low_distortion_disk_parametrization(
+    return od.parametrization.arap_parametrization(
         mesh_wp.points,
         mesh_wp.indices,
         init=init,  # pyright: ignore[reportArgumentType]
@@ -1863,7 +1922,7 @@ def test_slim_parametrization_is_slim_from_its_start(
     Ordito against ordito: each ``init`` is ``slim`` from the start its docstring names.
 
     The free start is ``low_distortion_parametrization``'s chart and the disk starts are
-    ``low_distortion_disk_parametrization``'s scaled starts (``iterations=0``); ``slim``'s own
+    ``arap_parametrization``'s scaled starts (``iterations=0``); ``slim``'s own
     oracle is libigl (``test_slim_matches_igl``). Bit for bit under the deterministic setting, and
     the chart moved off its start.
     """
@@ -1930,9 +1989,7 @@ def test_slim_parametrization_unwraps_a_disk_with_no_fold(
     uv_np = od.parametrization.slim_parametrization(*arguments).numpy().astype(np.float64)
     start_np = _slim_start(mesh_wp, "tutte").numpy().astype(np.float64)
     arap_np = (
-        od.parametrization.low_distortion_disk_parametrization(*arguments, init="tutte")
-        .numpy()
-        .astype(np.float64)
+        od.parametrization.arap_parametrization(*arguments, init="tutte").numpy().astype(np.float64)
     )
 
     assert (_signed_chart_areas(start_np, faces_np) > 0).all()

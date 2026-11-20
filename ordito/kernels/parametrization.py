@@ -317,7 +317,7 @@ def gather_interior_uv(
 
 
 # The element ARAP pieces every ARAP here shares (``arap``, ``low_distortion_parametrization``,
-# ``low_distortion_disk_parametrization``): one rest shape per face (its shape-function gradients
+# ``arap_parametrization``): one rest shape per face (its shape-function gradients
 # and area), one local step (``face_rotation``) and one right-hand side, gathered per vertex
 # (``rotation_row``) rather than scattered, so a vertex's sum is one launch with no zeroing and,
 # under ``ordito.config``'s deterministic setting, in the adjacency rows' ascending face order.

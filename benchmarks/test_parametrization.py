@@ -413,20 +413,21 @@ def test_low_distortion_parametrization(bench_case: BenchCase) -> None:
     assert uv.size == vertices.size
 
 
-@pytest.mark.benchmark(group="low_distortion_disk_parametrization")
+@pytest.mark.benchmark(group="arap_parametrization")
 @pytest.mark.benchaxis("patch")
 @pytest.mark.benchlibs("ordito")
 @pytest.mark.parametrize("init", ["harmonic", "tutte", "lscm"])
-def test_low_distortion_disk_parametrization(bench_case: BenchCase, init: str) -> None:
+def test_arap_parametrization(bench_case: BenchCase, init: str) -> None:
     """
-    Pin-free free-boundary ARAP chart of a disk from each start, iterated on the full mesh.
+    Pin-free free-boundary ARAP chart from each start, iterated on the full mesh.
 
-    The patch meshes are disks. Every call checks the topology, solves the start and factors the
-    full mesh's proximal system before iterating, all timed. ordito's only row, as above.
+    Every call finds the longest boundary loop and checks the mesh is connected, solves the start
+    and factors the full mesh's proximal system before iterating, all timed. ordito's only row, as
+    above.
     """
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     uv = bench_case.run(
-        lambda: od.parametrization.low_distortion_disk_parametrization(
+        lambda: od.parametrization.arap_parametrization(
             vertices,
             faces,
             init=init,  # pyright: ignore[reportArgumentType]
