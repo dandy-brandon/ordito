@@ -302,6 +302,225 @@ def _procrustes_into(
     )
 
 
+@overload
+def procrustes_from_offsets(
+    a: wp.array[wp.vec3],
+    b: wp.array[wp.vec3],
+    offsets: wp.array[wp.int32],
+    weights: wp.array[wp.float32] | None = None,
+    reflection: bool = True,
+    translation: bool = True,
+    scale: bool = True,
+    *,
+    robust_rounds: int = 0,
+    huber_scale: float = 1.5,
+    huber_floor: float = 0.0,
+    cumulative: bool = False,
+    lower_median: bool = False,
+    return_weights: Literal[False] = False,
+) -> wp.array[wp.mat44]: ...
+@overload
+def procrustes_from_offsets(
+    a: wp.array[wp.vec3],
+    b: wp.array[wp.vec3],
+    offsets: wp.array[wp.int32],
+    weights: wp.array[wp.float32] | None = None,
+    reflection: bool = True,
+    translation: bool = True,
+    scale: bool = True,
+    *,
+    robust_rounds: int = 0,
+    huber_scale: float = 1.5,
+    huber_floor: float = 0.0,
+    cumulative: bool = False,
+    lower_median: bool = False,
+    return_weights: Literal[True],
+) -> tuple[wp.array[wp.mat44], wp.array[wp.float32]]: ...
+def procrustes_from_offsets(
+    a: wp.array[wp.vec3],
+    b: wp.array[wp.vec3],
+    offsets: wp.array[wp.int32],
+    weights: wp.array[wp.float32] | None = None,
+    reflection: bool = True,
+    translation: bool = True,
+    scale: bool = True,
+    *,
+    robust_rounds: int = 0,
+    huber_scale: float = 1.5,
+    huber_floor: float = 0.0,
+    cumulative: bool = False,
+    lower_median: bool = False,
+    return_weights: bool = False,
+) -> wp.array[wp.mat44] | tuple[wp.array[wp.mat44], wp.array[wp.float32]]:
+    """
+    Optimal transform of each of several sets of corresponding points, optionally Huber-robust.
+
+    Set ``s`` is the pairs ``a[offsets[s]:offsets[s + 1]]`` and ``b[offsets[s]:offsets[s + 1]]``;
+    its transform minimises ``sum w_i |M a_i - b_i|^2`` over the pairs of that set alone.
+
+    With ``robust_rounds > 0`` each set is refitted that many times by iteratively reweighted least
+    squares: a round measures every pair's residual ``r_i = |M a_i - b_i|`` under the previous
+    fit, takes ``delta = max(huber_scale * median(r), huber_floor)`` over the set, and refits with
+    weights ``w_i * min(1, delta / r_i)``, so pairs far beyond the set's typical residual lose
+    influence.
+
+    Parameters
+    ----------
+    a, b
+        ``(n_points,)`` corresponding points, the sets packed one after another.
+    offsets
+        ``(n_sets + 1,)`` start of each set in ``a`` and ``b``, ending at ``n_points``.
+    weights
+        ``(n_points,)`` non-negative per-pair weights. Uniform weights are assumed when ``None``.
+    reflection
+        Allow reflections in the rotation component.
+    translation
+        Allow translation.
+    scale
+        Allow uniform scaling, at the least-squares scale.
+    robust_rounds
+        Keyword-only. Huber reweighting rounds after the first fit; ``0`` fits once.
+    huber_scale
+        Keyword-only. ``delta`` as a multiple of the set's median residual.
+    huber_floor
+        Keyword-only. Least ``delta``, in the points' units, so a nearly exact fit does not
+        down-weight ordinary noise.
+    cumulative
+        Keyword-only. Multiply each round's factors into the previous round's weights instead of
+        ``weights``, so a persistent outlier loses more weight every round.
+    lower_median
+        Keyword-only. Take the lower of the two middle residuals as an even set's median instead of
+        their mean.
+    return_weights
+        Keyword-only. Also return the weights of each set's last fit.
+
+    Returns
+    -------
+    matrices
+        ``(n_sets,)`` column-vector transforms, ``M a`` approximating ``b``; the identity for an
+        empty set or one whose weights sum to zero.
+    fit_weights
+        ``(n_points,)`` weights of the last fit: ``weights`` (or ones) reweighted by the rounds.
+        Only returned when ``return_weights=True``.
+
+    Raises
+    ------
+    RuntimeError
+        If ``a``, ``b``, ``offsets`` and ``weights`` are not all on one device.
+    ValueError
+        If ``b`` or ``weights`` does not have the length of ``a``, ``offsets`` is empty,
+        ``robust_rounds`` or ``huber_floor`` is negative, or ``huber_scale`` is not positive.
+
+    See Also
+    --------
+    [`procrustes`][ordito.registration.procrustes] :
+        One set, split across the device, with trimesh's scale.
+
+    Notes
+    -----
+    The scale is the least-squares one (Umeyama's, as in pytorch3d's
+    ``corresponding_points_alignment`` with ``estimate_scale=True``), not
+    [`procrustes`][ordito.registration.procrustes]' ratio of the two sets' spreads, which
+    [`trimesh.registration.procrustes`][] defines; the two agree when the fit is exact. A set of
+    coincident points keeps scale one.
+
+    Each set is fitted, and refitted, by one block of threads in a single launch, with no host
+    synchronisation and no atomics, so the result repeats bit for bit. That suits many sets of up to
+    a few thousand points; for one large cloud use
+    [`procrustes`][ordito.registration.procrustes].
+
+    The returned matrices are column-vector, the transpose of pytorch3d's ``R`` (see
+    [`procrustes`][ordito.registration.procrustes]).
+
+    Examples
+    --------
+    Fit two rigidly moved copies of a box sample at once, one with a gross outlier the robust
+    rounds discount:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    source, _ = od.sample.sample_surface(vertices, faces, 50, seed=0)
+    source_np = source.numpy()
+    motion = od.transform.rotation_matrix((0.0, 0.0, 1.0), 0.3)
+    moved_np = od.transform.transform_points(source, motion).numpy()
+    outlier_np = moved_np.copy()
+    outlier_np[0] += 10.0
+    a = wp.array(np.concatenate([source_np, source_np]), dtype=wp.vec3)
+    b = wp.array(np.concatenate([moved_np, outlier_np]), dtype=wp.vec3)
+    offsets = wp.array([0, 50, 100], dtype=wp.int32)
+    matrices, fit_weights = od.registration.procrustes_from_offsets(
+        a, b, offsets, scale=False, robust_rounds=4, return_weights=True
+    )
+    error = np.abs(matrices.numpy() - od.transform.matrix_to_numpy(motion)).max(axis=(1, 2))
+    print(bool(error[0] < 1e-4), bool(error[1] < 1e-2))  # True True
+    print(bool(fit_weights.numpy()[50] < 0.05))  # True
+    ```
+    """
+    require_same_device(a=a, b=b, offsets=offsets, weights=weights)
+    n = a.size
+    device = a.device
+    if b.size != n:
+        raise ValueError(f"a and b must have the same length, got {n} and {b.size}")
+    if weights is not None and weights.size != n:
+        raise ValueError(f"weights must have the same length as a, got {weights.size} and {n}")
+    if offsets.size == 0:
+        raise ValueError("offsets must hold at least the leading 0 (n_sets + 1 entries)")
+    if robust_rounds < 0:
+        raise ValueError(f"robust_rounds must be non-negative, got {robust_rounds}")
+    if not huber_scale > 0.0:
+        raise ValueError(f"huber_scale must be positive, got {huber_scale}")
+    if huber_floor < 0.0:
+        raise ValueError(f"huber_floor must be non-negative, got {huber_floor}")
+
+    n_sets = offsets.size - 1
+    matrices = _launch.empty(n_sets, dtype=wp.mat44, device=device)
+    keep_weights = return_weights or (cumulative and robust_rounds > 0)
+    out_weights = (
+        _launch.empty(n, dtype=wp.float32, device=device)
+        if keep_weights
+        else _zero_length(wp.float32, device)
+    )
+    if n_sets > 0:
+        residuals = (
+            _launch.empty(n, dtype=wp.float32, device=device)
+            if robust_rounds > 0
+            else _zero_length(wp.float32, device)
+        )
+        scale_mode = (
+            kernel_registration.SCALE_LEAST_SQUARES if scale else kernel_registration.SCALE_NONE
+        )
+        _launch.launch_tiled(
+            kernel_registration.procrustes_sets,
+            dim=n_sets,
+            inputs=[
+                a,
+                b,
+                weights if weights is not None else _zero_length(wp.float32, device),
+                offsets,
+                reflection,
+                translation,
+                scale_mode,
+                robust_rounds,
+                huber_scale,
+                huber_floor,
+                cumulative,
+                lower_median,
+                residuals,
+            ],
+            outputs=[matrices, out_weights],
+            block_dim=TILE_1D,
+            device=device,
+        )
+    if not return_weights:
+        return matrices
+    return matrices, out_weights
+
+
 _ROBUST_KINDS: dict[str, int] = {"none": 0, "huber": 1, "tukey": 2}
 
 

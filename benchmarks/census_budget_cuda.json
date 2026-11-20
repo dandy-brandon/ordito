@@ -6829,6 +6829,30 @@
    "d2h": 1
   }
  },
+ "benchmarks/test_registration.py::test_procrustes_from_offsets[sphere_med-ordito-cuda-16]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_registration.py::test_procrustes_from_offsets[sphere_med-ordito-cuda-4096]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_registration.py::test_procrustes_from_offsets_robust[sphere_med-ordito-cuda-16]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_registration.py::test_procrustes_from_offsets_robust[sphere_med-ordito-cuda-4096]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 2
+  }
+ },
  "benchmarks/test_remesh.py::test_cluster_decimate[sphere_small-ordito-cuda-2.0]": {
   "counts": {
    "launch": 5,
@@ -7944,6 +7968,18 @@
    "d2h": 1,
    "scan": 1,
    "sort": 1
+  }
+ },
+ "benchmarks/test_selection.py::test_vertex_hop_distance[sphere_med-ordito-cuda-1]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_selection.py::test_vertex_hop_distance[sphere_med-ordito-cuda-8]": {
+  "counts": {
+   "launch": 9,
+   "alloc": 2
   }
  },
  "benchmarks/test_smoothing.py::test_equalize_triangle_areas[sphere_small-ordito-cuda]": {

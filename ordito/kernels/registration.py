@@ -26,6 +26,7 @@ from ordito.kernels.reduce import (
     SELECT_RUN,
     SELECT_SUCCESSOR,
     block_chunk_1d,
+    block_min,
     block_sum,
     finish_block_total,
     last_atomic_block,
@@ -135,6 +136,40 @@ def make_affine44(rotation: wp.mat33, translation: wp.vec3) -> wp.mat44:
 
 
 @wp.func
+def procrustes_moment_terms(
+    w: wp.float32, av: wp.vec3, bv: wp.vec3
+) -> tuple[wp.vec3, wp.vec3, wp.float32, wp.float32, wp.mat33]:
+    # One point's share of every moment the fit needs, its shifted coordinates ``av`` and ``bv``
+    # weighted by ``w``: the per-point step ``accumulate_procrustes_moments_block`` and
+    # ``procrustes_sets`` both sum. The covariance is weighted like every other moment, so the
+    # rotation is the one optimal for the weights (trimesh's convention since 5.2.1).
+    return w * av, w * bv, w * wp.length_sq(av), w * wp.length_sq(bv), w * wp.outer(bv, av)
+
+
+@wp.func
+def pack_procrustes_moments(
+    w_sum: wp.float32,
+    a_sum: wp.vec3,
+    b_sum: wp.vec3,
+    a_sq: wp.float32,
+    b_sq: wp.float32,
+    cov: wp.mat33,
+):
+    # The moments in the accumulator's slot layout, for one block reduction of them all. The
+    # default constructor, not a zero-fill: every slot is written below.
+    packed = wp.vector(length=PROCRUSTES_MOMENT_SLOTS, dtype=wp.float32)
+    packed[ACC_W_SUM] = w_sum
+    packed[ACC_A_SQ] = a_sq
+    packed[ACC_B_SQ] = b_sq
+    for c in range(3):
+        packed[ACC_A_SUM + c] = a_sum[c]
+        packed[ACC_B_SUM + c] = b_sum[c]
+        for r in range(3):
+            packed[ACC_COV + c * 3 + r] = cov[c, r]
+    return packed
+
+
+@wp.func
 def accumulate_procrustes_moments_block(
     chunk: wp.int32,
     lane: wp.int32,
@@ -186,29 +221,20 @@ def accumulate_procrustes_moments_block(
     for k in range(lane, count, wp.block_dim()):
         index = offset + k
         w = sample_weight(weights, index)
-        av = a[index] - shift_a
-        bv = b[index] - shift_b
+        a_term, b_term, a_sq_term, b_sq_term, cov_term = procrustes_moment_terms(
+            w, a[index] - shift_a, b[index] - shift_b
+        )
         w_sum += w
-        a_sum += w * av
-        b_sum += w * bv
-        a_sq += w * wp.length_sq(av)
-        b_sq += w * wp.length_sq(bv)
-        # The covariance is weighted like every other moment, so the rotation is the one optimal
-        # for the weights (trimesh's convention since 5.2.1).
-        cov += w * wp.outer(bv, av)
+        a_sum += a_term
+        b_sum += b_term
+        a_sq += a_sq_term
+        b_sq += b_sq_term
+        cov += cov_term
 
     # Packed into the accumulator's own slot layout and folded by **one** block reduction, which
     # is block-collective, so it runs outside the ``lane == 0`` guard and only the commit is
-    # guarded. The default constructor, not a zero-fill: every slot is written just below.
-    packed = wp.vector(length=PROCRUSTES_MOMENT_SLOTS, dtype=wp.float32)
-    packed[ACC_W_SUM] = w_sum
-    packed[ACC_A_SQ] = a_sq
-    packed[ACC_B_SQ] = b_sq
-    for c in range(3):
-        packed[ACC_A_SUM + c] = a_sum[c]
-        packed[ACC_B_SUM + c] = b_sum[c]
-        for r in range(3):
-            packed[ACC_COV + c * 3 + r] = cov[c, r]
+    # guarded.
+    packed = pack_procrustes_moments(w_sum, a_sum, b_sum, a_sq, b_sq, cov)
     store_block_sum(chunk, lane, packed, out_acc, 0, stride)
 
 
@@ -261,6 +287,84 @@ def rotation_from_covariance(cov: Any, use_reflection: wp.bool):
     return R
 
 
+# How a fit scales, an ``int32`` selector so the two Procrustes forms share one matrix builder:
+# none, trimesh's ratio of the two clouds' spreads (``procrustes``), or the least-squares scale of
+# Umeyama (``procrustes_from_offsets``, as pytorch3d's ``corresponding_points_alignment``). The two
+# agree only on an exact fit.
+SCALE_NONE = wp.int32(0)
+SCALE_SPREAD = wp.int32(1)
+SCALE_LEAST_SQUARES = wp.int32(2)
+
+
+@wp.func
+def similarity_from_moments(
+    ws: wp.float32,
+    a_sum: wp.vec3,
+    b_sum: wp.vec3,
+    a_sq: wp.float32,
+    b_sq: wp.float32,
+    raw_cov: wp.mat33,
+    shift_a: wp.vec3,
+    shift_b: wp.vec3,
+    use_reflection: wp.bool,
+    use_translation: wp.bool,
+    scale_mode: wp.int32,
+) -> wp.mat44:
+    # The transform from the moments ``procrustes_moment_terms`` sums, shifted by ``shift_a`` and
+    # ``shift_b`` (``procrustes_shifts``).
+    # Centroids relative to the shift origins, then un-shifted back into world coordinates.
+    a_rel = wp.vec3(wp.float32(0.0), wp.float32(0.0), wp.float32(0.0))
+    b_rel = wp.vec3(wp.float32(0.0), wp.float32(0.0), wp.float32(0.0))
+    if use_translation:
+        a_rel = a_sum / ws
+        b_rel = b_sum / ws
+    acenter = shift_a + a_rel
+    bcenter = shift_b + b_rel
+
+    ascale = wp.float32(1.0)
+    bscale = wp.float32(1.0)
+    a_variance = wp.float32(0.0)
+    if scale_mode != SCALE_NONE:
+        # Shifted second-moment identity: sum w |a - centroid|^2 / S_w = sum w |a - p|^2 / S_w
+        # minus |centroid - p|^2. Mathematically non-negative, but computed as a difference of two
+        # independently tile-reduced sums (non-associative float32
+        # accumulation), so a near-degenerate cloud (tightly clustered, or exactly duplicated
+        # points) can land it at a tiny negative value from cancellation alone -- floored the same
+        # way ``solve_spd6`` below floors its own Cholesky pivot for the identical reason, rather
+        # than feeding ``wp.sqrt`` a negative argument and propagating NaN through the SVD.
+        a_variance = a_sq / ws - wp.length_sq(a_rel)
+        ascale = wp.sqrt(wp.max(a_variance, wp.float32(1e-20)))
+        bscale = wp.sqrt(wp.max(b_sq / ws - wp.length_sq(b_rel), wp.float32(1e-20)))
+
+    # Shifted weighted cross-moment identity:
+    # H = sum w outer(b - bc, a - ac)
+    #   = M - outer(S_b, ac') - outer(bc', S_a) + S_w outer(bc', ac')
+    cov = raw_cov - wp.outer(b_sum, a_rel) - wp.outer(b_rel, a_sum) + ws * wp.outer(b_rel, a_rel)
+
+    # Normalise cross-covariance by scale product
+    inv_scales = wp.float32(1.0) / (bscale * ascale)
+    target = cov * inv_scales
+
+    R = rotation_from_covariance(target, use_reflection)  # noqa: N806
+
+    s = wp.float32(1.0)
+    if scale_mode == SCALE_SPREAD:
+        s = bscale / ascale
+    elif scale_mode == SCALE_LEAST_SQUARES and a_variance > wp.float32(0.0):
+        # Umeyama's ``trace(R^T H) / sum w |a - ac|^2``, with ``H = target * ascale * bscale`` and
+        # the denominator ``S_w ascale^2``. A cloud of coincident points (no spread to measure a
+        # scale against) keeps scale one.
+        s = wp.trace(wp.transpose(R) * target) * bscale / (ws * ascale)
+
+    sR = s * R  # noqa: N806
+
+    t = wp.vec3(wp.float32(0.0), wp.float32(0.0), wp.float32(0.0))
+    if use_translation:
+        t = bcenter - sR * acenter
+
+    return make_affine44(sR, t)
+
+
 @wp.func
 def procrustes_matrix(
     a: wp.array[wp.vec3],
@@ -270,61 +374,24 @@ def procrustes_matrix(
     use_translation: wp.bool,
     use_scale: wp.bool,
 ) -> wp.mat44:
-    ws = acc[ACC_W_SUM]
+    # ``procrustes``' transform from its folded accumulator, scaled by the spread ratio.
     shift_a, shift_b = procrustes_shifts(a, b, use_translation)
-
-    # Centroids relative to the shift origins, then un-shifted back into world coordinates.
-    a_rel = wp.vec3(wp.float32(0.0), wp.float32(0.0), wp.float32(0.0))
-    b_rel = wp.vec3(wp.float32(0.0), wp.float32(0.0), wp.float32(0.0))
-    if use_translation:
-        a_rel = acc_vec3(acc, ACC_A_SUM) / ws
-        b_rel = acc_vec3(acc, ACC_B_SUM) / ws
-    acenter = shift_a + a_rel
-    bcenter = shift_b + b_rel
-
-    ascale = wp.float32(1.0)
-    bscale = wp.float32(1.0)
-    if use_scale:
-        # Shifted second-moment identity: sum w |a - centroid|^2 / S_w = sum w |a - p|^2 / S_w
-        # minus |centroid - p|^2. Mathematically non-negative, but computed as a difference of two
-        # independently tile-reduced sums (non-associative float32
-        # accumulation), so a near-degenerate cloud (tightly clustered, or exactly duplicated
-        # points) can land it at a tiny negative value from cancellation alone -- floored the same
-        # way ``solve_spd6`` below floors its own Cholesky pivot for the identical reason, rather
-        # than feeding ``wp.sqrt`` a negative argument and propagating NaN through the SVD.
-        ascale = wp.sqrt(wp.max(acc[ACC_A_SQ] / ws - wp.length_sq(a_rel), wp.float32(1e-20)))
-        bscale = wp.sqrt(wp.max(acc[ACC_B_SQ] / ws - wp.length_sq(b_rel), wp.float32(1e-20)))
-
-    # Shifted weighted cross-moment identity:
-    # H = sum w outer(b - bc, a - ac)
-    #   = M - outer(S_b, ac') - outer(bc', S_a) + S_w outer(bc', ac')
     cov = wp.matrix_from_rows(
         acc_vec3(acc, ACC_COV + 0), acc_vec3(acc, ACC_COV + 3), acc_vec3(acc, ACC_COV + 6)
     )
-    cov = (
-        cov
-        - wp.outer(acc_vec3(acc, ACC_B_SUM), a_rel)
-        - wp.outer(b_rel, acc_vec3(acc, ACC_A_SUM))
-        + ws * wp.outer(b_rel, a_rel)
+    return similarity_from_moments(
+        acc[ACC_W_SUM],
+        acc_vec3(acc, ACC_A_SUM),
+        acc_vec3(acc, ACC_B_SUM),
+        acc[ACC_A_SQ],
+        acc[ACC_B_SQ],
+        cov,
+        shift_a,
+        shift_b,
+        use_reflection,
+        use_translation,
+        wp.where(use_scale, SCALE_SPREAD, SCALE_NONE),
     )
-
-    # Normalise cross-covariance by scale product
-    inv_scales = wp.float32(1.0) / (bscale * ascale)
-    target = cov * inv_scales
-
-    R = rotation_from_covariance(target, use_reflection)  # noqa: N806
-
-    s = wp.float32(1.0)
-    if use_scale:
-        s = bscale / ascale
-
-    sR = s * R  # noqa: N806
-
-    t = wp.vec3(wp.float32(0.0), wp.float32(0.0), wp.float32(0.0))
-    if use_translation:
-        t = bcenter - sR * acenter
-
-    return make_affine44(sR, t)
 
 
 @wp.kernel
@@ -338,6 +405,180 @@ def build_procrustes_matrix(
     out_matrix: wp.array[wp.mat44],
 ) -> None:
     out_matrix[0] = procrustes_matrix(a, b, acc, use_reflection, use_translation, use_scale)
+
+
+@wp.func
+def set_order_statistic(
+    values: wp.array[wp.float32], start: wp.int32, count: wp.int32, lane: wp.int32, rank: wp.int32
+) -> wp.float32:
+    # The ``rank``-th smallest (from 0) of the non-negative ``values[start:start + count]``, the
+    # block's lanes striding the set: a bisection over the values' bits, which order a non-negative
+    # float as its value, one block count a step. 31 steps cover every finite float and ``inf``,
+    # with no sort, scratch or ordering of the set, so the set's points can stay where they are.
+    lo = wp.uint32(0)
+    hi = wp.uint32(0x7F800000)
+    while lo < hi:
+        mid = lo + (hi - lo) // wp.uint32(2)
+        below = wp.int32(0)
+        for k in range(lane, count, wp.block_dim()):
+            if wp.cast(values[start + k], wp.uint32) <= mid:
+                below += 1
+        if block_sum(below) > rank:
+            hi = mid
+        else:
+            lo = mid + wp.uint32(1)
+    return wp.cast(lo, wp.float32)
+
+
+@wp.func
+def set_median(
+    values: wp.array[wp.float32],
+    start: wp.int32,
+    count: wp.int32,
+    lane: wp.int32,
+    lower_median: wp.bool,
+) -> wp.float32:
+    # The median of a non-empty set as ``numpy.median`` forms it, or the lower middle value of an
+    # even count. The upper middle value is the lower one when enough values tie with it, and
+    # otherwise the least value above it: one count and one block minimum, not a second bisection.
+    lower_rank = (count - 1) // 2
+    lower = set_order_statistic(values, start, count, lane, lower_rank)
+    if lower_median or count % 2 == 1:
+        return lower
+    at_most = wp.int32(0)
+    # From an expression, not the constant itself, which the loop would otherwise rewrite in place.
+    above = FLOAT32_INF_CONSTANT + wp.float32(0.0)
+    for k in range(lane, count, wp.block_dim()):
+        value = values[start + k]
+        if value <= lower:
+            at_most += 1
+        else:
+            above = wp.min(above, value)
+    upper = lower
+    if block_sum(at_most) <= lower_rank + 1:
+        upper = block_min(above)
+    return (lower + upper) * wp.float32(0.5)
+
+
+@wp.func
+def huber_factor(residual: wp.float32, delta: wp.float32) -> wp.float32:
+    # Huber's reweighting factor ``min(1, delta / residual)``: one inside ``delta``, including a
+    # zero residual at ``delta == 0``.
+    return wp.where(residual <= delta, wp.float32(1.0), delta / residual)
+
+
+@wp.kernel
+def procrustes_sets(
+    a: wp.array[wp.vec3],
+    b: wp.array[wp.vec3],
+    weights: wp.array[wp.float32],
+    offsets: wp.array[wp.int32],
+    use_reflection: wp.bool,
+    use_translation: wp.bool,
+    scale_mode: wp.int32,
+    rounds: wp.int32,
+    huber_scale: wp.float32,
+    huber_floor: wp.float32,
+    cumulative: wp.bool,
+    lower_median: wp.bool,
+    residuals: wp.array[wp.float32],
+    out_matrices: wp.array[wp.mat44],
+    out_weights: wp.array[wp.float32],
+) -> None:
+    # One Procrustes fit per set ``offsets[s]:offsets[s + 1]``, one block a set, then ``rounds``
+    # Huber refits, all inside the block: a round reads the previous fit's residuals at the set's
+    # median, reweights, refits, and the next residuals follow. The moments are
+    # ``accumulate_procrustes_moments_block``'s (``procrustes_moment_terms``), shifted by the set's
+    # first pair, and fold in one block reduction; what the two kernels still differ by is the
+    # range (a set, not a chunk of one cloud), the weights a round forms, and the scale
+    # (``scale_mode``). A lane reads and writes only its own entries of ``residuals`` and
+    # ``out_weights``, so no barrier separates a round's writes from the next round's reads, and
+    # every sum is a fixed tree: the fit repeats bit for bit with no atomics on either device.
+    #
+    # Lanes partition the set and stride by ``wp.block_dim()``, so the CPU's one lane a block walks
+    # the whole set. One block a set fills the device only with many sets; a single large
+    # cloud belongs to ``procrustes``, whose blocks split it.
+    #
+    # Zero-length ``weights`` means uniform; zero-length ``out_weights`` means the fit weights are
+    # neither returned nor read back (non-cumulative rounds re-form them from ``weights``);
+    # zero-length ``residuals`` means no rounds.
+    s, lane = wp.tid()
+    n = a.shape[0]
+    start = wp.min(wp.max(offsets[s], 0), n)
+    end = wp.min(wp.max(offsets[s + 1], start), n)
+    count = end - start
+    identity = make_affine44(wp.identity(3, dtype=wp.float32), wp.vec3())
+    if count <= 0:
+        if lane == 0:
+            out_matrices[s] = identity
+        return
+    shift_a = wp.vec3()
+    shift_b = wp.vec3()
+    if use_translation:
+        shift_a = a[start]
+        shift_b = b[start]
+    keep_weights = out_weights.shape[0] > 0
+
+    transform = identity
+    delta = wp.float32(0.0)
+    for round_index in range(rounds + 1):
+        w_sum = wp.float32(0.0)
+        a_sum = wp.vec3()
+        b_sum = wp.vec3()
+        a_sq = wp.float32(0.0)
+        b_sq = wp.float32(0.0)
+        cov = wp.mat33()
+        for k in range(lane, count, wp.block_dim()):
+            index = start + k
+            w = wp.float32(0.0)
+            if round_index > 0 and cumulative:
+                w = out_weights[index]
+            else:
+                w = sample_weight(weights, index)
+            if round_index > 0:
+                w *= huber_factor(residuals[index], delta)
+            if keep_weights:
+                out_weights[index] = w
+            a_term, b_term, a_sq_term, b_sq_term, cov_term = procrustes_moment_terms(
+                w, a[index] - shift_a, b[index] - shift_b
+            )
+            w_sum += w
+            a_sum += a_term
+            b_sum += b_term
+            a_sq += a_sq_term
+            b_sq += b_sq_term
+            cov += cov_term
+        total = block_sum(pack_procrustes_moments(w_sum, a_sum, b_sum, a_sq, b_sq, cov))
+        ws = total[ACC_W_SUM]
+        if not (ws > wp.float32(0.0)):
+            # No point carries weight: nothing to fit, and the rounds would only divide by zero.
+            transform = identity
+            break
+        transform = similarity_from_moments(
+            ws,
+            wp.vec3(total[ACC_A_SUM], total[ACC_A_SUM + 1], total[ACC_A_SUM + 2]),
+            wp.vec3(total[ACC_B_SUM], total[ACC_B_SUM + 1], total[ACC_B_SUM + 2]),
+            total[ACC_A_SQ],
+            total[ACC_B_SQ],
+            wp.matrix_from_rows(
+                wp.vec3(total[ACC_COV + 0], total[ACC_COV + 1], total[ACC_COV + 2]),
+                wp.vec3(total[ACC_COV + 3], total[ACC_COV + 4], total[ACC_COV + 5]),
+                wp.vec3(total[ACC_COV + 6], total[ACC_COV + 7], total[ACC_COV + 8]),
+            ),
+            shift_a,
+            shift_b,
+            use_reflection,
+            use_translation,
+            scale_mode,
+        )
+        if round_index < rounds:
+            for k in range(lane, count, wp.block_dim()):
+                index = start + k
+                residuals[index] = wp.length(transform_point_mat44(a[index], transform) - b[index])
+            median = set_median(residuals, start, count, lane, lower_median)
+            delta = wp.max(huber_scale * median, huber_floor)
+    if lane == 0:
+        out_matrices[s] = transform
 
 
 @wp.func

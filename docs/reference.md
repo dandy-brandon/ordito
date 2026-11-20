@@ -58,6 +58,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | move, rotate, scale, mirror | [`transform`][ordito.transform]: [`transform_mesh`][ordito.transform.transform_mesh], [`rotation_matrix`][ordito.transform.rotation_matrix] |
 | combine meshes, or split into parts | [`combine.concatenate`][ordito.combine.concatenate], [`combine.split`][ordito.combine.split] |
 | keep a subset of faces | [`selection.submesh_from_face_mask`][ordito.selection.submesh_from_face_mask] |
+| grow a selection, or measure hops from it | [`selection.expand_vertex_mask`][ordito.selection.expand_vertex_mask], [`vertex_hop_distance`][ordito.selection.vertex_hop_distance] |
 | carry colours, UVs, labels or any per-vertex or per-face field through an edit | ``return_provenance=True`` and [`interpolation.Provenance`][ordito.interpolation.Provenance] |
 | turn per-corner values (a UV atlas, hard normals) into per-vertex ones, or weld them back | [`repair.split_vertices_by_corner_values`][ordito.repair.split_vertices_by_corner_values], [`remove_duplicated_vertices`][ordito.repair.remove_duplicated_vertices] with ``vertex_values`` |
 | read a per-vertex field at surface samples or query hits | [`interpolation.interpolate_barycentric`][ordito.interpolation.interpolate_barycentric], [`sample.sample_surface`][ordito.sample.sample_surface] with ``return_barycentric=True`` |
@@ -87,6 +88,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | convex hull ([example](examples/points.md#pc8)) | [`points.convex_hull`][ordito.points.convex_hull] (exact), [`convex_superset_mask`][ordito.points.convex_superset_mask] (prefilter) |
 | reconstruct a surface | [`reconstruction.screened_poisson`][ordito.reconstruction.screened_poisson], [`ball_pivoting`][ordito.reconstruction.ball_pivoting] |
 | align two scans | [`registration.icp`][ordito.registration.icp], [`icp_point_to_plane`][ordito.registration.icp_point_to_plane], [`procrustes`][ordito.registration.procrustes] |
+| fit many sets of corresponding points at once, robust to outliers | [`registration.procrustes_from_offsets`][ordito.registration.procrustes_from_offsets] |
 | voxelize | [`voxels.voxelize_mesh`][ordito.voxels.voxelize_mesh], [`voxelize_points`][ordito.voxels.voxelize_points] |
 | **Differential geometry** | |
 | cotangent Laplacian and mass matrix | [`laplacian.cotmatrix`][ordito.laplacian.cotmatrix], [`laplacian.mass_matrix`][ordito.laplacian.mass_matrix] |

@@ -87,6 +87,7 @@ import pymeshlab as ml
 import pytest
 import pytorch3d.ops as p3d_ops
 import pyvista as pv
+import torch
 import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
@@ -319,6 +320,107 @@ def test_procrustes(bench_case: BenchCase) -> None:
             lambda: estimation.compute_transformation(source_pcd, target_pcd, correspondences)
         )
         assert np.asarray(matrix_o3d).shape == (4, 4)
+
+
+_SET_POINTS = 48
+_SET_COUNTS = [16, 4096]
+
+
+def _point_sets_np(bench_case: BenchCase, n_sets: int) -> tuple[np.ndarray, np.ndarray]:
+    """
+    ``(n_sets, _SET_POINTS, 3)`` sets of mesh vertices, and their images.
+
+    Each set's image is its own rotation, scale and shift of it plus a little noise, so every set
+    is a distinct noisy similarity fit.
+    """
+    rng = np.random.default_rng(_SEED)
+    picks = rng.integers(0, bench_case.n_vertices, size=(n_sets, _SET_POINTS))
+    source_np = bench_case.vertices_np[picks].astype(np.float32)
+    angles = rng.uniform(-0.5, 0.5, size=n_sets)
+    cos, sin = np.cos(angles), np.sin(angles)
+    zeros, ones = np.zeros(n_sets), np.ones(n_sets)
+    rotations = np.stack([cos, -sin, zeros, sin, cos, zeros, zeros, zeros, ones], axis=1).reshape(
+        n_sets, 3, 3
+    )
+    scales = rng.uniform(0.8, 1.2, size=(n_sets, 1, 1))
+    target_np = scales * np.einsum("kij,knj->kni", rotations, source_np) + rng.normal(
+        size=(n_sets, 1, 3)
+    )
+    target_np += rng.normal(scale=_NOISE_FRACTION * _diagonal(bench_case), size=target_np.shape)
+    return source_np, target_np.astype(np.float32)
+
+
+def _point_sets_wp(
+    bench_case: BenchCase, n_sets: int
+) -> tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.int32]]:
+    """``_point_sets_np`` packed for ``procrustes_from_offsets``: sources, targets, offsets."""
+    source_np, target_np = _point_sets_np(bench_case, n_sets)
+    device = bench_case.device
+    return (
+        wp.array(source_np.reshape(-1, 3), dtype=wp.vec3, device=device),
+        wp.array(target_np.reshape(-1, 3), dtype=wp.vec3, device=device),
+        wp.array(
+            np.arange(n_sets + 1, dtype=np.int32) * _SET_POINTS, dtype=wp.int32, device=device
+        ),
+    )
+
+
+@pytest.mark.benchmark(group="procrustes_from_offsets")
+@pytest.mark.benchmeshes("sphere_med")
+@pytest.mark.benchlibs("ordito", "trimesh", "pytorch3d")
+@pytest.mark.parametrize("n_sets", _SET_COUNTS)
+def test_procrustes_from_offsets(bench_case: BenchCase, n_sets: int) -> None:
+    """
+    Many small similarity fits at once: one block a set against pytorch3d's batched fit.
+
+    **pytorch3d**'s ``corresponding_points_alignment`` takes the whole ``(n_sets, 48, 3)`` batch
+    in one call with the same least-squares scale; the two agree to 1e-6 at uniform weights
+    (``tests/test_registration.py``). **trimesh** fits one set a call, so its row is a Python loop
+    over the sets: the cost of driving a single-set API, and an upper bound. The axis is the set
+    count, the sets' size fixed at a landmark set's.
+    """
+    if bench_case.kind == "ordito":
+        a, b, offsets = _point_sets_wp(bench_case, n_sets)
+        matrices = bench_case.run(lambda: od.registration.procrustes_from_offsets(a, b, offsets))
+        assert matrices.shape == (n_sets,)
+        return
+    source_np, target_np = _point_sets_np(bench_case, n_sets)
+    if bench_case.kind == "pytorch3d":
+        source_p3d = torch.from_numpy(source_np).to(bench_case.torch_device)
+        target_p3d = torch.from_numpy(target_np).to(bench_case.torch_device)
+        aligned_p3d = bench_case.run(
+            lambda: p3d_ops.corresponding_points_alignment(
+                source_p3d, target_p3d, estimate_scale=True, allow_reflection=True
+            )
+        )
+        assert aligned_p3d.R.shape == (n_sets, 3, 3)
+        return
+
+    def procrustes_tm() -> list[object]:
+        return [
+            tm.registration.procrustes(source, target, return_cost=False)
+            for source, target in zip(source_np, target_np, strict=True)
+        ]
+
+    assert len(bench_case.run(procrustes_tm)) == n_sets
+
+
+@pytest.mark.benchmark(group="procrustes_from_offsets_robust")
+@pytest.mark.benchmeshes("sphere_med")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("n_sets", _SET_COUNTS)
+def test_procrustes_from_offsets_robust(bench_case: BenchCase, n_sets: int) -> None:
+    """
+    The same fits with four Huber rounds, each a set median by bisection inside the block.
+
+    No reference library reweights a Procrustes fit; read the row against the plain group's
+    ordito row, whose fit is every round's cost before the median.
+    """
+    a, b, offsets = _point_sets_wp(bench_case, n_sets)
+    matrices = bench_case.run(
+        lambda: od.registration.procrustes_from_offsets(a, b, offsets, robust_rounds=4)
+    )
+    assert matrices.shape == (n_sets,)
 
 
 @pytest.mark.benchmark(group="icp_point_cloud")

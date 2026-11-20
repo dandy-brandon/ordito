@@ -11,6 +11,7 @@ import open3d as o3d
 import pytest
 import pytorch3d.ops as p3d_ops
 import pyvista as pv
+import torch
 import trimesh as tm
 import trimesh.registration as tm_reg
 import warp as wp
@@ -424,6 +425,290 @@ def test_procrustes_matches_pytorch3d(device: str) -> None:
     assert np.allclose(scale, float(aligned_p3d.s[0]), rtol=1e-5, atol=1e-5)
     assert np.allclose((linear_np / scale).T, aligned_p3d.R[0].cpu().numpy(), rtol=1e-5, atol=1e-6)
     assert np.allclose(matrix_np[:3, 3], aligned_p3d.T[0].cpu().numpy(), rtol=1e-5, atol=1e-6)
+
+
+def _noisy_similarity_sets(
+    n_sets: int, n_points: int, seed: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``n_sets`` point sets, each a noisy similarity of its source, and per-pair weights."""
+    rng = np.random.default_rng(seed)
+    a_np = rng.normal(size=(n_sets, n_points, 3)) * [3.0, 1.5, 0.7] + rng.normal(
+        size=(n_sets, 1, 3)
+    )
+    b_np = np.empty_like(a_np)
+    for s in range(n_sets):
+        q, _ = np.linalg.qr(rng.normal(size=(3, 3)))
+        scale = rng.uniform(0.5, 2.0)
+        b_np[s] = scale * a_np[s] @ q.T + rng.normal(size=3) * 5.0
+    b_np += rng.normal(scale=0.05, size=b_np.shape)
+    weights_np = rng.uniform(0.2, 1.0, size=(n_sets, n_points))
+    return a_np.astype(np.float32), b_np.astype(np.float32), weights_np.astype(np.float32)
+
+
+@pytest.mark.parametrize("estimate_scale", [True, False])
+@pytest.mark.parametrize("allow_reflection", [True, False])
+@pytest.mark.parity("procrustes_from_offsets", "pytorch3d")
+def test_procrustes_from_offsets_matches_pytorch3d(
+    device: str, estimate_scale: bool, allow_reflection: bool
+) -> None:
+    """
+    Class B against ``corresponding_points_alignment``, batched: ``R`` transposes.
+
+    pytorch3d fits a batch of equal-size sets at once, with Umeyama's least-squares scale, which
+    is the scale this function takes (``procrustes`` takes trimesh's spread ratio, which a noisy
+    fit makes differ). Its row-vector ``s X R + T`` gives ordito's linear block as ``s R^T``. Half
+    the sets' targets are mirrored, so with reflections allowed the reference's rotations have both
+    determinant signs, and without they are all proper.
+
+    Uniform weights only: pytorch3d multiplies both centred clouds by the weights, so its
+    covariance and scale weigh a pair by ``w^2`` while its centroids weigh it by ``w``, which is not
+    the weighted least-squares fit (0.12 apart on these sets, where ordito and a ``float64`` NumPy
+    Umeyama agree to 2e-6). The weighted fit is pinned against trimesh per set and against the
+    NumPy oracle in the robust test.
+    """
+    n_sets, n_points = 24, 40
+    a_np, b_np, _ = _noisy_similarity_sets(n_sets, n_points, seed=3)
+    b_np[::2, :, 0] *= -1.0
+    aligned_p3d = p3d_ops.corresponding_points_alignment(
+        torch.from_numpy(a_np).to(device),
+        torch.from_numpy(b_np).to(device),
+        estimate_scale=estimate_scale,
+        allow_reflection=allow_reflection,
+    )
+    rotation_p3d = aligned_p3d.R.cpu().numpy()
+    scale_p3d = aligned_p3d.s.cpu().numpy()
+    signs = np.sign(np.linalg.det(rotation_p3d))
+    assert set(signs) == ({-1.0, 1.0} if allow_reflection else {1.0})
+    assert np.ptp(scale_p3d) > 0.5 if estimate_scale else np.all(scale_p3d == 1.0)
+
+    matrices_np = od.registration.procrustes_from_offsets(
+        points_to_warp(a_np.reshape(-1, 3), device),
+        points_to_warp(b_np.reshape(-1, 3), device),
+        wp.array(np.arange(n_sets + 1, dtype=np.int32) * n_points, dtype=wp.int32, device=device),
+        reflection=allow_reflection,
+        scale=estimate_scale,
+    ).numpy()
+
+    linear_p3d = scale_p3d[:, None, None] * np.transpose(rotation_p3d, (0, 2, 1))
+    assert np.allclose(matrices_np[:, :3, :3], linear_p3d, rtol=1e-5, atol=1e-5)
+    assert np.allclose(matrices_np[:, :3, 3], aligned_p3d.T.cpu().numpy(), rtol=1e-5, atol=1e-5)
+    assert np.array_equal(matrices_np[:, 3], np.tile([0.0, 0.0, 0.0, 1.0], (n_sets, 1)))
+
+
+@pytest.mark.parity("procrustes_from_offsets", "trimesh")
+def test_procrustes_from_offsets_matches_trimesh_per_set(device: str) -> None:
+    """
+    Class A against ``trimesh.registration.procrustes`` run on each set, sets of ragged sizes.
+
+    Without scaling the two scales agree (both one), so trimesh is a per-set oracle for the
+    rotation and translation. The sets range from one pair to more than a block's lanes, and an
+    empty set and a set whose weights are all zero both come back as the identity.
+    """
+    rng = np.random.default_rng(8)
+    sizes = [5, 0, 1, 130, 64, 7, 3]
+    a_np, b_np, _ = _noisy_similarity_sets(1, sum(sizes), seed=9)
+    a_np, b_np = a_np[0], b_np[0]
+    for start in np.cumsum([0, *sizes[:-1]]):  # every set its own motion
+        q, _ = np.linalg.qr(rng.normal(size=(3, 3)))
+        q *= np.sign(np.linalg.det(q))
+        b_np[start:] = (b_np[start:] @ q.T + rng.normal(size=3)).astype(np.float32)
+    weights_np = rng.uniform(0.2, 1.0, size=len(a_np)).astype(np.float32)
+    offsets_np = np.cumsum([0, *sizes]).astype(np.int32)
+    weightless = 5
+    weights_np[offsets_np[weightless] : offsets_np[weightless + 1]] = 0.0
+
+    matrices_np = od.registration.procrustes_from_offsets(
+        points_to_warp(a_np, device),
+        points_to_warp(b_np, device),
+        wp.array(offsets_np, dtype=wp.int32, device=device),
+        wp.array(weights_np, dtype=wp.float32, device=device),
+        reflection=False,
+        scale=False,
+    ).numpy()
+
+    assert matrices_np.shape == (len(sizes), 4, 4)
+    for s, size in enumerate(sizes):
+        span = slice(offsets_np[s], offsets_np[s + 1])
+        if size == 0 or s == weightless:
+            assert np.array_equal(matrices_np[s], np.eye(4))
+            continue
+        if size < 3:  # the rotation about a single pair is arbitrary: compare where it maps it
+            moved_np = a_np[span] @ matrices_np[s, :3, :3].T + matrices_np[s, :3, 3]
+            assert np.allclose(moved_np, b_np[span], rtol=1e-5, atol=1e-5)
+            continue
+        matrix_tm, _, _ = tm_reg.procrustes(
+            a_np[span].astype(np.float64),
+            b_np[span].astype(np.float64),
+            weights=weights_np[span].astype(np.float64),
+            reflection=False,
+            scale=False,
+        )
+        assert not np.allclose(matrix_tm, np.eye(4), atol=1e-2)
+        assert np.allclose(matrices_np[s], matrix_tm, rtol=1e-5, atol=2e-5)
+
+
+def _robust_similarities_np(
+    a_np: np.ndarray,
+    b_np: np.ndarray,
+    weights_np: np.ndarray,
+    rounds: int,
+    huber_scale: float,
+    huber_floor: float,
+    cumulative: bool,
+    lower_median: bool,
+) -> tuple[np.ndarray, np.ndarray]:
+    """IRLS Umeyama fits of ``(k, n, 3)`` sets in ``float64``: matrices and last fit weights."""
+
+    def fit(w: np.ndarray) -> np.ndarray:
+        matrices = np.zeros((len(a_np), 4, 4))
+        for s in range(len(a_np)):
+            p = w[s] / w[s].sum()
+            ac, bc = p @ a_np[s], p @ b_np[s]
+            cov = ((b_np[s] - bc) * p[:, None]).T @ (a_np[s] - ac)
+            u, sigma, vt = np.linalg.svd(cov)
+            d = np.ones(3)
+            d[2] = np.sign(np.linalg.det(u @ vt))
+            rotation = (u * d) @ vt
+            scale = (sigma * d).sum() / (p @ ((a_np[s] - ac) ** 2).sum(axis=1))
+            matrices[s, :3, :3] = scale * rotation
+            matrices[s, :3, 3] = bc - scale * rotation @ ac
+            matrices[s, 3, 3] = 1.0
+        return matrices
+
+    fit_weights = weights_np.astype(np.float64)
+    matrices = fit(fit_weights)
+    for _ in range(rounds):
+        moved = np.einsum("kij,knj->kni", matrices[:, :3, :3], a_np) + matrices[:, None, :3, 3]
+        residual = np.linalg.norm(moved - b_np, axis=2)
+        method = "lower" if lower_median else "linear"
+        median = np.quantile(residual, 0.5, axis=1, method=method, keepdims=True)
+        delta = np.maximum(huber_scale * median, huber_floor)
+        factor = np.where(residual <= delta, 1.0, delta / np.maximum(residual, 1e-30))
+        fit_weights = (fit_weights if cumulative else weights_np) * factor
+        matrices = fit(fit_weights)
+    return matrices, fit_weights
+
+
+@pytest.mark.parametrize(
+    ("cumulative", "lower_median", "n_points"),
+    [(False, False, 40), (True, True, 40), (False, True, 33), (True, False, 33)],
+)
+def test_procrustes_from_offsets_robust_rounds(
+    device: str, cumulative: bool, lower_median: bool, n_points: int
+) -> None:
+    """
+    Not a library comparison: no reference library reweights a Procrustes fit; a NumPy IRLS oracle.
+
+    The oracle is the reweighting the docstring states, in ``float64``: Umeyama fits, residuals
+    under the last fit, ``delta = max(huber_scale * median, huber_floor)`` and factors
+    ``min(1, delta / r)``, against the base or the previous weights. A fifth of each set's targets
+    are thrown far off, so the robust fits must differ from the plain one by a large margin
+    (asserted) and come back near the planted motion; the median convention matters on the even
+    sets (both are parametrized) and is moot on the odd ones.
+    """
+    n_sets, rounds = 6, 4
+    a_np, b_np, weights_np = _noisy_similarity_sets(n_sets, n_points, seed=21)
+    clean_np = b_np.copy()
+    rng = np.random.default_rng(22)
+    outliers = rng.random(size=(n_sets, n_points)) < 0.2
+    b_np[outliers] += rng.normal(scale=4.0, size=(int(outliers.sum()), 3)).astype(np.float32)
+
+    matrices_wp, fit_weights_wp = od.registration.procrustes_from_offsets(
+        points_to_warp(a_np.reshape(-1, 3), device),
+        points_to_warp(b_np.reshape(-1, 3), device),
+        wp.array(np.arange(n_sets + 1, dtype=np.int32) * n_points, dtype=wp.int32, device=device),
+        wp.array(weights_np.reshape(-1), dtype=wp.float32, device=device),
+        reflection=False,
+        robust_rounds=rounds,
+        huber_floor=0.02,
+        cumulative=cumulative,
+        lower_median=lower_median,
+        return_weights=True,
+    )
+    matrices_np = matrices_wp.numpy()
+    options = (1.5, 0.02, cumulative, lower_median)
+    matrices_ref, weights_ref = _robust_similarities_np(a_np, b_np, weights_np, rounds, *options)
+    plain_ref, _ = _robust_similarities_np(a_np, b_np, weights_np, 0, *options)
+    clean_ref, _ = _robust_similarities_np(a_np, clean_np, weights_np, 0, *options)
+
+    assert np.abs(plain_ref - matrices_ref).max() > 0.1  # the rounds matter
+    assert np.abs(clean_ref - matrices_ref).max() < 0.1  # and recover the motion
+    assert np.allclose(matrices_np, matrices_ref, rtol=1e-4, atol=1e-4)
+    assert np.allclose(fit_weights_wp.numpy(), weights_ref.reshape(-1), rtol=1e-4, atol=1e-5)
+
+
+def test_procrustes_from_offsets_repeats_and_reports_weights(device: str) -> None:
+    """
+    Not a library comparison: the fit repeats bit for bit, and its weight report is the input's.
+
+    Eight robust calls give the same bits with the deterministic setting off as well (the fit has
+    no atomics). With no rounds the reported weights are the given weights, or ones, and the
+    matrices equal the call without ``return_weights``.
+    """
+    n_sets, n_points = 300, 70
+    a_np, b_np, weights_np = _noisy_similarity_sets(n_sets, n_points, seed=4)
+    a_wp = points_to_warp(a_np.reshape(-1, 3), device)
+    b_wp = points_to_warp(b_np.reshape(-1, 3), device)
+    offsets_wp = wp.array(
+        np.arange(n_sets + 1, dtype=np.int32) * n_points, dtype=wp.int32, device=device
+    )
+    weights_wp = wp.array(weights_np.reshape(-1), dtype=wp.float32, device=device)
+    with od.config.deterministic(False):
+        runs = [
+            od.registration.procrustes_from_offsets(
+                a_wp, b_wp, offsets_wp, weights_wp, robust_rounds=3
+            ).numpy()
+            for _ in range(8)
+        ]
+    assert all(np.array_equal(run, runs[0]) for run in runs)
+
+    plain_wp = od.registration.procrustes_from_offsets(a_wp, b_wp, offsets_wp, weights_wp)
+    matrices_wp, reported_wp = od.registration.procrustes_from_offsets(
+        a_wp, b_wp, offsets_wp, weights_wp, return_weights=True
+    )
+    assert np.array_equal(matrices_wp.numpy(), plain_wp.numpy())
+    assert np.array_equal(reported_wp.numpy(), weights_np.reshape(-1))
+    _, ones_wp = od.registration.procrustes_from_offsets(
+        a_wp, b_wp, offsets_wp, return_weights=True
+    )
+    assert np.array_equal(ones_wp.numpy(), np.ones(n_sets * n_points, dtype=np.float32))
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"b": 4}, "a and b must have the same length"),
+        ({"weights": 4}, "weights must have the same length"),
+        ({"offsets": 0}, "offsets must hold at least"),
+        ({"robust_rounds": -1}, "robust_rounds must be non-negative"),
+        ({"huber_scale": 0.0}, "huber_scale must be positive"),
+        ({"huber_floor": -1.0}, "huber_floor must be non-negative"),
+    ],
+)
+def test_procrustes_from_offsets_validates_its_input(
+    device: str, change: dict[str, float], message: str
+) -> None:
+    """Not a library comparison: every guard the docstring lists raises, naming its argument."""
+    points_np = np.random.default_rng(1).normal(size=(5, 3)).astype(np.float32)
+    b_count = int(change.get("b", 5))
+    weights_count = int(change.get("weights", 5))
+    offsets_np = np.array([0, 5][: int(change.get("offsets", 2))], dtype=np.int32)
+    with pytest.raises(ValueError, match=message):
+        od.registration.procrustes_from_offsets(
+            points_to_warp(points_np, device),
+            points_to_warp(points_np[:b_count], device),
+            wp.array(offsets_np, dtype=wp.int32, device=device),
+            wp.ones(weights_count, dtype=wp.float32, device=device),
+            robust_rounds=int(change.get("robust_rounds", 0)),
+            huber_scale=change.get("huber_scale", 1.5),
+            huber_floor=change.get("huber_floor", 0.0),
+        )
+    sets_wp = od.registration.procrustes_from_offsets(
+        points_to_warp(points_np, device),
+        points_to_warp(points_np, device),
+        wp.zeros(1, dtype=wp.int32, device=device),
+    )
+    assert sets_wp.shape == (0,)
 
 
 @pytest.mark.parity("icp_point_cloud", "pytorch3d")

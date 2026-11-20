@@ -586,6 +586,9 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # composed one on exit, as in ``icp``'s other loop; ``closest`` holds each landmark's match
     # between the passes of one round.
     ("registration", "landmark_icp"): frozenset({"closest", "total"}),
+    # ``procrustes_from_offsets``' robust rounds: ``residuals`` holds each pair's residual under
+    # the set's previous fit, which the next round's median and weights read.
+    ("registration", "procrustes_sets"): frozenset({"residuals"}),
     # ``method="meshlib"``'s serial refinement edits one half-edge structure in place: its records,
     # positions, region flags, split queue and split log, bundled in ``mesh``.
     ("holes", "serial_subdivide"): frozenset({"mesh"}),

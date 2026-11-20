@@ -222,6 +222,23 @@ def test_shrink_vertex_mask(bench_case: BenchCase, hops: int) -> None:
         bench_case.run(erode_pml)
 
 
+@pytest.mark.benchmark(group="vertex_hop_distance")
+@pytest.mark.benchmeshes("sphere_med")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("hops", _HOPS)
+def test_vertex_hop_distance(bench_case: BenchCase, hops: int) -> None:
+    """
+    ``expand_vertex_mask``'s rounds, keeping the hop buffer: should match its rows above one hop.
+
+    No reference library measures hop distance over a mesh's edges; SciPy's unweighted
+    ``csgraph.shortest_path`` is the test oracle, not a comparable single call (it needs the
+    adjacency built first and runs a search per seed).
+    """
+    faces, mask = bench_case.faces_wp, _seed_mask(bench_case)
+    hops_wp = bench_case.run(lambda: od.selection.vertex_hop_distance(faces, mask, hops))
+    assert hops_wp.shape == mask.shape
+
+
 def _face_indices(bench_case: BenchCase) -> tuple[wp.array[wp.int32], np.ndarray]:
     """Half the faces as a ``(indices_wp, indices_np)`` pair, already unique and sorted."""
     key = (bench_case.mesh_name, str(bench_case.device))

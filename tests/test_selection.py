@@ -1851,6 +1851,58 @@ def test_vertex_morphology_on_an_irregular_mesh(device: str, hops: int) -> None:
     assert np.array_equal(shrunk_np, expected_shrink)
 
 
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular_hollow", "torus_irregular_holes"])
+@pytest.mark.parametrize("max_hops", [0, 1, 6])
+def test_vertex_hop_distance(request: pytest.FixtureRequest, mesh_name: str, max_hops: int):
+    """
+    Class A against SciPy's unweighted multi-source shortest path, cut at ``max_hops``.
+
+    The seeds are a few scattered vertices, so on the two-component hollow sphere one component
+    holds no seed and stays unreached however large the bound, and the bound also leaves seeded
+    vertices out of reach. Both the reached and the unreached sentinel occur at every bound, and
+    at ``max_hops > 1`` several distances do.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    n = len(mesh_tm.vertices)
+    faces_np = np.asarray(mesh_tm.faces, dtype=np.int32).reshape(-1)
+    seed = np.zeros(n, dtype=bool)
+    labels_np = csgraph.connected_components(mesh_tm.edges_sparse, directed=False)[1]
+    candidates = np.flatnonzero(labels_np == labels_np[0])
+    seed[np.random.default_rng(5).choice(candidates, size=3, replace=False)] = True
+
+    hops_np = od.selection.vertex_hop_distance(
+        mesh_wp.indices, wp.array(seed, dtype=wp.bool, device=mesh_wp.points.device), max_hops
+    ).numpy()
+
+    distance_np = _graph_distance(faces_np, n, seed)
+    expected = np.where(distance_np <= max_hops, distance_np, 2**31 - 1).astype(np.int32)
+    assert (expected == 2**31 - 1).any()
+    assert np.unique(expected[expected < 2**31 - 1]).size == max_hops + 1
+    assert np.array_equal(hops_np, expected)
+
+
+def test_vertex_hop_distance_guards(device: str) -> None:
+    """
+    Not a library comparison: a negative bound raises, an empty mask returns an empty array.
+
+    It also pins the agreement with ``expand_vertex_mask`` the docstring states, on a grid.
+    """
+    vertices_np, faces_np = _grid_mesh(5)
+    faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
+    mask_np = np.zeros(len(vertices_np), dtype=bool)
+    mask_np[[0, 12]] = True
+    mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
+    with pytest.raises(ValueError, match="max_hops must be non-negative"):
+        od.selection.vertex_hop_distance(faces_wp, mask_wp, -1)
+    empty = od.selection.vertex_hop_distance(faces_wp, wp.zeros(0, dtype=wp.bool, device=device), 2)
+    assert empty.shape == (0,)
+    hops_np = od.selection.vertex_hop_distance(faces_wp, mask_wp, 3).numpy()
+    for k in (1, 2):
+        expanded_np = od.selection.expand_vertex_mask(faces_wp, mask_wp, k).numpy()
+        assert 0 < expanded_np.sum() < len(mask_np)
+        assert np.array_equal(hops_np <= k, expanded_np)
+
+
 @pytest.mark.parametrize("face_mode", ["all", "any"])
 def test_face_indices_from_vertex_indices(
     request: pytest.FixtureRequest, face_mode: Literal["all", "any"]

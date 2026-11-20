@@ -1943,6 +1943,75 @@ def shrink_vertex_mask(
     return _dilate_vertex_mask(faces, mask, hops, value=False)
 
 
+def vertex_hop_distance(
+    faces: wp.array[wp.int32], mask: wp.array[wp.bool], max_hops: int
+) -> wp.array[wp.int32]:
+    """
+    Count the mesh edges from each vertex to the nearest selected vertex, up to a bound.
+
+    The breadth-first distance over the mesh's edges from every selected vertex at once: ``0`` on
+    the selection, ``1`` on its one-ring, and so on out to ``max_hops``.
+
+    Parameters
+    ----------
+    faces
+        ``(3 * n_faces,)`` flat triangle index buffer.
+    mask
+        ``(n_vertices,)`` selection the distances are measured from.
+    max_hops
+        Largest distance measured.
+
+    Returns
+    -------
+    wp.array[wp.int32]
+        ``(n_vertices,)`` hop count on ``mask.device``; ``2**31 - 1`` at a vertex more than
+        ``max_hops`` edges from the selection, or not connected to it, so a test
+        ``distance <= k`` for ``k <= max_hops`` needs no special case.
+
+    Raises
+    ------
+    RuntimeError
+        If ``faces`` and ``mask`` are not on one device.
+    ValueError
+        If ``max_hops`` is negative.
+
+    See Also
+    --------
+    [`expand_vertex_mask`][ordito.selection.expand_vertex_mask] :
+        ``vertex_hop_distance(faces, mask, k) <= k`` as a mask.
+    [`shortest_path_envelope`][ordito.graph.shortest_path_envelope] :
+        Distances along weighted edges.
+
+    Notes
+    -----
+    Each hop is one pass over the faces, whatever the size of the selection, so the cost is
+    ``max_hops`` such passes. Vertices no face references are reached only when selected.
+
+    Examples
+    --------
+    Hops from corner vertex 0 of a 3 x 3 vertex grid, whose diagonals run from vertex 0 towards
+    vertex 8:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(3, 3))
+    corner = wp.array(np.arange(9) == 0, dtype=wp.bool)
+    hops = od.selection.vertex_hop_distance(faces, corner, 4)
+    print(hops.numpy().tolist())  # [0, 1, 2, 1, 1, 2, 2, 2, 2]
+    ```
+    """
+    require_same_device(faces=faces, mask=mask)
+    if max_hops < 0:
+        raise ValueError(f"max_hops must be non-negative, got {max_hops}")
+    if mask.size == 0:
+        return _launch.empty(0, dtype=wp.int32, device=mask.device)
+    return _vertex_hops(faces, mask, max_hops, value=True)[0]
+
+
 def _dilate_vertex_mask(
     faces: wp.array[wp.int32], mask: wp.array[wp.bool], hops: int, *, value: bool
 ) -> wp.array[wp.bool]:
@@ -1959,7 +2028,6 @@ def _dilate_vertex_mask(
     is never written. ``hops`` must be positive.
     """
     device = mask.device
-    n_vertices = mask.size
     n_faces = faces.size // 3
     if hops == 1:
         out_mask = _launch.clone(mask)
@@ -1971,6 +2039,21 @@ def _dilate_vertex_mask(
                 device=device,
             )
         return out_mask
+    return _vertex_hops(faces, mask, hops, value=value)[1]
+
+
+def _vertex_hops(
+    faces: wp.array[wp.int32], mask: wp.array[wp.bool], hops: int, *, value: bool
+) -> tuple[wp.array[wp.int32], wp.array[wp.bool]]:
+    """
+    Grow the hop buffer of ``_dilate_vertex_mask`` by ``hops`` rounds, and the mask beside it.
+
+    Returns the ``int32`` round each vertex was first reached in (``INT32_MAX`` where none reached
+    it) and the dilated mask. ``hops`` may be zero, which only seeds the two.
+    """
+    device = mask.device
+    n_vertices = mask.size
+    n_faces = faces.size // 3
     hop_of = _launch.empty(n_vertices, dtype=wp.int32, device=device)
     out_mask = _launch.empty(n_vertices, dtype=wp.bool, device=device)
     _launch.launch(
@@ -1980,6 +2063,8 @@ def _dilate_vertex_mask(
         outputs=[hop_of, out_mask],
         device=device,
     )
+    if hops <= 0:
+        return hop_of, out_mask
     if n_faces > 0 and not wp.get_device(device).is_cuda:
         # The CPU device runs a launch's threads one after another: every round in one launch.
         _launch.launch(
@@ -1996,7 +2081,7 @@ def _dilate_vertex_mask(
                 inputs=[faces, hop, value, hop_of, out_mask],
                 device=device,
             )
-    return out_mask
+    return hop_of, out_mask
 
 
 def face_indices_from_vertex_indices(
