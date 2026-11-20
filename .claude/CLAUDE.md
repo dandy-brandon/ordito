@@ -1408,9 +1408,10 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   coarse level (150 iterations, 0.8 of the call). `solve(refine=False)` (2026-11-20) drops the
   residual tests (`refine_start`, two `residual_test`, two `refine_advance`) for a loop that
   iterates to its own fixpoint; `slim` takes it (its held-factor solve ~230 -> ~206 us on
-  `saddle_small`, calls 0.95-0.96x CUDA, CPU at par, charts within 1.2e-7). Open: whether
-  `_proximal_arap` takes it too (outputs move by rounding; its tolerance stop reads the moves),
-  and a one-block triangular solve for a small factor, which is now nearly all of the solve: 7
+  `saddle_small`, calls 0.95-0.96x CUDA, CPU at par, charts within 1.2e-7), and so does the
+  coarse level (bunny 0.81x, dragon 0.86x CUDA; the full-mesh loops keep refinement, declined at
+  `_proximal_arap`). Open: a one-block triangular solve for a small factor, nearly all of the
+  solve now: 7
   forward and 7 backward levels of two or three latency-bound kernels. `slim`'s replayed solves
   are 5.4 of 15 ms on `saddle_small` and 22 of 58 ms on a 164 k-face hemisphere. Numbers in
   `reference/component-status.md` ("Post-0.3.0 sweep").

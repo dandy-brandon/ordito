@@ -5517,9 +5517,9 @@
  },
  "benchmarks/test_parametrization.py::test_low_distortion_parametrization[hemisphere-ordito-cuda]": {
   "counts": {
-   "launch": 328,
+   "launch": 324,
    "alloc": 87,
-   "memset": 29,
+   "memset": 28,
    "d2h": 14,
    "scan": 22,
    "sort": 17
@@ -5593,9 +5593,9 @@
  },
  "benchmarks/test_parametrization.py::test_slim_parametrization[hemisphere-ordito-cuda-free]": {
   "counts": {
-   "launch": 1363,
+   "launch": 1359,
    "alloc": 164,
-   "memset": 63,
+   "memset": 62,
    "d2d": 3,
    "d2h": 23,
    "scan": 48,

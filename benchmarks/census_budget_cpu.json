@@ -5012,7 +5012,7 @@
  },
  "benchmarks/test_parametrization.py::test_low_distortion_parametrization[hemisphere-ordito-cpu]": {
   "counts": {
-   "launch": 283,
+   "launch": 289,
    "alloc": 85,
    "h2h": 1,
    "readback": 14,
@@ -5081,7 +5081,7 @@
  },
  "benchmarks/test_parametrization.py::test_slim_parametrization[hemisphere-ordito-cpu-free]": {
   "counts": {
-   "launch": 1498,
+   "launch": 1504,
    "alloc": 160,
    "h2h": 4,
    "readback": 23,

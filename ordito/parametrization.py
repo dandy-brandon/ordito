@@ -2028,6 +2028,7 @@ def _two_level_chart(
         iterations,
         settled,
         normal=normal,
+        refine=False,
     )
     chart = _prolonged_chart(
         vertices, cluster, centroids, centroids_f32, coarse_faces, coarse_vertex_faces,
@@ -2149,6 +2150,7 @@ def _proximal_arap(
     *,
     start: odt.Array2dFloat64 | None = None,
     normal: wp.vec3d | None = None,
+    refine: bool = True,
 ) -> odt.Array2dFloat64:
     """
     Pin-free ARAP iterated from ``start``, each global step a factored solve.
@@ -2163,6 +2165,16 @@ def _proximal_arap(
     loose piece where it started. Each iteration's largest move is reduced on the device and read
     every ``_TWO_LEVEL_READ_EVERY`` iterations; the iterations after the one that settles change
     nothing (``kernels/parametrization.proximal_rhs``), so the stop is exact.
+
+    ``refine=False`` solves each step against the factor alone (``SparseCholesky.solve``): the
+    loop iterates to its own fixpoint, which absorbs the factor's rounding (far below
+    ``settled``), and once settled the right-hand side stops changing, so the solve repeats the
+    chart bit for bit and the stop stays exact. The coarse level takes it (2026-11-20, CUDA
+    new/old: bunny 0.81x, dragon 0.86x, whose coarse loops run their 150 iterations; CPU bunny
+    0.90x; charts within 7.5e-9 of 0.15, flips unchanged). The full-mesh loops keep refinement:
+    near the fixpoint a warm start passes the test and skips the triangular solve, which the CPU
+    runs a launch a level, so unrefined they cost the CPU 1.09-1.18x on ``hemisphere``
+    (``arap_parametrization``, harmonic and Tutte starts) for par on CUDA (0.97-1.03x).
     """
     device = points.device
     n_points = points.size
@@ -2237,7 +2249,7 @@ def _proximal_arap(
             outputs=[rhs, previous],
             device=device,
         )  # fmt: skip
-        factorization.solve(rhs, chart)
+        factorization.solve(rhs, chart, refine=refine)
         _launch.launch_tiled(
             kernel_parametrization.proximal_moves,
             dim=move_blocks,
