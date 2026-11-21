@@ -396,6 +396,21 @@ def test_refine_to_length(bench_case: BenchCase) -> None:
     assert faces.size > faces_wp.size
 
 
+@pytest.mark.benchmark(group="smooth_out")
+@pytest.mark.benchlibs("ordito", "manifold3d")
+@pytest.mark.benchaxis("scale")
+def test_smooth_out(bench_case: BenchCase) -> None:
+    """``od.boolean.smooth_out`` of the sphere into two pieces an edge."""
+    if bench_case.kind == "manifold3d":
+        a_m3, _ = _manifolds_m3(bench_case)
+        result_m3 = bench_case.run(lambda: _forced(a_m3.smooth_out().refine(2)))
+        assert result_m3.num_tri() > 0
+        return
+    vertices_wp, faces_wp = bench_case.vertices_wp, bench_case.faces_wp
+    _, faces = bench_case.run(lambda: od.boolean.smooth_out(vertices_wp, faces_wp, 2))
+    assert faces.size == 4 * faces_wp.size
+
+
 @pytest.mark.benchmark(group="cross_section")
 @pytest.mark.benchlibs("ordito", "manifold3d")
 @pytest.mark.benchaxis("scale")

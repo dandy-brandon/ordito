@@ -489,8 +489,8 @@
  },
  "benchmarks/test_boolean.py::test_refine[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 37,
-   "alloc": 77,
+   "launch": 38,
+   "alloc": 81,
    "h2h": 16,
    "readback": 9,
    "scan": 5,
@@ -499,8 +499,8 @@
  },
  "benchmarks/test_boolean.py::test_refine_to_length[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 37,
-   "alloc": 77,
+   "launch": 38,
+   "alloc": 81,
    "h2h": 16,
    "readback": 9,
    "scan": 5,
@@ -524,6 +524,16 @@
    "h2h": 10,
    "readback": 17,
    "scan": 9,
+   "sort": 10
+  }
+ },
+ "benchmarks/test_boolean.py::test_smooth_out[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 49,
+   "alloc": 82,
+   "h2h": 11,
+   "readback": 9,
+   "scan": 4,
    "sort": 10
   }
  },

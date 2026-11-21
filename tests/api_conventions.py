@@ -593,6 +593,11 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("boolean", "own_coplanar_groups"): frozenset({"coplanar"}),
     ("boolean", "write_result_halfedges"): frozenset({"slot_halfedge"}),
     ("boolean", "split_pinched_fans"): frozenset({"m"}),
+    # The smoothing passes refine each halfedge's ``tangents`` in place, in ``CreateTangents``'
+    # order; the vertex pass marks the ``fixed`` halfedges the distribution pass turns between.
+    ("boolean", "sharpen_vertex_tangents"): frozenset({"tangents", "fixed"}),
+    ("boolean", "linearize_flat_tangents"): frozenset({"tangents"}),
+    ("boolean", "distribute_tangents"): frozenset({"tangents"}),
     # The multifrontal factorization works in place: ``fronts`` holds each front's operator
     # entries, then its factor and the Schur complement its parent extends; ``blocks`` the solve
     # blocks each panel's update rewrites. The refinement loop's ``state`` / ``rhs_scale`` are its

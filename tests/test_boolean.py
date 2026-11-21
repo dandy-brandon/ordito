@@ -450,6 +450,96 @@ def test_refine_to_length_matches_manifold3d(
     _assert_same_as_m3(od.boolean.refine_to_length(*_upload(mesh_tm, device), length), result_m3)
 
 
+_SMOOTH_SHAPES = ["box", "cylinder", "sphere_irregular", "box_minus_ball"]
+
+
+def _smooth_mesh_tm(request: pytest.FixtureRequest, shape: str) -> tm.Trimesh:
+    """Return a smoothing case: quads, flat caps, needles, a smooth torus or a CSG result."""
+    if shape == "torus":
+        return _float32_mesh(tm.creation.torus(1.0, 0.3, 16, 8))
+    if shape == "box_minus_ball":
+        ball_tm = _float32_mesh(tm.creation.icosphere(subdivisions=2, radius=0.7))
+        return _manifold_mesh_tm(
+            _manifold_m3(_box([-0.5, -0.5, -0.5], [0.5, 0.5, 0.5])) - _manifold_m3(ball_tm)
+        )
+    return _refine_mesh_tm(request, shape)
+
+
+# ``tolerance`` runs only where no corner joins three creases of zero smoothness: there Manifold's
+# ``0 / 0`` smoothness makes NaN tangents, whose edge counts it converts unchecked (it crashes on
+# ``sphere_irregular``'s needles and never returns on the box); ordito adds nothing on them.
+_SMOOTH_CASES = [
+    (shape, mode, angle, smoothness)
+    for shape in _SMOOTH_SHAPES
+    for mode, angle, smoothness in [("n", 52.5, 0.0), ("n", 30.0, 0.5), ("length", 40.0, 0.2)]
+] + [
+    ("sphere_irregular", "tolerance", 30.0, 0.5),
+    ("box_minus_ball", "tolerance", 52.5, 0.3),
+    ("torus", "tolerance", 52.5, 0.0),
+]
+
+
+@pytest.mark.parity("smooth_out", "manifold3d")
+@pytest.mark.parametrize(("shape", "mode", "min_sharp_angle", "min_smoothness"), _SMOOTH_CASES)
+def test_smooth_out_matches_manifold3d(
+    request: pytest.FixtureRequest,
+    device: str,
+    shape: str,
+    mode: str,
+    min_sharp_angle: float,
+    min_smoothness: float,
+) -> None:
+    """
+    ``smooth_out`` is Manifold's ``smooth_out`` then its refinement, array for array.
+
+    Class A. ``n`` against ``refine``, ``length`` against ``refine_to_length``, ``tolerance``
+    against ``refine_to_tolerance``. The box smooths its faces as quads, the cylinder keeps its
+    caps flat and its rims creased, ``sphere_irregular``'s needles take the Bezier patches'
+    degenerate branches, and the box less a ball holds flat faces, sharp creases and a curved
+    cavity at once; a nonzero smoothness leaves the creases partly smooth.
+    """
+    mesh_tm = _smooth_mesh_tm(request, shape)
+    extent = float(np.ptp(mesh_tm.vertices, axis=0).max())
+    smoothed_m3 = _manifold_m3(mesh_tm).smooth_out(min_sharp_angle, min_smoothness)
+    vertices, faces = _upload(mesh_tm, device)
+    if mode == "n":
+        result_m3 = smoothed_m3.refine(3)
+        result = od.boolean.smooth_out(
+            vertices, faces, 3, min_sharp_angle=min_sharp_angle, min_smoothness=min_smoothness
+        )
+    elif mode == "length":
+        result_m3 = smoothed_m3.refine_to_length(0.15 * extent)
+        result = od.boolean.smooth_out(
+            vertices,
+            faces,
+            length=0.15 * extent,
+            min_sharp_angle=min_sharp_angle,
+            min_smoothness=min_smoothness,
+        )
+    else:
+        result_m3 = smoothed_m3.refine_to_tolerance(0.01 * extent)
+        result = od.boolean.smooth_out(
+            vertices,
+            faces,
+            tolerance=0.01 * extent,
+            min_sharp_angle=min_sharp_angle,
+            min_smoothness=min_smoothness,
+        )
+    assert result_m3.num_vert() > len(mesh_tm.vertices)
+    _assert_same_as_m3(result, result_m3)
+
+
+def test_smooth_out_takes_exactly_one_refinement(device: str) -> None:
+    """None or two of ``n``, ``length``, ``tolerance`` raise. Not a library comparison: guards."""
+    vertices, faces = _upload(_box([0, 0, 0], [1, 1, 1]), device)
+    with pytest.raises(ValueError, match="exactly one"):
+        od.boolean.smooth_out(vertices, faces)
+    with pytest.raises(ValueError, match="exactly one"):
+        od.boolean.smooth_out(vertices, faces, 2, length=0.1)
+    with pytest.raises(ValueError, match="must be finite and nonzero"):
+        od.boolean.smooth_out(vertices, faces, tolerance=0.0)
+
+
 def test_refine_rejects_a_degenerate_count_or_length(device: str) -> None:
     """``n`` below one and a zero length raise ``ValueError``. Not a library comparison: guards."""
     vertices, faces = _upload(_box([0, 0, 0], [1, 1, 1]), device)

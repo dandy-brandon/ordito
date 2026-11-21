@@ -65,6 +65,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | drop a closed mesh's redundant vertices within a tolerance | [`boolean.simplify`][ordito.boolean.simplify] |
 | the loops where a horizontal plane cuts a solid | [`boolean.cross_section`][ordito.boolean.cross_section], [`cross_section_with_offsets`][ordito.boolean.cross_section_with_offsets] |
 | split every edge of a solid into equal pieces, or into pieces of a length | [`boolean.refine`][ordito.boolean.refine], [`refine_to_length`][ordito.boolean.refine_to_length] |
+| refine a solid onto a smooth surface through its vertices, keeping creases | [`boolean.smooth_out`][ordito.boolean.smooth_out] |
 | a solid's separate pieces, each a solid | [`boolean.decompose`][ordito.boolean.decompose] |
 | triangulate a planar region with holes | [`polyline.triangulate_polygons`][ordito.polyline.triangulate_polygons], [`triangulate_polygons_from_offsets`][ordito.polyline.triangulate_polygons_from_offsets] |
 | keep a subset of faces | [`selection.submesh_from_face_mask`][ordito.selection.submesh_from_face_mask] |

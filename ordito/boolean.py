@@ -47,7 +47,8 @@ _FLOAT32_EPSILON = 1.1920929e-07
 _MAX_UNION_SIZE = 1000
 # ``Partition``'s cache: each sorted set of side divisions' barycentrics and sub-triangles.
 _PARTITIONS: dict[
-    tuple[int, int, int], tuple[list[tuple[float, float, float, float]], list[tuple[int, int, int]]]
+    tuple[int, int, int, int],
+    tuple[list[tuple[float, float, float, float]], list[tuple[int, int, int]]],
 ] = {}
 
 
@@ -1279,19 +1280,311 @@ def refine_to_length(
     return _mesh_from_solid(_solid_refine(solid, 0, length), device)
 
 
+def smooth_out(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    n: int | None = None,
+    *,
+    length: float | None = None,
+    tolerance: float | None = None,
+    min_sharp_angle: float = 52.5,
+    min_smoothness: float = 0.0,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    Return a closed mesh refined onto a smooth surface through its vertices, keeping sharp edges.
+
+    Each edge becomes a curve leaving its ends along the surface's tangent planes, circular where
+    it can be, and each face a patch between its edges' curves. Edges bent past
+    ``min_sharp_angle`` stay creases; faces of three or more coplanar triangles stay flat, and
+    two coplanar triangles are smoothed as one quad. The refinement is chosen by exactly one of
+    ``n``, ``length`` and ``tolerance``.
+
+    Parameters
+    ----------
+    vertices, faces
+        ``(n_vertices,)`` and ``(3 * n_faces,)`` closed, consistently wound mesh.
+    n
+        The pieces each edge is split into, as [`refine`][ordito.boolean.refine] splits them;
+        ``1`` returns the mesh as [`union`][ordito.boolean.union] lays out a result.
+    length
+        Split each edge into pieces of about this length instead, as
+        [`refine_to_length`][ordito.boolean.refine_to_length] does.
+    tolerance
+        Split each edge until the faceted result is within about this distance of the smooth
+        surface instead; curved regions take more vertices than flat ones.
+    min_sharp_angle
+        Degrees: edges whose faces meet at more than this stay sharp.
+    min_smoothness
+        How smooth a sharp edge still is, from ``0`` (a crease) to ``1`` (as smooth as any).
+
+    Returns
+    -------
+    vertices : wp.array[wp.vec3]
+        ``(n_vertices_out,)`` the input vertices and the added ones, on the smooth surface.
+    faces : wp.array[wp.int32]
+        ``(3 * n_faces_out,)`` result triangles.
+
+    Raises
+    ------
+    RuntimeError
+        If ``vertices`` and ``faces`` are not on one device.
+    ValueError
+        If not exactly one of ``n``, ``length`` and ``tolerance`` is given, ``n`` is below one,
+        ``length`` or ``tolerance`` is zero or not finite, or the mesh is not closed, has an edge
+        shared by more than two faces, or is not consistently wound.
+
+    See Also
+    --------
+    [`refine`][ordito.boolean.refine]
+    [`remesh.subdivide`][ordito.remesh.subdivide]
+
+    Notes
+    -----
+    Manifold's ``Manifold.smooth_out`` followed by ``refine``, ``refine_to_length`` or
+    ``refine_to_tolerance``.
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, faces = od.boolean.smooth_out(*od.creation.icosphere(subdivisions=1), 3)
+    print(faces.size // 3)  # 720
+    ```
+    """
+    require_same_device(vertices=vertices, faces=faces)
+    if sum(x is not None for x in (n, length, tolerance)) != 1:
+        raise ValueError("pass exactly one of n, length and tolerance")
+    if n is not None and n < 1:
+        raise ValueError(f"n must be at least 1, got {n}")
+    target = abs(float(length if length is not None else tolerance or 0.0))
+    if n is None and (target == 0.0 or not math.isfinite(target)):
+        raise ValueError(f"length or tolerance must be finite and nonzero, got {target}")
+    device = vertices.device
+    solid = _solid_from_mesh(vertices, faces, 0, "")
+    if solid.is_empty or n == 1:
+        return _mesh_from_solid(solid, device)
+    smoothed = _solid_smooth_out(
+        solid,
+        int(n) if n is not None else 1,
+        target if length is not None else 0.0,
+        target if tolerance is not None else 0.0,
+        float(min_sharp_angle),
+        float(min_smoothness),
+    )
+    return _mesh_from_solid(smoothed, device)
+
+
 def _solid_refine(solid: _Solid, added: int, length: float) -> _Solid:
     """
     ``Impl::Refine`` with no tangents: ``Subdivide``, ``CalculateVertNormals``, ``SortGeometry``.
 
     Every edge takes ``added`` vertices, or ``int(|edge| / length)`` when ``length`` is positive;
-    each face takes the cached partition of its sides' divisions, its sub-triangles inheriting
-    its normal and reference. Sorted in the solid's own box (``Refine`` does not recalculate it).
+    the new vertices sit at their barycentrics. Sorted in the solid's own box (``Refine`` does
+    not recalculate it).
+    """
+    device = solid.positions.device
+    twins = halfedge_twins(solid.faces, solid.n_vertices, validate=False)
+    inside = _launch.zeros(solid.faces.size, dtype=wp.int32, device=device)
+    sub = _subdivide(solid, twins, inside, added, length)
+    positions = _launch.empty(sub.bary_tri.size, dtype=wp.vec3d, device=device)
+    _launch.launch(
+        kernel_boolean.linear_bary_positions,
+        dim=sub.bary_tri.size,
+        inputs=[solid.positions, solid.faces, twins, inside, sub.bary_tri, sub.bary_uvw],
+        outputs=[positions],
+        device=device,
+    )
+    refined = solid._replace(
+        positions=positions,
+        faces=sub.faces,
+        face_normals=sub.face_normals,
+        vertex_normals=positions,
+        face_mesh=sub.face_mesh,
+        face_coplanar=sub.face_coplanar,
+        face_source=None,
+    )
+    mesh = _halfedge_mesh_from_solid(refined)
+    return _finish_solid(mesh, solid.epsilon, solid.tolerance, device, (solid.lower, solid.upper))
+
+
+def _solid_smooth_out(
+    solid: _Solid,
+    n: int,
+    length: float,
+    tolerance: float,
+    min_sharp_angle: float,
+    min_smoothness: float,
+) -> _Solid:
+    """
+    ``SmoothOut`` then ``Refine(n)``, ``RefineToLength`` or ``RefineToTolerance``.
+
+    Tangents from the geometry, then the refined vertices on the surface they define, normals
+    and coplanar groups recomputed and sorted in the new box.
+    """
+    device = solid.positions.device
+    n_h = solid.faces.size
+    n_v = solid.n_vertices
+    twins = halfedge_twins(solid.faces, n_v, validate=False)
+    tangents = _smoothing_tangents(solid, twins, min_sharp_angle, min_smoothness)
+    inside = _launch.empty(n_h, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_boolean.quad_diagonal_flags,
+        dim=n_h,
+        inputs=[tangents],
+        outputs=[inside],
+        device=device,
+    )
+    sub = _subdivide(solid, twins, inside, n - 1, length, tangents, tolerance)
+    positions = _launch.empty(sub.bary_tri.size, dtype=wp.vec3d, device=device)
+    _launch.launch(
+        kernel_boolean.interp_tri_positions,
+        dim=sub.bary_tri.size,
+        inputs=[solid.positions, solid.faces, twins, inside, tangents, sub.bary_tri, sub.bary_uvw],
+        outputs=[positions],
+        device=device,
+    )
+    lower, upper = _positions_box(positions)
+    return _solid_from_positions(
+        positions, sub.faces, 0, solid.epsilon, solid.tolerance, lower, upper, ""
+    )
+
+
+def _smoothing_tangents(
+    solid: _Solid, twins: wp.array[wp.int32], min_sharp_angle: float, min_smoothness: float
+) -> wp.array[wp.vec4d]:
+    """
+    ``CreateTangents(SharpenEdges(min_sharp_angle, min_smoothness))``.
+
+    Each halfedge's weighted cubic Bezier tangent, a quad's diagonal marked with weight ``-1``.
     """
     device = solid.positions.device
     n_h = solid.faces.size
     n_v = solid.n_vertices
     n_t = solid.n_faces
-    twins = halfedge_twins(solid.faces, n_v, validate=False)
+    first = _launch.full(n_v, 2147483647, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_boolean.least_outgoing_halfedges,
+        dim=n_h,
+        inputs=[solid.faces],
+        outputs=[first],
+        device=device,
+    )
+    flat = _launch.zeros(n_t, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_boolean.flat_faces,
+        dim=n_t,
+        inputs=[twins, solid.face_mesh, solid.face_coplanar],
+        outputs=[flat],
+        device=device,
+    )
+    normals = _launch.empty(n_v, dtype=wp.vec3d, device=device)
+    _launch.launch(
+        kernel_boolean.smoothing_vertex_normals,
+        dim=n_v,
+        inputs=[
+            twins,
+            solid.face_mesh,
+            solid.face_coplanar,
+            flat,
+            first,
+            solid.face_normals,
+            solid.vertex_normals,
+        ],
+        outputs=[normals],
+        device=device,
+    )
+    tangents = _launch.empty(n_h, dtype=wp.vec4d, device=device)
+    _launch.launch(
+        kernel_boolean.initial_tangents,
+        dim=n_h,
+        inputs=[
+            solid.positions,
+            solid.faces,
+            twins,
+            solid.face_mesh,
+            solid.face_coplanar,
+            solid.face_normals,
+            normals,
+        ],
+        outputs=[tangents],
+        device=device,
+    )
+    present = _launch.zeros(n_h, dtype=wp.int32, device=device)
+    smoothness = _launch.empty(n_h, dtype=wp.vec2d, device=device)
+    min_radians = max(min_sharp_angle, 1e-4) * math.pi / 180
+    _launch.launch(
+        kernel_boolean.edge_smoothness,
+        dim=n_h,
+        inputs=[
+            solid.faces,
+            twins,
+            solid.face_mesh,
+            solid.face_coplanar,
+            flat,
+            solid.face_normals,
+            min_radians,
+            min_smoothness,
+        ],
+        outputs=[present, smoothness],
+        device=device,
+    )
+    fixed = _launch.zeros(n_h, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_boolean.sharpen_vertex_tangents,
+        dim=n_v,
+        inputs=[solid.positions, solid.faces, twins, flat, first, present, smoothness],
+        outputs=[tangents, fixed],
+        device=device,
+    )
+    _launch.launch(
+        kernel_boolean.linearize_flat_tangents,
+        dim=n_h,
+        inputs=[solid.positions, solid.faces, twins],
+        outputs=[tangents],
+        device=device,
+    )
+    _launch.launch(
+        kernel_boolean.distribute_tangents,
+        dim=n_h,
+        inputs=[solid.positions, solid.faces, twins, solid.vertex_normals, fixed],
+        outputs=[tangents],
+        device=device,
+    )
+    return tangents
+
+
+class _Subdivision(NamedTuple):
+    """``Subdivide``'s triangles, their inherited attributes, and every vertex's barycentric."""
+
+    faces: wp.array[wp.int32]
+    face_normals: wp.array[wp.vec3d]
+    face_mesh: wp.array[wp.int32]
+    face_coplanar: wp.array[wp.int32]
+    bary_tri: wp.array[wp.int32]
+    bary_uvw: wp.array[wp.vec4d]
+
+
+def _subdivide(
+    solid: _Solid,
+    twins: wp.array[wp.int32],
+    inside: wp.array[wp.int32],
+    added: int,
+    length: float,
+    tangents: wp.array[wp.vec4d] | None = None,
+    tolerance: float = 0.0,
+) -> _Subdivision:
+    """
+    ``Impl::Subdivide``: split the edges and tile each face with its sides' cached partition.
+
+    A quad is the face whose diagonal ``inside`` marks. Vertices keep their indices, each edge's
+    added vertices follow in edge order, then each face's interior ones; every vertex records the
+    face (a quad's lower triangle) and the barycentric it sits at.
+    """
+    device = solid.positions.device
+    n_h = solid.faces.size
+    n_v = solid.n_vertices
+    n_t = solid.n_faces
     ranks, forward = offsets_buffer(n_h, device)
     _launch.launch(
         kernel_boolean.forward_halfedge_flags,
@@ -1304,25 +1597,49 @@ def _solid_refine(solid: _Solid, added: int, length: float) -> _Solid:
     n_edges = scan_count(forward)
     added_offsets, added_counts = offsets_buffer(n_edges, device)
     edge_halfedge = _launch.empty(n_edges, dtype=wp.int32, device=device)
+    if tangents is None:
+        tangents = _launch.empty(1, dtype=wp.vec4d, device=device)
+    # ``RefineToTolerance`` keeps some interior: its raw counts feed a second pass.
+    raw = added_counts
+    if tolerance > 0.0:
+        raw = _launch.zeros(n_edges, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_boolean.refine_edge_added,
         dim=n_h,
-        inputs=[solid.positions, solid.faces, ranks, added, length],
-        outputs=[added_counts, edge_halfedge],
+        inputs=[
+            solid.positions,
+            solid.faces,
+            twins,
+            ranks,
+            inside,
+            tangents,
+            added,
+            length,
+            tolerance,
+        ],
+        outputs=[raw, edge_halfedge],
         device=device,
     )
+    if tolerance > 0.0:
+        _launch.launch(
+            kernel_boolean.keep_interior_added,
+            dim=n_h,
+            inputs=[solid.faces, twins, ranks, inside, raw],
+            outputs=[added_counts],
+            device=device,
+        )
     n_added = scan_count(added_counts)
-    keys = _launch.empty(n_t, dtype=wp.vec3i, device=device)
+    keys = _launch.empty(n_t, dtype=wp.vec4i, device=device)
     _launch.launch(
         kernel_boolean.refine_face_keys,
         dim=n_t,
-        inputs=[solid.faces, twins, ranks, added_offsets],
+        inputs=[solid.faces, twins, ranks, inside, added_offsets],
         outputs=[keys],
         device=device,
     )
     # Host readback: the partitions are built on the host, one per distinct set of divisions.
     unique_keys, face_key_np = np.unique(read_array(keys), axis=0, return_inverse=True)
-    partitions = [_triangle_partition((int(a), int(b), int(c))) for a, b, c in unique_keys]
+    partitions = [_partition((int(a), int(b), int(c), int(d))) for a, b, c, d in unique_keys]
     key_triangles_np = np.cumsum([0] + [len(tris) for _, tris in partitions], dtype=np.int64)
     key_vertices_np = np.cumsum([0] + [len(bary) for bary, _ in partitions], dtype=np.int64)
     key_interior_np = np.diff(key_vertices_np) - unique_keys.sum(axis=1)
@@ -1333,33 +1650,38 @@ def _solid_refine(solid: _Solid, added: int, length: float) -> _Solid:
     interior_offsets_np = n_v + n_added + np.concatenate([[0], np.cumsum(face_interior_np)])
     n_new_t = int(triangle_offsets_np[-1])
     n_new_v = int(interior_offsets_np[-1])
-    partition_triangles = np.asarray([t for _, tris in partitions for t in tris], dtype=np.int32)
-    partition_bary = np.asarray([b[:3] for bary, _ in partitions for b in bary], dtype=np.float64)
+    partition_triangles = np.asarray(
+        [t for _, tris in partitions for t in tris], dtype=np.int32
+    ).reshape(-1, 3)
+    partition_bary = np.asarray(
+        [b for bary, _ in partitions for b in bary], dtype=np.float64
+    ).reshape(-1, 4)
 
     def upload(values: np.ndarray) -> wp.array[wp.int32]:
         return _launch.array(values.astype(np.int32), dtype=wp.int32, device=device)
 
-    positions = _launch.empty(n_new_v, dtype=wp.vec3d, device=device)
+    bary_tri = _launch.empty(n_new_v, dtype=wp.int32, device=device)
+    bary_uvw = _launch.empty(n_new_v, dtype=wp.vec4d, device=device)
     last = _launch.full(n_v, -1, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_boolean.last_corner_halfedges,
         dim=n_h,
-        inputs=[solid.faces],
+        inputs=[solid.faces, inside],
         outputs=[last],
         device=device,
     )
     _launch.launch(
-        kernel_boolean.refine_retained_points,
+        kernel_boolean.refine_retained_bary,
         dim=n_v,
-        inputs=[solid.positions, solid.faces, last],
-        outputs=[positions],
+        inputs=[twins, inside, last],
+        outputs=[bary_tri, bary_uvw],
         device=device,
     )
     _launch.launch(
-        kernel_boolean.refine_edge_points,
+        kernel_boolean.refine_edge_bary,
         dim=n_edges,
-        inputs=[solid.positions, solid.faces, edge_halfedge, added_offsets, n_v],
-        outputs=[positions],
+        inputs=[twins, inside, edge_halfedge, added_offsets, n_v],
+        outputs=[bary_tri, bary_uvw],
         device=device,
     )
     faces = _launch.empty(3 * n_new_t, dtype=wp.int32, device=device)
@@ -1370,57 +1692,72 @@ def _solid_refine(solid: _Solid, added: int, length: float) -> _Solid:
         kernel_boolean.refine_faces,
         dim=n_t,
         inputs=[
-            solid.positions,
             solid.faces,
             twins,
             ranks,
+            inside,
             added_offsets,
             n_v,
             upload(face_key_np),
             upload(key_triangles_np),
             upload(key_vertices_np),
-            _launch.array(partition_triangles.reshape(-1, 3), dtype=wp.vec3i, device=device),
-            _launch.array(partition_bary.reshape(-1, 3), dtype=wp.vec3d, device=device),
+            _launch.array(partition_triangles, dtype=wp.vec3i, device=device),
+            _launch.array(partition_bary, dtype=wp.vec4d, device=device),
             upload(triangle_offsets_np),
             upload(interior_offsets_np),
             solid.face_normals,
             solid.face_mesh,
             solid.face_coplanar,
         ],
-        outputs=[faces, face_normals, face_mesh, face_coplanar, positions],
+        outputs=[faces, face_normals, face_mesh, face_coplanar, bary_tri, bary_uvw],
         device=device,
     )
-    refined = solid._replace(
-        positions=positions,
-        faces=faces,
-        face_normals=face_normals,
-        vertex_normals=positions,
-        face_mesh=face_mesh,
-        face_coplanar=face_coplanar,
-        face_source=None,
-    )
-    mesh = _halfedge_mesh_from_solid(refined)
-    return _finish_solid(mesh, solid.epsilon, solid.tolerance, device, (solid.lower, solid.upper))
+    return _Subdivision(faces, face_normals, face_mesh, face_coplanar, bary_tri, bary_uvw)
 
 
-def _triangle_partition(
-    n: tuple[int, int, int],
+def _partition(
+    n: tuple[int, int, int, int],
 ) -> tuple[list[tuple[float, float, float, float]], list[tuple[int, int, int]]]:
     """
-    ``Partition::GetCachedPartition`` of a triangle with sides of ``n[0] >= n[1] >= n[2]`` pieces.
+    ``Partition::GetCachedPartition`` of the sorted side divisions ``n``.
 
-    Purely topological: each vertex's barycentric (corners, then each side's added vertices, then
-    the interior) and the sub-triangles over them, cached by the divisions.
+    A quad's when ``n[3]`` is positive, a triangle's (``n[0] >= n[1] >= n[2]``) otherwise,
+    nothing for all zeros. Purely topological: each vertex's barycentric (corners, then each
+    side's added vertices, then the interior) and the sub-triangles over them, cached by the
+    divisions.
     """
     cached = _PARTITIONS.get(n)
     if cached is not None:
         return cached
-    bary: list[tuple[float, float, float, float]] = [
-        (1.0, 0.0, 0.0, 0.0),
-        (0.0, 1.0, 0.0, 0.0),
-        (0.0, 0.0, 1.0, 0.0),
-    ]
+    bary: list[tuple[float, float, float, float]] = []
     tris: list[tuple[int, int, int]] = []
+    if n[0] > 0 and n[3] > 0:  # quad
+        bary.extend(
+            [(1.0, 0.0, 0.0, 0.0), (0.0, 1.0, 0.0, 0.0), (0.0, 0.0, 1.0, 0.0), (0.0, 0.0, 0.0, 1.0)]
+        )
+        offsets = [4, 0, 0, 0]
+        for i in range(4):
+            if i > 0:
+                offsets[i] = offsets[i - 1] + n[i - 1] - 1
+            next_bary = bary[(i + 1) % 4]
+            for j in range(1, n[i]):
+                bary.append(_lerp4(bary[i], next_bary, j / n[i]))
+        _partition_quad(
+            tris, bary, [0, 1, 2, 3], offsets, [k - 1 for k in n], [True, True, True, True]
+        )
+    elif n[0] > 0:
+        _triangle_partition(bary, tris, (n[0], n[1], n[2]))
+    _PARTITIONS[n] = (bary, tris)
+    return bary, tris
+
+
+def _triangle_partition(
+    bary: list[tuple[float, float, float, float]],
+    tris: list[tuple[int, int, int]],
+    n: tuple[int, int, int],
+) -> None:
+    """``GetCachedPartition``'s triangle branch, sides of ``n[0] >= n[1] >= n[2]`` pieces."""
+    bary.extend([(1.0, 0.0, 0.0, 0.0), (0.0, 1.0, 0.0, 0.0), (0.0, 0.0, 1.0, 0.0)])
     for i in range(3):
         next_bary = bary[(i + 1) % 3]
         for j in range(1, n[i]):
@@ -1480,8 +1817,6 @@ def _triangle_partition(
                 [0, ns - 2, nh - 1, n[2] - 2],
                 [True, True, False, True],
             )
-    _PARTITIONS[n] = (bary, tris)
-    return bary, tris
 
 
 def _lerp4(
