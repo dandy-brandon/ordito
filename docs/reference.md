@@ -95,6 +95,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | per-point covariances and frames | [`points.point_covariances`][ordito.points.point_covariances], [`point_frames`][ordito.points.point_frames] |
 | cluster a point cloud | [`points.cluster_labels`][ordito.points.cluster_labels] (DBSCAN, Euclidean clusters) |
 | boundary points of a cloud | [`points.point_boundary_mask`][ordito.points.point_boundary_mask] |
+| geodesic distance, transport and log map on a cloud | [`heat.PointCloudHeatSolver`][ordito.heat.PointCloudHeatSolver] (heat method on the local triangulations' tufted cover), [`points.local_triangulation`][ordito.points.local_triangulation] |
 | points visible from a viewpoint | [`points.point_visible_mask`][ordito.points.point_visible_mask] (hidden point removal) |
 | down-sample | [`voxels.voxel_down_sample`][ordito.voxels.voxel_down_sample], [`points.farthest_point_sample`][ordito.points.farthest_point_sample] |
 | order points or cells along a Hilbert or Morton curve | [`points.space_filling_order`][ordito.points.space_filling_order], [`voxels.space_filling_codes`][ordito.voxels.space_filling_codes] |
@@ -181,7 +182,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 
 | Module | Contents |
 |---|---|
-| [points](api/ordito/points.md) | Point-cloud geometry: plane and line fits, covariance, normals and their orientation, smoothing, clustering, outliers, down-sampling, convex hull, visibility. |
+| [points](api/ordito/points.md) | Point-cloud geometry: plane and line fits, covariance, normals and their orientation, local triangulations, smoothing, clustering, outliers, down-sampling, convex hull, visibility. |
 | [sample](api/ordito/sample.md) | New points on a mesh surface, inside its volume, or over a sphere. |
 | [voxels](api/ordito/voxels.md) | Sparse voxel grids: voxelize, test membership, morphology, booleans, and mesh the result. |
 | [reconstruction](api/ordito/reconstruction.md) | Surfaces from points: Delaunay, screened Poisson, ball pivoting, uniform resampling. |
@@ -203,7 +204,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | Module | Contents |
 |---|---|
 | [geodesic_walk](api/ordito/geodesic_walk.md) | Straightest geodesics, shortest paths and loop shortening across the surface. |
-| [heat](api/ordito/heat.md) | Heat-method distances, signed distances, vector transport and log maps. |
+| [heat](api/ordito/heat.md) | Heat-method distances, signed distances, vector transport and log maps, on meshes and point clouds. |
 
 ### Curves
 

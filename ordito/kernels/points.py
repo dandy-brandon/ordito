@@ -1,3 +1,4 @@
+import math
 from typing import Any
 
 import warp as wp
@@ -30,7 +31,7 @@ from ordito.kernels.neighbors import (
     ball_count_in_radius,
     in_ball,
 )
-from ordito.kernels.predicates import point_plane_dot, triangle_normal
+from ordito.kernels.predicates import plane_basis, point_plane_dot, triangle_normal
 from ordito.kernels.reduce import (
     block_chunk,
     block_chunk_1d,
@@ -444,6 +445,273 @@ def point_frames(
     )
     out_frames[v] = wp.matrix_from_rows(major, wp.cross(normal, major), normal)
     out_eigenvalues[v] = to_vec3(sigma)
+
+
+# --- Local Delaunay stars: geometry-central's point-cloud triangulation ---
+#
+# ``points.local_triangulation`` and ``heat.PointCloudHeatSolver`` port geometry-central's
+# ``PointPositionGeometry`` (``potpourri3d.PointCloudLocalTriangulation`` and
+# ``PointCloudHeatSolver``): each point's ``k`` nearest others, a normal from their offsets, a
+# tangent frame from the normal, and the point's star in its local Delaunay triangulation of the
+# offsets projected onto that frame. Everything is formed in ``float64``, as the reference does.
+
+# The neighbours a star's scratch rows hold: ``points.local_triangulation`` refuses a wider
+# table. geometry-central takes 30.
+LOCAL_TRIANGULATION_MAX_NEIGHBORS = 64
+# geometry-central's ``DEGENERATE_THRESH``, in units of the neighbourhood's radius: a neighbour
+# this close to the point is pushed out to ten times it, and of two neighbours this close to one
+# direction the farther is dropped.
+STAR_DEGENERATE = wp.float64(1e-7)
+# The angle a neighbour on the point itself sorts at, ahead of every real angle, and is dropped.
+STAR_BAD_ANGLE = wp.float64(-777.0)
+STAR_TWO_PI = wp.float64(2.0 * math.pi)
+
+
+@wp.func
+def cloud_neighbor(
+    neighbor_idx: wp.array2d[wp.int32], row: wp.int32, p: wp.int32, j: wp.int32, kept: wp.int32
+) -> wp.int32:
+    # Entry ``j`` of ``row``, point ``p``'s self-query row, as geometry-central's
+    # ``kNearestNeighbors`` keeps it, ``kept`` entries already kept: the point itself is skipped
+    # wherever it sits, and with it absent (a duplicate took its slot) the row's last neighbour is
+    # dropped, so a row of ``m`` slots keeps at most ``m - 1``. ``-1`` for a slot not kept. The
+    # stars read row ``p`` of the cloud's table; the log map's seed (``heat.seed_cloud_log_map``)
+    # the one row it queried for its source.
+    q = neighbor_idx[row, j]
+    if q < 0 or q == p or kept >= neighbor_idx.shape[1] - 1:
+        return wp.int32(-1)
+    return q
+
+
+@wp.func
+def cloud_normal(
+    points: wp.array[wp.vec3],
+    neighbor_idx: wp.array2d[wp.int32],
+    normals: wp.array[wp.vec3],
+    p: wp.int32,
+) -> wp.vec3d:
+    # Point ``p``'s unit normal: the caller's, when ``normals`` is not empty, else
+    # geometry-central's -- the smallest left singular vector of the neighbours' offsets from the
+    # point, uncentred -- signed by the SHOT rule (``shot_oriented``), where the reference's sign
+    # is whatever its SVD returns.
+    if normals.shape[0] > 0:
+        return wp.normalize(wp.vec3d(normals[p]))
+    center = wp.vec3d(points[p])
+    scatter = wp.mat33d()
+    kept = wp.int32(0)
+    for j in range(neighbor_idx.shape[1]):
+        q = cloud_neighbor(neighbor_idx, p, p, j, kept)
+        if q >= 0:
+            kept += 1
+            offset = wp.vec3d(points[q]) - center
+            scatter += wp.outer(offset, offset)
+    u, _sigma, _vt = wp.svd3(scatter)
+    normal = wp.normalize(wp.vec3d(u[0, 2], u[1, 2], u[2, 2]))
+    valid = wp.float32(0.0)
+    for j in range(neighbor_idx.shape[1]):
+        if neighbor_idx[p, j] >= 0:
+            valid += 1.0
+    signed = shot_oriented(points, neighbor_idx, p, to_vec3(normal), valid)
+    return wp.where(wp.dot(to_vec3d(signed), normal) < wp.float64(0.0), -normal, normal)
+
+
+@wp.func
+def cloud_frame(
+    points: wp.array[wp.vec3],
+    neighbor_idx: wp.array2d[wp.int32],
+    normals: wp.array[wp.vec3],
+    p: wp.int32,
+) -> tuple[wp.vec3d, wp.vec3d, wp.vec3d]:
+    # Point ``p``'s tangent frame ``(basis_x, basis_y, normal)``: ``cloud_normal`` and
+    # geometry-central's ``buildTangentBasis`` of it (``predicates.plane_basis``, ``basis_y``
+    # normalized as the reference normalizes it). Shared by the stars and the heat solver's frames
+    # (``heat.point_cloud_frames``), so the stars are built in the frames the solver reports.
+    normal = cloud_normal(points, neighbor_idx, normals, p)
+    basis_x, basis_y = plane_basis(normal)
+    return basis_x, wp.normalize(basis_y), normal
+
+
+@wp.func
+def star_step(
+    order: wp.array[wp.int32], start: wp.int32, count: wp.int32, step: wp.int32
+) -> wp.int32:
+    # The next kept slot of the angular order after ``start`` (``step`` 1) or before it (``step``
+    # -1), cyclically; ``start`` itself when it is the only one. Dropped slots hold ``-1``.
+    i = (start + step + count) % count
+    while order[i] < 0:
+        i = (i + step + count) % count
+    return i
+
+
+@wp.func
+def star_gap(
+    xs: wp.array[wp.float64], ys: wp.array[wp.float64], a: wp.int32, b: wp.int32
+) -> wp.bool:
+    # Whether no triangle spans neighbours ``a`` then ``b`` of the angular order: they are half a
+    # turn or more apart (geometry-central's ``isBoundary``).
+    return xs[a] * ys[b] - ys[a] * xs[b] <= wp.float64(0.0)
+
+
+@wp.func
+def star_collinear(
+    xs: wp.array[wp.float64],
+    ys: wp.array[wp.float64],
+    a: wp.int32,
+    b: wp.int32,
+    length_a: wp.float64,
+    length_b: wp.float64,
+) -> wp.bool:
+    # Whether neighbours ``a`` and ``b`` lie on one ray from the point, to the degeneracy
+    # heuristic's tolerance.
+    cross = xs[a] * ys[b] - ys[a] * xs[b]
+    dot = xs[a] * xs[b] + ys[a] * ys[b]
+    return wp.abs(cross) < length_a * length_b * STAR_DEGENERATE and dot > wp.float64(0.0)
+
+
+@wp.func
+def star_keeps(
+    xs: wp.array[wp.float64],
+    ys: wp.array[wp.float64],
+    prev: wp.int32,
+    curr: wp.int32,
+    nxt: wp.int32,
+) -> wp.bool:
+    # Whether ``curr`` stays in the star between ``prev`` and ``nxt``: it lies strictly inside the
+    # circle through the point, ``prev`` and ``nxt`` (geometry-central's ``inCircleTest`` with the
+    # point at the origin, whose 4 x 4 determinant is minus this 3 x 3 one).
+    ax = xs[prev]
+    ay = ys[prev]
+    az = ax * ax + ay * ay
+    bx = xs[nxt]
+    by = ys[nxt]
+    bz = bx * bx + by * by
+    cx = xs[curr]
+    cy = ys[curr]
+    cz = cx * cx + cy * cy
+    det = ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx)
+    return -det > wp.float64(0.0)
+
+
+@wp.kernel(enable_backward=False)
+def local_triangulation_stars(
+    points: wp.array[wp.vec3],
+    neighbor_idx: wp.array2d[wp.int32],
+    normals: wp.array[wp.vec3],
+    out_stars: wp.array3d[wp.int32],
+    out_counts: wp.array[wp.int32],
+) -> None:
+    # Point ``p``'s star in the local Delaunay triangulation of its neighbours, as
+    # geometry-central's ``buildLocalTriangulations`` (with its degeneracy heuristic) builds it:
+    # triangles ``(p, a, b)`` into ``out_stars[p, :count]``, counter-clockwise about the normal,
+    # in the angular order from the smallest polar angle. The neighbours are sorted by angle in the
+    # tangent plane, and a neighbour is dropped while the diamond it closes with its kept
+    # predecessor and successor is not Delaunay, until a pass drops none. Kernel-scope ``wp.zeros``
+    # rows, as ``reconstruction.build_local_triangulations`` holds its fans: every access is a
+    # runtime index.
+    p = wp.int32(wp.tid())
+    basis_x, basis_y, normal = cloud_frame(points, neighbor_idx, normals, p)
+    ids = wp.zeros(shape=LOCAL_TRIANGULATION_MAX_NEIGHBORS, dtype=wp.int32)
+    xs = wp.zeros(shape=LOCAL_TRIANGULATION_MAX_NEIGHBORS, dtype=wp.float64)
+    ys = wp.zeros(shape=LOCAL_TRIANGULATION_MAX_NEIGHBORS, dtype=wp.float64)
+    angles = wp.zeros(shape=LOCAL_TRIANGULATION_MAX_NEIGHBORS, dtype=wp.float64)
+    order = wp.zeros(shape=LOCAL_TRIANGULATION_MAX_NEIGHBORS, dtype=wp.int32)
+    center = wp.vec3d(points[p])
+    m = wp.int32(0)
+    scale_sq = wp.float64(0.0)
+    for j in range(neighbor_idx.shape[1]):
+        q = cloud_neighbor(neighbor_idx, p, p, j, m)
+        if q >= 0:
+            offset = wp.vec3d(points[q]) - center
+            offset = offset - wp.dot(offset, normal) * normal
+            x = wp.dot(basis_x, offset)
+            y = wp.dot(basis_y, offset)
+            ids[m] = q
+            xs[m] = x
+            ys[m] = y
+            scale_sq = wp.max(scale_sq, x * x + y * y)
+            m += 1
+    out_counts[p] = 0
+    scale = wp.sqrt(scale_sq)
+    if not (wp.isfinite(scale) and scale > wp.float64(0.0)):
+        # Hopelessly degenerate (every neighbour on the point): no triangles, as the reference.
+        return
+    # Neighbours on the point are pushed out along their direction (or one spread by their index),
+    # each to its own radius so they are not cocircular.
+    near = scale * STAR_DEGENERATE
+    for i in range(m):
+        length = wp.sqrt(xs[i] * xs[i] + ys[i] * ys[i])
+        if length < near:
+            dx = xs[i] / length
+            dy = ys[i] / length
+            if not (wp.isfinite(dx) and wp.isfinite(dy)):
+                theta = STAR_TWO_PI * wp.float64(i) / wp.float64(m)
+                dx = wp.cos(theta)
+                dy = wp.sin(theta)
+            radius = (wp.float64(1.0) + wp.float64(i) / wp.float64(m)) * near * wp.float64(10.0)
+            xs[i] = radius * dx
+            ys[i] = radius * dy
+    for i in range(m):
+        length = wp.sqrt(xs[i] * xs[i] + ys[i] * ys[i])
+        angle = wp.atan2(ys[i] / length, xs[i] / length)
+        angles[i] = wp.where(wp.isfinite(angle), angle, STAR_BAD_ANGLE)
+        # Insertion sort by angle, stable among ties.
+        slot = i
+        while slot > 0:
+            if angles[order[slot - 1]] <= angles[i]:
+                break
+            order[slot] = order[slot - 1]
+            slot -= 1
+        order[slot] = i
+    for i in range(m):
+        if angles[order[i]] == STAR_BAD_ANGLE:
+            order[i] = wp.int32(-1)
+
+    changed = wp.int32(1)
+    while changed != 0:
+        changed = wp.int32(0)
+        for middle in range(m):
+            curr = order[middle]
+            if curr < 0:
+                continue
+            prev = order[star_step(order, middle, m, wp.int32(-1))]
+            nxt = order[star_step(order, middle, m, wp.int32(1))]
+            if curr == prev or curr == nxt or prev == nxt:
+                continue
+            # Of neighbours on one ray from the point, only the nearest stays.
+            length_prev = wp.sqrt(xs[prev] * xs[prev] + ys[prev] * ys[prev])
+            length_curr = wp.sqrt(xs[curr] * xs[curr] + ys[curr] * ys[curr])
+            length_next = wp.sqrt(xs[nxt] * xs[nxt] + ys[nxt] * ys[nxt])
+            if (
+                star_collinear(xs, ys, curr, nxt, length_curr, length_next)
+                and length_curr > length_next
+            ) or (
+                star_collinear(xs, ys, curr, prev, length_curr, length_prev)
+                and length_curr > length_prev
+            ):
+                order[middle] = wp.int32(-1)
+                changed = wp.int32(1)
+                continue
+            if star_gap(xs, ys, prev, curr) or star_gap(xs, ys, curr, nxt):
+                continue
+            if not star_keeps(xs, ys, prev, curr, nxt):
+                order[middle] = wp.int32(-1)
+                changed = wp.int32(1)
+
+    count = wp.int32(0)
+    for i in range(m):
+        a = order[i]
+        if a < 0:
+            continue
+        following = star_step(order, i, m, wp.int32(1))
+        if following == i:
+            continue
+        b = order[following]
+        if not star_gap(xs, ys, a, b):
+            out_stars[p, count, 0] = p
+            out_stars[p, count, 1] = ids[a]
+            out_stars[p, count, 2] = ids[b]
+            count += 1
+    out_counts[p] = count
 
 
 @wp.kernel

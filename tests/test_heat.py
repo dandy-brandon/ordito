@@ -3274,6 +3274,172 @@ def test_release_factorizations_frees_them(
 
 
 # ---------------------------------------------------------------------------
+# PointCloudHeatSolver
+# ---------------------------------------------------------------------------
+
+
+def _cloud_and_reference(
+    mesh_wp: wp.Mesh,
+) -> tuple[np.ndarray, pp3d.PointCloudHeatSolver, wp.array[wp.vec3]]:
+    """
+    Return a mesh's vertices as a ``float64`` cloud, potpourri3d's solver on it, and its normals.
+
+    The cloud is the ``float32`` points ordito reads, widened, so both sides see one cloud; the
+    normals are the reference's own (``get_tangent_frames``), uploaded for ordito to take.
+    """
+    points_np = np.ascontiguousarray(mesh_wp.points.numpy(), dtype=np.float64)
+    solver_pp = pp3d.PointCloudHeatSolver(points_np)
+    _, _, normals_pp = solver_pp.get_tangent_frames()
+    return points_np, solver_pp, points_to_warp(normals_pp, mesh_wp.device)
+
+
+@pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parity("point_cloud_heat_distance", "potpourri3d")
+@pytest.mark.parity("point_cloud_extend_scalar", "potpourri3d")
+@pytest.mark.parity("point_cloud_transport_tangent_vectors", "potpourri3d")
+@pytest.mark.parity("point_cloud_log_map", "potpourri3d")
+def test_point_cloud_heat_solver_matches_potpourri3d(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Class A: ``potpourri3d.PointCloudHeatSolver``'s four answers, given its normals.
+
+    The mesh's vertices alone, as a cloud. The reference takes its normal's sign from its SVD,
+    which nothing reproduces; handed those normals, ordito builds the same frames and stars (see
+    ``test_points.test_local_triangulation_matches_potpourri3d``), so the cover, its operators and
+    every solve are the reference's: distance from two sources, the extension of two values,
+    transport of two vectors of different lengths (which takes the magnitudes' extension rather
+    than one shared length) and the log map, each against its reference at ``1e-5``. Measured worst
+    gaps on ``sphere_irregular`` / ``saddle_graded``: distance 9e-9 / 1.4e-8 of the range,
+    extension 1e-14, transport 4e-7 / 1e-7, log map 1.2e-7 / 9.5e-8, both devices.
+
+    Non-vacuity: the distance spans the cloud, the extension takes both values, the transported
+    field is resolved almost everywhere and turns (it is not one constant vector), and the log map
+    reaches the distance's range.
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    device = mesh_wp.device
+    points_np, solver_pp, normals_wp = _cloud_and_reference(mesh_wp)
+    n = points_np.shape[0]
+    solver = od.heat.PointCloudHeatSolver(mesh_wp.points, normals=normals_wp)
+    sources_np = np.array([0, n // 2], dtype=np.int32)
+    sources_wp = wp.array(sources_np, dtype=wp.int32, device=device)
+
+    basis_x_pp, basis_y_pp, normals_pp = solver_pp.get_tangent_frames()
+    basis_x_wp, basis_y_wp, frame_normals_wp = solver.tangent_frames
+    assert np.allclose(basis_x_wp.numpy(), basis_x_pp, rtol=1e-5, atol=1e-5)
+    assert np.allclose(basis_y_wp.numpy(), basis_y_pp, rtol=1e-5, atol=1e-5)
+    assert np.allclose(frame_normals_wp.numpy(), normals_pp, rtol=1e-5, atol=1e-5)
+
+    distance_pp = np.asarray(solver_pp.compute_distance_multisource(sources_np.astype(np.int64)))
+    assert np.ptp(distance_pp) > 1.0
+    assert np.allclose(solver.distance(sources_wp).numpy(), distance_pp, rtol=1e-5, atol=1e-5)
+
+    values_np = np.array([1.0, -2.0])
+    extended_pp = np.asarray(solver_pp.extend_scalar(sources_np.astype(np.int64), values_np))
+    assert extended_pp.min() < -1.9
+    assert extended_pp.max() > 0.9
+    extended_wp = solver.extend_scalar(
+        sources_wp, wp.array(values_np, dtype=wp.float64, device=device)
+    ).numpy()
+    assert np.allclose(extended_wp, extended_pp, rtol=1e-5, atol=1e-5)
+
+    vectors_np = np.array([[1.0, 0.5], [0.3, -1.0]], dtype=np.float32)
+    transported_pp = np.asarray(
+        solver_pp.transport_tangent_vectors(
+            sources_np.astype(np.int64), vectors_np.astype(np.float64)
+        )
+    )
+    transported_wp, resolved_wp = solver.transport_tangent_vectors(
+        sources_wp, wp.array(vectors_np, dtype=wp.vec2, device=device)
+    )
+    resolved_np = resolved_wp.numpy()
+    assert resolved_np.mean() > 0.9
+    assert np.ptp(transported_pp[:, 0]) > 0.5
+    assert np.allclose(
+        transported_wp.numpy()[resolved_np], transported_pp[resolved_np], rtol=1e-5, atol=1e-5
+    )
+
+    logarithm_pp = np.asarray(solver_pp.compute_log_map(0))
+    assert np.linalg.norm(logarithm_pp, axis=1).max() > 1.0
+    assert np.allclose(solver.log_map(0).numpy(), logarithm_pp, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("mesh_name", MESHES)
+def test_point_cloud_frames_match_potpourri3d_up_to_the_normals_sign(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Class B (the normal's sign): estimated frames are potpourri3d's ``get_tangent_frames``.
+
+    Both estimate the normal as the uncentred smallest singular vector of the neighbours' offsets;
+    the reference signs it by its SVD and ordito by the SHOT rule. Flipping the normal flips
+    ``basis_x`` (the normal crossed into a fixed axis) and keeps ``basis_y`` (their cross), so the
+    named transform negates ``normal`` and ``basis_x`` where the normals point apart. Non-vacuity:
+    the two sign rules disagree somewhere and agree somewhere, so the transform is exercised both
+    ways.
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    _, solver_pp, _ = _cloud_and_reference(mesh_wp)
+    basis_x_pp, basis_y_pp, normals_pp = solver_pp.get_tangent_frames()
+    basis_x_wp, basis_y_wp, normals_wp = (
+        frame.numpy() for frame in od.heat.PointCloudHeatSolver(mesh_wp.points).tangent_frames
+    )
+    signs = np.sign(np.sum(normals_wp * normals_pp, axis=1))[:, None]
+    assert np.unique(signs).shape[0] == 2
+    assert np.allclose(signs * normals_wp, normals_pp, rtol=1e-5, atol=1e-5)
+    assert np.allclose(signs * basis_x_wp, basis_x_pp, rtol=1e-5, atol=1e-5)
+    assert np.allclose(basis_y_wp, basis_y_pp, rtol=1e-5, atol=1e-5)
+
+
+def test_point_cloud_heat_solver_takes_duplicate_points(device: str) -> None:
+    """
+    Not a library comparison: a cloud with duplicated points gives finite fields.
+
+    A duplicate shares every angle with its twin, and the reference breaks those ties by its
+    unstable sort, so no reference answer is defined there. What is: the duplicates' degenerate
+    triangles are mollified, so the distance stays finite and grows away from the source, and the
+    log map's length is still the distance.
+    """
+    vertices, _ = od.creation.icosphere(subdivisions=3, device=device)
+    points_np = vertices.numpy()
+    points_wp = points_to_warp(np.concatenate([points_np, points_np[:50]]), device)
+    solver = od.heat.PointCloudHeatSolver(points_wp)
+    distance = solver.distance(wp.array([0], dtype=wp.int32, device=device)).numpy()
+    assert np.isfinite(distance).all()
+    assert distance[0] == 0.0
+    assert distance.max() > 3.0
+    radius = np.linalg.norm(solver.log_map(0).numpy(), axis=1)
+    assert np.allclose(radius, distance, atol=1e-5)
+
+
+def test_point_cloud_heat_solver_guards_its_arguments(device: str) -> None:
+    """
+    Not a library comparison: the constructor and the solves refuse what they cannot answer.
+
+    A ``k`` outside ``[1, 64]``, a cloud with no ``k`` neighbours per point and a normal table of
+    the wrong length are refused on construction; a source outside the cloud, or a vector table
+    not matching the sources, at the solve.
+    """
+    vertices, _ = od.creation.icosphere(subdivisions=1, device=device)
+    for k in (0, 65, int(vertices.shape[0])):
+        with pytest.raises(ValueError, match=r"k must be|neighbours per point"):
+            od.heat.PointCloudHeatSolver(vertices, k=k)
+    with pytest.raises(ValueError, match="normals"):
+        od.heat.PointCloudHeatSolver(vertices, normals=wp.zeros(3, dtype=wp.vec3, device=device))
+    solver = od.heat.PointCloudHeatSolver(vertices, k=8)
+    outside = wp.array([int(vertices.shape[0])], dtype=wp.int32, device=device)
+    with pytest.raises(ValueError, match="sources"):
+        solver.distance(outside)
+    with pytest.raises(ValueError, match="source must be"):
+        solver.log_map(-1)
+    with pytest.raises(ValueError, match="vectors"):
+        solver.transport_tangent_vectors(
+            wp.array([0], dtype=wp.int32, device=device), wp.zeros(2, dtype=wp.vec2, device=device)
+        )
+
+
+# ---------------------------------------------------------------------------
 # tangent_to_world and edge cases
 # ---------------------------------------------------------------------------
 

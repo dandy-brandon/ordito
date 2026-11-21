@@ -6,6 +6,7 @@ import igl
 import manifold3d as m3
 import numpy as np
 import open3d as o3d
+import potpourri3d as pp3d
 import pymeshlab as ml
 import pytest
 import pytorch3d.ops as p3d_ops
@@ -1298,6 +1299,83 @@ def test_point_frames_matches_pytorch3d(device: str) -> None:
         eigenvalues_wp.numpy(), curvatures_p3d[0].numpy()[:, ::-1], rtol=1e-5, atol=1e-5
     )
     assert np.allclose(np.linalg.det(frames_wp.numpy()), 1.0, atol=1e-5)
+
+
+def _local_triangulation_pp(points_np: np.ndarray) -> np.ndarray:
+    """potpourri3d's local triangulation as ``(n_triangles, 3)`` rows, its padding dropped."""
+    padded = pp3d.PointCloudLocalTriangulation(points_np).get_local_triangulation()
+    rows = padded.reshape(-1, 3)
+    return rows[rows[:, 0] >= 0]
+
+
+@pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parity("local_triangulation", "potpourri3d")
+def test_local_triangulation_matches_potpourri3d(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Class A given potpourri3d's normals, Class B (each triangle's winding) with ordito's own.
+
+    ``potpourri3d.PointCloudLocalTriangulation`` on the mesh's vertices, ``k = 30``. The reference
+    signs each normal by its SVD; handed those normals
+    (``PointCloudHeatSolver.get_tangent_frames``), ordito builds the same frames, sorts the same
+    angles and drops the same neighbours, so its buffer is the reference's rows with the padding
+    dropped, in the same order. With its own normals a point whose normal points the other way
+    winds its star the other way, so each triangle is compared with its corners sorted (the named
+    transform), as a multiset of rows.
+
+    Non-vacuity: every point has a star, and with its own normals ordito winds some star
+    differently from the reference (the sign rules disagree somewhere), so the transform matters.
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    points_np = np.ascontiguousarray(mesh_wp.points.numpy(), dtype=np.float64)
+    rows_pp = _local_triangulation_pp(points_np)
+    assert np.unique(rows_pp[:, 0]).shape[0] == points_np.shape[0]
+    _, _, normals_pp = pp3d.PointCloudHeatSolver(points_np).get_tangent_frames()
+    neighbor_idx_wp, _ = od_neighbors.query_nearest(mesh_wp.points, mesh_wp.points, k=31)
+    given_wp = od.local_triangulation(
+        mesh_wp.points, neighbor_idx_wp, points_to_warp(normals_pp, mesh_wp.device)
+    )
+    assert np.array_equal(given_wp.numpy().reshape(-1, 3), rows_pp)
+    estimated_np = od.local_triangulation(mesh_wp.points, neighbor_idx_wp).numpy().reshape(-1, 3)
+    assert not np.array_equal(estimated_np, rows_pp)
+    assert np.array_equal(
+        lexsort_rows(np.sort(estimated_np, axis=1)), lexsort_rows(np.sort(rows_pp, axis=1))
+    )
+
+
+def test_local_triangulation_skips_a_point_on_its_neighbours(device: str) -> None:
+    """
+    Not a library comparison: a point whose neighbours all lie on it has no star.
+
+    Forty copies of one point beside a grid: each copy's thirty neighbours are copies, so its
+    neighbourhood has no extent and no triangles, as geometry-central leaves it; every grid point
+    keeps a star whose triangles all start at it.
+    """
+    grid = np.stack(np.meshgrid(np.arange(10.0), np.arange(10.0)), axis=-1).reshape(-1, 2)
+    points_np = np.concatenate([np.c_[grid, np.zeros(100)], np.full((40, 3), 50.0)])
+    points_wp = points_to_warp(points_np, device)
+    neighbor_idx_wp, _ = od_neighbors.query_nearest(points_wp, points_wp, k=31)
+    rows_np = od.local_triangulation(points_wp, neighbor_idx_wp).numpy().reshape(-1, 3)
+    owners_np = np.unique(rows_np[:, 0])
+    assert np.array_equal(owners_np, np.arange(100))
+    assert (rows_np < 100).all()
+
+
+def test_local_triangulation_refuses_a_wide_table(device: str) -> None:
+    """
+    Not a library comparison: a table wider than the stars' scratch, or misfit normals, raise.
+
+    A star's rows hold 64 neighbours, so a 66-column table is refused rather than truncated; a
+    normal table must hold one normal per point.
+    """
+    points_wp = points_to_warp(_random_points(100, 0), device)
+    neighbor_idx_wp, _ = od_neighbors.query_nearest(points_wp, points_wp, k=66)
+    with pytest.raises(ValueError, match="at most 65 columns"):
+        od.local_triangulation(points_wp, neighbor_idx_wp)
+    neighbor_idx_wp, _ = od_neighbors.query_nearest(points_wp, points_wp, k=31)
+    with pytest.raises(ValueError, match="normals"):
+        od.local_triangulation(points_wp, neighbor_idx_wp, points_to_warp(np.ones((3, 3)), device))
 
 
 @pytest.mark.parametrize("max_gap", [math.pi / 2.0, 0.75 * math.pi])

@@ -131,18 +131,22 @@ def triangle_normal(a: Any, b: Any, c: Any):
 
 
 @wp.func
-def plane_basis(normal: wp.vec3) -> tuple[wp.vec3, wp.vec3]:
+def plane_basis(normal: Any):
     # An arbitrary orthonormal in-plane basis for the plane perpendicular to ``normal``. Kernel-
     # scope mirror of ``ordito.points.plane_basis``, for callers that hold the normal in device
     # memory and must not read it back to build the frame -- a general geometric helper with no
     # point-cloud dependency, which is why it lives here rather than in ``kernels/points.py``: it
-    # is reached from two unrelated kernel modules (``kernels/smoothing.py``,
-    # ``kernels/polyline.py``), the same "reached from a second module" trigger already applied to
-    # ``triangle_aabb``/``triangle_double_area``/``circumcircle_diameter``.
+    # is reached from unrelated kernel modules (``kernels/smoothing.py``, ``kernels/polyline.py``,
+    # ``kernels/points.py``), the same "reached from a second module" trigger already applied to
+    # ``triangle_aabb``/``triangle_double_area``/``circumcircle_diameter``. Generic over the
+    # precision: it is geometry-central's ``Vector3::buildTangentBasis`` rule, which the point-cloud
+    # frames (``points.cloud_frame``) take in ``float64``.
+    zero = type(normal[0])(0.0)
+    one = type(normal[0])(1.0)
     unit_normal = wp.normalize(normal)
-    axis = wp.vec3(1.0, 0.0, 0.0)
-    if wp.abs(unit_normal[0]) > 0.9:
-        axis = wp.vec3(0.0, 1.0, 0.0)
+    axis = type(normal)(one, zero, zero)
+    if wp.abs(unit_normal[0]) > type(normal[0])(0.9):
+        axis = type(normal)(zero, one, zero)
     u = wp.normalize(wp.cross(axis, unit_normal))
     v = wp.cross(unit_normal, u)
     return u, v

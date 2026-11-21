@@ -317,6 +317,22 @@ def scanned_count(inclusive: wp.array[wp.int32], i: wp.int32) -> tuple[wp.int32,
     return start, inclusive[i] - start
 
 
+@wp.kernel
+def pack_padded_rows(
+    rows: wp.array3d[wp.int32], inclusive_counts: wp.array[wp.int32], out_rows: wp.array2d[wp.int32]
+) -> None:
+    # Launched over ``(n, k)``: item ``v``'s padded row ``j`` below its count copied to packed row
+    # ``start + j``, ``inclusive_counts`` the in-place inclusive scan of the counts. An item's rows
+    # stay contiguous and in order. Packs ``reconstruction``'s local fans and ``points``' local
+    # Delaunay stars, each built ``k`` slots a point and filling a few.
+    v, j = wp.tid()
+    start, count = scanned_count(inclusive_counts, v)
+    if j >= count:
+        return
+    for c in range(rows.shape[2]):
+        out_rows[start + j, c] = rows[v, j, c]
+
+
 @wp.func
 def row_chunk_slots(k: wp.int32, end: wp.int32) -> wp.vec4i:
     # Entries ``k`` to ``k + 3`` of a row ending at ``end``, each clamped to the row's last entry:

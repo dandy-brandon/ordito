@@ -2615,6 +2615,57 @@
    "sort": 39
   }
  },
+ "benchmarks/test_heat.py::test_point_cloud_extend_scalar[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 29,
+   "alloc": 36,
+   "readback": 10,
+   "scan": 1,
+   "sort": 4
+  }
+ },
+ "benchmarks/test_heat.py::test_point_cloud_heat_distance[sphere_small-ordito-cpu-amortized]": {
+  "counts": {
+   "launch": 12,
+   "alloc": 2,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_heat.py::test_point_cloud_heat_distance[sphere_small-ordito-cpu-full]": {
+  "counts": {
+   "launch": 35,
+   "alloc": 36,
+   "readback": 10,
+   "scan": 1,
+   "sort": 4
+  }
+ },
+ "benchmarks/test_heat.py::test_point_cloud_heat_solver[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 9,
+   "readback": 2,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_heat.py::test_point_cloud_log_map[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 38,
+   "alloc": 39,
+   "readback": 10,
+   "scan": 1,
+   "sort": 4
+  }
+ },
+ "benchmarks/test_heat.py::test_point_cloud_transport_tangent_vectors[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 34,
+   "alloc": 40,
+   "readback": 11,
+   "scan": 1,
+   "sort": 4
+  }
+ },
  "benchmarks/test_heat.py::test_tangent_to_world[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 1,
@@ -5453,6 +5504,14 @@
   "counts": {
    "launch": 1,
    "alloc": 1
+  }
+ },
+ "benchmarks/test_points.py::test_local_triangulation[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 6,
+   "readback": 2,
+   "scan": 1
   }
  },
  "benchmarks/test_points.py::test_normal_outlier_mask[sphere_small-ordito-cpu]": {

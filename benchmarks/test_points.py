@@ -94,6 +94,7 @@ import igl
 import manifold3d as m3
 import numpy as np
 import open3d as o3d
+import potpourri3d as pp3d
 import pymeshlab as ml
 import pytest
 import pytorch3d.ops as p3d_ops
@@ -912,6 +913,32 @@ def test_point_frames(bench_case: BenchCase) -> None:
         )
     )
     assert frames.shape == (bench_case.n_vertices,)
+
+
+@pytest.mark.benchmark(group="local_triangulation")
+@pytest.mark.benchlibs("ordito", "potpourri3d")
+def test_local_triangulation(bench_case: BenchCase) -> None:
+    """
+    Every point's local Delaunay star over ``k = 30`` nearest, search and normals included.
+
+    potpourri3d's ``PointCloudLocalTriangulation`` runs its kd-tree search, an SVD a point for the
+    normals and the stars one point at a time, and pads its answer to the widest star; ordito packs
+    the stars into one triangle buffer.
+    """
+    if bench_case.kind == "potpourri3d":
+        positions_np = np.ascontiguousarray(bench_case.vertices_np, dtype=np.float64)
+        triangulation_pp = bench_case.run(
+            lambda: pp3d.PointCloudLocalTriangulation(positions_np).get_local_triangulation()
+        )
+        assert triangulation_pp.shape[0] == bench_case.n_vertices
+        return
+    points = bench_case.vertices_wp
+    faces = bench_case.run(
+        lambda: od.points.local_triangulation(
+            points, od.neighbors.query_nearest(points, points, k=_KNN + 1)[0]
+        )
+    )
+    assert faces.size >= 3 * bench_case.n_vertices
 
 
 @pytest.mark.benchmark(group="point_boundary_mask")

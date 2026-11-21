@@ -51,6 +51,7 @@ from ordito.kernels.laplacian import (
     store_half_cotangents_float64,
 )
 from ordito.kernels.linalg import shift_factor, shifted_block_entry, shifted_scalar_entry
+from ordito.kernels.points import cloud_frame, cloud_neighbor
 from ordito.kernels.predicates import (
     complex_product,
     ordered_dot,
@@ -4245,6 +4246,156 @@ HEAT_SYSTEM_ROWS: OverloadTable
 VECTOR_HEAT_SYSTEM_ROWS: OverloadTable
 
 
+# --- PointCloudHeatSolver: geometry-central's point-cloud heat method ---
+#
+# The solver runs ``heat_geodesic(method="potpourri3d", use_robust=True)``'s operators on the
+# tufted cover of the cloud's local Delaunay stars (``points.local_triangulation``), as
+# geometry-central's ``PointCloudHeatSolver`` does; what is the cloud's own is below: the frames,
+# the connection between them, and the log map's seed.
+
+
+@wp.kernel
+def point_cloud_frames(
+    points: wp.array[wp.vec3],
+    neighbor_idx: wp.array2d[wp.int32],
+    normals: wp.array[wp.vec3],
+    out_basis_x: wp.array[wp.vec3],
+    out_basis_y: wp.array[wp.vec3],
+    out_normals: wp.array[wp.vec3],
+) -> None:
+    # Each point's tangent frame, the one its star was built in (``points.cloud_frame``).
+    p = wp.int32(wp.tid())
+    basis_x, basis_y, normal = cloud_frame(points, neighbor_idx, normals, p)
+    out_basis_x[p] = to_vec3(basis_x)
+    out_basis_y[p] = to_vec3(basis_y)
+    out_normals[p] = to_vec3(normal)
+
+
+# geometry-central's threshold below which two normals count as parallel, and the source's
+# ``basis_x`` stands in for the axis between them.
+CLOUD_PARALLEL_AXIS = wp.float64(1e-6)
+
+
+@wp.func
+def rotate_around(v: wp.vec3d, axis: wp.vec3d, theta: wp.float64) -> wp.vec3d:
+    # ``v`` rotated by ``theta`` about ``axis``: geometry-central's ``Vector3::rotateAround``.
+    axis_n = wp.normalize(axis)
+    parallel = axis_n * wp.dot(v, axis_n)
+    tangent = v - parallel
+    if wp.length_sq(tangent) > wp.float64(0.0):
+        basis_x = wp.normalize(tangent)
+        basis_y = wp.cross(axis_n, basis_x)
+        magnitude = wp.length(tangent)
+        return magnitude * (wp.cos(theta) * basis_x + wp.sin(theta) * basis_y) + parallel
+    return parallel
+
+
+@wp.func
+def cloud_transport(
+    source_normal: wp.vec3d,
+    source_x: wp.vec3d,
+    target_normal: wp.vec3d,
+    target_x: wp.vec3d,
+    target_y: wp.vec3d,
+) -> tuple[wp.vec2d, wp.bool]:
+    # The source frame's ``basis_x`` carried into the target frame, and whether the two frames'
+    # orientations disagree: geometry-central's ``transportBetweenOriented``. The target's normal
+    # and ``basis_y`` are flipped where the normals point apart, the source normal is turned onto
+    # the target's about their common perpendicular, and ``basis_x`` with it.
+    inverted = wp.dot(source_normal, target_normal) < wp.float64(0.0)
+    normal = wp.where(inverted, -target_normal, target_normal)
+    target_y_oriented = wp.where(inverted, -target_y, target_y)
+    axis = wp.cross(normal, source_normal)
+    if wp.length(axis) > CLOUD_PARALLEL_AXIS:
+        axis = wp.normalize(axis)
+    else:
+        axis = source_x
+    # The angle from the source normal to the target's in the plane perpendicular to ``axis``
+    # (geometry-central's ``angleInPlane``).
+    axis_n = wp.normalize(axis)
+    in_plane = wp.normalize(source_normal - wp.dot(source_normal, axis_n) * axis_n)
+    plane_y = wp.normalize(wp.cross(axis, in_plane))
+    angle = wp.atan2(wp.dot(normal, plane_y), wp.dot(normal, in_plane))
+    carried = rotate_around(source_x, axis, angle)
+    return wp.vec2d(wp.dot(carried, target_x), wp.dot(carried, target_y_oriented)), inverted
+
+
+@wp.kernel
+def cloud_vector_system_rows(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    heat_values: wp.array[wp.float64],
+    normals: wp.array[wp.vec3],
+    basis_x: wp.array[wp.vec3],
+    basis_y: wp.array[wp.vec3],
+    out_values: wp.array[wp.mat22d],
+) -> None:
+    # Row ``i`` of the vector heat system ``M + t L_connection`` over the scalar heat system's
+    # pattern: geometry-central's ``PointPositionGeometry::computeConnectionLaplacian`` shifted by
+    # the mass. Each off-diagonal entry is the heat system's, times the complex rotation carrying
+    # column ``j``'s frame into row ``i``'s, as the ``2 x 2`` block ``[[x, -y], [y, x]]`` -- or
+    # ``[[x, y], [y, -x]]``, its conjugate, where the frames' orientations disagree; the diagonal
+    # is the heat system's, the mass plus ``t`` times the row's weights, on both components.
+    i = wp.int32(wp.tid())
+    normal_i = to_vec3d(normals[i])
+    x_i = to_vec3d(basis_x[i])
+    y_i = to_vec3d(basis_y[i])
+    for s in range(offsets[i], offsets[i + 1]):
+        j = columns[s]
+        h = heat_values[s]
+        if j == i:
+            out_values[s] = wp.mat22d(h, wp.float64(0.0), wp.float64(0.0), h)
+            continue
+        r, inverted = cloud_transport(
+            to_vec3d(normals[j]), to_vec3d(basis_x[j]), normal_i, x_i, y_i
+        )
+        c = wp.where(inverted, wp.float64(-1.0), wp.float64(1.0))
+        out_values[s] = h * wp.mat22d(r[0], -r[1] * c, r[1], r[0] * c)
+
+
+@wp.kernel
+def seed_cloud_log_map(
+    source: wp.int32,
+    neighbor_row: wp.array2d[wp.int32],
+    points: wp.array[wp.vec3],
+    basis_x: wp.array[wp.vec3],
+    basis_y: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    out_sources: wp.array[wp.int32],
+    out_indicator: wp.array[wp.float64],
+    out_x: wp.array[wp.float64],
+    out_y: wp.array[wp.float64],
+) -> None:
+    # The log map's three right-hand sides, launched over one thread: the source's indicator (the
+    # distance's heat), and geometry-central's "unit circle" seeds -- each of the source's
+    # neighbours (``neighbor_row``, its self-query row) at its offset's coordinates in the source's
+    # tangent frame, one field per coordinate. Their diffusion is the direction the log map takes.
+    out_sources[0] = source
+    out_indicator[source] = wp.float64(1.0)
+    center = wp.vec3d(points[source])
+    normal = to_vec3d(normals[source])
+    x = to_vec3d(basis_x[source])
+    y = to_vec3d(basis_y[source])
+    kept = wp.int32(0)
+    for j in range(neighbor_row.shape[1]):
+        q = cloud_neighbor(neighbor_row, wp.int32(0), source, j, kept)
+        if q >= 0:
+            kept += 1
+            offset = wp.vec3d(points[q]) - center
+            offset = offset - wp.dot(offset, normal) * normal
+            out_x[q] = wp.dot(x, offset)
+            out_y[q] = wp.dot(y, offset)
+
+
+@wp.func
+def cloud_log_map_entry(
+    diffused_x: wp.float64, diffused_y: wp.float64, distance: wp.float64
+) -> wp.vec2:
+    # A point's log map coordinates: the diffused seed coordinates' direction at the distance's
+    # length (geometry-central normalizes the pair and scales it). Zero where neither field reached.
+    return to_vec2(scale_to_magnitude(wp.vec2d(diffused_x, diffused_y), distance))
+
+
 def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
     global HEAT_SYSTEM_ROWS, VECTOR_HEAT_SYSTEM_ROWS
@@ -4317,6 +4468,11 @@ def _declare_lazy_map_kernels() -> None:
                 transported_and_resolved,
                 (dense(wp.vec2d), dense(wp.float64), dense(wp.float64), wp.float64(0)),
                 (wp.vec2, wp.bool),
+            ),
+            (
+                cloud_log_map_entry,
+                (dense(wp.float64), dense(wp.float64), dense(wp.float64)),
+                wp.vec2,
             ),
         ]
     )

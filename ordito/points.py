@@ -24,6 +24,9 @@ No connectivity here -- everything takes a bare ``(n,)`` array of positions. Fou
   [`point_frames`][ordito.points.point_frames] return each neighbourhood's second moments and
   principal frame, and [`point_boundary_mask`][ordito.points.point_boundary_mask] flags the rim of
   a sampled open surface by its neighbours' angular gap.
+  [`local_triangulation`][ordito.points.local_triangulation] gives each point its star in a
+  Delaunay triangulation of its neighbourhood, the triangles a point-cloud Laplacian is built from
+  ([`PointCloudHeatSolver`][ordito.heat.PointCloudHeatSolver]).
   [`plane_basis`][ordito.points.plane_basis] and [`radial_sort`][ordito.points.radial_sort] then
   let a caller work in the tangent plane it defines.
   [`space_filling_order`][ordito.points.space_filling_order] orders a whole cloud along a Hilbert
@@ -1632,6 +1635,133 @@ def point_frames(
             device=device,
         )
     return out_frames, out_eigenvalues
+
+
+def local_triangulation(
+    points: wp.array[wp.vec3],
+    neighbor_idx: odt.Array2dInt32,
+    normals: wp.array[wp.vec3] | None = None,
+) -> wp.array[wp.int32]:
+    """
+    Each point's star in the Delaunay triangulation of its neighbourhood, as one triangle buffer.
+
+    The neighbours of each point are projected onto its tangent plane, sorted by angle about it,
+    and thinned to its one-ring in their planar Delaunay triangulation; the star is the triangles
+    of that ring, each with the point as its first corner. That is geometry-central's
+    ``buildLocalTriangulations`` with its degeneracy heuristic
+    (``potpourri3d.PointCloudLocalTriangulation``): a neighbour on the point is pushed off it, and
+    of neighbours on one ray from the point only the nearest is kept. A triangle two or three
+    neighbouring points agree on appears once in each star, so the buffer is a non-manifold soup
+    over the cloud. Its tufted cover is what a point-cloud Laplacian is assembled on
+    ([`PointCloudHeatSolver`][ordito.heat.PointCloudHeatSolver]).
+
+    Parameters
+    ----------
+    points
+        ``(n,)`` point positions.
+    neighbor_idx
+        ``(n, k + 1)`` self-query neighbour table, as
+        [`query_nearest`][ordito.neighbors.query_nearest] gives for ``k + 1`` neighbours of each
+        point among the points; ``-1`` slots are skipped. Each row's own point is skipped wherever
+        it sits, and a row it is missing from (a duplicate point took its slot) drops its last
+        entry instead, so every star is built from at most ``k`` neighbours. ``k`` is at most 64.
+    normals
+        ``(n,)`` normals the tangent planes are perpendicular to. When ``None``, each is the
+        direction the point's neighbours' offsets from it spread least along (their smallest
+        singular vector, uncentred: geometry-central's estimate), signed toward the side at least
+        half the offsets lie on.
+
+    Returns
+    -------
+    wp.array[wp.int32]
+        ``(3 * n_triangles,)`` flat triangle index buffer: every point's star in point order, its
+        triangles counter-clockwise about its normal starting from the smallest polar angle in its
+        tangent frame ([`PointCloudHeatSolver.tangent_frames`]
+        [ordito.heat.PointCloudHeatSolver.tangent_frames]). A point whose neighbours all lie on it
+        has no triangles.
+
+    Raises
+    ------
+    ValueError
+        If ``neighbor_idx`` or ``normals`` does not have one row per point, or ``neighbor_idx``
+        has more than 65 columns.
+    RuntimeError
+        If ``points``, ``neighbor_idx`` and ``normals`` are not all on one device.
+
+    Notes
+    -----
+    A duplicated point shares every angle with its twin, and which of the two a star keeps is then
+    a tie the angular sort breaks: geometry-central breaks it by an unstable sort, so on a cloud
+    with duplicates the stars are not the reference's. Remove them first
+    ([`point_duplicate_mask`][ordito.points.point_duplicate_mask]).
+
+    See Also
+    --------
+    [`PointCloudHeatSolver`][ordito.heat.PointCloudHeatSolver]
+    [`triangulate_point_cloud`][ordito.reconstruction.triangulate_point_cloud]
+        A manifold mesh reconstructed from local triangulations of another kind.
+
+    Examples
+    --------
+    On a sphere's vertices every point's star closes around it, five or six triangles on an
+    icosphere:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, _ = od.creation.icosphere(subdivisions=2)
+    neighbor_idx, _ = od.neighbors.query_nearest(vertices, vertices, 31)
+    faces = od.points.local_triangulation(vertices, neighbor_idx).numpy().reshape(-1, 3)
+    counts = np.bincount(faces[:, 0], minlength=vertices.shape[0])
+    print(int(counts.min()), int(counts.max()))  # 5 6
+    ```
+    """
+    require_same_device(points=points, neighbor_idx=neighbor_idx, normals=normals)
+    odt.ensure_ndim(neighbor_idx, 2, dtype=wp.int32)
+    device = points.device
+    n = points.size
+    _require_point_rows(n, neighbor_idx=neighbor_idx)
+    if normals is not None:
+        _require_point_rows(n, normals=normals)
+    width = int(neighbor_idx.shape[1])
+    if width - 1 > kernel_points.LOCAL_TRIANGULATION_MAX_NEIGHBORS:
+        raise ValueError(
+            f"neighbor_idx may hold at most {kernel_points.LOCAL_TRIANGULATION_MAX_NEIGHBORS + 1} "
+            f"columns (the point and {kernel_points.LOCAL_TRIANGULATION_MAX_NEIGHBORS} "
+            f"neighbours), got {width}"
+        )
+    if n == 0 or width < 2:
+        return _launch.empty(0, dtype=wp.int32, device=device)
+    # A star has at most one triangle per neighbour it keeps, and it keeps at most ``width - 1``.
+    rows = width - 1
+    stars = _launch.empty(3 * n * rows, dtype=wp.int32, device=device).reshape((n, rows, 3))
+    counts = _launch.empty(n, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_points.local_triangulation_stars,
+        dim=n,
+        inputs=[
+            points,
+            neighbor_idx,
+            _launch.empty(0, dtype=wp.vec3, device=device) if normals is None else normals,
+        ],
+        outputs=[stars, counts],
+        device=device,
+    )
+    _launch.array_scan(counts, out_array=counts, inclusive=True)
+    # Readback: the triangle count sizes the packed buffer.
+    n_triangles = int(read_scalar(counts))
+    faces = odt.empty_2d((n_triangles, 3), wp.int32, device=device)
+    if n_triangles > 0:
+        _launch.launch(
+            kernel_array.pack_padded_rows,
+            dim=(n, rows),
+            inputs=[stars, counts],
+            outputs=[faces],
+            device=device,
+        )
+    return cast(wp.array[wp.int32], faces.flatten())
 
 
 def point_boundary_mask(

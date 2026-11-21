@@ -25,6 +25,13 @@ Beside them, [`fast_marching_distance`][ordito.heat.fast_marching_distance] answ
 task without a diffusion: a front marched across the faces, the serial alternative to the heat
 method, solved here in parallel rounds.
 
+A point cloud has no faces to diffuse over, so
+[`PointCloudHeatSolver`][ordito.heat.PointCloudHeatSolver] builds some: each point's star in a
+Delaunay triangulation of its neighbours
+([`local_triangulation`][ordito.points.local_triangulation]), whose union's intrinsic tufted
+cover carries the distance, the scalar extension, transport and the log map
+(``potpourri3d.PointCloudHeatSolver``).
+
 The three are one module because two of them cannot be separated: the vector solvers import
 [`heat_operators`][ordito.heat.heat_operators] and [`heat_geodesic`][ordito.heat.heat_geodesic],
 [`VectorHeatOperators`][ordito.heat.VectorHeatOperators] embeds the scalar method's operator tuple,
@@ -53,6 +60,7 @@ import logging
 import math
 import warnings
 import weakref
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal, NamedTuple, TypeVar, cast, overload
 
@@ -77,6 +85,7 @@ from ordito.halfedge import vertex_one_rings
 from ordito.kernels import array as kernel_array
 from ordito.kernels import heat as kernel_heat
 from ordito.kernels import linalg as kernel_linalg
+from ordito.kernels import points as kernel_points
 from ordito.kernels import predicates as kernel_predicates
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import scatter as kernel_scatter
@@ -2410,7 +2419,7 @@ def extend_scalar(
         owned,
         cast("wp.array[wp.int32]", arguments[0]),
         cast("wp.array[wp.float64]", arguments[1]),
-        cast("float | None", arguments[2]),
+        lambda: bound.heat_solver(cast("float | None", arguments[2])),
     )
 
 
@@ -2419,9 +2428,15 @@ def _extend_scalar(
     owned: bool,
     sources: wp.array[wp.int32],
     values: wp.array[wp.float64],
-    t: float | None,
+    solver_of: Callable[[], HeatSolver],
 ) -> wp.array[wp.float64]:
-    """``extend_scalar`` on a `Trimesh`; ``owned`` is whether the caller passed it."""
+    """
+    ``extend_scalar`` on a `Trimesh`; ``owned`` is whether the caller passed it.
+
+    ``solver_of`` returns the solver whose heat system diffuses the values: the mesh's default one,
+    or [`PointCloudHeatSolver`][ordito.heat.PointCloudHeatSolver]'s cover solver. Called past the
+    empty-input exit, which builds nothing.
+    """
     vertices, faces = mesh.vertices, mesh.faces
     require_same_device(vertices=vertices, faces=faces, sources=sources, values=values)
     device = vertices.device
@@ -2431,7 +2446,7 @@ def _extend_scalar(
         return _launch.zeros(n_vertices, dtype=wp.float64, device=device)
     _require_same_length(values, n_sources, "extend_scalar", "values")
 
-    solver = mesh.heat_solver(t)
+    solver = solver_of()
     # The indicator and the weighted values diffuse through the same operator, so they are one
     # batched two-column solve rather than two independent ones, which shares the launches and
     # converges on the worse-behaved of the two columns.
@@ -4415,6 +4430,502 @@ class HeatSolver:
         if mesh is None:
             raise RuntimeError("HeatSolver: its Trimesh no longer exists")
         return mesh
+
+
+class PointCloudHeatSolver:
+    """
+    The heat method on a point cloud: distance, scalar extension, transport and log map.
+
+    geometry-central's point-cloud heat solver (``potpourri3d.PointCloudHeatSolver``). Each point
+    takes its ``k`` nearest others and a tangent frame from its normal, and its star in the
+    Delaunay triangulation of those neighbours in its tangent plane
+    ([`local_triangulation`][ordito.points.local_triangulation]). The union of the stars, a
+    non-manifold soup over the cloud, is given its tufted cover, mollified and flipped to intrinsic
+    Delaunay, and the mesh solvers run on that:
+    [`distance`][ordito.heat.PointCloudHeatSolver.distance] is
+    [`heat_geodesic`][ordito.heat.heat_geodesic] at ``method="potpourri3d"`` with ``use_robust``
+    on the cover, whose cotangent weights are never negative.
+    [`transport_tangent_vectors`][ordito.heat.PointCloudHeatSolver.transport_tangent_vectors]
+    diffuses through a connection Laplacian made of the cover's weights and the rotations carrying
+    each point's frame into its neighbours', and
+    [`log_map`][ordito.heat.PointCloudHeatSolver.log_map] reads its direction off the diffusion of
+    the source's neighbours' tangent coordinates and its radius off the distance.
+
+    The neighbourhoods, frames and stars are built on construction; the cover, its operators and
+    their factorizations on first use, kept for the solver's lifetime as a
+    [`Trimesh`][ordito.mesh.Trimesh]'s [`HeatSolver`][ordito.heat.HeatSolver] keeps them (a system
+    solved a second time is factored). Every field is per point, and runs in ``float64``.
+
+    Parameters
+    ----------
+    points
+        ``(n,)`` point positions.
+    k
+        Neighbours per point, at most 64; geometry-central's 30 by default.
+    normals
+        ``(n,)`` normals the tangent planes are perpendicular to. When ``None``, each point's is
+        estimated from its neighbours' offsets (see
+        [`local_triangulation`][ordito.points.local_triangulation]), which fixes the plane but not
+        its sign: with estimated normals the stars, and so the cover, are the reference's up to
+        the side each is wound from, which moves the fields by a fraction of a per cent of their
+        range. Pass oriented normals (a scanner's, or ``potpourri3d``'s own) for the reference's
+        answer.
+    t
+        Diffusion time. When ``None``, the squared mean edge length of the cover, lengthened on a
+        cloud too fine for it as [`HeatSolver`][ordito.heat.HeatSolver] lengthens it.
+
+    Raises
+    ------
+    ValueError
+        If ``k`` is not in ``[1, 64]``, the cloud has ``k`` points or fewer, or ``normals`` does
+        not hold one normal per point.
+    RuntimeError
+        If ``points`` and ``normals`` are not on one device.
+
+    Notes
+    -----
+    A cloud with duplicated points is solved, but its stars are not the reference's (see
+    [`local_triangulation`][ordito.points.local_triangulation]); remove them first.
+
+    Its frames are geometry-central's: ``basis_x`` is the normal crossed into ``(1, 0, 0)``
+    (``(0, 1, 0)`` for a normal within about 26 degrees of it) and ``basis_y`` the normal crossed
+    into ``basis_x``. Tangent vectors in and out are in these frames.
+
+    See Also
+    --------
+    [`HeatSolver`][ordito.heat.HeatSolver]
+        The same solves on a mesh.
+    [`local_triangulation`][ordito.points.local_triangulation]
+
+    Examples
+    --------
+    Pole to pole over the vertices of a unit sphere, with no faces, the distance is close to ``pi``:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, _ = od.creation.icosphere(subdivisions=3)
+    heights = vertices.numpy()[:, 2]
+    north, south = int(np.argmax(heights)), int(np.argmin(heights))
+    solver = od.heat.PointCloudHeatSolver(vertices)
+    distance = solver.distance(wp.array([north], dtype=wp.int32)).numpy()
+    print(f"{distance[south]:.1f}")  # 3.1
+    logarithm = solver.log_map(north).numpy()
+    print(f"{np.linalg.norm(logarithm[south]):.1f}")  # 3.1
+    ```
+    """
+
+    def __init__(
+        self,
+        points: wp.array[wp.vec3],
+        *,
+        k: int = 30,
+        normals: wp.array[wp.vec3] | None = None,
+        t: float | None = None,
+    ) -> None:
+        """
+        Build the neighbourhoods, frames and local triangulations of ``points``.
+
+        Raises
+        ------
+        ValueError
+            If ``k`` is not in ``[1, 64]``, the cloud has ``k`` points or fewer, or ``normals``
+            does not hold one normal per point.
+        RuntimeError
+            If ``points`` and ``normals`` are not on one device.
+        """
+        require_same_device(points=points, normals=normals)
+        limit = kernel_points.LOCAL_TRIANGULATION_MAX_NEIGHBORS
+        if not 1 <= k <= limit:
+            raise ValueError(f"PointCloudHeatSolver: k must be in [1, {limit}], got {k}")
+        n = points.size
+        if n <= k:
+            raise ValueError(
+                f"PointCloudHeatSolver: a cloud of {n} points has no {k} neighbours per point"
+            )
+        if normals is not None:
+            _require_same_length(normals, n, "PointCloudHeatSolver", "normals")
+        device = points.device
+        self.points = points
+        self.k = k
+        self.t = None if t is None else float(t)
+        neighbor_idx, _ = od.neighbors.query_nearest(points, points, k + 1)
+        basis_x, basis_y, frame_normals = (
+            _launch.empty(n, dtype=wp.vec3, device=device) for _ in range(3)
+        )
+        _launch.launch(
+            kernel_heat.point_cloud_frames,
+            dim=n,
+            inputs=[
+                points,
+                neighbor_idx,
+                _launch.empty(0, dtype=wp.vec3, device=device) if normals is None else normals,
+            ],
+            outputs=[basis_x, basis_y, frame_normals],
+            device=device,
+        )
+        self._frames = (basis_x, basis_y, frame_normals)
+        faces = od.points.local_triangulation(points, neighbor_idx, normals)
+        # The stars as a mesh, so the cover, its operators and their factorizations are a
+        # ``HeatSolver``'s, kept with it.
+        self._mesh = Trimesh(points, faces)
+        self._solver = self._mesh.heat_solver(self.t, use_robust=True, method="potpourri3d")
+        # The vector heat system over the cover's pattern and its preconditioner, once built.
+        self._vector: tuple[odt.BsrMatrix[wp.mat22d], wpl.LinearOperator] | None = None
+
+    @property
+    def tangent_frames(self) -> tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.vec3]]:
+        """
+        ``(basis_x, basis_y, normals)``, each ``(n,)``: every point's tangent frame.
+
+        The frames tangent vectors are given and returned in, and the stars were built in:
+        ``potpourri3d.PointCloudHeatSolver.get_tangent_frames``, up to each estimated normal's sign
+        (see the class's ``normals``).
+        """
+        return self._frames
+
+    @property
+    def nbytes(self) -> int:
+        """Device memory this solver's kept factorizations hold, in bytes."""
+        return self._solver.nbytes
+
+    def release(self) -> None:
+        """
+        Drop every kept factorization; the operators stay.
+
+        See [`HeatSolver.release`][ordito.heat.HeatSolver.release].
+        """
+        self._solver.release()
+
+    def distance(self, sources: wp.array[wp.int32]) -> wp.array[wp.float64]:
+        """
+        Approximate geodesic distance to the nearest source point.
+
+        ``potpourri3d.PointCloudHeatSolver.compute_distance`` (``compute_distance_multisource`` for
+        several sources): [`heat_geodesic`][ordito.heat.heat_geodesic] at
+        ``method="potpourri3d"`` on the cloud's intrinsic tufted cover.
+
+        Parameters
+        ----------
+        sources
+            ``(n_sources,)`` source point indices.
+
+        Returns
+        -------
+        wp.array[wp.float64]
+            ``(n,)`` distance to the nearest source, zero at a single source.
+
+        Raises
+        ------
+        ValueError
+            If an entry of ``sources`` is not a point index.
+        RuntimeError
+            If ``sources`` is not on the points' device.
+
+        Examples
+        --------
+        ```python
+        import warp as wp
+
+        import ordito as od
+
+        vertices, _ = od.creation.icosphere(subdivisions=3)
+        solver = od.heat.PointCloudHeatSolver(vertices)
+        distance = solver.distance(wp.array([0], dtype=wp.int32)).numpy()
+        print(distance[0], f"{distance.max():.1f}")  # 0.0 3.1
+        ```
+        """
+        return _heat_geodesic(self._mesh, True, sources, self.t, True, "potpourri3d")
+
+    def extend_scalar(
+        self, sources: wp.array[wp.int32], values: wp.array[wp.float64]
+    ) -> wp.array[wp.float64]:
+        """
+        Extend values given at source points to the whole cloud by diffusion.
+
+        ``potpourri3d.PointCloudHeatSolver.extend_scalar``: the diffused values over the diffused
+        source indicator (see [`extend_scalar`][ordito.heat.extend_scalar]), so each point takes
+        roughly its geodesically nearest source's value. The cover's weights are never negative,
+        so the field stays within the source values' range.
+
+        Parameters
+        ----------
+        sources
+            ``(n_sources,)`` source point indices.
+        values
+            ``(n_sources,)`` the value at each source.
+
+        Returns
+        -------
+        wp.array[wp.float64]
+            ``(n,)`` extended field; zero on a part of the cloud no source reaches.
+
+        Raises
+        ------
+        ValueError
+            If ``values`` does not hold one value per source, or an entry of ``sources`` is not a
+            point index.
+        RuntimeError
+            If ``sources`` and ``values`` are not on the points' device.
+
+        Examples
+        --------
+        ```python
+        import numpy as np
+        import warp as wp
+
+        import ordito as od
+
+        vertices, _ = od.creation.icosphere(subdivisions=3)
+        heights = vertices.numpy()[:, 2]
+        poles = wp.array([np.argmax(heights), np.argmin(heights)], dtype=wp.int32)
+        solver = od.heat.PointCloudHeatSolver(vertices)
+        extended = solver.extend_scalar(poles, wp.array([1.0, -1.0], dtype=wp.float64)).numpy()
+        print(f"{extended[heights > 0.5].min():.2f}")  # 1.00
+        print(f"{extended[heights < -0.5].max():.2f}")  # -1.00
+        ```
+        """
+        return _extend_scalar(self._mesh, True, sources, values, lambda: self._solver)
+
+    def transport_tangent_vectors(
+        self, sources: wp.array[wp.int32], vectors: wp.array[wp.vec2]
+    ) -> tuple[wp.array[wp.vec2], wp.array[wp.bool]]:
+        """
+        Parallel-transport tangent vectors from source points to the whole cloud.
+
+        ``potpourri3d.PointCloudHeatSolver.transport_tangent_vectors``: the vector heat method on
+        the cloud (see [`transport_tangent_vectors`][ordito.heat.transport_tangent_vectors]). The
+        vectors diffuse through the connection Laplacian built from the cover's cotangent weights
+        and the rotation carrying each point's frame into its neighbours' (the frame of a neighbour
+        whose normal points the other way is reflected first), their directions are kept, and their
+        lengths are the sources' lengths extended by diffusion.
+
+        Parameters
+        ----------
+        sources
+            ``(n_sources,)`` source point indices.
+        vectors
+            ``(n_sources,)`` each source's tangent vector, in its frame
+            ([`tangent_frames`][ordito.heat.PointCloudHeatSolver.tangent_frames]).
+
+        Returns
+        -------
+        transported : wp.array[wp.vec2]
+            ``(n,)`` the transported field, each vector in its point's frame.
+        resolved : wp.array[wp.bool]
+            ``(n,)`` whether a point's direction stands out of round-off: false on the cut locus,
+            where copies arriving from different sides cancel.
+
+        Raises
+        ------
+        ValueError
+            If ``vectors`` does not hold one vector per source, or an entry of ``sources`` is not
+            a point index.
+        RuntimeError
+            If ``sources`` and ``vectors`` are not on the points' device.
+
+        Examples
+        --------
+        A unit vector transported over a sphere keeps its unit length:
+
+        ```python
+        import numpy as np
+        import warp as wp
+
+        import ordito as od
+
+        vertices, _ = od.creation.icosphere(subdivisions=3)
+        solver = od.heat.PointCloudHeatSolver(vertices)
+        sources = wp.array([0], dtype=wp.int32)
+        vectors = wp.array([[1.0, 0.0]], dtype=wp.vec2)
+        transported, resolved = solver.transport_tangent_vectors(sources, vectors)
+        lengths = np.linalg.norm(transported.numpy()[resolved.numpy()], axis=1)
+        print(f"{lengths.min():.3f}", f"{lengths.max():.3f}")  # 1.000 1.000
+        ```
+        """
+        points = self.points
+        require_same_device(points=points, sources=sources, vectors=vectors)
+        device = points.device
+        n = points.size
+        n_sources = sources.size
+        if self._mesh.faces.size == 0 or n_sources == 0:
+            return (
+                _launch.zeros(n, dtype=wp.vec2, device=device),
+                _launch.zeros(n, dtype=wp.bool, device=device),
+            )
+        caller = "PointCloudHeatSolver.transport_tangent_vectors"
+        _require_same_length(vectors, n_sources, caller, "vectors")
+        # The vector field's right-hand side and solution, then the indicator's and the
+        # magnitudes' as two scalar columns: one buffer.
+        (field_rhs, field, scalar_rhs, scalars), invalid = _zeroed_fields_and_flag(
+            device, 2 * n, 2 * n, 2 * n, 2 * n
+        )
+        _launch.launch(
+            kernel_heat.seed_transport_sources,
+            dim=n_sources,
+            inputs=[sources, vectors],
+            outputs=[
+                _pairs(field_rhs, n),
+                _launch.view(scalar_rhs, 0, n),
+                _launch.view(scalar_rhs, n, 2 * n),
+                invalid,
+            ],
+            device=device,
+        )
+        _require_indices_in_range(invalid, n, caller, "sources")
+        system, preconditioner = self._vector_system()
+        # Settled and factored as the solver's own vector role: stored over the cover's pattern,
+        # its factorization derives its analysis from the heat system's.
+        self._solver._settle(  # pyright: ignore[reportPrivateUsage]
+            "vector", system, _pairs(field_rhs, n), _pairs(field, n), preconditioner=preconditioner
+        )
+        self._solver.diffuse(scalar_rhs.reshape((2, n)), scalars.reshape((2, n)))
+        transported = _launch.empty(n, dtype=wp.vec2, device=device)
+        resolved = _launch.empty(n, dtype=wp.bool, device=device)
+        _launch.map(
+            kernel_heat.transported_and_resolved,
+            _pairs(field, n),
+            _launch.view(scalars, n, 2 * n),
+            _launch.view(scalars, 0, n),
+            wp.float64(_RESOLVED_FRACTION),
+            out=[transported, resolved],
+        )
+        return transported, resolved
+
+    def log_map(self, source: int) -> wp.array[wp.vec2]:
+        """
+        Logarithmic map about a source point: every point's position in the source's tangent plane.
+
+        ``potpourri3d.PointCloudHeatSolver.compute_log_map``. The direction is geometry-central's
+        "unit circle" one: the source's neighbours seeded with their coordinates in the source's
+        frame, each coordinate diffused as a scalar field, and the pair normalized at every point;
+        the radius is [`distance`][ordito.heat.PointCloudHeatSolver.distance] from the source.
+
+        Parameters
+        ----------
+        source
+            The source point's index.
+
+        Returns
+        -------
+        wp.array[wp.vec2]
+            ``(n,)`` coordinates in the source's tangent frame
+            ([`tangent_frames`][ordito.heat.PointCloudHeatSolver.tangent_frames]); the source's
+            own is zero.
+
+        Raises
+        ------
+        ValueError
+            If ``source`` is not a point index.
+
+        Examples
+        --------
+        The log map's length is the distance from the source:
+
+        ```python
+        import numpy as np
+        import warp as wp
+
+        import ordito as od
+
+        vertices, _ = od.creation.icosphere(subdivisions=3)
+        solver = od.heat.PointCloudHeatSolver(vertices)
+        radius = np.linalg.norm(solver.log_map(0).numpy(), axis=1)
+        distance = solver.distance(wp.array([0], dtype=wp.int32)).numpy()
+        print(bool(np.allclose(radius, distance, atol=1e-5)))  # True
+        ```
+        """
+        points = self.points
+        device = points.device
+        n = points.size
+        if not 0 <= source < n:
+            raise ValueError(
+                f"PointCloudHeatSolver.log_map: source must be a point index in [0, {n}), got "
+                f"{source}"
+            )
+        if self._mesh.faces.size == 0:
+            return _launch.zeros(n, dtype=wp.vec2, device=device)
+        mesh, solver = self._mesh, self._solver
+        # The source's own neighbourhood, queried again rather than the whole table kept.
+        neighbor_row, _ = od.neighbors.query_nearest(
+            points, _launch.view(points, source, source + 1), self.k + 1
+        )
+        # The indicator and the two coordinate fields as three columns, their solution, the
+        # divergence's sums, the distance, the shift's means and the source's index: one buffer.
+        rhs, diffused, scratch, phi, means, source_word = _zeroed_fields(
+            device, 3 * n, 3 * n, n, n, _source_means_size(n, 1), 1
+        )
+        sources = _launch.alias(source_word, wp.int32, 0, 1)
+        basis_x, basis_y, normals = self._frames
+        _launch.launch(
+            kernel_heat.seed_cloud_log_map,
+            dim=1,
+            inputs=[source, neighbor_row, points, basis_x, basis_y, normals],
+            outputs=[
+                sources,
+                _launch.view(rhs, 0, n),
+                _launch.view(rhs, n, 2 * n),
+                _launch.view(rhs, 2 * n, 3 * n),
+            ],
+            device=device,
+        )
+        solver.diffuse(rhs.reshape((3, n)), diffused.reshape((3, n)))
+        distance = _distance_from_heat(
+            mesh,
+            solver,
+            sources,
+            _launch.view(diffused, 0, n),
+            _corner_order(mesh, solver),
+            scratch,
+            means,
+            phi,
+            geometry_central=True,
+        )
+        logarithm = _launch.empty(n, dtype=wp.vec2, device=device)
+        _launch.map(
+            kernel_heat.cloud_log_map_entry,
+            _launch.view(diffused, n, 2 * n),
+            _launch.view(diffused, 2 * n, 3 * n),
+            distance,
+            out=logarithm,
+        )
+        return logarithm
+
+    def _vector_system(self) -> tuple[odt.BsrMatrix[wp.mat22d], wpl.LinearOperator]:
+        """
+        Build the vector heat system ``M + t L_connection`` and its Jacobi preconditioner, once.
+
+        Over the cover heat system's pattern, from its values and the frames
+        (``kernels/heat.cloud_vector_system_rows``): geometry-central's connection Laplacian, its
+        diagonal the heat system's own.
+        """
+        if self._vector is None:
+            heat_system = self._solver.operators[0]
+            n = heat_system.nrow
+            values = _launch.empty(
+                heat_system.columns.size, dtype=wp.mat22d, device=heat_system.device
+            )
+            basis_x, basis_y, normals = self._frames
+            _launch.launch(
+                kernel_heat.cloud_vector_system_rows,
+                dim=n,
+                inputs=[
+                    heat_system.offsets,
+                    heat_system.columns,
+                    heat_system.values,
+                    normals,
+                    basis_x,
+                    basis_y,
+                ],
+                outputs=[values],
+                device=heat_system.device,
+            )
+            system = od.array.bsr_from_csr(n, n, heat_system.offsets, heat_system.columns, values)
+            self._vector = (system, twl.jacobi_preconditioner(system))
+        return self._vector
 
 
 def _tufted_intrinsic_delaunay(

@@ -105,6 +105,15 @@ Assembly alone is measured as ``connection_laplacian`` in
 ``use_intrinsic_delaunay=False`` so the discretization matches. It cannot run on ``cave_cube`` at
 all: its right-angle diagonals give zero cotangent weights and geometry-central's factorization
 fails there, so no group uses that mesh. trimesh, libigl and open3d have no tangent-space machinery.
+
+Point clouds
+============
+``PointCloudHeatSolver`` against ``potpourri3d.PointCloudHeatSolver`` on each mesh's vertices
+alone, along the **scale** axis: the cloud's size sets the neighbour search, the stars and the
+cover, and the solves are the mesh solves on that cover. Both solvers are built inside the timed
+callable (``setup=full``), which on both sides is a ``k = 30`` neighbour search, the frames, the
+local Delaunay stars and the cover's mollification and flips; ``point_cloud_heat_distance`` also
+times the amortized solve (``setup=amortized``), on a solver warmed until it runs factored.
 """
 
 from __future__ import annotations
@@ -1054,3 +1063,143 @@ def test_heat_solver_solve_poisson(bench_case: BenchCase) -> None:
 
     bench_case.run(run)
     assert np.isfinite(solution.numpy()).all()
+
+
+# --------------------------------------------------------------------------
+# PointCloudHeatSolver
+# --------------------------------------------------------------------------
+
+
+def _cloud_solver_pp(bench_case: BenchCase) -> pp3d.PointCloudHeatSolver:
+    return pp3d.PointCloudHeatSolver(np.ascontiguousarray(bench_case.vertices_np, dtype=np.float64))
+
+
+@pytest.mark.benchmark(group="point_cloud_heat_solver")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito")
+def test_point_cloud_heat_solver(bench_case: BenchCase) -> None:
+    """
+    ``PointCloudHeatSolver`` construction: the neighbour search, the frames and the stars.
+
+    The cover, its operators and their factorizations are built by the first solve, which the
+    solve rows below time; potpourri3d builds everything in its constructor, so it is compared
+    there rather than here.
+    """
+    points = bench_case.vertices_wp
+
+    def build() -> od.heat.PointCloudHeatSolver:
+        solver = od.heat.PointCloudHeatSolver(points)
+        assert solver.tangent_frames[0].shape == (bench_case.n_vertices,)
+        assert solver.nbytes == 0
+        return solver
+
+    solver = bench_case.run(build, rounds=_VECTOR_HEAT_ROUNDS)
+    solver.release()
+
+
+@pytest.mark.benchmark(group="point_cloud_heat_distance")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito", "potpourri3d")
+@pytest.mark.parametrize("setup", ["full", "amortized"])
+def test_point_cloud_heat_distance(bench_case: BenchCase, setup: str) -> None:
+    """Geodesic distance from one point: the heat method on the cloud's intrinsic cover."""
+    n_vertices = bench_case.n_vertices
+    if bench_case.kind == "ordito":
+        points = bench_case.vertices_wp
+        sources = _sources_wp(bench_case)
+        if setup == "amortized":
+            solver = od.heat.PointCloudHeatSolver(points)
+            for _ in range(2):
+                solver.distance(sources)
+            distance = bench_case.run(lambda: solver.distance(sources), rounds=_GEODESIC_ROUNDS)
+        else:
+            distance = bench_case.run(
+                lambda: od.heat.PointCloudHeatSolver(points).distance(sources),
+                rounds=_GEODESIC_ROUNDS,
+            )
+        assert distance.shape == (n_vertices,)
+    elif setup == "amortized":
+        solver_pp = _cloud_solver_pp(bench_case)
+        solver_pp.compute_distance(0)
+        assert np.asarray(
+            bench_case.run(lambda: solver_pp.compute_distance(0), rounds=_GEODESIC_ROUNDS)
+        ).shape == (n_vertices,)
+    else:
+        assert np.asarray(
+            bench_case.run(
+                lambda: _cloud_solver_pp(bench_case).compute_distance(0), rounds=_GEODESIC_ROUNDS
+            )
+        ).shape == (n_vertices,)
+
+
+@pytest.mark.benchmark(group="point_cloud_extend_scalar")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito", "potpourri3d")
+def test_point_cloud_extend_scalar(bench_case: BenchCase) -> None:
+    """Two scalar diffusions on the cover and their ratio."""
+    n_vertices = bench_case.n_vertices
+    if bench_case.kind == "ordito":
+        points = bench_case.vertices_wp
+        sources = _sources_wp(bench_case)
+        values = wp.array(np.array([1.0]), dtype=wp.float64, device=bench_case.device)
+        extended = bench_case.run(
+            lambda: od.heat.PointCloudHeatSolver(points).extend_scalar(sources, values),
+            rounds=_VECTOR_HEAT_ROUNDS,
+        )
+        assert extended.shape == (n_vertices,)
+    else:
+        assert np.asarray(
+            bench_case.run(
+                lambda: _cloud_solver_pp(bench_case).extend_scalar([0], [1.0]),
+                rounds=_VECTOR_HEAT_ROUNDS,
+            )
+        ).shape == (n_vertices,)
+
+
+@pytest.mark.benchmark(group="point_cloud_transport_tangent_vectors")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito", "potpourri3d")
+def test_point_cloud_transport_tangent_vectors(bench_case: BenchCase) -> None:
+    """The cloud's connection Laplacian, one vector solve and the magnitudes' extension."""
+    n_vertices = bench_case.n_vertices
+    if bench_case.kind == "ordito":
+        points = bench_case.vertices_wp
+        sources = _sources_wp(bench_case)
+        vectors = wp.array(
+            np.array([[1.0, 0.0]], dtype=np.float32), dtype=wp.vec2, device=bench_case.device
+        )
+        transported, resolved = bench_case.run(
+            lambda: od.heat.PointCloudHeatSolver(points).transport_tangent_vectors(
+                sources, vectors
+            ),
+            rounds=_VECTOR_HEAT_ROUNDS,
+        )
+        assert transported.shape == (n_vertices,)
+        assert resolved.shape == (n_vertices,)
+    else:
+        assert np.asarray(
+            bench_case.run(
+                lambda: _cloud_solver_pp(bench_case).transport_tangent_vectors([0], [[1.0, 0.0]]),
+                rounds=_VECTOR_HEAT_ROUNDS,
+            )
+        ).shape == (n_vertices, 2)
+
+
+@pytest.mark.benchmark(group="point_cloud_log_map")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito", "potpourri3d")
+def test_point_cloud_log_map(bench_case: BenchCase) -> None:
+    """Three scalar diffusions as one solve, the source's neighbour query and the distance."""
+    n_vertices = bench_case.n_vertices
+    if bench_case.kind == "ordito":
+        points = bench_case.vertices_wp
+        logarithm = bench_case.run(
+            lambda: od.heat.PointCloudHeatSolver(points).log_map(0), rounds=_VECTOR_HEAT_ROUNDS
+        )
+        assert logarithm.shape == (n_vertices,)
+    else:
+        assert np.asarray(
+            bench_case.run(
+                lambda: _cloud_solver_pp(bench_case).compute_log_map(0), rounds=_VECTOR_HEAT_ROUNDS
+            )
+        ).shape == (n_vertices, 2)

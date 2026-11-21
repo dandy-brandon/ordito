@@ -434,7 +434,7 @@ def triangulate_point_cloud(
     # peaks, and the padded table released.
     fans = odt.empty_2d((n_candidates, 3), wp.int32, device=device)
     _launch.launch(
-        kernel_reconstruction.pack_fan_rows,
+        kernel_array.pack_padded_rows,
         dim=(n, k),
         inputs=[out_tris, fan_counts],
         outputs=[fans],
@@ -452,7 +452,7 @@ def triangulate_point_cloud(
 
 
 class _Fans(NamedTuple):
-    """Every point's fan of local triangles, packed (``kernels/reconstruction.pack_fan_rows``)."""
+    """Every point's fan of local triangles, packed (``kernels/array.pack_padded_rows``)."""
 
     rows: odt.Array2dInt32
     """``(n_candidates, 3)`` the fans' triangles, a fan's contiguous, its center first."""

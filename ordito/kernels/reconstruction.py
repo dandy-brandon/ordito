@@ -952,22 +952,6 @@ def rebuild_grown_local_triangulations(
     out_counts[v] = count
 
 
-@wp.kernel
-def pack_fan_rows(
-    tris: wp.array3d[wp.int32], inclusive_counts: wp.array[wp.int32], out_rows: wp.array2d[wp.int32]
-) -> None:
-    # Launched over ``(n, k)``: fan slot ``(v, j)`` below point ``v``'s count copied to its packed
-    # row ``start + j``. The fans are built ``k`` slots a point and fill about six, so every later
-    # pass reads them packed: a fan slot keeps its flat number ``v * k + j`` (the sort payload and
-    # the flood's codes), and ``fan_row`` finds its packed row.
-    v, j = wp.tid()
-    start, count = scanned_count(inclusive_counts, v)
-    if j >= count:
-        return
-    for c in range(3):
-        out_rows[start + j, c] = tris[v, j, c]
-
-
 @wp.func
 def fan_row_index(
     inclusive_counts: wp.array[wp.int32], fan_width: wp.int32, slot: wp.int32
@@ -985,7 +969,7 @@ def fan_row(
     fan_width: wp.int32,
     slot: wp.int32,
 ) -> wp.vec3i:
-    # Fan slot ``slot``'s triangle, read from the packed fans (``pack_fan_rows``).
+    # Fan slot ``slot``'s triangle, read from the packed fans (``array.pack_padded_rows``).
     r = fan_row_index(inclusive_counts, fan_width, slot)
     return wp.vec3i(rows[r, 0], rows[r, 1], rows[r, 2])
 
