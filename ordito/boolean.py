@@ -57,7 +57,10 @@ _SERIAL_FLOOD_SEEDS = 64
 # A result face of this many polygon sides or more is triangulated and paired on the CPU, whose
 # one thread runs those quadratic passes far faster than a GPU thread (2026-11-21: an 82 k-face
 # sphere's plane cut, whose cap is one polygon, 433 + 136 -> 13 + 6 ms; the copies are prefixes).
-_HEAVY_FACE_SIDES = 256
+# Swept over icospheres of 3 to 6 subdivisions cut by a plane, 16-32 sides best at every size
+# (5 k faces 45 -> 8.6 ms against 256); 64 lost the smallest cap. Many-sided faces come only from
+# an operand's few large triangles, so the CPU pass stays short.
+_HEAVY_FACE_SIDES = 32
 # An operand with at most this many halfedges crosses the other's faces pair by pair.
 _PAIR_CROSSING_HALFEDGES = 384
 # ``Partition``'s cache: each sorted set of side divisions' barycentrics and sub-triangles.
