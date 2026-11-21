@@ -4058,3 +4058,677 @@ def _declare_block_dims() -> None:
 
 
 _declare_block_dims()
+
+# -- ear clipping of polygons with holes (Manifold's ``EarClip``, ``polygon.cpp``) -----------------
+#
+# A port of the Manifold library's triangulator (Apache-2.0, https://github.com/elalish/manifold,
+# v3.5.5; Copyright 2021 The Manifold Authors): David Eberly's ear clipping, holes keyholed to
+# their outer polygon first, the sharpest valid ear clipped next, every geometric test within an
+# epsilon. ``ordito.boolean`` triangulates its cut faces with it. What differs from the C++: the
+# ``std::multiset`` of ears is a scan for the least ``(cost, insertion)`` pair, the 2-d tree a scan
+# of the polygon's vertices through the same box, and the recursion an explicit stack -- the
+# same choices in the same order. Built in ``float64``; Manifold's ``CCW`` and friends compare
+# near-zero areas against epsilon, so the arithmetic must not fuse (the callers' modules build
+# unfused, and so does this one's functions where those modules inline them).
+
+
+@wp.func
+def det2(a: wp.vec2d, b: wp.vec2d) -> wp.float64:
+    return a[0] * b[1] - a[1] * b[0]
+
+
+@wp.func
+def ccw(p0: wp.vec2d, p1: wp.vec2d, p2: wp.vec2d, tol: wp.float64) -> wp.int32:
+    # ``CCW``: the turn p0 -> p1 -> p2, zero within ``tol``.
+    v1 = p1 - p0
+    v2 = p2 - p0
+    area = v1[0] * v2[1] - v1[1] * v2[0]
+    base2 = wp.max(wp.dot(v1, v1), wp.dot(v2, v2))
+    if area * area * wp.float64(4.0) <= base2 * tol * tol:
+        return wp.int32(0)
+    return wp.where(area > wp.float64(0.0), wp.int32(1), wp.int32(-1))
+
+
+@wp.func
+def safe_normalize2(v: wp.vec2d) -> wp.vec2d:
+    n = v / wp.length(v)
+    if wp.isfinite(n[0]):
+        return n
+    return wp.vec2d()
+
+
+@wp.struct
+class EarClipState:
+    """One face's ear clipper: its circular list and the work lists, cut at the face's offset."""
+
+    pos: wp.array[wp.vec2d]
+    right_dir: wp.array[wp.vec2d]
+    left: wp.array[wp.int32]
+    right: wp.array[wp.int32]
+    idx: wp.array[wp.int32]
+    cost: wp.array[wp.float64]
+    seq: wp.array[wp.int32]
+    visit: wp.array[wp.int32]
+    collider: wp.array[wp.int32]
+    stack: wp.array[wp.int32]
+    starts: wp.array[wp.int32]
+    holes: wp.array[wp.int32]
+    hole_box: wp.array[wp.vec4d]
+    outers: wp.array[wp.int32]
+    simples: wp.array[wp.int32]
+    tris: wp.array[wp.vec3i]
+
+
+@wp.func
+def ec_link(ec: EarClipState, left: wp.int32, right: wp.int32):
+    ec.right[left] = right
+    ec.left[right] = left
+    ec.right_dir[left] = safe_normalize2(ec.pos[right] - ec.pos[left])
+
+
+@wp.func
+def ec_clipped(ec: EarClipState, v: wp.int32) -> wp.bool:
+    return ec.left[ec.right[v]] != v
+
+
+@wp.func
+def ec_is_short(ec: EarClipState, v: wp.int32, eps: wp.float64) -> wp.bool:
+    edge = ec.pos[ec.right[v]] - ec.pos[v]
+    return wp.dot(edge, edge) * wp.float64(4.0) < eps * eps
+
+
+@wp.func
+def ec_step(ec: EarClipState, v: wp.int32, to_left: wp.bool) -> wp.int32:
+    return wp.where(to_left, ec.left[v], ec.right[v])
+
+
+@wp.func
+def ec_inside_edge(
+    ec: EarClipState,
+    this: wp.int32,
+    tail: wp.int32,
+    eps: wp.float64,
+    to_left: wp.bool,
+    limit: wp.int32,
+) -> wp.bool:
+    # ``Vert::InsideEdge``: whether ``this`` is on the inside of edge tail -> tail.right, walking
+    # past edges shorter than epsilon until the answer is clear.
+    p2 = eps * eps
+    next_l = ec.right[ec.left[this]]
+    next_r = ec.right[tail]
+    center = tail
+    last = center
+    stop = wp.where(to_left, ec.right[this], ec.left[this])
+    steps = wp.int32(0)
+    while next_l != next_r and tail != next_r and next_l != stop and steps < limit:
+        steps += 1
+        edge_l = ec.pos[next_l] - ec.pos[center]
+        l2 = wp.dot(edge_l, edge_l)
+        if l2 <= p2:
+            next_l = ec_step(ec, next_l, to_left)
+            continue
+        edge_r = ec.pos[next_r] - ec.pos[center]
+        r2 = wp.dot(edge_r, edge_r)
+        if r2 <= p2:
+            next_r = ec.right[next_r]
+            continue
+        vec_lr = ec.pos[next_r] - ec.pos[next_l]
+        lr2 = wp.dot(vec_lr, vec_lr)
+        if lr2 <= p2:
+            last = center
+            center = next_l
+            next_l = ec_step(ec, next_l, to_left)
+            if next_l == next_r:
+                break
+            next_r = ec.right[next_r]
+            continue
+        convexity = ccw(ec.pos[next_l], ec.pos[center], ec.pos[next_r], eps)
+        if center != last:
+            convexity += ccw(ec.pos[last], ec.pos[center], ec.pos[next_l], eps) + ccw(
+                ec.pos[next_r], ec.pos[center], ec.pos[last], eps
+            )
+        if convexity != 0:
+            return convexity > 0
+        if l2 < r2:
+            center = next_l
+            next_l = ec_step(ec, next_l, to_left)
+        else:
+            center = next_r
+            next_r = ec.right[next_r]
+        last = center
+    return True
+
+
+@wp.func
+def ec_is_convex(ec: EarClipState, v: wp.int32, eps: wp.float64) -> wp.bool:
+    return ccw(ec.pos[ec.left[v]], ec.pos[v], ec.pos[ec.right[v]], eps) >= 0
+
+
+@wp.func
+def ec_is_reflex(ec: EarClipState, v: wp.int32, eps: wp.float64, limit: wp.int32) -> wp.bool:
+    left = ec.left[v]
+    return not ec_inside_edge(ec, left, ec.right[left], eps, True, limit)
+
+
+@wp.func
+def ec_clip_ear(ec: EarClipState, ear: wp.int32, tri_base: wp.int32, n_tris: wp.int32) -> wp.int32:
+    # ``ClipEar``: unlink the ear and emit its triangle unless two corners are copies of one
+    # vertex (a keyhole's duplicates). Returns the new triangle count.
+    left = ec.left[ear]
+    right = ec.right[ear]
+    ec_link(ec, left, right)
+    a = ec.idx[left]
+    b = ec.idx[ear]
+    c = ec.idx[right]
+    if a != b and b != c and c != a:
+        ec.tris[tri_base + n_tris] = wp.vec3i(a, b, c)
+        return n_tris + 1
+    return n_tris
+
+
+@wp.func
+def ec_clip_if_degenerate(
+    ec: EarClipState,
+    ear: wp.int32,
+    eps: wp.float64,
+    base: wp.int32,
+    cap: wp.int32,
+    n_tris: wp.int32,
+) -> wp.int32:
+    # ``ClipIfDegenerate`` with its recursion on an explicit stack: the left neighbour's whole
+    # cascade before the right's, as the recursion runs them.
+    top = wp.int32(1)
+    ec.stack[base] = ear
+    count = n_tris
+    while top > 0:
+        top -= 1
+        e = ec.stack[base + top]
+        if ec_clipped(ec, e):
+            continue
+        left = ec.left[e]
+        right = ec.right[e]
+        if left == right:
+            continue
+        pl = ec.pos[left]
+        pe = ec.pos[e]
+        pr = ec.pos[right]
+        if ec_is_short(ec, e, eps) or (
+            ccw(pl, pe, pr, eps) == 0 and wp.dot(pl - pe, pr - pe) > wp.float64(0.0)
+        ):
+            count = ec_clip_ear(ec, e, base, count)
+            if top + 2 <= cap:
+                ec.stack[base + top] = right
+                ec.stack[base + top + 1] = left
+                top += 2
+    return count
+
+
+@wp.func
+def ec_loop(
+    ec: EarClipState, first: wp.int32, out: wp.array[wp.int32], base: wp.int32, limit: wp.int32
+) -> wp.vec3i:
+    # ``EarClip::Loop`` as a list: the un-clipped vertices it visits from ``first`` into
+    # ``out[base:]``, as (count, whether it ran into a two-vertex remnant, the vertex it ended on).
+    # The visitors never relink the list, so listing first is the same walk.
+    v = first
+    start = first
+    count = wp.int32(0)
+    ended = wp.int32(0)
+    steps = wp.int32(0)
+    while steps < limit:
+        steps += 1
+        if ec_clipped(ec, v):
+            start = ec.left[ec.right[v]]
+            if not ec_clipped(ec, start):
+                v = start
+                if ec.right[v] == ec.left[v]:
+                    ended = wp.int32(1)
+                    break
+                out[base + count] = v
+                count += 1
+        else:
+            if ec.right[v] == ec.left[v]:
+                ended = wp.int32(1)
+                break
+            out[base + count] = v
+            count += 1
+        v = ec.right[v]
+        if v == start:
+            break
+    return wp.vec3i(count, ended, v)
+
+
+@wp.func
+def ec_interp_y2x(
+    ec: EarClipState, v: wp.int32, start: wp.vec2d, on_top: wp.int32, eps: wp.float64
+) -> tuple[wp.float64, wp.bool]:
+    # ``Vert::InterpY2X``: where edge v -> v.right crosses ``start.y`` going up, if it does.
+    p = ec.pos[v]
+    r = ec.pos[ec.right[v]]
+    if wp.abs(p[1] - start[1]) <= eps:
+        if r[1] <= start[1] + eps or on_top == 1:
+            return wp.float64(0.0), False
+        return p[0], True
+    if p[1] < start[1] - eps:
+        if r[1] > start[1] + eps:
+            return p[0] + (start[1] - p[1]) * (r[0] - p[0]) / (r[1] - p[1]), True
+        if r[1] < start[1] - eps or on_top == -1:
+            return wp.float64(0.0), False
+        return r[0], True
+    return wp.float64(0.0), False
+
+
+@wp.func
+def ec_signed_dist(
+    ec: EarClipState, this: wp.int32, v: wp.int32, unit: wp.vec2d, eps: wp.float64
+) -> wp.float64:
+    origin = ec.pos[this]
+    d = det2(unit, ec.pos[v] - origin)
+    if wp.abs(d) < eps:
+        d_right = det2(unit, ec.pos[ec.right[v]] - origin)
+        if wp.abs(d_right) > eps:
+            return d_right
+        d_left = det2(unit, ec.pos[ec.left[v]] - origin)
+        if wp.abs(d_left) > eps:
+            return d_left
+    return d
+
+
+@wp.func
+def ec_ear_cost(
+    ec: EarClipState, v: wp.int32, eps: wp.float64, collider_base: wp.int32, n_collider: wp.int32
+) -> wp.float64:
+    # ``Vert::EarCost``: how far the worst vertex in the ear's box intrudes, the Delaunay term
+    # ranking the valid ears.
+    left = ec.left[v]
+    right = ec.right[v]
+    open_side = ec.pos[left] - ec.pos[right]
+    center = wp.float64(0.5) * (ec.pos[left] + ec.pos[right])
+    scale = wp.float64(4.0) / wp.dot(open_side, open_side)
+    radius = wp.length(open_side) / wp.float64(2.0)
+    open_side = open_side / wp.length(open_side)
+    total = wp.dot(ec.right_dir[left], ec.right_dir[v]) - wp.float64(1.0) - eps
+    if ccw(ec.pos[v], ec.pos[left], ec.pos[right], eps) == 0:
+        return total
+    box_lo = wp.vec2d(center[0] - radius, center[1] - radius)
+    box_hi = wp.vec2d(center[0] + radius, center[1] + radius)
+    box_lo = wp.min(box_lo, ec.pos[v]) - wp.vec2d(eps, eps)
+    box_hi = wp.max(box_hi, ec.pos[v]) + wp.vec2d(eps, eps)
+    lid = ec.idx[left]
+    rid = ec.idx[right]
+    vid = ec.idx[v]
+    for c in range(n_collider):
+        test = ec.collider[collider_base + c]
+        p = ec.pos[test]
+        if p[0] < box_lo[0] or p[1] < box_lo[1] or p[0] > box_hi[0] or p[1] > box_hi[1]:
+            continue
+        tid = ec.idx[test]
+        if ec_clipped(ec, test) or tid == vid or tid == lid or tid == rid:
+            continue
+        cost = wp.min(
+            ec_signed_dist(ec, v, test, ec.right_dir[v], eps),
+            ec_signed_dist(ec, v, test, ec.right_dir[left], eps),
+        )
+        cost = wp.min(cost, det2(open_side, p - ec.pos[right]))
+        if cost < wp.float64(0.0) - eps:
+            diff = p - center
+            cost = wp.float64(0.0) - eps - scale * wp.dot(diff, diff)
+        if cost > total:
+            total = cost
+    return total
+
+
+@wp.func
+def ec_process_ear(
+    ec: EarClipState,
+    v: wp.int32,
+    eps: wp.float64,
+    collider_base: wp.int32,
+    n_collider: wp.int32,
+    next_seq: wp.int32,
+) -> wp.int32:
+    # ``ProcessEar``: requeue v at its new cost, or drop it while it is reflex. Queue order is
+    # (cost, insertion), the ``std::multiset``'s. Returns the next insertion number.
+    ec.seq[v] = -1
+    if ec_is_short(ec, v, eps):
+        ec.cost[v] = wp.float64(-1.0e308) * wp.float64(10.0)
+        ec.seq[v] = next_seq
+        return next_seq + 1
+    if ec_is_convex(ec, v, wp.float64(2.0) * eps):
+        ec.cost[v] = ec_ear_cost(ec, v, eps, collider_base, n_collider)
+        ec.seq[v] = next_seq
+        return next_seq + 1
+    ec.cost[v] = wp.float64(1.0)
+    return next_seq
+
+
+@wp.func
+def ec_find_closer_bridge(
+    ec: EarClipState,
+    start: wp.int32,
+    edge: wp.int32,
+    eps: wp.float64,
+    base: wp.int32,
+    n_outers: wp.int32,
+    limit: wp.int32,
+) -> wp.int32:
+    # ``FindCloserBridge``: the reflex vertex inside the triangle between the hole's start, the
+    # first guess and the horizontal line, if any, closest in angle.
+    s = ec.pos[start]
+    e = ec.pos[edge]
+    er = ec.pos[ec.right[edge]]
+    connector = ec.right[edge]
+    if e[0] < s[0]:
+        connector = ec.right[edge]
+    elif er[0] < s[0]:
+        connector = edge
+    elif er[1] - s[1] > s[1] - e[1]:
+        connector = edge
+    if wp.abs(ec.pos[connector][1] - s[1]) <= eps:
+        return connector
+    above = wp.where(ec.pos[connector][1] > s[1], wp.float64(1.0), wp.float64(-1.0))
+    for o in range(n_outers):
+        walk = ec_loop(ec, ec.outers[base + o], ec.visit, base, limit)
+        for i in range(walk[0]):
+            vert = ec.visit[base + i]
+            p = ec.pos[vert]
+            c = ec.pos[connector]
+            inside = above * wp.float64(ccw(s, p, c, eps))
+            if (
+                p[0] > s[0] - eps
+                and p[1] * above > s[1] * above - eps
+                and (
+                    inside > wp.float64(0.0)
+                    or (inside == wp.float64(0.0) and p[0] < c[0] and p[1] * above < c[1] * above)
+                )
+                and ec_inside_edge(ec, vert, edge, eps, True, limit)
+                and ec_is_reflex(ec, vert, eps, limit)
+            ):
+                connector = vert
+    return connector
+
+
+@wp.func
+def ec_copy_vert(ec: EarClipState, src: wp.int32, dst: wp.int32):
+    ec.pos[dst] = ec.pos[src]
+    ec.right_dir[dst] = ec.right_dir[src]
+    ec.left[dst] = ec.left[src]
+    ec.right[dst] = ec.right[src]
+    ec.idx[dst] = ec.idx[src]
+    ec.cost[dst] = ec.cost[src]
+    ec.seq[dst] = ec.seq[src]
+
+
+@wp.func
+def ec_triangulate_poly(
+    ec: EarClipState,
+    start: wp.int32,
+    eps: wp.float64,
+    base: wp.int32,
+    limit: wp.int32,
+    n_tris: wp.int32,
+) -> wp.int32:
+    # ``TriangulatePoly``: clip the cheapest ear until the polygon is spent; an empty queue (a
+    # geometrically invalid polygon) clips the backup vertex, so the result stays manifold.
+    collect = ec_loop(ec, start, ec.collider, base, limit)
+    n_collider = collect[0]
+    if n_collider == 0:
+        return n_tris
+    for c in range(n_collider):
+        ec.seq[ec.collider[base + c]] = -1
+    num_tri = wp.int32(-2)
+    next_seq = wp.int32(0)
+    walk = ec_loop(ec, start, ec.visit, base, limit)
+    for i in range(walk[0]):
+        next_seq = ec_process_ear(ec, ec.visit[base + i], eps, base, n_collider, next_seq)
+        num_tri += 1
+    if walk[1] != 0:
+        return n_tris
+    v = walk[2]
+    count = n_tris
+    while num_tri > 0:
+        best = wp.int32(-1)
+        best_cost = wp.float64(0.0)
+        best_seq = wp.int32(0)
+        for c in range(n_collider):
+            u = ec.collider[base + c]
+            if ec.seq[u] >= 0:
+                if (
+                    best < 0
+                    or ec.cost[u] < best_cost
+                    or (ec.cost[u] == best_cost and ec.seq[u] < best_seq)
+                ):
+                    best = u
+                    best_cost = ec.cost[u]
+                    best_seq = ec.seq[u]
+        if best >= 0:
+            v = best
+            ec.seq[v] = -1
+        count = ec_clip_ear(ec, v, base, count)
+        num_tri -= 1
+        next_seq = ec_process_ear(ec, ec.left[v], eps, base, n_collider, next_seq)
+        next_seq = ec_process_ear(ec, ec.right[v], eps, base, n_collider, next_seq)
+        v = ec.right[v]
+    return count
+
+
+@wp.func
+def ear_clip(
+    ec: EarClipState,
+    base: wp.int32,
+    cap: wp.int32,
+    n_verts: wp.int32,
+    n_loops: wp.int32,
+    eps: wp.float64,
+) -> wp.int32:
+    # ``EarClip``'s constructor and ``Triangulate`` over the polygon ``assemble_loops`` laid out at
+    # ``base``: ``n_verts`` vertices in loop order, loop ``l`` starting at ``ec.starts[base + l]``.
+    # Returns the triangle count, the triangles in ``ec.tris[base:]``.
+    limit = 4 * cap + 16
+    n_tris = wp.int32(0)
+    for i in range(n_verts):
+        n_tris = ec_clip_if_degenerate(ec, base + i, eps, base, cap, n_tris)
+    n_holes = wp.int32(0)
+    n_outers = wp.int32(0)
+    n_simples = wp.int32(0)
+    for loop in range(n_loops):
+        first = ec.starts[base + loop]
+        # ``FindStart``.
+        origin = ec.pos[first]
+        start = first
+        max_x = wp.float64(-1.0e308) * wp.float64(10.0)
+        box_lo = wp.vec2d(
+            wp.float64(1.0e308) * wp.float64(10.0), wp.float64(1.0e308) * wp.float64(10.0)
+        )
+        box_hi = wp.vec2d() - box_lo
+        area = wp.float64(0.0)
+        compensation = wp.float64(0.0)
+        walk = ec_loop(ec, first, ec.visit, base, limit)
+        if walk[1] != 0:
+            continue
+        for i in range(walk[0]):
+            v = ec.visit[base + i]
+            p = ec.pos[v]
+            box_lo = wp.min(box_lo, p)
+            box_hi = wp.max(box_hi, p)
+            area1 = det2(p - origin, ec.pos[ec.right[v]] - origin)
+            t1 = area + area1
+            compensation += (area - t1) + area1
+            area = t1
+            if p[0] > max_x and ec_is_reflex(ec, v, eps, limit):
+                max_x = p[0]
+                start = v
+        area += compensation
+        size = box_hi - box_lo
+        min_area = eps * wp.max(size[0], size[1])
+        if wp.isfinite(max_x) and area < wp.float64(0.0) - min_area:
+            ec.holes[base + n_holes] = start
+            ec.hole_box[base + n_holes] = wp.vec4d(box_lo[0], box_lo[1], box_hi[0], box_hi[1])
+            n_holes += 1
+        else:
+            ec.simples[base + n_simples] = start
+            n_simples += 1
+            if area > min_area:
+                ec.outers[base + n_outers] = start
+                n_outers += 1
+    # ``CutKeyhole`` for each hole, rightmost first (a ``std::multiset`` by x, ties in order).
+    count = n_verts
+    for _ in range(n_holes):
+        pick = wp.int32(-1)
+        for h in range(n_holes):
+            hv = ec.holes[base + h]
+            if hv < 0:
+                continue
+            if pick < 0 or ec.pos[hv][0] > ec.pos[ec.holes[base + pick]][0]:
+                pick = h
+        start = ec.holes[base + pick]
+        box = ec.hole_box[base + pick]
+        ec.holes[base + pick] = -1
+        s = ec.pos[start]
+        on_top = wp.int32(0)
+        if s[1] >= box[3] - eps:
+            on_top = wp.int32(1)
+        elif s[1] <= box[1] + eps:
+            on_top = wp.int32(-1)
+        connector = wp.int32(-1)
+        for o in range(n_outers):
+            walk = ec_loop(ec, ec.outers[base + o], ec.visit, base, limit)
+            for i in range(walk[0]):
+                edge = ec.visit[base + i]
+                x, ok = ec_interp_y2x(ec, edge, s, on_top, eps)
+                if not ok:
+                    continue
+                if not ec_inside_edge(ec, start, edge, eps, True, limit):
+                    continue
+                take = connector < 0
+                if not take:
+                    take = (
+                        ccw(wp.vec2d(x, s[1]), ec.pos[connector], ec.pos[ec.right[connector]], eps)
+                        == 1
+                    )
+                if not take:
+                    if ec.pos[connector][1] < ec.pos[edge][1]:
+                        take = ec_inside_edge(ec, edge, connector, eps, False, limit)
+                    else:
+                        take = not ec_inside_edge(ec, connector, edge, eps, False, limit)
+                if take:
+                    connector = edge
+        if connector < 0:
+            ec.simples[base + n_simples] = start
+            n_simples += 1
+            continue
+        connector = ec_find_closer_bridge(ec, start, connector, eps, base, n_outers, limit)
+        # ``JoinPolygons``: duplicate both ends and splice the hole in.
+        if count + 2 > cap:
+            continue
+        new_start = base + count
+        new_connector = base + count + 1
+        count += 2
+        ec_copy_vert(ec, start, new_start)
+        ec_copy_vert(ec, connector, new_connector)
+        ec.left[ec.right[start]] = new_start
+        ec.right[ec.left[connector]] = new_connector
+        ec_link(ec, start, connector)
+        ec_link(ec, new_connector, new_start)
+        n_tris = ec_clip_if_degenerate(ec, start, eps, base, cap, n_tris)
+        n_tris = ec_clip_if_degenerate(ec, new_start, eps, base, cap, n_tris)
+        n_tris = ec_clip_if_degenerate(ec, connector, eps, base, cap, n_tris)
+        n_tris = ec_clip_if_degenerate(ec, new_connector, eps, base, cap, n_tris)
+    for i in range(n_simples):
+        n_tris = ec_triangulate_poly(ec, ec.simples[base + i], eps, base, limit, n_tris)
+    return n_tris
+
+
+@wp.func
+def polygons_convex(
+    ec: EarClipState, n_verts: wp.int32, n_loops: wp.int32, eps: wp.float64
+) -> wp.bool:
+    # ``IsConvex``: every loop turns left at every vertex (beyond epsilon where it folds back).
+    for loop in range(n_loops):
+        first = ec.starts[loop]
+        last = n_verts
+        if loop + 1 < n_loops:
+            last = ec.starts[loop + 1]
+        size = last - first
+        first_edge = ec.pos[first] - ec.pos[last - 1]
+        last_edge = first_edge / wp.length(first_edge)
+        for v in range(size):
+            edge = first_edge
+            if v + 1 < size:
+                edge = ec.pos[first + v + 1] - ec.pos[first + v]
+            d = det2(last_edge, edge)
+            if d <= wp.float64(0.0) or (
+                wp.abs(d) < eps and wp.dot(last_edge, edge) < wp.float64(0.0)
+            ):
+                return False
+            last_edge = edge / wp.length(edge)
+    return True
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def triangulate_polygon_set(
+    points: wp.array[wp.vec2],
+    offsets: wp.array[wp.int32],
+    epsilon: wp.float64,
+    allow_convex: wp.int32,
+    ec: EarClipState,
+    out_count: wp.array[wp.int32],
+) -> None:
+    # ``TriangulateIdx`` of every loop at once (outer loops counter-clockwise, holes clockwise), one
+    # thread: the alternating fan of ``TriangulateConvex`` when every loop is convex and that is
+    # allowed, else ``EarClip``. Loops of fewer than three points are dropped. Triangles reference
+    # ``points``; unbuilt Python-scope inputs are as in ``manifold::Triangulate``.
+    n_loops_in = offsets.shape[0] - 1
+    n_verts = wp.int32(0)
+    n_loops = wp.int32(0)
+    for loop in range(n_loops_in):
+        head = offsets[loop]
+        tail = offsets[loop + 1]
+        if tail - head < 3:
+            continue
+        loop_first = n_verts
+        for i in range(head, tail):
+            v = n_verts
+            ec.pos[v] = wp.vec2d(points[i])
+            ec.idx[v] = i
+            ec.seq[v] = -1
+            ec.cost[v] = wp.float64(0.0)
+            if i > head:
+                ec_link(ec, v - 1, v)
+            n_verts += 1
+        ec_link(ec, n_verts - 1, loop_first)
+        ec.starts[n_loops] = loop_first
+        n_loops += 1
+    if n_verts == 0:
+        out_count[0] = 0
+        return
+    if allow_convex != 0 and polygons_convex(ec, n_verts, n_loops, epsilon):
+        count = wp.int32(0)
+        for loop in range(n_loops):
+            first = ec.starts[loop]
+            last = n_verts
+            if loop + 1 < n_loops:
+                last = ec.starts[loop + 1]
+            i = first
+            k = last - 1
+            right = wp.bool(True)
+            while i + 1 < k:
+                j = wp.where(right, i + 1, k - 1)
+                ec.tris[count] = wp.vec3i(ec.idx[i], ec.idx[j], ec.idx[k])
+                count += 1
+                if right:
+                    i = j
+                else:
+                    k = j
+                right = not right
+        out_count[0] = count
+        return
+    eps = epsilon
+    if eps < wp.float64(0.0):
+        # ``EarClip``'s own epsilon: the points' largest coordinate times ``kPrecision``.
+        scale = wp.float64(0.0)
+        for v in range(n_verts):
+            p = ec.pos[v]
+            scale = wp.max(scale, wp.max(wp.abs(p[0]), wp.abs(p[1])))
+        eps = scale * wp.float64(1e-12)
+    out_count[0] = ear_clip(ec, 0, ec.pos.shape[0], n_verts, n_loops, eps)

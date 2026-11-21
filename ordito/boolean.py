@@ -36,6 +36,7 @@ from ordito._common import offsets_buffer, read_array, read_values, require_same
 from ordito.graph import connected_component_labels_from_edges
 from ordito.halfedge import halfedge_twins
 from ordito.kernels import boolean as kernel_boolean
+from ordito.kernels import polyline as kernel_polyline
 
 _Operation = Literal["union", "intersection", "difference"]
 
@@ -2138,7 +2139,7 @@ def _ear_clip_state(
     capacity: int, device: wp.DeviceLike
 ) -> tuple[StructInstance, wp.array[wp.vec3i]]:
     """Allocate the ear clipper's scratch for ``capacity`` slots over every face, and its output."""
-    state = kernel_boolean.EarClipState()
+    state = kernel_polyline.EarClipState()
     state.pos = _launch.empty(capacity, dtype=wp.vec2d, device=device)
     state.right_dir = _launch.empty(capacity, dtype=wp.vec2d, device=device)
     state.left = _launch.empty(capacity, dtype=wp.int32, device=device)

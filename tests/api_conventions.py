@@ -588,6 +588,7 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("boolean", "emit_partial_edges"): frozenset({"record_rank"}),
     ("boolean", "emit_new_edges"): frozenset({"item_rank"}),
     ("boolean", "triangulate_faces"): frozenset({"ec"}),
+    ("polyline", "triangulate_polygon_set"): frozenset({"ec"}),
     ("boolean", "flood_coplanar"): frozenset({"coplanar", "face_normals", "stack"}),
     ("boolean", "own_coplanar_groups"): frozenset({"coplanar"}),
     ("boolean", "write_result_halfedges"): frozenset({"slot_halfedge"}),

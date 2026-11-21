@@ -36,6 +36,7 @@ without that duplicate, which is the form
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from typing import Literal
 
 import numpy as np
@@ -2428,3 +2429,180 @@ def _faces_in_tip_order(faces: odt.Array2dInt32, n_tips: int) -> odt.Array2dInt3
         device=device,
     )
     return odt.as_array2d(ordered, wp.int32)
+
+
+def triangulate_polygons(
+    polygons: Sequence[wp.array[wp.vec2]], epsilon: float = -1.0, *, allow_convex: bool = True
+) -> wp.array[wp.int32]:
+    """
+    Return the triangles of a planar region given as polygons: outer loops and the holes in them.
+
+    Each polygon is a closed loop with no repeated closing point, outer boundaries counter-clockwise
+    and holes clockwise, all on one device. The loops are triangulated together, holes cut into
+    the loop around them, and no point is added: every output triangle names three input points,
+    numbered through the polygons in order. Loops that overlap, or come within ``epsilon`` of one
+    another, still give a triangulation whose edges follow the loops (a manifold one), though its
+    triangles may then overlap.
+
+    Parameters
+    ----------
+    polygons
+        ``(n_i,)`` loops of 2D points.
+    epsilon
+        The distance below which points count as coincident and turns as straight. Negative takes
+        ``1e-12`` times the points' largest coordinate.
+    allow_convex
+        When every loop is convex, triangulate each by an alternating fan instead of clipping ears:
+        faster, lower-quality triangles.
+
+    Returns
+    -------
+    wp.array[wp.int32]
+        ``(3 * n_faces,)`` flat triangle index buffer into the polygons' points, in order.
+
+    Raises
+    ------
+    RuntimeError
+        If the polygons are not all on one device.
+
+    See Also
+    --------
+    [`triangulate_polygons_from_offsets`][ordito.polyline.triangulate_polygons_from_offsets]
+    [`triangulate_polygon`][ordito.polyline.triangulate_polygon]
+
+    Notes
+    -----
+    The Manifold library's triangulator (``manifold3d.triangulate``): the same triangles, in the
+    same order.
+
+    Examples
+    --------
+    A square with a square hole: eight points, eight triangles:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    outer = wp.array([[0, 0], [4, 0], [4, 4], [0, 4]], dtype=wp.vec2)
+    hole = wp.array([[1, 1], [1, 3], [3, 3], [3, 1]], dtype=wp.vec2)
+    faces = od.polyline.triangulate_polygons([outer, hole])
+    print(faces.size // 3)  # 8
+    ```
+    """
+    if len(polygons) == 0:
+        return _launch.empty(0, dtype=wp.int32, device=None)
+    require_same_device(polygons=list(polygons))
+    device = polygons[0].device
+    sizes = [int(polygon.shape[0]) for polygon in polygons]
+    points = _launch.empty(sum(sizes), dtype=wp.vec2, device=device)
+    offset = 0
+    for polygon, size in zip(polygons, sizes, strict=True):
+        if size > 0:
+            _launch.copy(points, polygon, dest_offset=offset, count=size)
+        offset += size
+    offsets = _launch.array(np.cumsum([0, *sizes]).astype(np.int32), dtype=wp.int32, device=device)
+    return triangulate_polygons_from_offsets(points, offsets, epsilon, allow_convex=allow_convex)
+
+
+def triangulate_polygons_from_offsets(
+    points: wp.array[wp.vec2],
+    offsets: wp.array[wp.int32],
+    epsilon: float = -1.0,
+    *,
+    allow_convex: bool = True,
+) -> wp.array[wp.int32]:
+    """
+    Return the triangles of a planar region given as packed loops: outer loops and their holes.
+
+    Loop ``r`` is ``points[offsets[r] : offsets[r + 1]]``; otherwise as
+    [`triangulate_polygons`][ordito.polyline.triangulate_polygons].
+
+    Parameters
+    ----------
+    points
+        ``(n_points,)`` every loop's points, loop after loop.
+    offsets
+        ``(n_loops + 1,)`` loop bounds into ``points``.
+    epsilon
+        The distance below which points count as coincident and turns as straight. Negative takes
+        ``1e-12`` times the points' largest coordinate.
+    allow_convex
+        When every loop is convex, triangulate each by an alternating fan instead of clipping ears.
+
+    Returns
+    -------
+    wp.array[wp.int32]
+        ``(3 * n_faces,)`` flat triangle index buffer into ``points``.
+
+    Raises
+    ------
+    RuntimeError
+        If ``points`` and ``offsets`` are not on one device.
+
+    See Also
+    --------
+    [`triangulate_polygons`][ordito.polyline.triangulate_polygons]
+
+    Notes
+    -----
+    The ear clipper is serial, so the region is triangulated on the host CPU whatever the
+    arrays' device, and the triangles copied back; a region of many thousands of points is
+    slow.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points = wp.array([[0, 0], [2, 0], [1, 1], [2, 2], [0, 2]], dtype=wp.vec2)
+    offsets = wp.array([0, 5], dtype=wp.int32)
+    faces = od.polyline.triangulate_polygons_from_offsets(points, offsets)
+    print(faces.size // 3)  # 3
+    ```
+    """
+    require_same_device(points=points, offsets=offsets)
+    device = points.device
+    n_points = int(points.shape[0])
+    # The clipper is one serial walk of dependent loads, so it runs on the host whatever the
+    # device: 1 024 points 7 ms on the CPU against 459 ms on one GPU thread (65x, 2026-11-21; the
+    # copies are a few microseconds of the region's bytes).
+    host = wp.get_device("cpu")
+    if wp.get_device(device) != host:
+        points = _launch.clone(points, device=host)
+        offsets = _launch.clone(offsets, device=host)
+    capacity = 3 * n_points + 16
+    state = kernel_polyline.EarClipState()
+    state.pos = _launch.empty(capacity, dtype=wp.vec2d, device=host)
+    state.right_dir = _launch.empty(capacity, dtype=wp.vec2d, device=host)
+    state.left = _launch.empty(capacity, dtype=wp.int32, device=host)
+    state.right = _launch.empty(capacity, dtype=wp.int32, device=host)
+    state.idx = _launch.empty(capacity, dtype=wp.int32, device=host)
+    state.cost = _launch.empty(capacity, dtype=wp.float64, device=host)
+    state.seq = _launch.empty(capacity, dtype=wp.int32, device=host)
+    state.visit = _launch.empty(capacity, dtype=wp.int32, device=host)
+    state.collider = _launch.empty(capacity, dtype=wp.int32, device=host)
+    state.stack = _launch.empty(capacity, dtype=wp.int32, device=host)
+    state.starts = _launch.empty(capacity, dtype=wp.int32, device=host)
+    state.holes = _launch.empty(capacity, dtype=wp.int32, device=host)
+    state.hole_box = _launch.empty(capacity, dtype=wp.vec4d, device=host)
+    state.outers = _launch.empty(capacity, dtype=wp.int32, device=host)
+    state.simples = _launch.empty(capacity, dtype=wp.int32, device=host)
+    tris = _launch.empty(capacity, dtype=wp.vec3i, device=host)
+    state.tris = tris
+    count = _launch.zeros(1, dtype=wp.int32, device=host)
+    if n_points > 0 and int(offsets.shape[0]) > 1:
+        _launch.launch(
+            kernel_polyline.triangulate_polygon_set,
+            dim=1,
+            inputs=[points, offsets, float(epsilon), 1 if allow_convex else 0, state],
+            outputs=[count],
+            device=host,
+        )
+    n_triangles = int(read_values(count, 0, 1)[0])
+    faces = _launch.empty(3 * n_triangles, dtype=wp.int32, device=device)
+    if n_triangles > 0:
+        _launch.copy(faces, _launch.view_as(_launch.view(tris, 0, n_triangles), wp.int32))
+    return faces

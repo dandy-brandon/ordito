@@ -6337,6 +6337,40 @@
    "sort": 1
   }
  },
+ "benchmarks/test_polyline.py::test_triangulate_polygons[ordito-cuda-1024]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 22,
+   "d2d": 9,
+   "h2d": 2,
+   "d2h": 2
+  }
+ },
+ "benchmarks/test_polyline.py::test_triangulate_polygons[ordito-cuda-64]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 22,
+   "d2d": 9,
+   "h2d": 2,
+   "d2h": 2
+  }
+ },
+ "benchmarks/test_polyline.py::test_triangulate_polygons_from_offsets[ordito-cuda-1024]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 20,
+   "h2d": 1,
+   "d2h": 2
+  }
+ },
+ "benchmarks/test_polyline.py::test_triangulate_polygons_from_offsets[ordito-cuda-64]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 20,
+   "h2d": 1,
+   "d2h": 2
+  }
+ },
  "benchmarks/test_polyline.py::test_triangulate_polyline[sphere_small-ordito-cuda-1024]": {
   "counts": {
    "launch": 7,

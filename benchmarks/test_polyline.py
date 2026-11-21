@@ -89,6 +89,7 @@ stores unordered segments with no ordering, length, resampling or simplification
 
 from __future__ import annotations
 
+import manifold3d as m3
 import numpy as np
 import pytest
 import pyvista as pv
@@ -884,6 +885,62 @@ def test_triangulate_polygon(bench_lib: BenchLibrary, ring_size: int) -> None:
         polygon = sg.Polygon(_star_np(ring_size))
         _vertices, faces_tm = bench_lib.run(lambda: tm.creation.triangulate_polygon(polygon))
         assert faces_tm.shape[0] > 0
+
+
+def _region_np(ring_size: int) -> list[np.ndarray]:
+    """Return a star ring with eight small square holes inside its core, as loops."""
+    holes = []
+    for k in range(8):
+        angle = 2.0 * np.pi * k / 8
+        cx, cy = 0.25 * np.cos(angle), 0.25 * np.sin(angle)
+        s = 0.04
+        holes.append(
+            np.array([[cx - s, cy - s], [cx - s, cy + s], [cx + s, cy + s], [cx + s, cy - s]])
+        )
+    return [_star_np(ring_size), *holes]
+
+
+@pytest.mark.benchmark(group="triangulate_polygons")
+@pytest.mark.benchlibs("ordito", "manifold3d")
+@pytest.mark.parametrize("ring_size", _STAR_RINGS)
+def test_triangulate_polygons(bench_lib: BenchLibrary, ring_size: int) -> None:
+    """
+    A star ring with eight holes, keyholed and ear clipped by Manifold's triangulator.
+
+    One thread runs the whole region (the clipper is serial); the manifold3d row is the same
+    algorithm on the CPU.
+    """
+    loops_np = _region_np(ring_size)
+    if bench_lib.kind == "manifold3d":
+        faces_m3 = bench_lib.run(lambda: m3.triangulate(loops_np))
+        assert len(faces_m3) > 0
+        return
+    device = str(bench_lib.device)
+    loops_wp = [
+        wp.array(loop.astype(np.float32), dtype=wp.vec2, device=device) for loop in loops_np
+    ]
+    faces = bench_lib.run(lambda: od.polyline.triangulate_polygons(loops_wp))
+    assert faces.size > 0
+
+
+@pytest.mark.benchmark(group="triangulate_polygons_from_offsets")
+@pytest.mark.benchlibs("ordito", "manifold3d")
+@pytest.mark.parametrize("ring_size", _STAR_RINGS)
+def test_triangulate_polygons_from_offsets(bench_lib: BenchLibrary, ring_size: int) -> None:
+    """The same region as packed loops, the copy into one buffer not timed."""
+    loops_np = _region_np(ring_size)
+    if bench_lib.kind == "manifold3d":
+        faces_m3 = bench_lib.run(lambda: m3.triangulate(loops_np))
+        assert len(faces_m3) > 0
+        return
+    device = str(bench_lib.device)
+    points_wp = wp.array(np.concatenate(loops_np).astype(np.float32), dtype=wp.vec2, device=device)
+    sizes = np.cumsum([0, *(len(loop) for loop in loops_np)]).astype(np.int32)
+    offsets_wp = wp.array(sizes, dtype=wp.int32, device=device)
+    faces = bench_lib.run(
+        lambda: od.polyline.triangulate_polygons_from_offsets(points_wp, offsets_wp)
+    )
+    assert faces.size > 0
 
 
 _LONG_RINGS = [16384, 65536]

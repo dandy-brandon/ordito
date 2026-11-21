@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Literal, cast
 
+import manifold3d as m3
 import numpy as np
 import pytest
 import shapely.geometry as sg
@@ -2606,6 +2607,84 @@ def test_triangulate_polygon_zipper_tail_matches_the_round_loop(
     assert np.isclose(
         _tiled_area(ring_np, faces_np), abs(_signed_ring_area(ring_np.astype(np.float64)))
     )
+
+
+def _loop_np(
+    n: int,
+    radius: float,
+    centre: tuple[float, float] = (0.0, 0.0),
+    *,
+    clockwise: bool = False,
+    jitter: float = 0.0,
+    seed: int = 0,
+) -> np.ndarray:
+    """Return an ``n``-point loop around ``centre``, radius jittered, as ``float32`` points."""
+    angles = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)
+    if clockwise:
+        angles = angles[::-1]
+    radii = radius * (1.0 + jitter * np.random.default_rng(seed).uniform(-1.0, 1.0, n))
+    points = np.stack([centre[0] + radii * np.cos(angles), centre[1] + radii * np.sin(angles)], 1)
+    return points.astype(np.float32)
+
+
+# Regions of loops: a square with a hole, a star, a convex loop (the fan), two outer loops with
+# holes, jagged holes in a jagged loop, and degenerate loops (collinear points, a repeated point,
+# a two-point loop that is dropped).
+_POLYGON_SETS = {
+    "square_hole": [
+        np.array([[0, 0], [4, 0], [4, 4], [0, 4]], dtype=np.float32),
+        np.array([[1, 1], [1, 3], [3, 3], [3, 1]], dtype=np.float32),
+    ],
+    "star": [_loop_np(20, 1.0, jitter=0.5)],
+    "convex": [_loop_np(12, 1.0)],
+    "two_outer_holes": [
+        _loop_np(30, 1.0),
+        _loop_np(8, 0.3, (0.3, 0.0), clockwise=True),
+        _loop_np(8, 0.2, (-0.4, 0.2), clockwise=True),
+        _loop_np(16, 0.5, (3.0, 0.0)),
+    ],
+    "jagged_holes": [
+        _loop_np(60, 2.0, jitter=0.2, seed=1),
+        _loop_np(10, 0.3, (0.5, 0.5), clockwise=True, jitter=0.2, seed=2),
+        _loop_np(12, 0.4, (-0.6, -0.4), clockwise=True, jitter=0.3, seed=3),
+        _loop_np(9, 0.25, (0.2, -0.9), clockwise=True, jitter=0.1, seed=4),
+    ],
+    "degenerate": [
+        np.array([[0, 0], [1, 0], [2, 0], [2, 1], [1, 1], [1, 1], [0, 1]], dtype=np.float32),
+        np.array([[5, 5], [6, 5]], dtype=np.float32),
+    ],
+}
+
+
+@pytest.mark.parity("triangulate_polygons", "manifold3d")
+@pytest.mark.parity("triangulate_polygons_from_offsets", "manifold3d")
+@pytest.mark.parametrize("allow_convex", [True, False])
+@pytest.mark.parametrize("case", list(_POLYGON_SETS))
+def test_triangulate_polygons_matches_manifold3d(
+    device: str, case: str, allow_convex: bool
+) -> None:
+    """
+    The triangles of a region of loops are ``manifold3d.triangulate``'s, in its order.
+
+    Class A, array for array: the same ear clipper (keyholed holes, the sharpest valid ear first)
+    and, where every loop is convex and that is allowed, the same alternating fan. Both entry
+    points, the list and the packed loops. The reference is non-vacuous: it has triangles.
+    """
+    polygons_np = _POLYGON_SETS[case]
+    faces_m3 = np.asarray(
+        m3.triangulate([polygon.astype(np.float64) for polygon in polygons_np], -1.0, allow_convex)
+    )
+    assert faces_m3.shape[0] > 0
+    polygons_wp = [wp.array(polygon, dtype=wp.vec2, device=device) for polygon in polygons_np]
+    faces_wp = od.polyline.triangulate_polygons(polygons_wp, allow_convex=allow_convex)
+    assert np.array_equal(faces_wp.numpy().reshape(-1, 3), faces_m3)
+    points_wp = wp.array(np.concatenate(polygons_np), dtype=wp.vec2, device=device)
+    sizes = [0, *(len(polygon) for polygon in polygons_np)]
+    offsets_wp = wp.array(np.cumsum(sizes).astype(np.int32), dtype=wp.int32, device=device)
+    packed_wp = od.polyline.triangulate_polygons_from_offsets(
+        points_wp, offsets_wp, allow_convex=allow_convex
+    )
+    assert np.array_equal(packed_wp.numpy().reshape(-1, 3), faces_m3)
 
 
 def test_polyline_triangulate_is_reproducible_far_from_the_origin(device: str) -> None:
