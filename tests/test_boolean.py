@@ -465,6 +465,34 @@ def test_cross_section_matches_manifold3d(device: str, shape: str, height: float
     assert offsets.numpy()[-1] == sum(len(loop) for loop in loops)
 
 
+@pytest.mark.parity("decompose", "manifold3d")
+@pytest.mark.parametrize("case", ["row", "apart", "nested"])
+def test_decompose_matches_manifold3d(device: str, case: str) -> None:
+    """
+    The pieces are Manifold's ``decompose``, piece for piece and array for array.
+
+    Class A. ``apart`` is six spheres beside a bar crossing some of them (several pieces, one of
+    them merged); ``row`` is one piece; ``nested`` a box inside a hollow box: the outer wall, the
+    cavity's wall and the box, three pieces of which two touch nothing but enclose each other.
+    """
+    if case == "nested":
+        shell_m3 = _manifold_m3(_box([0, 0, 0], [3, 3, 3])) - _manifold_m3(
+            _box([1, 1, 1], [2, 2, 2])
+        )
+        whole_m3 = shell_m3 + _manifold_m3(_box([1.25, 1.25, 1.25], [1.75, 1.75, 1.75]))
+    else:
+        whole_m3 = m3.Manifold.batch_boolean(
+            [_manifold_m3(mesh) for mesh in _batch_meshes(case)], m3.OpType.Add
+        )
+    whole_tm = _manifold_mesh_tm(whole_m3)
+    pieces_m3 = _manifold_m3(whole_tm).decompose()
+    assert len(pieces_m3) == {"row": 1, "apart": 5, "nested": 3}[case]
+    pieces = od.boolean.decompose(*_upload(whole_tm, device))
+    assert len(pieces) == len(pieces_m3)
+    for piece, piece_m3 in zip(pieces, pieces_m3, strict=True):
+        _assert_same_as_m3(piece, piece_m3)
+
+
 def _manifold_mesh_tm(result_m3: m3.Manifold) -> tm.Trimesh:
     """Return a Manifold as a ``float32`` trimesh mesh."""
     mesh_m3 = result_m3.to_mesh()

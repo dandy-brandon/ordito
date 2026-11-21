@@ -1057,6 +1057,104 @@ def cross_section_with_offsets(
     return points, offsets
 
 
+def decompose(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
+) -> list[tuple[wp.array[wp.vec3], wp.array[wp.int32]]]:
+    """
+    Return a closed mesh's connected pieces, each a closed mesh.
+
+    Pieces are ordered by their earliest vertex, and each is laid out as
+    [`union`][ordito.boolean.union] lays out a result: vertices and faces in Morton order within
+    the piece's own box (a mesh of one piece keeps the whole mesh's box). Joining them back with
+    [`union_all`][ordito.boolean.union_all] gives the mesh.
+
+    Parameters
+    ----------
+    vertices, faces
+        ``(n_vertices,)`` and ``(3 * n_faces,)`` closed, consistently wound mesh.
+
+    Returns
+    -------
+    list[tuple[wp.array[wp.vec3], wp.array[wp.int32]]]
+        ``(n_vertices_i,)`` and ``(3 * n_faces_i,)`` each piece.
+
+    Raises
+    ------
+    RuntimeError
+        If ``vertices`` and ``faces`` are not on one device.
+    ValueError
+        If the mesh is not closed, has an edge shared by more than two faces, or is not
+        consistently wound.
+
+    See Also
+    --------
+    [`combine.split`][ordito.combine.split]
+
+    Notes
+    -----
+    Manifold's ``Manifold.decompose``: the same pieces, in the same order and layout.
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    a = od.creation.box(bounds=[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
+    b = od.creation.box(bounds=[[2.0, 0.0, 0.0], [3.0, 1.0, 1.0]])
+    pieces = od.boolean.decompose(*od.boolean.union_all([a, b]))
+    print(len(pieces))  # 2
+    ```
+    """
+    require_same_device(vertices=vertices, faces=faces)
+    device = vertices.device
+    solid = _solid_from_mesh(vertices, faces, 0, "")
+    if solid.is_empty:
+        return []
+    edges = odt.empty_2d((solid.faces.size, 2), wp.int32, device=device)
+    _launch.launch(
+        kernel_boolean.unbroken_edge_rows,
+        dim=solid.faces.size,
+        inputs=[solid.faces, _launch.zeros(solid.faces.size, dtype=wp.int32, device=device)],
+        outputs=[edges],
+        device=device,
+    )
+    labels = connected_component_labels_from_edges(edges, solid.n_vertices, validate=False)
+    # Host readback: each piece is gathered on the host, its vertices and faces in index order.
+    labels_np = read_array(labels)
+    roots = np.unique(labels_np)
+    if roots.size == 1:
+        return [_mesh_from_solid(solid, device)]
+    faces_np = read_array(solid.faces).reshape(-1, 3)
+    positions_np = read_array(solid.positions)
+    pieces: list[tuple[wp.array[wp.vec3], wp.array[wp.int32]]] = []
+    for root in roots:
+        vertex_ids = np.flatnonzero(labels_np == root)
+        piece_faces = faces_np[labels_np[faces_np[:, 0]] == root]
+        if piece_faces.size == 0:
+            continue
+        remap = np.full(labels_np.size, -1, dtype=np.int32)
+        remap[vertex_ids] = np.arange(vertex_ids.size, dtype=np.int32)
+        piece_positions = positions_np[vertex_ids]
+        lower = tuple(float(x) for x in piece_positions.min(axis=0))
+        upper = tuple(float(x) for x in piece_positions.max(axis=0))
+        sorted_positions, sorted_faces, *_ = _morton_sorted(
+            _launch.array(piece_positions, dtype=wp.vec3d, device=device),
+            _launch.array(remap[piece_faces].reshape(-1), dtype=wp.int32, device=device),
+            (lower[0], lower[1], lower[2]),
+            (upper[0], upper[1], upper[2]),
+        )
+        piece_vertices = _launch.empty(vertex_ids.size, dtype=wp.vec3, device=device)
+        _launch.launch(
+            kernel_boolean.narrow_positions,
+            dim=vertex_ids.size,
+            inputs=[sorted_positions],
+            outputs=[piece_vertices],
+            device=device,
+        )
+        pieces.append((piece_vertices, sorted_faces))
+    return pieces
+
+
 def _closed_positions(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
 ) -> tuple[wp.array[wp.vec3d], wp.array[wp.int32]]:

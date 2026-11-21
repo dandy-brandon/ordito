@@ -396,3 +396,27 @@ def test_cross_section_with_offsets(bench_case: BenchCase) -> None:
         lambda: od.boolean.cross_section_with_offsets(vertices_wp, faces_wp, height)
     )
     assert offsets.size > 1
+
+
+@pytest.mark.benchmark(group="decompose")
+@pytest.mark.benchlibs("ordito", "manifold3d")
+@pytest.mark.benchaxis("scale")
+def test_decompose(bench_case: BenchCase) -> None:
+    """``od.boolean.decompose`` of the sphere beside a disjoint moved copy of itself."""
+    vertices = np.asarray(bench_case.vertices_np, dtype=np.float32)
+    faces = np.asarray(bench_case.faces_np, dtype=np.int32)
+    shift = 2.0 * (vertices.max(axis=0) - vertices.min(axis=0))
+    both_np = np.concatenate([vertices, vertices + shift.astype(np.float32)])
+    both_faces = np.concatenate([faces, faces + vertices.shape[0]])
+    if bench_case.kind == "manifold3d":
+        whole_m3 = m3.Manifold(
+            m3.Mesh(vert_properties=both_np, tri_verts=both_faces.astype(np.uint32))
+        )
+        pieces_m3 = bench_case.run(whole_m3.decompose)
+        assert len(pieces_m3) == 2
+        return
+    device = bench_case.vertices_wp.device
+    vertices_wp = wp.array(both_np, dtype=wp.vec3, device=device)
+    faces_wp = wp.array(both_faces.reshape(-1), dtype=wp.int32, device=device)
+    pieces = bench_case.run(lambda: od.boolean.decompose(vertices_wp, faces_wp))
+    assert len(pieces) == 2

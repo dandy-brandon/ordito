@@ -448,6 +448,18 @@
    "scan": 2
   }
  },
+ "benchmarks/test_boolean.py::test_decompose[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 31,
+   "alloc": 49,
+   "memset": 7,
+   "d2d": 1,
+   "h2d": 5,
+   "d2h": 6,
+   "scan": 2,
+   "sort": 7
+  }
+ },
  "benchmarks/test_boolean.py::test_difference[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 97,
