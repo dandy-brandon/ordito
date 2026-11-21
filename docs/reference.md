@@ -61,16 +61,9 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | the same for many solids at once | [`union_all`][ordito.boolean.union_all], [`intersection_all`][ordito.boolean.intersection_all], [`difference_all`][ordito.boolean.difference_all] |
 | cut a solid by another solid or a plane, capped | [`split_by_mesh`][ordito.boolean.split_by_mesh], [`split_by_plane`][ordito.boolean.split_by_plane], [`trim_by_plane`][ordito.boolean.trim_by_plane] |
 | every crossing of segments with a closed surface, exact at edges and vertices | [`boolean.segment_hits`][ordito.boolean.segment_hits] |
-| the gap between two solids | [`boolean.min_gap`][ordito.boolean.min_gap] |
 | drop a closed mesh's redundant vertices within a tolerance | [`boolean.simplify`][ordito.boolean.simplify] |
-| the loops where a horizontal plane cuts a solid | [`boolean.cross_section`][ordito.boolean.cross_section], [`cross_section_with_offsets`][ordito.boolean.cross_section_with_offsets] |
-| split every edge of a solid into equal pieces, or into pieces of a length | [`boolean.refine`][ordito.boolean.refine], [`refine_to_length`][ordito.boolean.refine_to_length] |
 | refine a solid onto a smooth surface through its vertices, keeping creases | [`boolean.smooth_out`][ordito.boolean.smooth_out] |
-| the convex hull of points (or of meshes) as a solid | [`boolean.hull`][ordito.boolean.hull] |
-| a solid from a planar region: extruded (twisted, tapered) or revolved | [`boolean.extrude_region`][ordito.boolean.extrude_region], [`revolve`][ordito.boolean.revolve_region] |
 | a solid from a signed distance function | [`boolean.level_set`][ordito.boolean.level_set] |
-| per-vertex normals for shading, vertices split along sharp edges | [`boolean.split_normals`][ordito.boolean.split_normals] |
-| a solid's separate pieces, each a solid | [`boolean.decompose`][ordito.boolean.decompose] |
 | triangulate a planar region with holes | [`polyline.triangulate_polygons`][ordito.polyline.triangulate_polygons], [`triangulate_polygons_from_offsets`][ordito.polyline.triangulate_polygons_from_offsets] |
 | keep a subset of faces | [`selection.submesh_from_face_mask`][ordito.selection.submesh_from_face_mask] |
 | grow a selection, or measure hops from it | [`selection.expand_vertex_mask`][ordito.selection.expand_vertex_mask], [`vertex_hop_distance`][ordito.selection.vertex_hop_distance] |

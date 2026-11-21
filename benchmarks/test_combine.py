@@ -94,7 +94,7 @@ def _mesh_ml(bench_case: BenchCase) -> mm.Mesh:
 
 @pytest.mark.benchmark(group="split")
 @pytest.mark.benchaxis("components")
-@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pymeshlab", "meshlib")
+@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pymeshlab", "meshlib", "manifold3d")
 def test_split(bench_case: BenchCase) -> None:
     """
     Label, sort, then one batched compaction of every component: nearly flat across the axis.
@@ -107,6 +107,12 @@ def test_split(bench_case: BenchCase) -> None:
     ordito's rule; the mesh is read-only here, so one serves every round.
     """
     expected = {"sphere_med": 1, "parts_64": 64, "parts_1024": 1024}[bench_case.mesh_name]
+    if bench_case.kind == "manifold3d":
+        # ``decompose``: union-find over the edges, then one gather and Morton sort a piece.
+        manifold_m3 = bench_case.manifold_m3
+        pieces_m3 = bench_case.run(manifold_m3.decompose, rounds=_ROUNDS)
+        assert len(pieces_m3) == expected
+        return
     if bench_case.kind == "meshlib":
         mesh_part_ml = mm.MeshPart(_mesh_ml(bench_case))
         components_ml = bench_case.run(

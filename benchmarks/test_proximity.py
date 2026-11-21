@@ -753,7 +753,7 @@ def _separated_vertices_wp(bench_case: BenchCase, offset: float) -> wp.array[wp.
 
 
 @pytest.mark.benchmark(group="mesh_to_mesh_distance")
-@pytest.mark.benchlibs("ordito", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib", "manifold3d")
 @pytest.mark.parametrize("offset", _CLEARANCE_OFFSETS, ids=["near", "far"])
 def test_mesh_to_mesh_distance(bench_case: BenchCase, offset: float) -> None:
     """
@@ -803,6 +803,16 @@ def test_mesh_to_mesh_distance(bench_case: BenchCase, offset: float) -> None:
     node-by-node traversal, so a pair descent means building our own hierarchy rather than reusing
     ``wp.Bvh``.
     """
+    if bench_case.kind == "manifold3d":
+        # ``min_gap``: a box pass over both meshes' faces within the search length, then the
+        # closest pair; the search length covers the separation.
+        extent = bench_case.vertices_np.max(axis=0) - bench_case.vertices_np.min(axis=0)
+        first_m3 = bench_case.manifold_m3
+        second_m3 = first_m3.translate((offset * float(extent[0]), 0.0, 0.0))
+        assert second_m3.num_vert() > 0
+        search = float(2.0 * np.linalg.norm(extent))
+        assert bench_case.run(lambda: first_m3.min_gap(second_m3, search), rounds=3) > 0.0
+        return
     if bench_case.kind == "meshlib":
         skip_larger_than(bench_case, "bunny", "findDistance is a serial descent per pair")
         vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np

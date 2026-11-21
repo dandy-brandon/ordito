@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterable
 from typing import Any, cast
 
 import igl
+import manifold3d as m3
 import numpy as np
 import numpy.typing as npt
 import potpourri3d as pp3d
@@ -30,6 +31,8 @@ from tests.comparisons import (
     assert_unordered_rows_equal,
     hausdorff_two_sided,
     lexsort_rows,
+    same_point_loops,
+    without_repeated_points,
 )
 from tests.conftest import CLOSED_MESHES, MESHES, OPEN_MESHES
 from tests.conversions import (
@@ -645,6 +648,45 @@ def test_marching_triangles_exact_vertex_hit_is_reported_once(device: str) -> No
         rtol=1e-6,
         atol=1e-6,
     )
+
+
+@pytest.mark.parity("marching_triangles_with_offsets", "manifold3d")
+@pytest.mark.parametrize("shape", ["sphere", "torus"])
+@pytest.mark.parametrize("height", [0.1234, -0.0567])
+def test_marching_triangles_of_height_match_manifold3d_slice(
+    device: str, shape: str, height: float
+) -> None:
+    """
+    The level set of the height is Manifold's ``slice``: the same loops through the same points.
+
+    Class B, after one named transform: each loop compared up to its starting point and
+    direction (Manifold winds the section's outer loops counter-clockwise, ordito follows the
+    faces), the height dropped, at ``1e-6``. The heights miss every vertex, where the two break
+    ties differently; the torus has two loops.
+    """
+    mesh_tm = (
+        tm.creation.icosphere(subdivisions=3)
+        if shape == "sphere"
+        else tm.creation.torus(1.0, 0.3, 24, 12)
+    )
+    vertices_np = np.array(mesh_tm.vertices, dtype=np.float32)
+    mesh_m3 = m3.Manifold(
+        m3.Mesh(vert_properties=vertices_np, tri_verts=np.array(mesh_tm.faces, dtype=np.uint32))
+    )
+    loops_m3 = [np.asarray(loop) for loop in mesh_m3.slice(height).to_polygons()]
+    assert len(loops_m3) == (1 if shape == "sphere" else 2)
+    vertices, faces = numpy_to_warp(vertices_np, mesh_tm.faces, device)
+    values = wp.array(vertices_np[:, 2].astype(np.float64), dtype=wp.float64, device=device)
+    points, offsets, closed = od.intersection.marching_triangles_with_offsets(
+        vertices, faces, values, height
+    )
+    assert closed.numpy().all()
+    points_np, offsets_np = points.numpy(), offsets.numpy()
+    loops = [
+        without_repeated_points(points_np[offsets_np[i] : offsets_np[i + 1], :2].astype(np.float64))
+        for i in range(len(offsets_np) - 1)
+    ]
+    assert same_point_loops(loops, loops_m3, atol=1e-6, either_direction=True)
 
 
 def test_marching_triangles_level_set_is_the_piecewise_linear_one(

@@ -85,6 +85,7 @@ import math
 from typing import TYPE_CHECKING, Literal
 
 import igl
+import manifold3d as m3
 import numpy as np
 import pymeshlab as ml
 import pytest
@@ -653,7 +654,13 @@ def test_torus(bench_lib: BenchLibrary, sections: int) -> None:
 
 
 @pytest.mark.benchmark(group="revolve")
-@pytest.mark.benchlibs("ordito", "trimesh", "meshlib")
+@pytest.mark.noparity(
+    "manifold3d",
+    reason="Manifold revolves a closed region (clipped at the axis), ordito a profile curve as "
+    "a surface: the row closes the profile by its chord, so its solid has one wall more and "
+    "a different volume (a 9-point profile: 80 and 144 vertices)",
+)
+@pytest.mark.benchlibs("ordito", "trimesh", "meshlib", "manifold3d")
 @pytest.mark.parametrize("sections", _SECTIONS)
 def test_revolve(bench_lib: BenchLibrary, sections: int) -> None:
     # The shared engine, timed directly on a 64-point profile so the per-slice work dominates the
@@ -664,6 +671,14 @@ def test_revolve(bench_lib: BenchLibrary, sections: int) -> None:
     profile_np = np.column_stack(
         (1.0 + 0.25 * np.cos(np.linspace(0.0, np.pi, 64)), np.linspace(-1.0, 1.0, 64))
     )
+    if bench_lib.kind == "manifold3d":
+        # ``revolve`` sweeps a region, so the profile is closed by its chord: the same sections,
+        # one more wall between the profile's ends; ``CrossSection`` keeps about half the
+        # profile's points (its simplification), so the row is a lower bound on the work.
+        section_m3 = m3.CrossSection([profile_np[::-1]])
+        solid_m3 = bench_lib.run(lambda: m3.Manifold.revolve(section_m3, sections).num_tri())
+        assert solid_m3 > 0
+        return
     if bench_lib.kind == "meshlib":
         profile_ml = mm.std_vector_Vector2_float()
         for point_np in profile_np:
@@ -743,7 +758,7 @@ def test_extrude_polygon(bench_lib: BenchLibrary, ring_size: int) -> None:
 
 
 @pytest.mark.benchmark(group="extrude_triangulation")
-@pytest.mark.benchlibs("ordito")
+@pytest.mark.benchlibs("ordito", "manifold3d")
 @pytest.mark.parametrize("ring_size", [64, 1024])
 def test_extrude_triangulation(bench_lib: BenchLibrary, ring_size: int) -> None:
     """
@@ -751,9 +766,14 @@ def test_extrude_triangulation(bench_lib: BenchLibrary, ring_size: int) -> None:
 
     The triangulation of the same convex ring is built outside the timed callable, so the
     difference between this row and ``extrude_polygon``'s at the same ``ring_size`` is the cap
-    triangulation. ordito-only: ``tests/test_creation.py`` checks it by closure and volume rather
-    than against a library.
+    triangulation. manifold3d's ``extrude`` of the ring triangulates its own cap inside the row
+    (``tests/test_creation.py`` compares the two solids' vertices and volume).
     """
+    if bench_lib.kind == "manifold3d":
+        section_m3 = m3.CrossSection([_ring_np(ring_size)])
+        n_tri = bench_lib.run(lambda: m3.Manifold.extrude(section_m3, 1.0).num_tri())
+        assert n_tri == 2 * (ring_size - 2) + 2 * ring_size
+        return
     ring_wp = _ring_wp(ring_size, str(bench_lib.device))
     cap_vertices_wp, cap_faces_wp = od.polyline.triangulate_polygon(ring_wp)
     _, faces_wp = bench_lib.run(

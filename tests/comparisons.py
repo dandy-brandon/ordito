@@ -423,6 +423,52 @@ def assert_same_loop_set(loops_a: list[np.ndarray], loops_b: list[np.ndarray]) -
         assert_cyclic_permutation_equal(loop_a, loop_b)
 
 
+def without_repeated_points(loop: np.ndarray, tolerance: float = 1e-7) -> np.ndarray:
+    """Return a point loop less consecutive coincident points and a repeated closing one."""
+    kept: list[np.ndarray] = []
+    for point in loop:
+        if kept and np.linalg.norm(point - kept[-1]) <= tolerance:
+            continue
+        kept.append(point)
+    while len(kept) > 1 and np.linalg.norm(kept[0] - kept[-1]) <= tolerance:
+        kept.pop()
+    return np.asarray(kept)
+
+
+def same_point_loops(
+    loops_a: list[np.ndarray],
+    loops_b: list[np.ndarray],
+    *,
+    atol: float = 1e-7,
+    either_direction: bool = False,
+) -> bool:
+    """
+    Test whether two sets of closed point loops match one to one, each up to its starting point.
+
+    The point counterpart of [`assert_same_loop_set`][tests.comparisons.assert_same_loop_set]:
+    loops are paired greedily, a loop matching a cyclic shift of the other within ``atol`` (and,
+    with ``either_direction``, of its reverse).
+    """
+    if len(loops_a) != len(loops_b):
+        return False
+    used = [False] * len(loops_b)
+    for loop in loops_a:
+        for j, other in enumerate(loops_b):
+            if used[j] or len(loop) != len(other):
+                continue
+            candidates = [other, other[::-1]] if either_direction else [other]
+            if any(
+                np.allclose(np.roll(c, -shift, axis=0), loop, atol=atol, rtol=0)
+                for c in candidates
+                for shift in range(len(c))
+            ):
+                used[j] = True
+                break
+        else:
+            return False
+    return True
+
+
 def fraction_within(
     values_a: np.ndarray, values_b: np.ndarray, rtol: float = 5e-2, atol: float = 5e-2
 ) -> float:

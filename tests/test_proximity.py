@@ -12,6 +12,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Literal, cast
 
 import igl
+import manifold3d as m3
 import numpy as np
 import open3d as o3d
 import pymeshlab as ml
@@ -747,6 +748,37 @@ def test_mesh_to_mesh_distance_matches_pymeshlab(
         assert np.isclose(distance, expected, rtol=1e-5, atol=1e-6)
     assert minimum_pml >= distance - 1e-5  # a sampled minimum cannot beat the true one
     assert np.isclose(distance, minimum_pml, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parity("mesh_to_mesh_distance", "manifold3d")
+@pytest.mark.parametrize("offset", [2.05, 2.3, 3.0])
+def test_mesh_to_mesh_distance_matches_manifold3d(device: str, offset: float) -> None:
+    """
+    The distance is Manifold's ``min_gap`` with a search length past it.
+
+    Class A at ``1e-6``: ordito measures in ``float32``, Manifold in ``float64``. Two unit spheres
+    a near, a middling and a far gap apart, the closest pair rotated off any face's axis.
+    """
+    sphere_tm = tm.creation.icosphere(subdivisions=3)
+    moved_tm = sphere_tm.copy()
+    moved_tm.apply_transform(tm.transformations.rotation_matrix(0.3, [1.0, 2.0, 3.0]))
+    moved_tm.apply_translation([offset, 0.1, 0.0])
+    meshes_m3 = [
+        m3.Manifold(
+            m3.Mesh(
+                vert_properties=np.array(mesh.vertices, dtype=np.float32),
+                tri_verts=np.array(mesh.faces, dtype=np.uint32),
+            )
+        )
+        for mesh in (sphere_tm, moved_tm)
+    ]
+    gap_m3 = meshes_m3[0].min_gap(meshes_m3[1], 10.0)
+    distance, _, _ = od.proximity.mesh_to_mesh_distance(
+        *numpy_to_warp(np.asarray(sphere_tm.vertices, np.float32), sphere_tm.faces, device),
+        *numpy_to_warp(np.asarray(moved_tm.vertices, np.float32), moved_tm.faces, device),
+    )
+    assert gap_m3 > 0.0
+    assert math.isclose(distance, gap_m3, rel_tol=0.0, abs_tol=1e-6)
 
 
 def test_mesh_to_mesh_distance_tiled_pass_agrees_with_the_capped_one(

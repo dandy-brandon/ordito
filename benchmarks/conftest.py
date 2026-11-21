@@ -70,6 +70,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
+import manifold3d as m3
 import numpy as np
 import pytest
 import warp as wp
@@ -372,6 +373,7 @@ _faces_wp_cache: dict[tuple[str, str, str], wp.array[wp.int32]] = {}
 _vertices_wp_cache: dict[tuple[str, str, str], wp.array[wp.vec3]] = {}
 _mean_edge_cache: dict[str, float] = {}
 _o3d_cache: dict[str, o3d.geometry.TriangleMesh] = {}
+_m3_cache: dict[str, m3.Manifold] = {}
 _pml_cache: dict[str, ml.MeshSet] = {}
 _pv_cache: dict[str, pv.PolyData] = {}
 _p3d_cache: dict[tuple[str, str], p3d_structures.Meshes] = {}
@@ -1366,6 +1368,25 @@ class BenchCase(BenchLibrary):
         if self.mesh_name not in _pml_cache:
             _pml_cache[self.mesh_name] = _new_meshset_pml(self.mesh_name)
         return _pml_cache[self.mesh_name]
+
+    @property
+    def manifold_m3(self) -> m3.Manifold:
+        """
+        Shared ``manifold3d.Manifold`` of the mesh, built once per mesh.
+
+        Manifolds are immutable, so every round may share one. A mesh manifold3d refuses (open,
+        non-manifold or inconsistently wound) skips the row.
+        """
+        if self.mesh_name not in _m3_cache:
+            mesh_m3 = m3.Mesh(
+                vert_properties=np.array(self.vertices_np, dtype=np.float32),
+                tri_verts=np.array(self.faces_np, dtype=np.uint32).reshape(-1, 3),
+            )
+            _m3_cache[self.mesh_name] = m3.Manifold(mesh_m3)
+        manifold = _m3_cache[self.mesh_name]
+        if manifold.status() != m3.Error.NoError:
+            pytest.skip(f"manifold3d refuses {self.mesh_name}: {manifold.status()}")
+        return manifold
 
     def new_mesh_ml(self) -> mm.Mesh:
         """

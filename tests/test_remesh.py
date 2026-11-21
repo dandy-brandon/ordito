@@ -10,6 +10,7 @@ from collections.abc import Callable
 from typing import Any, Literal, TypedDict, cast
 
 import igl
+import manifold3d as m3
 import numpy as np
 import numpy.typing as npt
 import open3d as o3d
@@ -1102,6 +1103,34 @@ def test_subdivide_to_size_matches_meshlib(device: str) -> None:
             out_tm.vertices, out_tm.faces, subdivided_tm.vertices, subdivided_tm.faces
         )
         < 0.25 * max_edge
+    )
+
+
+@pytest.mark.parity("subdivide", "manifold3d")
+@pytest.mark.parametrize("shape", ["box", "sphere_irregular"])
+def test_subdivide_matches_manifold3d(
+    request: pytest.FixtureRequest, device: str, shape: str
+) -> None:
+    """
+    ``subdivide`` is Manifold's ``refine(2)``, up to numbering.
+
+    Class A through ``equality.meshes_allclose``: the same edge midpoints and four triangles a
+    face, laid out in Morton order on Manifold's side.
+    """
+    mesh_tm = (
+        tm.creation.box() if shape == "box" else request.getfixturevalue("sphere_irregular")[0]
+    )
+    vertices_np = np.array(mesh_tm.vertices, dtype=np.float32)
+    mesh_m3 = m3.Manifold(
+        m3.Mesh(vert_properties=vertices_np, tri_verts=np.array(mesh_tm.faces, dtype=np.uint32))
+    )
+    refined = mesh_m3.refine(2).to_mesh()
+    vertices, faces = od.remesh.subdivide(*numpy_to_warp(vertices_np, mesh_tm.faces, device))
+    assert od.equality.meshes_allclose(
+        vertices,
+        faces,
+        wp.array(np.array(refined.vert_properties)[:, :3], dtype=wp.vec3, device=device),
+        wp.array(np.array(refined.tri_verts, dtype=np.int32).reshape(-1), device=device),
     )
 
 

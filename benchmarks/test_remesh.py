@@ -143,7 +143,7 @@ _ROUNDS = 3
 
 
 @pytest.mark.benchmark(group="subdivide")
-@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pytorch3d", "manifold3d")
 def test_subdivide(bench_case: BenchCase) -> None:
     """
     Exactly 4x the faces in one pass: the module's clean throughput baseline.
@@ -175,6 +175,12 @@ def test_subdivide(bench_case: BenchCase) -> None:
     ``Meshes`` build, which is cheap next to a 4x face expansion.
     """
     skip_larger_than(bench_case, "dragon", "a 1:4 subdivision above dragon exceeds memory")
+    if bench_case.kind == "manifold3d":
+        # ``refine(2)``: the same four triangles a face, then the Morton sort of the result.
+        manifold_m3 = bench_case.manifold_m3
+        refined_m3 = bench_case.run(lambda: manifold_m3.refine(2).num_tri())
+        assert refined_m3 == 4 * bench_case.n_faces
+        return
     if bench_case.kind == "pytorch3d":
         mesh_p3d = bench_case.mesh_p3d
         n_faces = bench_case.n_faces
@@ -251,8 +257,14 @@ def test_subdivide_loop(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="subdivide_to_size")
+@pytest.mark.noparity(
+    "manifold3d",
+    reason="refine_to_length splits each edge once into floor(length / max_edge) pieces and "
+    "tiles each face to match, where subdivide_to_size bisects until short enough: on "
+    "icosphere(2) at 0.15 the two give 2 400 and 3 200 triangles, different meshes",
+)
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("ordito", "trimesh", "pymeshlab", "meshlib")
+@pytest.mark.benchlibs("ordito", "trimesh", "pymeshlab", "meshlib", "manifold3d")
 @pytest.mark.parametrize("split_fraction", _SPLIT_FRACTIONS)
 def test_subdivide_to_size(bench_case: BenchCase, split_fraction: float) -> None:
     """
@@ -268,6 +280,15 @@ def test_subdivide_to_size(bench_case: BenchCase, split_fraction: float) -> None
     inside the timed callable.
     """
     max_edge = split_fraction * bench_case.mean_edge
+    if bench_case.kind == "manifold3d":
+        # ``refine_to_length``: each edge split once into ``floor(length / max_edge)`` pieces and
+        # each face tiled to match, where trimesh's semantics bisect until short enough.
+        manifold_m3 = bench_case.manifold_m3
+        n_tri = bench_case.run(
+            lambda: manifold_m3.refine_to_length(max_edge).num_tri(), rounds=_ROUNDS
+        )
+        assert n_tri >= bench_case.n_faces
+        return
     if bench_case.kind == "meshlib":
         vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
 

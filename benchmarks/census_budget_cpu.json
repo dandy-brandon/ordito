@@ -407,36 +407,6 @@
    "alloc": 3
   }
  },
- "benchmarks/test_boolean.py::test_cross_section[sphere_small-ordito-cpu]": {
-  "counts": {
-   "launch": 6,
-   "alloc": 12,
-   "h2h": 3,
-   "readback": 5,
-   "scan": 1,
-   "sort": 1
-  }
- },
- "benchmarks/test_boolean.py::test_cross_section_with_offsets[sphere_small-ordito-cpu]": {
-  "counts": {
-   "launch": 6,
-   "alloc": 12,
-   "h2h": 3,
-   "readback": 4,
-   "scan": 1,
-   "sort": 1
-  }
- },
- "benchmarks/test_boolean.py::test_decompose[sphere_small-ordito-cpu]": {
-  "counts": {
-   "launch": 29,
-   "alloc": 45,
-   "h2h": 6,
-   "readback": 6,
-   "scan": 1,
-   "sort": 8
-  }
- },
  "benchmarks/test_boolean.py::test_difference[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 90,
@@ -455,36 +425,6 @@
    "readback": 84,
    "scan": 45,
    "sort": 32
-  }
- },
- "benchmarks/test_boolean.py::test_extrude_region[ordito-cpu-1024]": {
-  "counts": {
-   "launch": 19,
-   "alloc": 47,
-   "h2h": 7,
-   "readback": 7,
-   "scan": 1,
-   "sort": 5
-  }
- },
- "benchmarks/test_boolean.py::test_extrude_region[ordito-cpu-64]": {
-  "counts": {
-   "launch": 19,
-   "alloc": 47,
-   "h2h": 7,
-   "readback": 7,
-   "scan": 1,
-   "sort": 5
-  }
- },
- "benchmarks/test_boolean.py::test_hull[sphere_small-ordito-cpu]": {
-  "counts": {
-   "launch": 45,
-   "alloc": 37,
-   "h2h": 2,
-   "readback": 14,
-   "scan": 3,
-   "sort": 5
   }
  },
  "benchmarks/test_boolean.py::test_intersection[sphere_small-ordito-cpu]": {
@@ -524,56 +464,6 @@
    "h2h": 9,
    "readback": 17,
    "scan": 9,
-   "sort": 5
-  }
- },
- "benchmarks/test_boolean.py::test_min_gap[sphere_small-ordito-cpu]": {
-  "counts": {
-   "launch": 56,
-   "alloc": 90,
-   "h2h": 5,
-   "readback": 10,
-   "scan": 5,
-   "sort": 11
-  }
- },
- "benchmarks/test_boolean.py::test_refine[sphere_small-ordito-cpu]": {
-  "counts": {
-   "launch": 38,
-   "alloc": 81,
-   "h2h": 16,
-   "readback": 9,
-   "scan": 5,
-   "sort": 9
-  }
- },
- "benchmarks/test_boolean.py::test_refine_to_length[sphere_small-ordito-cpu]": {
-  "counts": {
-   "launch": 38,
-   "alloc": 81,
-   "h2h": 16,
-   "readback": 9,
-   "scan": 5,
-   "sort": 9
-  }
- },
- "benchmarks/test_boolean.py::test_revolve_region[ordito-cpu-1024]": {
-  "counts": {
-   "launch": 18,
-   "alloc": 27,
-   "h2h": 4,
-   "readback": 5,
-   "scan": 1,
-   "sort": 5
-  }
- },
- "benchmarks/test_boolean.py::test_revolve_region[ordito-cpu-64]": {
-  "counts": {
-   "launch": 18,
-   "alloc": 27,
-   "h2h": 4,
-   "readback": 5,
-   "scan": 1,
    "sort": 5
   }
  },
@@ -625,16 +515,6 @@
    "readback": 56,
    "scan": 28,
    "sort": 18
-  }
- },
- "benchmarks/test_boolean.py::test_split_normals[sphere_small-ordito-cpu]": {
-  "counts": {
-   "launch": 20,
-   "alloc": 39,
-   "h2h": 2,
-   "readback": 5,
-   "scan": 2,
-   "sort": 5
   }
  },
  "benchmarks/test_boolean.py::test_trim_by_plane[sphere_small-ordito-cpu]": {

@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Literal
 
 import igl
+import manifold3d as m3
 import numpy as np
 import potpourri3d as pp3d
 import pytest
@@ -193,6 +194,43 @@ def test_corner_normals_matches_meshlib(
     normals_wp = od.triangles.corner_normals(vertices_wp, faces_wp, creases_wp, weighting="area")
     assert normals_wp.shape == (n_faces, 3)
     assert np.allclose(normals_wp.numpy(), normals_ml, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parity("corner_normals", "manifold3d")
+@pytest.mark.parametrize("shape", ["box", "cylinder", "sphere_irregular"])
+@pytest.mark.parametrize("angle", [20.0, 52.5])
+def test_corner_normals_match_manifold3d(
+    request: pytest.FixtureRequest, device: str, shape: str, angle: float
+) -> None:
+    """
+    Angle-weighted corner normals at ``crease_edges(angle)`` are Manifold's ``calculate_normals``.
+
+    Class A at ``1e-6``, corner by corner: the mesh goes through Manifold first so both number its
+    faces alike, and Manifold's split vertices are read back per corner. Manifold's own build
+    differs from its wheel by one ``float32`` ulp on a few ``sphere_irregular`` needles; the box
+    and the cylinder split every rim vertex.
+    """
+    if shape == "box":
+        mesh_tm = tm.creation.box()
+    elif shape == "cylinder":
+        mesh_tm = tm.creation.cylinder(radius=0.3, height=3.0, sections=12)
+    else:
+        mesh_tm = request.getfixturevalue("sphere_irregular")[0]
+    mesh_m3 = m3.Manifold(
+        m3.Mesh(
+            vert_properties=np.array(mesh_tm.vertices, dtype=np.float32),
+            tri_verts=np.array(mesh_tm.faces, dtype=np.uint32),
+        )
+    )
+    plain = mesh_m3.to_mesh()
+    vertices, faces = numpy_to_warp(
+        np.array(plain.vert_properties)[:, :3], np.array(plain.tri_verts), device
+    )
+    creases = od.seams.crease_edges(vertices, faces, angle)
+    normals = od.triangles.corner_normals(vertices, faces, creases, weighting="angle")
+    split = mesh_m3.calculate_normals(0, angle).to_mesh()
+    corners_m3 = np.array(split.vert_properties)[np.array(split.tri_verts).reshape(-1), 3:6]
+    assert np.allclose(normals.numpy().reshape(-1, 3), corners_m3, rtol=0.0, atol=1e-6)
 
 
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])

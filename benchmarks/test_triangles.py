@@ -414,7 +414,7 @@ def test_face_nondegenerate_mask(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="corner_normals")
-@pytest.mark.benchlibs("ordito", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib", "manifold3d")
 @pytest.mark.parametrize("creased", [False, True])
 def test_corner_normals(bench_case: BenchCase, creased: bool) -> None:
     """
@@ -467,6 +467,14 @@ def _corner_normals_row(bench_case: BenchCase, creased: bool) -> None:
         # three or more faces, and ``lucy`` has 28. Neither is a size limit -- ``dragon`` is larger.
         pytest.skip(f"{bench_case.mesh_name} is not edge-manifold, so there is no fan to rotate")
     crease_angle = 0.5
+    if bench_case.kind == "manifold3d":
+        # ``calculate_normals``: angle-weighted normals split at sharp edges, then ``to_mesh``'s
+        # property vertices (one row a distinct corner normal); no crease bound means none.
+        manifold_m3 = bench_case.manifold_m3
+        angle = crease_angle if creased else 180.0
+        mesh_m3 = bench_case.run(lambda: manifold_m3.calculate_normals(0, angle).to_mesh())
+        assert len(mesh_m3.tri_verts) == bench_case.n_faces
+        return
     if bench_case.kind == "meshlib":
         mesh_ml = bench_case.new_mesh_ml()
         creases_ml = mm.UndirectedEdgeBitSet()

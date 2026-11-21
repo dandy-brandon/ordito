@@ -89,6 +89,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal, cast
 
+import manifold3d as m3
 import numpy as np
 import open3d as o3d
 import pymeshlab as ml
@@ -993,7 +994,7 @@ _SUBDIVISIONS = [1, 3]
 
 
 @pytest.mark.benchmark(group="convex_hull")
-@pytest.mark.benchlibs("ordito", "scipy", "trimesh", "open3d", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "scipy", "trimesh", "open3d", "pymeshlab", "manifold3d")
 def test_convex_hull(bench_case: BenchCase) -> None:
     """
     The exact hull against qhull, directly and through the three mesh wrappers.
@@ -1007,6 +1008,12 @@ def test_convex_hull(bench_case: BenchCase) -> None:
         points = bench_case.vertices_wp
         faces = bench_case.run(lambda: od.points.convex_hull(points))
         assert faces.shape[0] >= 12
+        return
+    if bench_case.kind == "manifold3d":
+        # QuickHull on the host, multi-threaded, returning the hull as a solid.
+        points_np = np.asarray(bench_case.vertices_np, dtype=np.float64)
+        hull_m3 = bench_case.run(lambda: m3.Manifold.hull_points(points_np))
+        assert hull_m3.num_tri() >= 4
         return
     skip_larger_than(bench_case, "dragon", "qhull is single-threaded on the host")
     points_np = bench_case.vertices_np

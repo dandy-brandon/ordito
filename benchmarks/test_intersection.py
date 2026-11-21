@@ -748,15 +748,25 @@ def test_marching_triangles_curves(bench_case: BenchCase, field: str) -> None:
 
 @pytest.mark.benchmark(group="marching_triangles_with_offsets")
 @pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("ordito")
+@pytest.mark.benchlibs("ordito", "manifold3d")
 @pytest.mark.parametrize("field", list(_FIELDS))
 def test_marching_triangles_with_offsets(bench_case: BenchCase, field: str) -> None:
     """
     The packed form of ``marching_triangles_curves``' level sets: no per-curve object.
 
     Read against that group's ordito row: the difference is the list of per-curve views, which is
-    the whole of what the list form adds.
+    the whole of what the list form adds. manifold3d's ``slice`` is the ``plane`` field (the
+    height) only: it cuts a solid by a horizontal plane.
     """
+    if bench_case.kind == "manifold3d":
+        if field != "plane":
+            pytest.skip("manifold3d slices by height only")
+        manifold_m3 = bench_case.manifold_m3
+        loops_m3 = bench_case.run(
+            lambda: manifold_m3.slice(_ISOVALUE).to_polygons(), rounds=_ROUNDS
+        )
+        assert len(loops_m3) > 0
+        return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     values, n_vertices = _field_wp(bench_case, field), bench_case.n_vertices
     points, offsets, closed = bench_case.run(

@@ -2,6 +2,7 @@ import math
 from collections.abc import Callable
 from typing import Literal, cast
 
+import manifold3d as m3
 import numpy as np
 import open3d as o3d
 import pymeshlab as ml
@@ -23,6 +24,7 @@ import ordito.equality as od_equality
 import ordito.grouping as od_grouping
 import ordito.neighbors as od_neighbors
 import ordito.points as od
+import ordito.repair as od_repair
 import ordito.typing as odt
 from ordito.kernels import points as kernel_points
 from tests.comparisons import assert_same_up_to_sign, lexsort_rows
@@ -1943,6 +1945,31 @@ def test_convex_hull_degenerate_input_matches_scipy(device: str, kind: str) -> N
     volume = np.einsum("ij,ij->", corner_np[:, 0], np.cross(corner_np[:, 1], corner_np[:, 2])) / 6
     assert np.isclose(volume, hull_scipy.volume, rtol=1e-6)
     _assert_convex_hull_of(points_np, faces_np)
+
+
+@pytest.mark.parity("convex_hull", "manifold3d")
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_convex_hull_matches_manifold3d(device: str, seed: int) -> None:
+    """
+    The compacted hull is Manifold's ``hull_points``, up to numbering.
+
+    Class A through ``equality.meshes_allclose``: the same extreme points and triangles, where
+    Manifold lays them out in Morton order and starts each face at QuickHull's corner. Clouds in
+    general position, of 10 to 2 000 points and varied aspect.
+    """
+    rng = np.random.default_rng(seed)
+    points_np = rng.normal(size=(int(rng.integers(10, 2000)), 3)) * rng.uniform(0.3, 3.0, 3)
+    points_np = points_np.astype(np.float32)
+    points = wp.array(points_np, dtype=wp.vec3, device=device)
+    vertices, faces, _ = od_repair.remove_unreferenced_vertices(points, od.convex_hull(points))
+    hull_m3 = m3.Manifold.hull_points(points_np.astype(np.float64)).to_mesh()
+    assert len(hull_m3.vert_properties) < len(points_np)
+    assert od_equality.meshes_allclose(
+        vertices,
+        faces,
+        wp.array(np.array(hull_m3.vert_properties)[:, :3], dtype=wp.vec3, device=device),
+        wp.array(np.array(hull_m3.tri_verts, dtype=np.int32).reshape(-1), device=device),
+    )
 
 
 def test_convex_hull_of_a_symmetric_cloud(device: str) -> None:

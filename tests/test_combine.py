@@ -6,6 +6,7 @@ import itertools
 from collections.abc import Sequence
 from typing import cast
 
+import manifold3d as m3
 import numpy as np
 import pytest
 import pytorch3d.structures as p3d_structures
@@ -324,6 +325,49 @@ def test_split_with_offsets_matches_split(three_parts: list[MeshPair]) -> None:
         f_begin, f_end = face_bounds_np[index], face_bounds_np[index + 1]
         assert np.array_equal(vertices_all_wp.numpy()[v_begin:v_end], vertices_wp.numpy())
         assert np.array_equal(faces_all_wp.numpy()[3 * f_begin : 3 * f_end], faces_wp.numpy())
+
+
+@pytest.mark.parity("split", "manifold3d")
+def test_split_matches_manifold3d(device: str) -> None:
+    """
+    ``split`` is Manifold's ``decompose``: the same pieces, each equal up to its numbering.
+
+    Class A through ``equality.meshes_allclose``: Manifold Morton-sorts each piece where ordito
+    keeps the input's order. A box, a sphere and a hollow box (its outer wall and its cavity's
+    are two pieces): four.
+    """
+
+    def solid_m3(mesh_tm: tm.Trimesh) -> m3.Manifold:
+        mesh_m3 = m3.Mesh(
+            vert_properties=np.array(mesh_tm.vertices, dtype=np.float32),
+            tri_verts=np.array(mesh_tm.faces, dtype=np.uint32),
+        )
+        return m3.Manifold(mesh_m3)
+
+    ball_tm = tm.creation.icosphere(subdivisions=2)
+    ball_tm.apply_translation([3.0, 0.0, 0.0])
+    hollow_m3 = solid_m3(tm.creation.box(bounds=[[6, 0, 0], [9, 3, 3]])) - solid_m3(
+        tm.creation.box(bounds=[[7, 1, 1], [8, 2, 2]])
+    )
+    whole_m3 = solid_m3(tm.creation.box()) + solid_m3(ball_tm) + hollow_m3
+    pieces_m3 = [piece.to_mesh() for piece in whole_m3.decompose()]
+    assert len(pieces_m3) == 4
+    whole = whole_m3.to_mesh()
+    vertices, faces = numpy_to_warp(
+        np.array(whole.vert_properties)[:, :3], np.array(whole.tri_verts), device
+    )
+    pieces = od.combine.split(vertices, faces)
+    assert len(pieces) == len(pieces_m3)
+    for piece_vertices, piece_faces in pieces:
+        assert any(
+            od.equality.meshes_allclose(
+                piece_vertices,
+                piece_faces,
+                wp.array(np.array(piece_m3.vert_properties)[:, :3], dtype=wp.vec3, device=device),
+                wp.array(np.array(piece_m3.tri_verts, dtype=np.int32).reshape(-1), device=device),
+            )
+            for piece_m3 in pieces_m3
+        )
 
 
 def test_split_labels_change_no_answer(three_parts: list[MeshPair]) -> None:

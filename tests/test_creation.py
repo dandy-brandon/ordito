@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from typing import Literal, NamedTuple, TypeAlias, cast
 
 import igl
+import manifold3d as m3
 import numpy as np
 import open3d as o3d
 import pymeshlab as ml
@@ -1601,6 +1603,37 @@ def test_extrude_triangulation_winds_a_many_block_triangulation(
         again_v, again_f = od.creation.extrude_triangulation(vertices_wp, faces_wp, 0.5)
         assert np.array_equal(again_v.numpy(), solid_v.numpy())
         assert np.array_equal(again_f.numpy(), solid_f.numpy())
+
+
+@pytest.mark.parity("extrude_triangulation", "manifold3d")
+def test_extrude_triangulation_matches_manifold3d(device: str) -> None:
+    """
+    A region's extrusion through ``triangulate_polygons`` is Manifold's ``extrude``.
+
+    Class C: the same vertices (``equality.points_allclose``), both closed, the same volume to
+    ``1e-6`` relative (they agree to ``2e-8``). The caps' triangulation and the walls' diagonals
+    are each library's own, so triangles are not compared; a wrong height, offset or lost hole
+    fails the vertices, a missing or flipped wall the volume. A square with a square hole.
+    """
+    outer = np.array([[0, 0], [4, 0], [4, 4], [0, 4]], dtype=np.float32)
+    hole = np.array([[1, 1], [1, 3], [3, 3], [3, 1]], dtype=np.float32)
+    cap_points = wp.array(np.vstack([outer, hole]), dtype=wp.vec2, device=device)
+    cap_faces = od.polyline.triangulate_polygons(
+        [
+            wp.array(outer, dtype=wp.vec2, device=device),
+            wp.array(hole, dtype=wp.vec2, device=device),
+        ]
+    )
+    vertices, faces = od.creation.extrude_triangulation(cap_points, cap_faces, 1.5)
+    solid_m3 = m3.Manifold.extrude(
+        m3.CrossSection([outer.astype(np.float64), hole.astype(np.float64)]), 1.5
+    )
+    mesh_m3 = solid_m3.to_mesh()
+    vertices_m3 = wp.array(np.array(mesh_m3.vert_properties)[:, :3], dtype=wp.vec3, device=device)
+    assert vertices.shape[0] == vertices_m3.shape[0]
+    assert od.equality.points_allclose(vertices, vertices_m3)
+    assert open_edge_count(faces.numpy().reshape(-1, 3)) == 0
+    assert math.isclose(od.measures.volume(vertices, faces), solid_m3.volume(), rel_tol=1e-6)
 
 
 _SWEEP_PATHS = {
