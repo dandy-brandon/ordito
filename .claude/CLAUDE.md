@@ -694,7 +694,9 @@ marker citing it. Both markers are stackable and take string literals only.
   meshlib, manifold3d (TBB) and pytorch3d-cpu are multi-threaded; only pytorch3d-cuda runs on the
   GPU.
 - `manifold3d` is the library `ordito.boolean` ports (Apache-2.0, code may derive from it): its
-  answers are compared array for array, `to_mesh()` order included. Its CSG is lazy (time a row
+  answers are compared array for array, `to_mesh()` order included. Its wheel can round one
+  `float32` ulp away from its own source (a few `calculate_normals` on needles): when a diff is one
+  ulp, check a source build before suspecting the port. Its CSG is lazy (time a row
   through `num_vert()`), it reads `float32` meshes, and `a + b` composes rather than intersects
   meshes whose boxes are apart.
 - Licensing: nothing under `ordito/` may name MeshLib or promesh (check 21), except an option

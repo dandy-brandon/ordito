@@ -598,6 +598,9 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("boolean", "sharpen_vertex_tangents"): frozenset({"tangents", "fixed"}),
     ("boolean", "linearize_flat_tangents"): frozenset({"tangents"}),
     ("boolean", "distribute_tangents"): frozenset({"tangents"}),
+    # ``SetNormals``' serial pass counts each vertex's sharp edges and keeps one vertex's groups
+    # and their normals in scratch.
+    ("boolean", "set_normals"): frozenset({"sharp_counts", "groups", "group_normals"}),
     # The multifrontal factorization works in place: ``fronts`` holds each front's operator
     # entries, then its factor and the Schur complement its parent extends; ``blocks`` the solve
     # blocks each panel's update rewrites. The refinement loop's ``state`` / ``rhs_scale`` are its

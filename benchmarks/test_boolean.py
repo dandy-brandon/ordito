@@ -427,6 +427,21 @@ def test_hull(bench_case: BenchCase) -> None:
     assert faces.size > 0
 
 
+@pytest.mark.benchmark(group="split_normals")
+@pytest.mark.benchlibs("ordito", "manifold3d")
+@pytest.mark.benchaxis("scale")
+def test_split_normals(bench_case: BenchCase) -> None:
+    """``od.boolean.split_normals`` of the sphere (manifold3d: ``calculate_normals``)."""
+    if bench_case.kind == "manifold3d":
+        a_m3, _ = _manifolds_m3(bench_case)
+        mesh_m3 = bench_case.run(lambda: a_m3.calculate_normals(0, 52.5).to_mesh())
+        assert len(mesh_m3.vert_properties) > 0
+        return
+    vertices_wp, faces_wp = bench_case.vertices_wp, bench_case.faces_wp
+    vertices, _, _ = bench_case.run(lambda: od.boolean.split_normals(vertices_wp, faces_wp))
+    assert vertices.shape[0] > 0
+
+
 @pytest.mark.benchmark(group="cross_section")
 @pytest.mark.benchlibs("ordito", "manifold3d")
 @pytest.mark.benchaxis("scale")

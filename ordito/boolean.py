@@ -1982,6 +1982,128 @@ def _level_set_solid(
     )
 
 
+def split_normals(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], min_sharp_angle: float = 52.5
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.vec3]]:
+    """
+    Return a closed mesh with a normal at every vertex, its vertices split along sharp edges.
+
+    A vertex where fewer than two sharp edges meet keeps one normal, its angle-weighted
+    pseudo-normal; one where two or more meet is split into a vertex for each run of faces
+    between sharp edges, each with that run's angle-weighted normal. Faces of one plane count
+    as one. Suited to shading: smooth across soft edges, creased along sharp ones.
+
+    Parameters
+    ----------
+    vertices, faces
+        ``(n_vertices,)`` and ``(3 * n_faces,)`` closed, consistently wound mesh.
+    min_sharp_angle
+        Degrees: edges whose faces meet at more than this are sharp.
+
+    Returns
+    -------
+    vertices : wp.array[wp.vec3]
+        ``(n_vertices_out,)`` the vertices, those on sharp edges repeated.
+    faces : wp.array[wp.int32]
+        ``(3 * n_faces,)`` the triangles over them.
+    normals : wp.array[wp.vec3]
+        ``(n_vertices_out,)`` each vertex's unit normal.
+
+    Raises
+    ------
+    RuntimeError
+        If ``vertices`` and ``faces`` are not on one device.
+    ValueError
+        If the mesh is not closed, has an edge shared by more than two faces, or is not
+        consistently wound.
+
+    See Also
+    --------
+    [`normals.vertex_normals`][ordito.normals.vertex_normals]
+
+    Notes
+    -----
+    Manifold's ``Manifold.calculate_normals``: the same vertices, triangles and normals in the
+    same order as its ``to_mesh`` lays them out.
+
+    Examples
+    --------
+    A box's corners each split three ways, one vertex for each face:
+
+    ```python
+    import ordito as od
+
+    vertices, faces, normals = od.boolean.split_normals(*od.creation.box())
+    print(vertices.shape[0], normals.shape[0])  # 24 24
+    ```
+    """
+    require_same_device(vertices=vertices, faces=faces)
+    device = vertices.device
+    solid = _solid_from_mesh(vertices, faces, 0, "")
+    if solid.is_empty:
+        empty = _launch.empty(0, dtype=wp.vec3, device=device)
+        return empty, _launch.empty(0, dtype=wp.int32, device=device), empty
+    return _split_normals(solid, float(min_sharp_angle))
+
+
+def _split_normals(
+    solid: _Solid, min_sharp_angle: float
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.vec3]]:
+    """``SetNormals(0, min_sharp_angle)`` then ``GetMeshGL``'s property vertices."""
+    device = solid.positions.device
+    n_h = solid.faces.size
+    n_v = solid.n_vertices
+    twins = halfedge_twins(solid.faces, n_v, validate=False)
+    prop = _launch.empty(n_h, dtype=wp.int32, device=device)
+    prop_normals = _launch.empty(n_v + n_h, dtype=wp.vec3d, device=device)
+    count = _launch.zeros(1, dtype=wp.int32, device=device)
+    inputs: list[object] = [
+        solid.positions,
+        solid.faces,
+        twins,
+        solid.face_normals,
+        solid.vertex_normals,
+        max(min_sharp_angle, 1e-4),
+        _launch.zeros(n_v, dtype=wp.int32, device=device),
+        _launch.empty(n_h, dtype=wp.int32, device=device),
+        _launch.empty(n_h, dtype=wp.vec3d, device=device),
+    ]
+    outputs: list[object] = [prop, prop_normals, count]
+    # A serial walk of dependent loads: one CPU thread runs it far faster than one GPU thread.
+    if wp.get_device(device).is_cpu:
+        _launch.launch(
+            kernel_boolean.set_normals, dim=1, inputs=inputs, outputs=outputs, device=device
+        )
+    else:
+        _launch_on_host(kernel_boolean.set_normals, inputs, outputs)
+    # Host readback: the property vertices' count sizes the first-use table.
+    n_props = int(read_values(count, 0, 1)[0])
+    first = _launch.full(n_props, 2147483647, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_boolean.first_prop_halfedges, dim=n_h, inputs=[prop], outputs=[first], device=device
+    )
+    ranks, flags = offsets_buffer(n_h, device)
+    _launch.launch(
+        kernel_boolean.first_prop_flags,
+        dim=n_h,
+        inputs=[prop, first],
+        outputs=[flags],
+        device=device,
+    )
+    n_out = scan_count(flags)
+    out_faces = _launch.empty(n_h, dtype=wp.int32, device=device)
+    out_vertices = _launch.empty(n_out, dtype=wp.vec3, device=device)
+    out_normals = _launch.empty(n_out, dtype=wp.vec3, device=device)
+    _launch.launch(
+        kernel_boolean.write_split_vertices,
+        dim=n_h,
+        inputs=[solid.positions, solid.faces, prop, prop_normals, first, ranks],
+        outputs=[out_faces, out_vertices, out_normals],
+        device=device,
+    )
+    return out_vertices, out_faces, out_normals
+
+
 def refine(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], n: int
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:

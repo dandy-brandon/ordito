@@ -690,6 +690,18 @@
    "sort": 14
   }
  },
+ "benchmarks/test_boolean.py::test_split_normals[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 24,
+   "alloc": 51,
+   "memset": 11,
+   "d2d": 1,
+   "h2d": 12,
+   "d2h": 16,
+   "scan": 4,
+   "sort": 3
+  }
+ },
  "benchmarks/test_boolean.py::test_trim_by_plane[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 104,

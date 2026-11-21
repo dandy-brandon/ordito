@@ -784,6 +784,34 @@ def test_level_set_rejects_a_bad_grid(device: str) -> None:
         od.boolean.level_set(level_set_functions.cube_sdf, [0, 0, 0, 1, 1, 1], 0.0, device=device)
 
 
+@pytest.mark.parity("split_normals", "manifold3d")
+@pytest.mark.parametrize("shape", ["box", "cylinder", "sphere_irregular", "box_minus_ball"])
+@pytest.mark.parametrize("min_sharp_angle", [20.0, 52.5, 89.0])
+def test_split_normals_match_manifold3d(
+    request: pytest.FixtureRequest, device: str, shape: str, min_sharp_angle: float
+) -> None:
+    """
+    ``split_normals`` is Manifold's ``calculate_normals`` as ``to_mesh`` lays it out.
+
+    Class A: vertex positions and triangles array for array, normals at ``1e-6``. On
+    ``sphere_irregular``'s needles a few normals differ from the manifold3d wheel by one ``float32``
+    ulp, where they equal a build of Manifold 3.5.5 from source bit for bit (2026-11-21: the
+    wheel's code generation rounds those angle-weighted sums differently); everywhere else they
+    match exactly. The box and the cylinder split every rim vertex; ``sphere_irregular``'s
+    needles leave some edges sharp at the low angle; the box less a ball mixes flat faces,
+    creases and a smooth cavity.
+    """
+    mesh_tm = _smooth_mesh_tm(request, shape)
+    result_m3 = _manifold_m3(mesh_tm).calculate_normals(0, min_sharp_angle).to_mesh()
+    properties_m3 = np.asarray(result_m3.vert_properties)
+    vertices, faces, normals = od.boolean.split_normals(*_upload(mesh_tm, device), min_sharp_angle)
+    assert np.array_equal(vertices.numpy(), properties_m3[:, :3])
+    assert np.array_equal(faces.numpy().reshape(-1, 3), np.asarray(result_m3.tri_verts))
+    assert np.allclose(normals.numpy(), properties_m3[:, 3:6], rtol=0.0, atol=1e-6)
+    if shape != "sphere_irregular":
+        assert np.array_equal(normals.numpy(), properties_m3[:, 3:6])
+
+
 def _manifold_mesh_tm(result_m3: m3.Manifold) -> tm.Trimesh:
     """Return a Manifold as a ``float32`` trimesh mesh."""
     mesh_m3 = result_m3.to_mesh()

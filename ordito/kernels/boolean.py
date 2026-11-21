@@ -5805,3 +5805,163 @@ def level_set_kernels(sdf: object) -> tuple[object, object, object]:
     )
     _LEVEL_SET_KERNELS[sdf] = built
     return built
+
+
+# -- split vertex normals (``SetNormals``) ---------------------------------------------------------
+
+
+@wp.func
+def dihedral_degrees(face_normals: wp.array[wp.vec3d], a: wp.int32, b: wp.int32) -> wp.float64:
+    # ``degrees(AngleBetween(...))``.
+    return angle_between(face_normals[a], face_normals[b]) * wp.float64(180.0) / SMOOTH_PI
+
+
+@wp.kernel
+def set_normals(
+    positions: wp.array[wp.vec3d],
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    face_normals: wp.array[wp.vec3d],
+    vertex_normals: wp.array[wp.vec3d],
+    min_sharp: wp.float64,
+    sharp_counts: wp.array[wp.int32],
+    groups: wp.array[wp.int32],
+    group_normals: wp.array[wp.vec3d],
+    out_prop: wp.array[wp.int32],
+    out_normals: wp.array[wp.vec3d],
+    out_count: wp.array[wp.int32],
+) -> None:
+    # ``SetNormals``' serial loop, one thread: each halfedge's property vertex, a vertex's own
+    # (its pseudo-normal) unless two or more sharp edges meet there, when the faces between each
+    # pair of sharp edges share an angle-weighted normal, split off into a new property vertex
+    # appended in halfedge order. ``groups`` / ``group_normals`` are scratch for one vertex.
+    n_h = faces.shape[0]
+    n_v = positions.shape[0]
+    for e in range(n_h):
+        out_prop[e] = -1
+        if faces[e] < faces[next_halfedge(e)]:
+            if dihedral_degrees(face_normals, e // 3, twins[e] // 3) > min_sharp:
+                sharp_counts[faces[e]] = sharp_counts[faces[e]] + 1
+                sharp_counts[faces[next_halfedge(e)]] = sharp_counts[faces[next_halfedge(e)]] + 1
+    n_props = n_v
+    for start_edge in range(n_h):
+        if out_prop[start_edge] >= 0:
+            continue
+        vert = faces[start_edge]
+        if sharp_counts[vert] < 2:
+            normal = vertex_normals[vert]
+            last_prop = wp.int32(-1)
+            current = start_edge
+            while True:
+                current = next_halfedge(twins[current])
+                prop = faces[current]
+                out_prop[current] = prop
+                if prop != last_prop:
+                    last_prop = prop
+                    out_normals[prop] = normal
+                if current == start_edge:
+                    break
+            continue
+        center = positions[vert]
+        current = start_edge
+        prev_face = current // 3
+        while True:
+            nxt = next_halfedge(twins[current])
+            face = nxt // 3
+            if dihedral_degrees(face_normals, face, prev_face) > min_sharp:
+                break
+            current = nxt
+            prev_face = face
+            if current == start_edge:
+                break
+        end_edge = current
+        # The groups: faces between sharp edges, each group's normal summed by angle.
+        n_groups = wp.int32(0)
+        n_steps = wp.int32(0)
+        here_face = end_edge // 3
+        here_edge = safe_normalize(positions[faces[next_halfedge(end_edge)]] - center)
+        current = end_edge
+        while True:
+            nxt = next_halfedge(twins[current])
+            next_face = nxt // 3
+            next_edge = safe_normalize(positions[faces[next_halfedge(nxt)]] - center)
+            if dihedral_degrees(face_normals, here_face, next_face) > min_sharp:
+                group_normals[n_groups] = wp.vec3d()
+                n_groups += 1
+            groups[n_steps] = n_groups - 1
+            n_steps += 1
+            if wp.isfinite(next_edge[0]):
+                direction = safe_normalize(cross3(next_edge, here_edge))
+                group_normals[n_groups - 1] = group_normals[n_groups - 1] + scaled3(
+                    direction, angle_between(here_edge, next_edge)
+                )
+            else:
+                next_edge = here_edge
+            here_face = next_face
+            here_edge = next_edge
+            current = nxt
+            if current == end_edge:
+                break
+        for g in range(n_groups):
+            group_normals[g] = safe_normalize(group_normals[g])
+        last_group = wp.int32(0)
+        last_prop = wp.int32(-1)
+        new_prop = wp.int32(-1)
+        idx = wp.int32(0)
+        current = end_edge
+        while True:
+            current = next_halfedge(twins[current])
+            prop = faces[current]
+            group = groups[idx]
+            if group != last_group and group != 0 and prop == last_prop:
+                last_group = group
+                new_prop = n_props
+                n_props += 1
+                out_normals[new_prop] = group_normals[group]
+            elif prop != last_prop:
+                last_prop = prop
+                new_prop = prop
+                out_normals[prop] = group_normals[group]
+            out_prop[current] = new_prop
+            idx += 1
+            if current == end_edge:
+                break
+    out_count[0] = n_props
+
+
+@wp.kernel
+def first_prop_halfedges(prop: wp.array[wp.int32], out_first: wp.array[wp.int32]) -> None:
+    # Each property vertex's first halfedge in triangle order, where ``GetMeshGL`` interns it.
+    h = wp.int32(wp.tid())
+    wp.atomic_min(out_first, prop[h], h)
+
+
+@wp.kernel
+def first_prop_flags(
+    prop: wp.array[wp.int32], first: wp.array[wp.int32], out_flags: wp.array[wp.int32]
+) -> None:
+    h = wp.int32(wp.tid())
+    out_flags[h] = wp.where(first[prop[h]] == h, 1, 0)
+
+
+@wp.kernel
+def write_split_vertices(
+    positions: wp.array[wp.vec3d],
+    faces: wp.array[wp.int32],
+    prop: wp.array[wp.int32],
+    prop_normals: wp.array[wp.vec3d],
+    first: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    out_faces: wp.array[wp.int32],
+    out_vertices: wp.array[wp.vec3],
+    out_normals: wp.array[wp.vec3],
+) -> None:
+    # ``GetMeshGL``'s property vertices: one output vertex a property vertex, in first-use order,
+    # its position its vertex's and its normal the property's.
+    h = wp.int32(wp.tid())
+    p = prop[h]
+    k = ranks[first[p]]
+    out_faces[h] = k
+    if first[p] == h:
+        out_vertices[k] = wp.vec3(positions[faces[h]])
+        out_normals[k] = wp.vec3(prop_normals[p])
