@@ -38,6 +38,8 @@ from ordito.graph import connected_component_labels_from_edges
 from ordito.halfedge import halfedge_twins
 from ordito.kernels import boolean as kernel_boolean
 from ordito.kernels import polyline as kernel_polyline
+from ordito.points import convex_hull
+from ordito.repair import remove_unreferenced_vertices
 
 _Operation = Literal["union", "intersection", "difference"]
 
@@ -1158,6 +1160,72 @@ def decompose(
         )
         pieces.append((piece_vertices, sorted_faces))
     return pieces
+
+
+def hull(points: wp.array[wp.vec3]) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    Return the convex hull of points as a closed mesh, laid out as the Boolean results are.
+
+    The hull's vertices are the extreme points, in Morton order within the hull's box, and its
+    faces follow in the same order. Pass a mesh's vertices for the hull of the mesh, or several
+    meshes' vertices together for the hull of all of them.
+
+    Parameters
+    ----------
+    points
+        ``(n_points,)`` points, ``n_points >= 4``, not all coplanar.
+
+    Returns
+    -------
+    vertices : wp.array[wp.vec3]
+        ``(n_vertices,)`` the hull's vertices, a subset of ``points``.
+    faces : wp.array[wp.int32]
+        ``(3 * n_faces,)`` outward-wound triangles.
+
+    Raises
+    ------
+    ValueError
+        If ``points`` holds fewer than 4 points or no 4 of them span a tetrahedron.
+
+    See Also
+    --------
+    [`points.convex_hull`][ordito.points.convex_hull]
+
+    Notes
+    -----
+    Manifold's ``Manifold.hull_points`` (``hull`` and ``batch_hull`` on meshes' vertices): the same
+    vertices and faces in the same order, each face possibly starting at another corner. The hull
+    is exact (see [`points.convex_hull`][ordito.points.convex_hull]) where Manifold's QuickHull
+    drops points within a rounding tolerance of a facet, so nearly coplanar clouds can keep a few
+    more vertices; Manifold returns a flat two-sided mesh for coplanar points, where this raises.
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, faces = od.boolean.hull(od.creation.icosphere(subdivisions=2)[0])
+    print(vertices.shape[0], faces.size // 3)  # 162 320
+    ```
+    """
+    device = points.device
+    hull_faces = convex_hull(points)
+    vertices, faces, _ = remove_unreferenced_vertices(points, hull_faces)
+    positions = _launch.empty(vertices.shape[0], dtype=wp.vec3d, device=device)
+    _launch.launch(
+        kernel_boolean.widen_positions,
+        dim=vertices.shape[0],
+        inputs=[vertices],
+        outputs=[positions],
+        device=device,
+    )
+    lower, upper = _positions_box(positions)
+    # ``SetEpsilon()``: both tolerances the double-precision floor at the hull's scale.
+    epsilon = kernel_boolean.PRECISION * max(abs(x) for x in (*lower, *upper))
+    solid = _solid_from_positions(
+        positions, faces, 0, epsilon, epsilon, lower, upper, "hull", sort_first=True
+    )
+    return _mesh_from_solid(solid, device)
 
 
 def refine(

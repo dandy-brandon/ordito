@@ -640,6 +640,28 @@ def test_decompose_matches_manifold3d(device: str, case: str) -> None:
         _assert_same_as_m3(piece, piece_m3)
 
 
+@pytest.mark.parity("hull", "manifold3d")
+@pytest.mark.parametrize("seed", [0, 1, 2, 3])
+def test_hull_matches_manifold3d(device: str, seed: int) -> None:
+    """
+    ``hull`` is Manifold's ``hull_points``: the same vertices in the same order, the same faces.
+
+    Class A through ``equality.faces_equal``: the faces come in Manifold's order, but each starts
+    at the corner QuickHull's construction left first, which an exact hull does not reproduce, so
+    faces compare up to rotation; the vertex arrays compare exactly. Clouds of 10 to 2 000 points
+    of varied shape; the seed-0 cloud's interior points are dropped.
+    """
+    rng = np.random.default_rng(seed)
+    points_np = rng.normal(size=(int(rng.integers(10, 2000)), 3)) * rng.uniform(0.3, 3.0, 3)
+    points_np = points_np.astype(np.float32)
+    mesh_m3 = m3.Manifold.hull_points(points_np.astype(np.float64)).to_mesh()
+    assert len(mesh_m3.vert_properties) < len(points_np)
+    vertices, faces = od.boolean.hull(wp.array(points_np, dtype=wp.vec3, device=device))
+    assert np.array_equal(vertices.numpy(), np.asarray(mesh_m3.vert_properties)[:, :3])
+    faces_m3 = wp.array(np.asarray(mesh_m3.tri_verts, dtype=np.int32).reshape(-1), device=device)
+    assert od.equality.faces_equal(faces, faces_m3)
+
+
 def _manifold_mesh_tm(result_m3: m3.Manifold) -> tm.Trimesh:
     """Return a Manifold as a ``float32`` trimesh mesh."""
     mesh_m3 = result_m3.to_mesh()

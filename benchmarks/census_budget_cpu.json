@@ -457,6 +457,16 @@
    "sort": 32
   }
  },
+ "benchmarks/test_boolean.py::test_hull[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 45,
+   "alloc": 37,
+   "h2h": 2,
+   "readback": 14,
+   "scan": 3,
+   "sort": 5
+  }
+ },
  "benchmarks/test_boolean.py::test_intersection[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 89,

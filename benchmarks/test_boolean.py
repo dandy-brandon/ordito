@@ -411,6 +411,21 @@ def test_smooth_out(bench_case: BenchCase) -> None:
     assert faces.size == 4 * faces_wp.size
 
 
+@pytest.mark.benchmark(group="hull")
+@pytest.mark.benchlibs("ordito", "manifold3d")
+@pytest.mark.benchaxis("scale")
+def test_hull(bench_case: BenchCase) -> None:
+    """``od.boolean.hull`` of the sphere's vertices (manifold3d: ``hull_points``)."""
+    if bench_case.kind == "manifold3d":
+        points_np = np.asarray(bench_case.vertices_np, dtype=np.float64)
+        result_m3 = bench_case.run(lambda: _forced(m3.Manifold.hull_points(points_np)))
+        assert result_m3.num_tri() > 0
+        return
+    vertices_wp = bench_case.vertices_wp
+    _, faces = bench_case.run(lambda: od.boolean.hull(vertices_wp))
+    assert faces.size > 0
+
+
 @pytest.mark.benchmark(group="cross_section")
 @pytest.mark.benchlibs("ordito", "manifold3d")
 @pytest.mark.benchaxis("scale")

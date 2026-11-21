@@ -484,6 +484,18 @@
    "sort": 22
   }
  },
+ "benchmarks/test_boolean.py::test_hull[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 119,
+   "alloc": 38,
+   "memset": 14,
+   "d2d": 1,
+   "h2d": 1,
+   "d2h": 15,
+   "scan": 13,
+   "sort": 4
+  }
+ },
  "benchmarks/test_boolean.py::test_intersection[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 97,
