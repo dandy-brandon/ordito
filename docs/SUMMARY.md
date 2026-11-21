@@ -126,6 +126,7 @@ Shelving decisions that are not obvious from the section titles:
         * [repair](api/ordito/repair.md)
         * [holes](api/ordito/holes.md)
         * [combine](api/ordito/combine.md)
+        * [boolean](api/ordito/boolean.md)
         * [remesh](api/ordito/remesh.md)
         * [smoothing](api/ordito/smoothing.md)
         * [seams](api/ordito/seams.md)

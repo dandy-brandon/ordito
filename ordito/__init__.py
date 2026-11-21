@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from ordito import (
         adjacency,
         array,
+        boolean,
         boundary,
         bounds,
         cholesky,
@@ -91,6 +92,7 @@ __all__ = [
     "Trimesh",
     "adjacency",
     "array",
+    "boolean",
     "boundary",
     "bounds",
     "cholesky",

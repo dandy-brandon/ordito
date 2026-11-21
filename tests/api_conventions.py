@@ -313,9 +313,16 @@ _PRIVATE_IMPORT_ALLOWLIST: dict[tuple[str, str], str] = {
 # ``array.split`` mirror ``numpy.concatenate`` / ``numpy.split``, while ``combine.concatenate``
 # mirrors ``trimesh.util.concatenate`` and ``combine.split`` mirrors ``trimesh.Trimesh.split``;
 # none is reachable unqualified and the naming rule requires both spellings of each.
+#
+# ``boolean.union`` / ``intersection`` / ``difference`` mirror ``trimesh.boolean``'s solids, and
+# ``voxels.union`` / ``intersection`` / ``difference`` the set operations on two grids' cells; the
+# same three words in both vocabularies, never reachable unqualified.
 _DUPLICATE_NAME_ALLOWLIST: dict[str, frozenset[str]] = {
     "concatenate": frozenset({"array", "combine"}),
     "split": frozenset({"array", "combine"}),
+    "union": frozenset({"boolean", "voxels"}),
+    "intersection": frozenset({"boolean", "voxels"}),
+    "difference": frozenset({"boolean", "voxels"}),
 }
 
 # --- check 7 -----------------------------------------------------------------------------------
@@ -572,6 +579,19 @@ _KERNEL_WRITE_CALLS = frozenset(
 #   persistent front. Neither an input nor the answer, so the name says what the buffer holds
 #   (``cursor``, ``front_out``, ``new_src``) rather than wearing a prefix that promises a result.
 _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
+    # ``boolean``'s Manifold port. The pairing passes keep each item's rank among its kind in
+    # ``record_rank`` / ``item_rank`` between their ranking and pairing loops; the ear clipper's
+    # circular lists and work lists live in ``ec``, cut at each face's offset; the coplanar flood
+    # grows ``coplanar`` and rewrites the grouped faces' ``face_normals`` in place, walking its
+    # ``stack``; ``slot_halfedge`` maps each polygon edge to its triangle halfedge for the pairing
+    # pass after; the topology cleanup edits the halfedge structure ``m`` in place.
+    ("boolean", "emit_partial_edges"): frozenset({"record_rank"}),
+    ("boolean", "emit_new_edges"): frozenset({"item_rank"}),
+    ("boolean", "triangulate_faces"): frozenset({"ec"}),
+    ("boolean", "flood_coplanar"): frozenset({"coplanar", "face_normals", "stack"}),
+    ("boolean", "own_coplanar_groups"): frozenset({"coplanar"}),
+    ("boolean", "write_result_halfedges"): frozenset({"slot_halfedge"}),
+    ("boolean", "split_pinched_fans"): frozenset({"m"}),
     # The multifrontal factorization works in place: ``fronts`` holds each front's operator
     # entries, then its factor and the Schur complement its parent extends; ``blocks`` the solve
     # blocks each panel's update rewrites. The refinement loop's ``state`` / ``rhs_scale`` are its

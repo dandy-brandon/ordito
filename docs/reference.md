@@ -57,6 +57,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | **Edit** | |
 | move, rotate, scale, mirror | [`transform`][ordito.transform]: [`transform_mesh`][ordito.transform.transform_mesh], [`rotation_matrix`][ordito.transform.rotation_matrix] |
 | combine meshes, or split into parts | [`combine.concatenate`][ordito.combine.concatenate], [`combine.split`][ordito.combine.split] |
+| union, intersection or difference of two solids | [`boolean`][ordito.boolean]: [`union`][ordito.boolean.union], [`intersection`][ordito.boolean.intersection], [`difference`][ordito.boolean.difference] |
 | keep a subset of faces | [`selection.submesh_from_face_mask`][ordito.selection.submesh_from_face_mask] |
 | grow a selection, or measure hops from it | [`selection.expand_vertex_mask`][ordito.selection.expand_vertex_mask], [`vertex_hop_distance`][ordito.selection.vertex_hop_distance] |
 | carry colours, UVs, labels or any per-vertex or per-face field through an edit | ``return_provenance=True`` and [`interpolation.Provenance`][ordito.interpolation.Provenance] |
@@ -147,6 +148,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | [repair](api/ordito/repair.md) | Removing what should not be in a mesh: duplicates, bad triangles, inconsistent winding. |
 | [holes](api/ordito/holes.md) | Closing boundary holes, and stitching two open meshes along a rim. |
 | [combine](api/ordito/combine.md) | Assembling meshes from parts and splitting them back apart. |
+| [boolean](api/ordito/boolean.md) | Union, intersection and difference of closed meshes as solids. |
 | [remesh](api/ordito/remesh.md) | Changing a mesh's triangulation: subdividing, decimating, and improving triangle shapes. |
 | [smoothing](api/ordito/smoothing.md) | Laplacian smoothing filters, for vertex positions and for per-vertex scalar fields. |
 | [seams](api/ordito/seams.md) | Feature and UV-seam edges, and the topological cut along them. |
