@@ -1623,12 +1623,6 @@ class _HeavyHost(NamedTuple):
     triangles: wp.array[wp.vec3i]
 
 
-def _copy_range(dest: odt.ArrayNd, src: odt.ArrayNd, start: int, count: int) -> None:
-    """Copy ``src[start:start + count]`` into the same entries of ``dest``."""
-    if count > 0:
-        _launch.copy(dest, src, dest_offset=start, src_offset=start, count=count)
-
-
 def _triangulate_heavy_on_host(
     faces: list[tuple[int, int, int, int, int]],
     inputs: list[object],
@@ -1770,6 +1764,12 @@ def _write_heavy_on_host(
         for array, h_array in zip((tri_mesh, tri_coplanar, tri_normal), h_outputs[2:], strict=True):
             _copy_range(array, h_array, dst, stop - dst)
         _copy_range(slot_halfedge, h_slots, first, end - first)
+
+
+def _copy_range(dest: odt.ArrayNd, src: odt.ArrayNd, start: int, count: int) -> None:
+    """Copy ``src[start:start + count]`` into the same entries of ``dest``."""
+    if count > 0:
+        _launch.copy(dest, src, dest_offset=start, src_offset=start, count=count)
 
 
 def _launch_heavy_faces(
