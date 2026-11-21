@@ -1203,6 +1203,14 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   Move only used prefixes: whole capacity-sized halfedge arrays cost a `difference` 90 of 105 ms.
   Many short independent walks stay on the device (the flood's rounds, the per-face passes).
 - **Shapes that lose:** a line-per-thread lattice pass absorbing a cell-per-thread one (`fill_orthographic`, 0.4-0.85x); a single-thread serial walk storing gathered values instead of computed indices (1.5-3x, polyline downsample); a per-face edge marker instead of a per-edge one plus a child-count launch (1.2x, remesh split).
+- **A counted-then-written walk with costly candidates decides each candidate once, a thread a
+  candidate** (2026-11-21, `kernels/boolean.decide_edge_candidates`,
+  `kernels/ray.decide_segment_candidates`): where every candidate a walk meets costs a chain of
+  exact `float64` predicates, a thread a query deciding them in turn, once to count and again to
+  write, waits on its longest chain (a 5 k-face Boolean's crossings: 241 us a launch for 3 168
+  candidates, the walk alone 24 us). The walks only count and write the candidates, one launch
+  decides them, and the compaction keeps candidate order: union 0.81-0.89x, `segment_hits`
+  0.22-0.48x; staging (below) does not apply, the decision being the cost, not the walk.
 - **A serial walk counted then written walks once** (2026-11-07): a kernel launched to count each
   walk's points and again to write them (tracers, descents, the flip traces) repeats the whole
   walk. The counting pass stages the points in a pool of 16-point chunks linked a walk at a time
@@ -1432,3 +1440,11 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `offset_mesh(method="meshlib")` against MeshLib's `offsetMesh`, whose extraction is ported
   (`marching_cubes(method="openvdb")`, Class A) and whose OpenVDB `meshToLevelSet` band field is
   not. Scoped, with source availability and licensing, in `reference/component-status.md` (16.0b).
+- **`boolean`'s heavy faces past a few thousand sides** (2026-11-21): a plane cut of a 1.3 M-face
+  sphere spends 112 of its 300 ms (manifold3d 229 ms) in the cap's host passes, whose loop
+  assembly (`assemble_loops`) and polygon-slot and diagonal pairing (`write_result_halfedges`)
+  are quadratic in the face's sides; a sort of each face's halfedges by `(start, end, index)`
+  makes the same choices in `n log n`. The same cut's 540 collapses around the cap's
+  high-valence vertices cost ~148 us each in one GPU thread (80 ms a pass), and the CPU's round
+  trip of the 8 M-halfedge prefixes about as much (`_solid._SERIAL_DEVICE_BASE`): a pass that
+  moves only the halfedges it touches would serve both.
