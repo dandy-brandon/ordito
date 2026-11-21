@@ -1195,7 +1195,7 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   `boolean`: the topology collapses and swaps, the coplanar flood past its rounds, the ear clipping
   and halfedge pairing of a polygon of 256 or more sides): one GPU thread waits a load's latency
   each step. Collapses 279 -> 10 ms on an 82 k-face sphere, a plane cut's one-polygon cap 433 +
-  136 -> 13 + 6 ms; `simplify` there 0.81 -> 0.023 s, `split_by_plane` 61x -> 1.0x Manifold.
+  136 -> 13 + 6 ms; `remesh.simplify` there 0.81 -> 0.023 s, `split_by_plane` 61x -> 1.0x Manifold.
   Move only used prefixes: whole capacity-sized halfedge arrays cost a `difference` 90 of 105 ms.
   Many short independent walks stay on the device (the flood's rounds, the per-face passes).
 - **Shapes that lose:** a line-per-thread lattice pass absorbing a cell-per-thread one (`fill_orthographic`, 0.4-0.85x); a single-thread serial walk storing gathered values instead of computed indices (1.5-3x, polyline downsample); a per-face edge marker instead of a per-edge one plus a child-count launch (1.2x, remesh split).

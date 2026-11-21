@@ -11,9 +11,9 @@ import trimesh as tm
 import warp as wp
 
 import ordito as od
-from tests import level_set_functions
+from tests.comparisons import assert_same_as_manifold3d
 from tests.conftest import CLOSED_MESHES
-from tests.conversions import numpy_to_warp, warp_empty
+from tests.conversions import float32_trimesh, numpy_to_warp, trimesh_to_manifold3d, warp_empty
 
 MeshPair = tuple[tm.Trimesh, wp.Mesh]
 WarpMesh = tuple[wp.array[wp.vec3], wp.array[wp.int32]]
@@ -32,11 +32,6 @@ _OPERATION_IDS = [name for name, _ in OPERATIONS]
 _GENERIC_MESHES = [*CLOSED_MESHES, "torus_irregular"]
 
 
-def _float32_mesh(mesh_tm: tm.Trimesh) -> tm.Trimesh:
-    """Return ``mesh_tm`` with ``float32`` coordinates, as ordito and Manifold both read them."""
-    return tm.Trimesh(mesh_tm.vertices.astype(np.float32), mesh_tm.faces, process=False)
-
-
 def _moved_copy(mesh_tm: tm.Trimesh, seed: int) -> tm.Trimesh:
     """Return ``mesh_tm`` rotated about its centroid and shifted by a third of its extent."""
     rng = np.random.default_rng(seed)
@@ -45,32 +40,11 @@ def _moved_copy(mesh_tm: tm.Trimesh, seed: int) -> tm.Trimesh:
     moved.apply_translation(-centre)
     moved.apply_transform(tm.transformations.random_rotation_matrix(rng.random(3)))
     moved.apply_translation(centre + mesh_tm.extents * np.array([0.31, 0.17, 0.11]))
-    return _float32_mesh(moved)
+    return float32_trimesh(moved)
 
 
 def _box(lower: list[float], upper: list[float]) -> tm.Trimesh:
     return tm.creation.box(bounds=[lower, upper])
-
-
-def _manifold_m3(mesh_tm: tm.Trimesh) -> m3.Manifold:
-    """Return ``mesh_tm`` as a Manifold, its ``float32`` coordinates as ordito reads them."""
-    mesh_m3 = m3.Mesh(
-        vert_properties=np.asarray(mesh_tm.vertices, dtype=np.float32),
-        tri_verts=np.asarray(mesh_tm.faces, dtype=np.uint32),
-    )
-    return m3.Manifold(mesh_m3)
-
-
-def _upload(mesh_tm: tm.Trimesh, device: str) -> WarpMesh:
-    return numpy_to_warp(np.asarray(mesh_tm.vertices, dtype=np.float32), mesh_tm.faces, device)
-
-
-def _assert_same_as_m3(result_wp: WarpMesh, result_m3: m3.Manifold) -> None:
-    """Assert ordito's mesh is Manifold's ``to_mesh()``, array for array, order included."""
-    mesh_m3 = result_m3.to_mesh()
-    vertices_wp, faces_wp = result_wp
-    assert np.array_equal(vertices_wp.numpy(), np.asarray(mesh_m3.vert_properties)[:, :3])
-    assert np.array_equal(faces_wp.numpy().reshape(-1, 3), np.asarray(mesh_m3.tri_verts))
 
 
 # Configurations where the operands touch, overlap in a plane or coincide: every tie Manifold's
@@ -113,13 +87,19 @@ def test_boolean_matches_manifold3d(
     volume is neither operand's, so the crossing curve is really there.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    a_tm = _float32_mesh(mesh_tm)
+    a_tm = float32_trimesh(mesh_tm)
     b_tm = _moved_copy(a_tm, seed=7)
-    result_m3 = _m3_operation(name, _manifold_m3(a_tm), _manifold_m3(b_tm))
+    result_m3 = _m3_operation(name, trimesh_to_manifold3d(a_tm), trimesh_to_manifold3d(b_tm))
     assert result_m3.num_tri() > 0
     assert not np.isclose(result_m3.volume(), a_tm.volume, rtol=1e-3)
     device = mesh_wp.device
-    _assert_same_as_m3(operation(*_upload(a_tm, device), *_upload(b_tm, device)), result_m3)
+    assert_same_as_manifold3d(
+        operation(
+            *numpy_to_warp(a_tm.vertices, a_tm.faces, device),
+            *numpy_to_warp(b_tm.vertices, b_tm.faces, device),
+        ),
+        result_m3,
+    )
 
 
 @pytest.mark.parity("boolean_union", "manifold3d")
@@ -140,9 +120,12 @@ def test_boolean_degenerate_contacts_match_manifold3d(
     touches, so it is intersected).
     """
     a_tm, b_tm = _DEGENERATE_CASES[case]
-    result_m3 = _m3_operation(name, _manifold_m3(a_tm), _manifold_m3(b_tm))
-    result_wp = operation(*_upload(a_tm, device), *_upload(b_tm, device))
-    _assert_same_as_m3(result_wp, result_m3)
+    result_m3 = _m3_operation(name, trimesh_to_manifold3d(a_tm), trimesh_to_manifold3d(b_tm))
+    result_wp = operation(
+        *numpy_to_warp(a_tm.vertices, a_tm.faces, device),
+        *numpy_to_warp(b_tm.vertices, b_tm.faces, device),
+    )
+    assert_same_as_manifold3d(result_wp, result_m3)
 
 
 @pytest.mark.parity("boolean_union", "trimesh")
@@ -156,11 +139,14 @@ def test_boolean_matches_trimesh(device: str, name: str, operation: Operation) -
     Class A, up to vertex numbering, face order and rotation (trimesh merges and reorders the
     engine's output).
     """
-    a_tm = _float32_mesh(tm.creation.icosphere(subdivisions=3))
+    a_tm = float32_trimesh(tm.creation.icosphere(subdivisions=3))
     b_tm = _moved_copy(a_tm, seed=11)
     reference_tm = getattr(tm.boolean, name)([a_tm, b_tm], engine="manifold")
     assert len(reference_tm.faces) > 0
-    vertices_wp, faces_wp = operation(*_upload(a_tm, device), *_upload(b_tm, device))
+    vertices_wp, faces_wp = operation(
+        *numpy_to_warp(a_tm.vertices, a_tm.faces, device),
+        *numpy_to_warp(b_tm.vertices, b_tm.faces, device),
+    )
     reference_wp = numpy_to_warp(reference_tm.vertices, reference_tm.faces, device)
     assert od.equality.meshes_allclose(vertices_wp, faces_wp, *reference_wp, atol=1e-6)
 
@@ -175,14 +161,17 @@ def test_split_by_mesh_matches_manifold3d(device: str, case: str) -> None:
     disjoint ties, where one part is the whole mesh or empty.
     """
     if case == "spheres":
-        a_tm = _float32_mesh(tm.creation.icosphere(subdivisions=3))
+        a_tm = float32_trimesh(tm.creation.icosphere(subdivisions=3))
         b_tm = _moved_copy(a_tm, seed=3)
     else:
         a_tm, b_tm = _DEGENERATE_CASES[case]
-    inside_m3, outside_m3 = _manifold_m3(a_tm).split(_manifold_m3(b_tm))
-    inside_wp, outside_wp = od.boolean.split_by_mesh(*_upload(a_tm, device), *_upload(b_tm, device))
-    _assert_same_as_m3(inside_wp, inside_m3)
-    _assert_same_as_m3(outside_wp, outside_m3)
+    inside_m3, outside_m3 = trimesh_to_manifold3d(a_tm).split(trimesh_to_manifold3d(b_tm))
+    inside_wp, outside_wp = od.boolean.split_by_mesh(
+        *numpy_to_warp(a_tm.vertices, a_tm.faces, device),
+        *numpy_to_warp(b_tm.vertices, b_tm.faces, device),
+    )
+    assert_same_as_manifold3d(inside_wp, inside_m3)
+    assert_same_as_manifold3d(outside_wp, outside_m3)
 
 
 # Planes through the box and the sphere: axis-aligned through vertices and edges (every tie),
@@ -215,22 +204,23 @@ def test_plane_cuts_match_manifold3d(
     """
     mesh_tm = {
         "box": _box([0, 0, 0], [1, 1, 1]),
-        "sphere": _float32_mesh(tm.creation.icosphere(subdivisions=3)),
-        "torus": _float32_mesh(tm.creation.torus(1.0, 0.3, 24, 12)),
+        "sphere": float32_trimesh(tm.creation.icosphere(subdivisions=3)),
+        "torus": float32_trimesh(tm.creation.torus(1.0, 0.3, 24, 12)),
     }[shape]
-    mesh_m3 = _manifold_m3(mesh_tm)
+    mesh_m3 = trimesh_to_manifold3d(mesh_tm)
     above_m3, below_m3 = mesh_m3.split_by_plane(normal, offset)
     trimmed_m3 = mesh_m3.trim_by_plane(normal, offset)
-    mesh_wp = _upload(mesh_tm, device)
+    mesh_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
     above_wp, below_wp = od.boolean.split_by_plane(*mesh_wp, normal, offset)
-    _assert_same_as_m3(above_wp, above_m3)
-    _assert_same_as_m3(below_wp, below_m3)
-    _assert_same_as_m3(od.boolean.trim_by_plane(*mesh_wp, normal, offset), trimmed_m3)
+    assert_same_as_manifold3d(above_wp, above_m3)
+    assert_same_as_manifold3d(below_wp, below_m3)
+    assert_same_as_manifold3d(od.boolean.trim_by_plane(*mesh_wp, normal, offset), trimmed_m3)
 
 
 def test_plane_cut_rejects_a_zero_normal(device: str) -> None:
     """A zero normal raises ``ValueError``. Not a library comparison: the guard."""
-    mesh_wp = _upload(_box([0, 0, 0], [1, 1, 1]), device)
+    box_tm = _box([0, 0, 0], [1, 1, 1])
+    mesh_wp = numpy_to_warp(box_tm.vertices, box_tm.faces, device)
     with pytest.raises(ValueError, match="normal"):
         od.boolean.split_by_plane(*mesh_wp, (0.0, 0.0, 0.0))
 
@@ -245,7 +235,7 @@ def _batch_meshes(case: str) -> list[tm.Trimesh]:
         sphere = tm.creation.icosphere(subdivisions=2, radius=float(rng.uniform(0.4, 0.8)))
         offset = rng.uniform(-1.0, 1.0, 3) if case == "scattered" else np.array([3.0 * i, 0, 0])
         sphere.apply_translation(offset)
-        meshes.append(_float32_mesh(sphere))
+        meshes.append(float32_trimesh(sphere))
     if case == "apart":
         meshes.append(_box([0.5, 0, 0], [4, 0.5, 0.5]))
     return meshes
@@ -275,251 +265,17 @@ def test_batch_booleans_match_manifold3d(
     pairing order decides; ``row`` touches face to face.
     """
     meshes_tm = _batch_meshes(case)
-    result_m3 = m3.Manifold.batch_boolean([_manifold_m3(mesh) for mesh in meshes_tm], op_m3)
-    result_wp = function([_upload(mesh, device) for mesh in meshes_tm])
-    _assert_same_as_m3(result_wp, result_m3)
+    result_m3 = m3.Manifold.batch_boolean(
+        [trimesh_to_manifold3d(mesh) for mesh in meshes_tm], op_m3
+    )
+    result_wp = function([numpy_to_warp(mesh.vertices, mesh.faces, device) for mesh in meshes_tm])
+    assert_same_as_manifold3d(result_wp, result_m3)
 
 
 def test_batch_booleans_reject_an_empty_list() -> None:
     """No mesh at all raises ``ValueError``. Not a library comparison: the guard."""
     with pytest.raises(ValueError, match="at least one mesh"):
         od.boolean.union_all([])
-
-
-@pytest.mark.parity("segment_hits", "manifold3d")
-@pytest.mark.parametrize("shape", ["box", "sphere_irregular", "torus"])
-def test_segment_hits_match_manifold3d(
-    request: pytest.FixtureRequest, device: str, shape: str
-) -> None:
-    """
-    Each segment's crossings are Manifold's ``ray_cast``: faces, parameters and points.
-
-    Class A, after one named transform: Manifold numbers faces in its internal order, ordito in
-    the caller's, so each hit's face is compared as the triangle it names. Segments through the
-    box's vertices, edges and face centres are the ties; the rest are random, crossing and
-    missing. The reference is non-vacuous: some segments cross, some miss.
-    """
-    if shape == "sphere_irregular":
-        mesh_tm = _float32_mesh(request.getfixturevalue("sphere_irregular")[0])
-    elif shape == "box":
-        mesh_tm = _box([0, 0, 0], [1, 1, 1])
-    else:
-        mesh_tm = _float32_mesh(tm.creation.torus(1.0, 0.3, 24, 12))
-    rng = np.random.default_rng(13)
-    centre = mesh_tm.vertices.mean(axis=0)
-    span = float(np.max(mesh_tm.extents))
-    origins_np = (centre + rng.uniform(-span, span, (64, 3))).astype(np.float32)
-    endpoints_np = (centre + rng.uniform(-span, span, (64, 3))).astype(np.float32)
-    origins_np[:4] = [[0.5, 0.5, -1.0], [0.0, 0.0, -1.0], [0.5, 0.0, -1.0], [1.0, 1.0, 2.0]]
-    endpoints_np[:4] = [[0.5, 0.5, 2.0], [0.0, 0.0, 2.0], [0.5, 0.0, 2.0], [1.0, 1.0, -1.0]]
-    mesh_m3 = _manifold_m3(mesh_tm)
-    mesh_out_m3 = mesh_m3.to_mesh()
-    vertices_m3 = np.asarray(mesh_out_m3.vert_properties)[:, :3]
-    faces_m3 = np.asarray(mesh_out_m3.tri_verts)
-    hit_faces, parameters, points, _, offsets = od.boolean.segment_hits(
-        *_upload(mesh_tm, device),
-        wp.array(origins_np, dtype=wp.vec3, device=device),
-        wp.array(endpoints_np, dtype=wp.vec3, device=device),
-    )
-    offsets_np = offsets.numpy()
-    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float32)
-    faces_np = np.asarray(mesh_tm.faces)
-    n_crossing = 0
-    for s in range(len(origins_np)):
-        hits_m3 = mesh_m3.ray_cast(tuple(origins_np[s].tolist()), tuple(endpoints_np[s].tolist()))
-        hits_m3 = sorted(hits_m3, key=lambda hit: hit.distance)
-        ours = range(int(offsets_np[s]), int(offsets_np[s + 1]))
-        assert len(ours) == len(hits_m3)
-        n_crossing += len(hits_m3) > 0
-        for hit_m3, k in zip(hits_m3, ours, strict=True):
-            triangle_m3 = sorted(map(tuple, vertices_m3[faces_m3[hit_m3.face_id]].tolist()))
-            triangle_np = sorted(map(tuple, vertices_np[faces_np[hit_faces.numpy()[k]]].tolist()))
-            assert triangle_np == triangle_m3
-            assert parameters.numpy()[k] == hit_m3.distance
-            assert np.array_equal(points.numpy()[k], np.asarray(hit_m3.position, dtype=np.float32))
-    assert 0 < n_crossing < len(origins_np)
-
-
-# Offsets along z for the second sphere: overlapping, near, nearer the search length, out of reach.
-
-
-@pytest.mark.parity("simplify", "manifold3d")
-@pytest.mark.parametrize(
-    ("shape", "tolerance"),
-    [("subdivided_box", 0.0), ("sphere", 0.01), ("sphere", 0.05), ("sphere_irregular", 0.0)],
-)
-def test_simplify_matches_manifold3d(
-    request: pytest.FixtureRequest, device: str, shape: str, tolerance: float
-) -> None:
-    """
-    ``simplify`` is Manifold's ``Manifold.simplify``, array for array.
-
-    Class A. A subdivided box collapses to its twelve triangles at the mesh's own precision;
-    an icosphere loses the vertices within the tolerance of a plane through their neighbours;
-    ``sphere_irregular``'s needles stay where nothing is collinear.
-    """
-    if shape == "subdivided_box":
-        mesh_tm = _box([0, 0, 0], [1, 1, 1]).subdivide().subdivide()
-    elif shape == "sphere":
-        mesh_tm = _float32_mesh(tm.creation.icosphere(subdivisions=3))
-    else:
-        mesh_tm = _float32_mesh(request.getfixturevalue("sphere_irregular")[0])
-    result_m3 = _manifold_m3(mesh_tm).simplify(tolerance)
-    if shape != "sphere_irregular":
-        assert result_m3.num_vert() < len(mesh_tm.vertices)
-    _assert_same_as_m3(od.boolean.simplify(*_upload(mesh_tm, device), tolerance), result_m3)
-
-
-def _refine_mesh_tm(request: pytest.FixtureRequest, shape: str) -> tm.Trimesh:
-    """Return a refinement case's mesh: a box, a long cylinder or ``sphere_irregular``."""
-    if shape == "box":
-        return _box([0, 0, 0], [1, 1, 1])
-    if shape == "cylinder":
-        return _float32_mesh(tm.creation.cylinder(radius=0.3, height=3.0, sections=12))
-    return _float32_mesh(request.getfixturevalue("sphere_irregular")[0])
-
-
-_SMOOTH_SHAPES = ["box", "cylinder", "sphere_irregular", "box_minus_ball"]
-
-
-def _smooth_mesh_tm(request: pytest.FixtureRequest, shape: str) -> tm.Trimesh:
-    """Return a smoothing case: quads, flat caps, needles, a smooth torus or a CSG result."""
-    if shape == "torus":
-        return _float32_mesh(tm.creation.torus(1.0, 0.3, 16, 8))
-    if shape == "box_minus_ball":
-        ball_tm = _float32_mesh(tm.creation.icosphere(subdivisions=2, radius=0.7))
-        return _manifold_mesh_tm(
-            _manifold_m3(_box([-0.5, -0.5, -0.5], [0.5, 0.5, 0.5])) - _manifold_m3(ball_tm)
-        )
-    return _refine_mesh_tm(request, shape)
-
-
-# ``tolerance`` runs only where no corner joins three creases of zero smoothness: there Manifold's
-# ``0 / 0`` smoothness makes NaN tangents, whose edge counts it converts unchecked (it crashes on
-# ``sphere_irregular``'s needles and never returns on the box); ordito adds nothing on them.
-_SMOOTH_CASES = [
-    (shape, mode, angle, smoothness)
-    for shape in _SMOOTH_SHAPES
-    for mode, angle, smoothness in [("n", 52.5, 0.0), ("n", 30.0, 0.5), ("length", 40.0, 0.2)]
-] + [
-    ("sphere_irregular", "tolerance", 30.0, 0.5),
-    ("box_minus_ball", "tolerance", 52.5, 0.3),
-    ("torus", "tolerance", 52.5, 0.0),
-]
-
-
-@pytest.mark.parity("smooth_out", "manifold3d")
-@pytest.mark.parametrize(("shape", "mode", "min_sharp_angle", "min_smoothness"), _SMOOTH_CASES)
-def test_smooth_out_matches_manifold3d(
-    request: pytest.FixtureRequest,
-    device: str,
-    shape: str,
-    mode: str,
-    min_sharp_angle: float,
-    min_smoothness: float,
-) -> None:
-    """
-    ``smooth_out`` is Manifold's ``smooth_out`` then its refinement, array for array.
-
-    Class A. ``n`` against ``refine``, ``length`` against ``refine_to_length``, ``tolerance``
-    against ``refine_to_tolerance``. The box smooths its faces as quads, the cylinder keeps its
-    caps flat and its rims creased, ``sphere_irregular``'s needles take the Bezier patches'
-    degenerate branches, and the box less a ball holds flat faces, sharp creases and a curved
-    cavity at once; a nonzero smoothness leaves the creases partly smooth.
-    """
-    mesh_tm = _smooth_mesh_tm(request, shape)
-    extent = float(np.ptp(mesh_tm.vertices, axis=0).max())
-    smoothed_m3 = _manifold_m3(mesh_tm).smooth_out(min_sharp_angle, min_smoothness)
-    vertices, faces = _upload(mesh_tm, device)
-    if mode == "n":
-        result_m3 = smoothed_m3.refine(3)
-        result = od.boolean.smooth_out(
-            vertices, faces, 3, min_sharp_angle=min_sharp_angle, min_smoothness=min_smoothness
-        )
-    elif mode == "length":
-        result_m3 = smoothed_m3.refine_to_length(0.15 * extent)
-        result = od.boolean.smooth_out(
-            vertices,
-            faces,
-            length=0.15 * extent,
-            min_sharp_angle=min_sharp_angle,
-            min_smoothness=min_smoothness,
-        )
-    else:
-        result_m3 = smoothed_m3.refine_to_tolerance(0.01 * extent)
-        result = od.boolean.smooth_out(
-            vertices,
-            faces,
-            tolerance=0.01 * extent,
-            min_sharp_angle=min_sharp_angle,
-            min_smoothness=min_smoothness,
-        )
-    assert result_m3.num_vert() > len(mesh_tm.vertices)
-    _assert_same_as_m3(result, result_m3)
-
-
-def test_smooth_out_takes_exactly_one_refinement(device: str) -> None:
-    """None or two of ``n``, ``length``, ``tolerance`` raise. Not a library comparison: guards."""
-    vertices, faces = _upload(_box([0, 0, 0], [1, 1, 1]), device)
-    with pytest.raises(ValueError, match="exactly one"):
-        od.boolean.smooth_out(vertices, faces)
-    with pytest.raises(ValueError, match="exactly one"):
-        od.boolean.smooth_out(vertices, faces, 2, length=0.1)
-    with pytest.raises(ValueError, match="must be finite and nonzero"):
-        od.boolean.smooth_out(vertices, faces, tolerance=0.0)
-
-
-_LEVEL_SETS = {
-    "torus": (level_set_functions.torus_sdf, level_set_functions.torus_sdf_py),
-    "cube": (level_set_functions.cube_sdf, level_set_functions.cube_sdf_py),
-    "blobs": (level_set_functions.blobs_sdf, level_set_functions.blobs_sdf_py),
-}
-
-
-@pytest.mark.parity("level_set", "manifold3d")
-@pytest.mark.parametrize("shape", list(_LEVEL_SETS))
-@pytest.mark.parametrize(
-    ("bounds", "edge_length", "level", "tolerance"),
-    [
-        ([-1.5, -1.5, -1.5, 1.5, 1.5, 1.5], 0.2, 0.0, -1.0),
-        ([-1.3, -1.1, -0.2, 1.2, 1.4, 0.25], 0.07, 0.05, -1.0),
-        ([-1.5, -1.5, -1.5, 1.5, 1.5, 1.5], 0.15, -0.05, 0.002),
-    ],
-    ids=["plain", "clipped", "refined"],
-)
-def test_level_set_matches_manifold3d(
-    device: str, shape: str, bounds: list[float], edge_length: float, level: float, tolerance: float
-) -> None:
-    """
-    ``level_set`` is Manifold's ``Manifold.level_set`` of the same function, array for array.
-
-    Class A. The function is a ``@wp.func`` here and its Python twin there, written to round the
-    same (``sqrt``, ``abs``, ``max``, arithmetic). A box clipping the surface caps it; a level
-    offsets it; a tolerance refines each vertex by root finding. The cube's flat faces snap whole
-    grid points onto the surface; the two blobs meet in a saddle; the fine grid overflows
-    Manifold's first hash table.
-    """
-    sdf, sdf_py = _LEVEL_SETS[shape]
-    result_m3 = m3.Manifold.level_set(sdf_py, bounds, edge_length, level, tolerance)
-    assert result_m3.num_tri() > 0
-    result = od.boolean.level_set(sdf, bounds, edge_length, level, tolerance, device=device)
-    _assert_same_as_m3(result, result_m3)
-
-
-def test_level_set_rejects_a_bad_grid(device: str) -> None:
-    """Inverted bounds and a zero edge length raise. Not a library comparison: guards."""
-    with pytest.raises(ValueError, match="upper corner"):
-        od.boolean.level_set(level_set_functions.cube_sdf, [1, 1, 1, 0, 0, 0], 0.1, device=device)
-    with pytest.raises(ValueError, match="edge_length"):
-        od.boolean.level_set(level_set_functions.cube_sdf, [0, 0, 0, 1, 1, 1], 0.0, device=device)
-
-
-def _manifold_mesh_tm(result_m3: m3.Manifold) -> tm.Trimesh:
-    """Return a Manifold as a ``float32`` trimesh mesh."""
-    mesh_m3 = result_m3.to_mesh()
-    return tm.Trimesh(
-        np.asarray(mesh_m3.vert_properties)[:, :3], np.asarray(mesh_m3.tri_verts), process=False
-    )
 
 
 @pytest.mark.parametrize(("name", "operation"), OPERATIONS, ids=_OPERATION_IDS)
@@ -532,7 +288,7 @@ def test_boolean_with_an_empty_operand(device: str, name: str, operation: Operat
     intersection empty, the difference the first operand (or empty when that is the empty one).
     """
     box_tm = _box([0, 0, 0], [1, 1, 1])
-    vertices, faces = _upload(box_tm, device)
+    vertices, faces = numpy_to_warp(box_tm.vertices, box_tm.faces, device)
     empty_vertices = warp_empty(0, wp.vec3, device)
     empty_faces = warp_empty(0, wp.int32, device)
     _, faces_left = operation(empty_vertices, empty_faces, vertices, faces)
@@ -554,7 +310,8 @@ def test_boolean_rejects_open_or_non_orientable_meshes(
     ``boy_surface`` no consistent winding; both operand positions are checked.
     """
     _, mesh_wp = request.getfixturevalue(mesh_name)
-    box_wp = _upload(_box([0, 0, 0], [1, 1, 1]), mesh_wp.device)
+    box_tm = _box([0, 0, 0], [1, 1, 1])
+    box_wp = numpy_to_warp(box_tm.vertices, box_tm.faces, mesh_wp.device)
     with pytest.raises(ValueError, match="closed, edge-manifold and consistently wound"):
         od.boolean.union(mesh_wp.points, mesh_wp.indices, *box_wp)
     with pytest.raises(ValueError, match="closed, edge-manifold and consistently wound"):
@@ -567,4 +324,7 @@ def test_boolean_requires_one_device() -> None:
         pytest.skip("needs a CUDA device beside the CPU")
     box_tm = _box([0, 0, 0], [1, 1, 1])
     with pytest.raises(RuntimeError):
-        od.boolean.union(*_upload(box_tm, "cpu"), *_upload(box_tm, "cuda:0"))
+        od.boolean.union(
+            *numpy_to_warp(box_tm.vertices, box_tm.faces, "cpu"),
+            *numpy_to_warp(box_tm.vertices, box_tm.faces, "cuda:0"),
+        )

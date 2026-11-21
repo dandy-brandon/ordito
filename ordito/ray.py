@@ -7,11 +7,14 @@ import math
 import warp as wp
 
 from ordito import _launch
-from ordito._common import read_scalar, require_same_device, scan_count
+from ordito._common import offsets_buffer, read_scalar, require_same_device, scan_count
+from ordito._manifold import FLOAT32_EPSILON, positions_box, solid_from_mesh
 from ordito.config import is_deterministic
 from ordito.constants import TOLERANCE_PLANAR
+from ordito.halfedge import halfedge_twins
 from ordito.kernels import proximity as kernel_proximity
 from ordito.kernels import ray as kernel_ray
+from ordito.kernels.algorithms import manifold as kernel_manifold
 
 
 def intersects_location(
@@ -634,3 +637,164 @@ def contains_points(
         device=points.device,
     )
     return out_contains
+
+
+def segment_hits(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    origins: wp.array[wp.vec3],
+    endpoints: wp.array[wp.vec3],
+) -> tuple[
+    wp.array[wp.int32],
+    wp.array[wp.float64],
+    wp.array[wp.vec3],
+    wp.array[wp.vec3],
+    wp.array[wp.int32],
+]:
+    """
+    Return every crossing of each segment with a closed mesh's surface, in order along it.
+
+    A crossing is decided by the same exact predicates as the Booleans, ties included, so a
+    segment through an edge or a vertex crosses the surface exactly once there, and a segment
+    entering and leaving a solid crosses it an even number of times.
+
+    Parameters
+    ----------
+    vertices, faces
+        ``(n_vertices,)`` and ``(3 * n_faces,)`` closed, consistently wound mesh.
+    origins, endpoints
+        ``(n_segments,)`` segment ends; segment ``s`` runs from ``origins[s]`` to
+        ``endpoints[s]``.
+
+    Returns
+    -------
+    hit_faces : wp.array[wp.int32]
+        ``(n_hits,)`` each crossing's face, an index into ``faces``' triangles.
+    parameters : wp.array[wp.float64]
+        ``(n_hits,)`` each crossing's place along its segment, from 0 at the origin to 1 at the
+        endpoint (measured along the segment's dominant axis).
+    points : wp.array[wp.vec3]
+        ``(n_hits,)`` each crossing.
+    normals : wp.array[wp.vec3]
+        ``(n_hits,)`` the crossed face's unit normal (shared by every face of a planar region).
+    offsets : wp.array[wp.int32]
+        ``(n_segments + 1,)`` segment ``s``'s crossings are ``offsets[s]:offsets[s + 1]``, nearest
+        the origin first.
+
+    Raises
+    ------
+    RuntimeError
+        If the four arrays are not all on one device.
+    ValueError
+        If the mesh is not closed, has an edge shared by more than two faces, or is not
+        consistently wound, or if ``origins`` and ``endpoints`` differ in length.
+
+    See Also
+    --------
+    [`ray.intersects_location`][ordito.ray.intersects_location]
+
+    Notes
+    -----
+    Manifold's ``Manifold.ray_cast``, for many segments at once.
+
+    Examples
+    --------
+    A segment through a unit cube, entering and leaving:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box(bounds=[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
+    origins = wp.array([[0.3, 0.4, -1.0]], dtype=wp.vec3)
+    endpoints = wp.array([[0.3, 0.4, 2.0]], dtype=wp.vec3)
+    _, parameters, points, _, offsets = od.ray.segment_hits(vertices, faces, origins, endpoints)
+    print(offsets.numpy().tolist())  # [0, 2]
+    print([round(float(z), 4) for z in points.numpy()[:, 2]])  # [0.0, 1.0]
+    ```
+    """
+    require_same_device(vertices=vertices, faces=faces, origins=origins, endpoints=endpoints)
+    n_segments = int(origins.shape[0])
+    if int(endpoints.shape[0]) != n_segments:
+        raise ValueError(
+            f"origins and endpoints must match in length, got {n_segments} and "
+            f"{int(endpoints.shape[0])}"
+        )
+    device = vertices.device
+    solid = solid_from_mesh(vertices, faces, 0, "")
+    offsets, counts = offsets_buffer(n_segments, device)
+    if solid.is_empty or n_segments == 0:
+        return (
+            _launch.empty(0, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=wp.float64, device=device),
+            _launch.empty(0, dtype=wp.vec3, device=device),
+            _launch.empty(0, dtype=wp.vec3, device=device),
+            offsets,
+        )
+    mates = halfedge_twins(solid.faces, solid.n_vertices, validate=False)
+    ray_positions = _launch.empty(2 * n_segments, dtype=wp.vec3d, device=device)
+    ray_faces = _launch.empty(3 * n_segments, dtype=wp.int32, device=device)
+    ray_mates = _launch.empty(3 * n_segments, dtype=wp.int32, device=device)
+    ray_normals = _launch.empty(2 * n_segments, dtype=wp.vec3d, device=device)
+    _launch.launch(
+        kernel_manifold.segment_edge_mesh,
+        dim=n_segments,
+        inputs=[origins, endpoints],
+        outputs=[ray_positions, ray_faces, ray_mates, ray_normals],
+        device=device,
+    )
+    segment_box_lower, segment_box_upper = positions_box(ray_positions)
+    scale = max(solid.scale, *(abs(x) for x in (*segment_box_lower, *segment_box_upper)))
+    pad = max(scale, 1.0) * 4.0 * FLOAT32_EPSILON
+    # The face tree for the segments' ray walks: boxes padded past the walk's ``float32`` rounding.
+    lowers = _launch.empty(solid.n_faces, dtype=wp.vec3, device=device)
+    uppers = _launch.empty(solid.n_faces, dtype=wp.vec3, device=device)
+    _launch.launch(
+        kernel_manifold.operand_boxes,
+        dim=solid.n_faces,
+        inputs=[solid.positions, solid.faces, mates, pad],
+        outputs=[
+            lowers,
+            uppers,
+            _launch.full(solid.n_vertices, 2147483647, dtype=wp.int32, device=device),
+            _launch.zeros(1, dtype=wp.int32, device=device),
+        ],
+        device=device,
+    )
+    bvh = wp.Bvh(lowers, uppers)
+    shared = [
+        ray_faces,
+        ray_positions,
+        ray_normals,
+        ray_mates,
+        solid.faces,
+        solid.positions,
+        solid.vertex_normals,
+        solid.face_normals,
+        mates,
+        bvh.id,
+        pad,
+    ]
+    _launch.launch(
+        kernel_manifold.count_segment_hits,
+        dim=n_segments,
+        inputs=shared,
+        outputs=[counts],
+        device=device,
+    )
+    n_hits = scan_count(counts)
+    hit_faces = _launch.empty(n_hits, dtype=wp.int32, device=device)
+    parameters = _launch.empty(n_hits, dtype=wp.float64, device=device)
+    points = _launch.empty(n_hits, dtype=wp.vec3, device=device)
+    normals = _launch.empty(n_hits, dtype=wp.vec3, device=device)
+    assert solid.face_source is not None
+    if n_hits > 0:
+        _launch.launch(
+            kernel_manifold.write_segment_hits,
+            dim=n_segments,
+            inputs=[*shared, offsets, solid.face_source],
+            outputs=[hit_faces, parameters, points, normals],
+            device=device,
+        )
+    return hit_faces, parameters, points, normals, offsets

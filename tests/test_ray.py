@@ -11,9 +11,12 @@ from meshlib import mrmeshpy as mm
 
 import ordito as od
 from tests.conversions import (
+    float32_trimesh,
     numpy_to_meshlib_point_vector,
+    numpy_to_warp,
     points_to_pyvista,
     points_to_warp,
+    trimesh_to_manifold3d,
     trimesh_to_meshlib,
     trimesh_to_pyvista,
     warp_empty,
@@ -553,3 +556,57 @@ def test_contains_cavity(sphere_irregular_hollow: tuple[tm.Trimesh, wp.Mesh]):
     contains_wp = od.ray.contains_points(mesh_wp, points_wp).numpy()
     assert contains_wp.tolist() == [False, True]
     assert np.array_equal(contains_wp, mesh_tm.contains(points_np))
+
+
+@pytest.mark.parity("segment_hits", "manifold3d")
+@pytest.mark.parametrize("shape", ["box", "sphere_irregular", "torus"])
+def test_segment_hits_match_manifold3d(
+    request: pytest.FixtureRequest, device: str, shape: str
+) -> None:
+    """
+    Each segment's crossings are Manifold's ``ray_cast``: faces, parameters and points.
+
+    Class A, after one named transform: Manifold numbers faces in its internal order, ordito in
+    the caller's, so each hit's face is compared as the triangle it names. Segments through the
+    box's vertices, edges and face centres are the ties; the rest are random, crossing and
+    missing. The reference is non-vacuous: some segments cross, some miss.
+    """
+    if shape == "sphere_irregular":
+        mesh_tm = float32_trimesh(request.getfixturevalue("sphere_irregular")[0])
+    elif shape == "box":
+        mesh_tm = tm.creation.box(bounds=[[0, 0, 0], [1, 1, 1]])
+    else:
+        mesh_tm = float32_trimesh(tm.creation.torus(1.0, 0.3, 24, 12))
+    rng = np.random.default_rng(13)
+    centre = mesh_tm.vertices.mean(axis=0)
+    span = float(np.max(mesh_tm.extents))
+    origins_np = (centre + rng.uniform(-span, span, (64, 3))).astype(np.float32)
+    endpoints_np = (centre + rng.uniform(-span, span, (64, 3))).astype(np.float32)
+    origins_np[:4] = [[0.5, 0.5, -1.0], [0.0, 0.0, -1.0], [0.5, 0.0, -1.0], [1.0, 1.0, 2.0]]
+    endpoints_np[:4] = [[0.5, 0.5, 2.0], [0.0, 0.0, 2.0], [0.5, 0.0, 2.0], [1.0, 1.0, -1.0]]
+    mesh_m3 = trimesh_to_manifold3d(mesh_tm)
+    mesh_out_m3 = mesh_m3.to_mesh()
+    vertices_m3 = np.asarray(mesh_out_m3.vert_properties)[:, :3]
+    faces_m3 = np.asarray(mesh_out_m3.tri_verts)
+    hit_faces, parameters, points, _, offsets = od.ray.segment_hits(
+        *numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device),
+        wp.array(origins_np, dtype=wp.vec3, device=device),
+        wp.array(endpoints_np, dtype=wp.vec3, device=device),
+    )
+    offsets_np = offsets.numpy()
+    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float32)
+    faces_np = np.asarray(mesh_tm.faces)
+    n_crossing = 0
+    for s in range(len(origins_np)):
+        hits_m3 = mesh_m3.ray_cast(tuple(origins_np[s].tolist()), tuple(endpoints_np[s].tolist()))
+        hits_m3 = sorted(hits_m3, key=lambda hit: hit.distance)
+        ours = range(int(offsets_np[s]), int(offsets_np[s + 1]))
+        assert len(ours) == len(hits_m3)
+        n_crossing += len(hits_m3) > 0
+        for hit_m3, k in zip(hits_m3, ours, strict=True):
+            triangle_m3 = sorted(map(tuple, vertices_m3[faces_m3[hit_m3.face_id]].tolist()))
+            triangle_np = sorted(map(tuple, vertices_np[faces_np[hit_faces.numpy()[k]]].tolist()))
+            assert triangle_np == triangle_m3
+            assert parameters.numpy()[k] == hit_m3.distance
+            assert np.array_equal(points.numpy()[k], np.asarray(hit_m3.position, dtype=np.float32))
+    assert 0 < n_crossing < len(origins_np)

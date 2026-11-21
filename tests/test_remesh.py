@@ -31,6 +31,7 @@ from ordito.triangles import FaceQualityMetric
 from tests.comparisons import (
     assert_nearest_bijection,
     assert_provenance_describes,
+    assert_same_as_manifold3d,
     canonical_winding,
     hausdorff_surface_two_sided,
     lexsort_rows,
@@ -42,6 +43,8 @@ from tests.conversions import (
     bsr_to_csr,
     bsr_to_dense,
     faces_igl,
+    float32_trimesh,
+    manifold3d_to_trimesh,
     meshlib_bitset_to_numpy,
     meshlib_scalars_to_numpy,
     meshlib_to_trimesh,
@@ -52,6 +55,7 @@ from tests.conversions import (
     points_to_warp,
     points_to_warp_uv,
     pytorch3d_to_numpy,
+    trimesh_to_manifold3d,
     trimesh_to_meshlib,
     trimesh_to_open3d,
     trimesh_to_pymeshlab,
@@ -5186,3 +5190,134 @@ def _split_every_edge(mesh_wp: wp.Mesh, **kwargs: Any) -> tuple[Any, ...]:
         inverse=inverse,
         **kwargs,
     )
+
+
+@pytest.mark.parity("simplify", "manifold3d")
+@pytest.mark.parametrize(
+    ("shape", "tolerance"),
+    [("subdivided_box", 0.0), ("sphere", 0.01), ("sphere", 0.05), ("sphere_irregular", 0.0)],
+)
+def test_simplify_matches_manifold3d(
+    request: pytest.FixtureRequest, device: str, shape: str, tolerance: float
+) -> None:
+    """
+    ``simplify`` is Manifold's ``Manifold.simplify``, array for array.
+
+    Class A. A subdivided box collapses to its twelve triangles at the mesh's own precision;
+    an icosphere loses the vertices within the tolerance of a plane through their neighbours;
+    ``sphere_irregular``'s needles stay where nothing is collinear.
+    """
+    if shape == "subdivided_box":
+        mesh_tm = tm.creation.box(bounds=[[0, 0, 0], [1, 1, 1]]).subdivide().subdivide()
+    elif shape == "sphere":
+        mesh_tm = float32_trimesh(tm.creation.icosphere(subdivisions=3))
+    else:
+        mesh_tm = float32_trimesh(request.getfixturevalue("sphere_irregular")[0])
+    result_m3 = trimesh_to_manifold3d(mesh_tm).simplify(tolerance)
+    if shape != "sphere_irregular":
+        assert result_m3.num_vert() < len(mesh_tm.vertices)
+    assert_same_as_manifold3d(
+        od.remesh.simplify(*numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device), tolerance),
+        result_m3,
+    )
+
+
+def _refine_mesh_tm(request: pytest.FixtureRequest, shape: str) -> tm.Trimesh:
+    """Return a refinement case's mesh: a box, a long cylinder or ``sphere_irregular``."""
+    if shape == "box":
+        return tm.creation.box(bounds=[[0, 0, 0], [1, 1, 1]])
+    if shape == "cylinder":
+        return float32_trimesh(tm.creation.cylinder(radius=0.3, height=3.0, sections=12))
+    return float32_trimesh(request.getfixturevalue("sphere_irregular")[0])
+
+
+_SMOOTH_SHAPES = ["box", "cylinder", "sphere_irregular", "box_minus_ball"]
+
+
+def _smooth_mesh_tm(request: pytest.FixtureRequest, shape: str) -> tm.Trimesh:
+    """Return a smoothing case: quads, flat caps, needles, a smooth torus or a CSG result."""
+    if shape == "torus":
+        return float32_trimesh(tm.creation.torus(1.0, 0.3, 16, 8))
+    if shape == "box_minus_ball":
+        ball_tm = float32_trimesh(tm.creation.icosphere(subdivisions=2, radius=0.7))
+        return manifold3d_to_trimesh(
+            trimesh_to_manifold3d(tm.creation.box(bounds=[[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]]))
+            - trimesh_to_manifold3d(ball_tm)
+        )
+    return _refine_mesh_tm(request, shape)
+
+
+# ``tolerance`` runs only where no corner joins three creases of zero smoothness: there Manifold's
+# ``0 / 0`` smoothness makes NaN tangents, whose edge counts it converts unchecked (it crashes on
+# ``sphere_irregular``'s needles and never returns on the box); ordito adds nothing on them.
+_SMOOTH_CASES = [
+    (shape, mode, angle, smoothness)
+    for shape in _SMOOTH_SHAPES
+    for mode, angle, smoothness in [("n", 52.5, 0.0), ("n", 30.0, 0.5), ("length", 40.0, 0.2)]
+] + [
+    ("sphere_irregular", "tolerance", 30.0, 0.5),
+    ("box_minus_ball", "tolerance", 52.5, 0.3),
+    ("torus", "tolerance", 52.5, 0.0),
+]
+
+
+@pytest.mark.parity("subdivide_smooth", "manifold3d")
+@pytest.mark.parametrize(("shape", "mode", "min_sharp_angle", "min_smoothness"), _SMOOTH_CASES)
+def test_subdivide_smooth_matches_manifold3d(
+    request: pytest.FixtureRequest,
+    device: str,
+    shape: str,
+    mode: str,
+    min_sharp_angle: float,
+    min_smoothness: float,
+) -> None:
+    """
+    ``subdivide_smooth`` is Manifold's ``smooth_out`` then its refinement, array for array.
+
+    Class A. ``n`` against ``refine``, ``length`` against ``refine_to_length``, ``tolerance``
+    against ``refine_to_tolerance``. The box smooths its faces as quads, the cylinder keeps its
+    caps flat and its rims creased, ``sphere_irregular``'s needles take the Bezier patches'
+    degenerate branches, and the box less a ball holds flat faces, sharp creases and a curved
+    cavity at once; a nonzero smoothness leaves the creases partly smooth.
+    """
+    mesh_tm = _smooth_mesh_tm(request, shape)
+    extent = float(np.ptp(mesh_tm.vertices, axis=0).max())
+    smoothed_m3 = trimesh_to_manifold3d(mesh_tm).smooth_out(min_sharp_angle, min_smoothness)
+    vertices, faces = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
+    if mode == "n":
+        result_m3 = smoothed_m3.refine(3)
+        result = od.remesh.subdivide_smooth(
+            vertices, faces, 3, min_sharp_angle=min_sharp_angle, min_smoothness=min_smoothness
+        )
+    elif mode == "length":
+        result_m3 = smoothed_m3.refine_to_length(0.15 * extent)
+        result = od.remesh.subdivide_smooth(
+            vertices,
+            faces,
+            length=0.15 * extent,
+            min_sharp_angle=min_sharp_angle,
+            min_smoothness=min_smoothness,
+        )
+    else:
+        result_m3 = smoothed_m3.refine_to_tolerance(0.01 * extent)
+        result = od.remesh.subdivide_smooth(
+            vertices,
+            faces,
+            tolerance=0.01 * extent,
+            min_sharp_angle=min_sharp_angle,
+            min_smoothness=min_smoothness,
+        )
+    assert result_m3.num_vert() > len(mesh_tm.vertices)
+    assert_same_as_manifold3d(result, result_m3)
+
+
+def test_subdivide_smooth_takes_exactly_one_refinement(device: str) -> None:
+    """None or two of ``n``, ``length``, ``tolerance`` raise. Not a library comparison: guards."""
+    box_tm = tm.creation.box(bounds=[[0, 0, 0], [1, 1, 1]])
+    vertices, faces = numpy_to_warp(box_tm.vertices, box_tm.faces, device)
+    with pytest.raises(ValueError, match="exactly one"):
+        od.remesh.subdivide_smooth(vertices, faces)
+    with pytest.raises(ValueError, match="exactly one"):
+        od.remesh.subdivide_smooth(vertices, faces, 2, length=0.1)
+    with pytest.raises(ValueError, match="must be finite and nonzero"):
+        od.remesh.subdivide_smooth(vertices, faces, tolerance=0.0)

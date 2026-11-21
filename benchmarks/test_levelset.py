@@ -42,6 +42,10 @@ default is the *zero* offset.
 
 open3d has no offset, and neither does trimesh or igl: a level-set offset needs a signed distance
 field on a lattice, and of the six CPU references only these two build one.
+
+**manifold3d** ``Manifold.level_set`` is ``function_level_set``'s reference, evaluating the
+Python twin of the row's ``@wp.func``; its answers equal ordito's array for array
+(``tests/test_levelset.py``, Class A).
 """
 
 from __future__ import annotations
@@ -49,6 +53,7 @@ from __future__ import annotations
 import math
 
 import igl
+import manifold3d as m3
 import numpy as np
 import pymeshlab as ml
 import pytest
@@ -570,3 +575,35 @@ def test_marching_cubes_openvdb(bench_lib: BenchLibrary, resolution: int) -> Non
         lambda: od.levelset.marching_cubes(field_wp, 0.0, method="openvdb")
     )
     assert faces_wp.size > 0
+
+
+@wp.func
+def _torus_sdf(p: wp.vec3d) -> wp.float64:
+    # Warp's vector types carry no index stub.
+    x, y, z = p[0], p[1], p[2]  # pyright: ignore[reportIndexIssue]
+    q = wp.sqrt(x * x + y * y) - wp.float64(1.0)
+    return wp.float64(0.35) - wp.sqrt(q * q + z * z)
+
+
+def _torus_sdf_py(x: float, y: float, z: float) -> float:
+    q = math.sqrt(x * x + y * y) - 1.0
+    return 0.35 - math.sqrt(q * q + z * z)
+
+
+@pytest.mark.benchmark(group="function_level_set")
+@pytest.mark.benchlibs("ordito", "manifold3d")
+@pytest.mark.parametrize("edge_length", [0.1, 0.025])
+def test_function_level_set(bench_lib: BenchLibrary, edge_length: float) -> None:
+    """``od.levelset.function_level_set`` of a torus's distance; manifold3d runs its Python twin."""
+    bounds = [-1.5, -1.5, -0.5, 1.5, 1.5, 0.5]
+    if bench_lib.kind == "manifold3d":
+        n_faces_m3 = bench_lib.run(
+            lambda: m3.Manifold.level_set(_torus_sdf_py, bounds, edge_length).num_tri()
+        )
+        assert n_faces_m3 > 0
+        return
+    device = bench_lib.device
+    _, faces = bench_lib.run(
+        lambda: od.levelset.function_level_set(_torus_sdf, bounds, edge_length, device=device)
+    )
+    assert faces.size > 0

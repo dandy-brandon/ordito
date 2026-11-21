@@ -12,6 +12,7 @@ import math
 from typing import Literal, cast
 
 import igl
+import manifold3d as m3
 import numpy as np
 import pymeshlab as ml
 import pytest
@@ -29,8 +30,10 @@ import ordito as od
 import ordito.typing as odt
 from ordito.constants import ALLCLOSE_ATOL, ALLCLOSE_RTOL
 from ordito.kernels import levelset as kernel_levelset
+from tests import level_set_functions
 from tests.comparisons import (
     assert_nearest_bijection,
+    assert_same_as_manifold3d,
     assert_unordered_rows_equal,
     euler_characteristic,
     hausdorff_two_sided,
@@ -2014,3 +2017,54 @@ def test_thicken_mesh_mates_change_no_answer(saddle_graded: tuple[tm.Trimesh, wp
     assert plain[1].size > 2 * faces_wp.size
     assert np.array_equal(given[0].numpy(), plain[0].numpy())
     assert np.array_equal(given[1].numpy(), plain[1].numpy())
+
+
+_LEVEL_SETS = {
+    "torus": (level_set_functions.torus_sdf, level_set_functions.torus_sdf_py),
+    "cube": (level_set_functions.cube_sdf, level_set_functions.cube_sdf_py),
+    "blobs": (level_set_functions.blobs_sdf, level_set_functions.blobs_sdf_py),
+}
+
+
+@pytest.mark.parity("function_level_set", "manifold3d")
+@pytest.mark.parametrize("shape", list(_LEVEL_SETS))
+@pytest.mark.parametrize(
+    ("bounds", "edge_length", "level", "tolerance"),
+    [
+        ([-1.5, -1.5, -1.5, 1.5, 1.5, 1.5], 0.2, 0.0, -1.0),
+        ([-1.3, -1.1, -0.2, 1.2, 1.4, 0.25], 0.07, 0.05, -1.0),
+        ([-1.5, -1.5, -1.5, 1.5, 1.5, 1.5], 0.15, -0.05, 0.002),
+    ],
+    ids=["plain", "clipped", "refined"],
+)
+def test_function_level_set_matches_manifold3d(
+    device: str, shape: str, bounds: list[float], edge_length: float, level: float, tolerance: float
+) -> None:
+    """
+    ``function_level_set`` is Manifold's ``Manifold.level_set`` of one function, array for array.
+
+    Class A. The function is a ``@wp.func`` here and its Python twin there, written to round the
+    same (``sqrt``, ``abs``, ``max``, arithmetic). A box clipping the surface caps it; a level
+    offsets it; a tolerance refines each vertex by root finding. The cube's flat faces snap whole
+    grid points onto the surface; the two blobs meet in a saddle; the fine grid overflows
+    Manifold's first hash table.
+    """
+    sdf, sdf_py = _LEVEL_SETS[shape]
+    result_m3 = m3.Manifold.level_set(sdf_py, bounds, edge_length, level, tolerance)
+    assert result_m3.num_tri() > 0
+    result = od.levelset.function_level_set(
+        sdf, bounds, edge_length, level, tolerance, device=device
+    )
+    assert_same_as_manifold3d(result, result_m3)
+
+
+def test_function_level_set_rejects_a_bad_grid(device: str) -> None:
+    """Inverted bounds and a zero edge length raise. Not a library comparison: guards."""
+    with pytest.raises(ValueError, match="upper corner"):
+        od.levelset.function_level_set(
+            level_set_functions.cube_sdf, [1, 1, 1, 0, 0, 0], 0.1, device=device
+        )
+    with pytest.raises(ValueError, match="edge_length"):
+        od.levelset.function_level_set(
+            level_set_functions.cube_sdf, [0, 0, 0, 1, 1, 1], 0.0, device=device
+        )

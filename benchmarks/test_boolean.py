@@ -26,7 +26,6 @@ is 5-17x slower than Manifold; the CPU device runs one thread against Manifold's
 
 from __future__ import annotations
 
-import math
 from collections.abc import Callable
 
 import manifold3d as m3
@@ -36,7 +35,7 @@ import trimesh as tm
 import warp as wp
 
 import ordito as od
-from conftest import BenchCase, BenchLibrary
+from conftest import BenchCase
 
 # The second operand: the sphere rotated about its centre and shifted by a fraction of its size.
 _ROTATION_SEED = 3
@@ -278,109 +277,3 @@ def test_intersection_all(bench_case: BenchCase) -> None:
 def test_difference_all(bench_case: BenchCase) -> None:
     """``od.boolean.difference_all``: the sphere less three copies around it."""
     _run_batch(bench_case, od.boolean.difference_all, m3.OpType.Subtract)
-
-
-# Segments across the sphere's box, random, half of them crossing.
-_N_SEGMENTS = 4096
-
-
-def _segments(bench_case: BenchCase) -> tuple[np.ndarray, np.ndarray]:
-    """Return random segments across the mesh's box as ``float32`` ends."""
-    vertices = np.asarray(bench_case.vertices_np, dtype=np.float64)
-    lower, upper = vertices.min(axis=0), vertices.max(axis=0)
-    rng = np.random.default_rng(_ROTATION_SEED)
-    origins = rng.uniform(lower, upper, (_N_SEGMENTS, 3)).astype(np.float32)
-    endpoints = rng.uniform(lower, upper, (_N_SEGMENTS, 3)).astype(np.float32)
-    return origins, endpoints
-
-
-@pytest.mark.benchmark(group="segment_hits")
-@pytest.mark.benchlibs("ordito", "manifold3d")
-@pytest.mark.benchaxis("scale")
-def test_segment_hits(bench_case: BenchCase) -> None:
-    """
-    ``od.boolean.segment_hits`` of 4 096 random segments: one launch walks them all.
-
-    The manifold3d row casts them one ``ray_cast`` at a time, as its API takes them.
-    """
-    origins, endpoints = _segments(bench_case)
-    if bench_case.kind == "manifold3d":
-        a_m3, _ = _manifolds_m3(bench_case)
-        pairs = [
-            (tuple(o.tolist()), tuple(e.tolist())) for o, e in zip(origins, endpoints, strict=True)
-        ]
-        hits_m3 = bench_case.run(lambda: [a_m3.ray_cast(o, e) for o, e in pairs])
-        assert len(hits_m3) == _N_SEGMENTS
-        return
-    device = bench_case.device
-    origins_wp = wp.array(origins, dtype=wp.vec3, device=device)
-    endpoints_wp = wp.array(endpoints, dtype=wp.vec3, device=device)
-    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    *_, offsets = bench_case.run(
-        lambda: od.boolean.segment_hits(vertices, faces, origins_wp, endpoints_wp)
-    )
-    assert offsets.size == _N_SEGMENTS + 1
-
-
-@pytest.mark.benchmark(group="simplify")
-@pytest.mark.benchlibs("ordito", "manifold3d")
-@pytest.mark.benchaxis("scale")
-def test_simplify(bench_case: BenchCase) -> None:
-    """``od.boolean.simplify`` at a tolerance of a thousandth of the sphere's size."""
-    vertices = np.asarray(bench_case.vertices_np, dtype=np.float64)
-    tolerance = 1e-3 * float(np.max(vertices.max(axis=0) - vertices.min(axis=0)))
-    if bench_case.kind == "manifold3d":
-        a_m3, _ = _manifolds_m3(bench_case)
-        result_m3 = bench_case.run(lambda: _forced(a_m3.simplify(tolerance)))
-        assert result_m3.num_tri() > 0
-        return
-    vertices_wp, faces_wp = bench_case.vertices_wp, bench_case.faces_wp
-    _, faces = bench_case.run(lambda: od.boolean.simplify(vertices_wp, faces_wp, tolerance))
-    assert faces.size > 0
-
-
-@pytest.mark.benchmark(group="smooth_out")
-@pytest.mark.benchlibs("ordito", "manifold3d")
-@pytest.mark.benchaxis("scale")
-def test_smooth_out(bench_case: BenchCase) -> None:
-    """``od.boolean.smooth_out`` of the sphere into two pieces an edge."""
-    if bench_case.kind == "manifold3d":
-        a_m3, _ = _manifolds_m3(bench_case)
-        result_m3 = bench_case.run(lambda: _forced(a_m3.smooth_out().refine(2)))
-        assert result_m3.num_tri() > 0
-        return
-    vertices_wp, faces_wp = bench_case.vertices_wp, bench_case.faces_wp
-    _, faces = bench_case.run(lambda: od.boolean.smooth_out(vertices_wp, faces_wp, 2))
-    assert faces.size == 4 * faces_wp.size
-
-
-@wp.func
-def _torus_sdf(p: wp.vec3d) -> wp.float64:
-    # Warp's vector types carry no index stub.
-    x, y, z = p[0], p[1], p[2]  # pyright: ignore[reportIndexIssue]
-    q = wp.sqrt(x * x + y * y) - wp.float64(1.0)
-    return wp.float64(0.35) - wp.sqrt(q * q + z * z)
-
-
-def _torus_sdf_py(x: float, y: float, z: float) -> float:
-    q = math.sqrt(x * x + y * y) - 1.0
-    return 0.35 - math.sqrt(q * q + z * z)
-
-
-@pytest.mark.benchmark(group="level_set")
-@pytest.mark.benchlibs("ordito", "manifold3d")
-@pytest.mark.parametrize("edge_length", [0.1, 0.025])
-def test_level_set(bench_lib: BenchLibrary, edge_length: float) -> None:
-    """``od.boolean.level_set`` of a torus's distance (manifold3d evaluates its Python twin)."""
-    bounds = [-1.5, -1.5, -0.5, 1.5, 1.5, 0.5]
-    if bench_lib.kind == "manifold3d":
-        result_m3 = bench_lib.run(
-            lambda: _forced(m3.Manifold.level_set(_torus_sdf_py, bounds, edge_length))
-        )
-        assert result_m3.num_tri() > 0
-        return
-    device = bench_lib.device
-    _, faces = bench_lib.run(
-        lambda: od.boolean.level_set(_torus_sdf, bounds, edge_length, device=device)
-    )
-    assert faces.size > 0

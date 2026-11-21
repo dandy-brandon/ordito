@@ -6,6 +6,7 @@ import ctypes
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, Protocol, SupportsIndex, TypeVar, cast
 
+import manifold3d as m3
 import numpy as np
 import open3d as o3d
 import pymeshlab as ml
@@ -1110,6 +1111,28 @@ def warp_to_trimesh(vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.int32]
         vertices=vertices_wp.numpy().astype(np.float64),
         faces=faces_wp.numpy().reshape(-1, 3).astype(np.int64),
         process=False,
+    )
+
+
+def float32_trimesh(mesh: tm.Trimesh) -> tm.Trimesh:
+    """Return ``mesh`` with ``float32`` coordinates, as ordito and Manifold both read them."""
+    return tm.Trimesh(mesh.vertices.astype(np.float32), mesh.faces, process=False)
+
+
+def trimesh_to_manifold3d(mesh: tm.Trimesh) -> m3.Manifold:
+    """Return ``mesh`` as a Manifold, its ``float32`` coordinates as ordito reads them."""
+    mesh_m3 = m3.Mesh(
+        vert_properties=np.asarray(mesh.vertices, dtype=np.float32),
+        tri_verts=np.asarray(mesh.faces, dtype=np.uint32),
+    )
+    return m3.Manifold(mesh_m3)
+
+
+def manifold3d_to_trimesh(solid_m3: m3.Manifold) -> tm.Trimesh:
+    """Return a Manifold's ``to_mesh()`` as a ``float32`` trimesh mesh, order kept."""
+    mesh_m3 = solid_m3.to_mesh()
+    return tm.Trimesh(
+        np.asarray(mesh_m3.vert_properties)[:, :3], np.asarray(mesh_m3.tri_verts), process=False
     )
 
 

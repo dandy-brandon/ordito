@@ -66,6 +66,10 @@ in open3d demand ``Int32``/``Int64``; two conventions inside one API.
 meshes, and ``tests/test_ray.py`` already holds it as the correctness oracle, which is the useful
 half. ``longest_ray`` is the exception: ``trimesh.proximity.longest_ray`` is the oracle that test
 compares it with, so its group times it.
+
+**manifold3d** ``Manifold.ray_cast`` is ``segment_hits``' reference (``segment_hits``): Manifold
+itself, timed one segment a call as its API takes them, on a ``Manifold`` built outside the timed
+call. Its answers equal ordito's (``tests/test_ray.py``, Class A).
 """
 
 from __future__ import annotations
@@ -450,3 +454,45 @@ def test_contains_points(bench_case: BenchCase) -> None:
     )
     inside = bench_case.run(lambda: od.ray.contains_points(mesh, points))
     assert inside.shape == (_N_RAYS,)
+
+
+# Segments across the sphere's box, random, half of them crossing.
+_N_SEGMENTS = 4096
+
+
+def _segments(bench_case: BenchCase) -> tuple[np.ndarray, np.ndarray]:
+    """Return random segments across the mesh's box as ``float32`` ends."""
+    vertices = np.asarray(bench_case.vertices_np, dtype=np.float64)
+    lower, upper = vertices.min(axis=0), vertices.max(axis=0)
+    rng = np.random.default_rng(3)
+    origins = rng.uniform(lower, upper, (_N_SEGMENTS, 3)).astype(np.float32)
+    endpoints = rng.uniform(lower, upper, (_N_SEGMENTS, 3)).astype(np.float32)
+    return origins, endpoints
+
+
+@pytest.mark.benchmark(group="segment_hits")
+@pytest.mark.benchlibs("ordito", "manifold3d")
+@pytest.mark.benchaxis("scale")
+def test_segment_hits(bench_case: BenchCase) -> None:
+    """
+    ``od.ray.segment_hits`` of 4 096 random segments: one launch walks them all.
+
+    The manifold3d row casts them one ``ray_cast`` at a time, as its API takes them.
+    """
+    origins, endpoints = _segments(bench_case)
+    if bench_case.kind == "manifold3d":
+        a_m3 = bench_case.manifold_m3
+        pairs = [
+            (tuple(o.tolist()), tuple(e.tolist())) for o, e in zip(origins, endpoints, strict=True)
+        ]
+        hits_m3 = bench_case.run(lambda: [a_m3.ray_cast(o, e) for o, e in pairs])
+        assert len(hits_m3) == _N_SEGMENTS
+        return
+    device = bench_case.device
+    origins_wp = wp.array(origins, dtype=wp.vec3, device=device)
+    endpoints_wp = wp.array(endpoints, dtype=wp.vec3, device=device)
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    *_, offsets = bench_case.run(
+        lambda: od.ray.segment_hits(vertices, faces, origins_wp, endpoints_wp)
+    )
+    assert offsets.size == _N_SEGMENTS + 1

@@ -31,6 +31,7 @@ The classes of comparison, and the bar each has to clear (see below):
 
 from __future__ import annotations
 
+import manifold3d as m3
 import numpy as np
 import scipy.sparse as sp
 import trimesh as tm
@@ -887,3 +888,13 @@ def assert_provenance_describes(
         for p, q in ((b, c), (c, a), (a, b)):
             weight = np.einsum("fj,fj->f", np.cross(q - p, centroids_np - p), unit_np) / area
             assert weight.min(initial=0.0) >= -atol
+
+
+def assert_same_as_manifold3d(
+    result_wp: tuple[wp.array[wp.vec3], wp.array[wp.int32]], result_m3: m3.Manifold
+) -> None:
+    """Assert ordito's mesh is Manifold's ``to_mesh()``, array for array, order included."""
+    mesh_m3 = result_m3.to_mesh()
+    vertices_wp, faces_wp = result_wp
+    assert np.array_equal(vertices_wp.numpy(), np.asarray(mesh_m3.vert_properties)[:, :3])
+    assert np.array_equal(faces_wp.numpy().reshape(-1, 3), np.asarray(mesh_m3.tri_verts))

@@ -23,8 +23,8 @@ from __future__ import annotations
 import heapq
 import math
 import struct
-from collections.abc import Callable, Sequence
-from typing import Literal, NamedTuple, Protocol, cast
+from collections.abc import Sequence
+from typing import Literal, NamedTuple
 
 import numpy as np
 import warp as wp
@@ -33,24 +33,31 @@ from warp._src.codegen import StructInstance
 import ordito.typing as odt
 from ordito import _launch
 from ordito._common import offsets_buffer, read_array, read_values, require_same_device, scan_count
+from ordito._manifold import (
+    FLOAT32_EPSILON,
+    Solid,
+    empty_solid,
+    finish_solid,
+    halfedge_mesh,
+    halfedge_mesh_from_solid,
+    mesh_from_solid,
+    simplify_topology,
+    solid_from_mesh,
+    solid_from_positions,
+)
 from ordito.graph import connected_component_labels_from_edges
 from ordito.halfedge import halfedge_twins
-from ordito.kernels import array as kernel_array
 from ordito.kernels import boolean as kernel_boolean
 from ordito.kernels import polyline as kernel_polyline
-from ordito.kernels import scatter as kernel_scatter
+from ordito.kernels.algorithms import manifold as kernel_manifold
 
 _Operation = Literal["union", "intersection", "difference"]
 
-_FLOAT32_EPSILON = 1.1920929e-07
 
 # ``BatchUnion``'s chunk: it groups at most this many of its last children at a time.
 _MAX_UNION_SIZE = 1000
-# Up to this many claiming seeds the coplanar flood runs in one thread, as Manifold's loop does;
-# above it in parallel rounds on CUDA (2026-11-21, quad-strip revolves: 64 seeds at par, 256
-# 0.39x, 2 048 0.07x, 16 384 0.008x). The CPU always takes the one thread: it runs a launch's
-# threads in turn, so the rounds only add work.
-_SERIAL_FLOOD_SEEDS = 64
+
+
 # A result face of this many polygon sides or more is triangulated and paired on the CPU, whose
 # one thread runs those quadratic passes far faster than a GPU thread (2026-11-21: an 82 k-face
 # sphere's plane cut, whose cap is one polygon, 433 + 136 -> 13 + 6 ms; the copies are prefixes).
@@ -58,13 +65,10 @@ _SERIAL_FLOOD_SEEDS = 64
 # (5 k faces 45 -> 8.6 ms against 256); 64 lost the smallest cap. Many-sided faces come only from
 # an operand's few large triangles, so the CPU pass stays short.
 _HEAVY_FACE_SIDES = 32
+
+
 # An operand with at most this many halfedges crosses the other's faces pair by pair.
 _PAIR_CROSSING_HALFEDGES = 384
-# ``Partition``'s cache: each sorted set of side divisions' barycentrics and sub-triangles.
-_PARTITIONS: dict[
-    tuple[int, int, int, int],
-    tuple[list[tuple[float, float, float, float]], list[tuple[int, int, int]]],
-] = {}
 
 
 def union(
@@ -296,10 +300,10 @@ def split_by_mesh(
         vertices_a=vertices_a, faces_a=faces_a, vertices_b=vertices_b, faces_b=faces_b
     )
     device = vertices_a.device
-    p = _solid_from_mesh(vertices_a, faces_a, 0, "a")
-    q = _solid_from_mesh(vertices_b, faces_b, 1, "b")
+    p = solid_from_mesh(vertices_a, faces_a, 0, "a")
+    q = solid_from_mesh(vertices_b, faces_b, 1, "b")
     inside, outside = _solid_split(p, q)
-    return _mesh_from_solid(inside, device), _mesh_from_solid(outside, device)
+    return mesh_from_solid(inside, device), mesh_from_solid(outside, device)
 
 
 def split_by_plane(
@@ -365,12 +369,12 @@ def split_by_plane(
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
-    solid = _solid_from_mesh(vertices, faces, 0, "")
+    solid = solid_from_mesh(vertices, faces, 0, "")
     if solid.is_empty:
-        empty = _mesh_from_solid(solid, device)
-        return empty, _mesh_from_solid(solid, device)
+        empty = mesh_from_solid(solid, device)
+        return empty, mesh_from_solid(solid, device)
     above, below = _solid_split(solid, _halfspace_solid(solid, normal, origin_offset, 1))
-    return _mesh_from_solid(above, device), _mesh_from_solid(below, device)
+    return mesh_from_solid(above, device), mesh_from_solid(below, device)
 
 
 def trim_by_plane(
@@ -428,11 +432,11 @@ def trim_by_plane(
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
-    solid = _solid_from_mesh(vertices, faces, 0, "")
+    solid = solid_from_mesh(vertices, faces, 0, "")
     if solid.is_empty:
-        return _mesh_from_solid(solid, device)
+        return mesh_from_solid(solid, device)
     halfspace = _halfspace_solid(solid, normal, origin_offset, 1)
-    return _mesh_from_solid(_solid_boolean(solid, halfspace, "intersection"), device)
+    return mesh_from_solid(_solid_boolean(solid, halfspace, "intersection"), device)
 
 
 def union_all(
@@ -492,7 +496,7 @@ def union_all(
     ```
     """
     solids, device = _batch_solids(meshes)
-    return _mesh_from_solid(_batch_union(solids), device)
+    return mesh_from_solid(_batch_union(solids), device)
 
 
 def intersection_all(
@@ -544,7 +548,7 @@ def intersection_all(
     ```
     """
     solids, device = _batch_solids(meshes)
-    return _mesh_from_solid(_batch_boolean(solids, "intersection"), device)
+    return mesh_from_solid(_batch_boolean(solids, "intersection"), device)
 
 
 def difference_all(
@@ -604,1317 +608,17 @@ def difference_all(
     solids, device = _batch_solids(meshes)
     first = solids[0]
     if len(solids) == 1:
-        return _mesh_from_solid(first, device)
-    return _mesh_from_solid(_solid_boolean(first, _batch_union(solids[1:]), "difference"), device)
-
-
-def segment_hits(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    origins: wp.array[wp.vec3],
-    endpoints: wp.array[wp.vec3],
-) -> tuple[
-    wp.array[wp.int32],
-    wp.array[wp.float64],
-    wp.array[wp.vec3],
-    wp.array[wp.vec3],
-    wp.array[wp.int32],
-]:
-    """
-    Return every crossing of each segment with a closed mesh's surface, in order along it.
-
-    A crossing is decided by the same exact predicates as the Booleans, ties included, so a
-    segment through an edge or a vertex crosses the surface exactly once there, and a segment
-    entering and leaving a solid crosses it an even number of times.
-
-    Parameters
-    ----------
-    vertices, faces
-        ``(n_vertices,)`` and ``(3 * n_faces,)`` closed, consistently wound mesh.
-    origins, endpoints
-        ``(n_segments,)`` segment ends; segment ``s`` runs from ``origins[s]`` to
-        ``endpoints[s]``.
-
-    Returns
-    -------
-    hit_faces : wp.array[wp.int32]
-        ``(n_hits,)`` each crossing's face, an index into ``faces``' triangles.
-    parameters : wp.array[wp.float64]
-        ``(n_hits,)`` each crossing's place along its segment, from 0 at the origin to 1 at the
-        endpoint (measured along the segment's dominant axis).
-    points : wp.array[wp.vec3]
-        ``(n_hits,)`` each crossing.
-    normals : wp.array[wp.vec3]
-        ``(n_hits,)`` the crossed face's unit normal (shared by every face of a planar region).
-    offsets : wp.array[wp.int32]
-        ``(n_segments + 1,)`` segment ``s``'s crossings are ``offsets[s]:offsets[s + 1]``, nearest
-        the origin first.
-
-    Raises
-    ------
-    RuntimeError
-        If the four arrays are not all on one device.
-    ValueError
-        If the mesh is not closed, has an edge shared by more than two faces, or is not
-        consistently wound, or if ``origins`` and ``endpoints`` differ in length.
-
-    See Also
-    --------
-    [`ray.intersects_location`][ordito.ray.intersects_location]
-
-    Notes
-    -----
-    Manifold's ``Manifold.ray_cast``, for many segments at once.
-
-    Examples
-    --------
-    A segment through a unit cube, entering and leaving:
-
-    ```python
-    import warp as wp
-
-    import ordito as od
-
-    vertices, faces = od.creation.box(bounds=[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
-    origins = wp.array([[0.3, 0.4, -1.0]], dtype=wp.vec3)
-    endpoints = wp.array([[0.3, 0.4, 2.0]], dtype=wp.vec3)
-    _, parameters, points, _, offsets = od.boolean.segment_hits(vertices, faces, origins, endpoints)
-    print(offsets.numpy().tolist())  # [0, 2]
-    print([round(float(z), 4) for z in points.numpy()[:, 2]])  # [0.0, 1.0]
-    ```
-    """
-    require_same_device(vertices=vertices, faces=faces, origins=origins, endpoints=endpoints)
-    n_segments = int(origins.shape[0])
-    if int(endpoints.shape[0]) != n_segments:
-        raise ValueError(
-            f"origins and endpoints must match in length, got {n_segments} and "
-            f"{int(endpoints.shape[0])}"
-        )
-    device = vertices.device
-    solid = _solid_from_mesh(vertices, faces, 0, "")
-    offsets, counts = offsets_buffer(n_segments, device)
-    if solid.is_empty or n_segments == 0:
-        return (
-            _launch.empty(0, dtype=wp.int32, device=device),
-            _launch.empty(0, dtype=wp.float64, device=device),
-            _launch.empty(0, dtype=wp.vec3, device=device),
-            _launch.empty(0, dtype=wp.vec3, device=device),
-            offsets,
-        )
-    mates = halfedge_twins(solid.faces, solid.n_vertices, validate=False)
-    ray_positions = _launch.empty(2 * n_segments, dtype=wp.vec3d, device=device)
-    ray_faces = _launch.empty(3 * n_segments, dtype=wp.int32, device=device)
-    ray_mates = _launch.empty(3 * n_segments, dtype=wp.int32, device=device)
-    ray_normals = _launch.empty(2 * n_segments, dtype=wp.vec3d, device=device)
-    _launch.launch(
-        kernel_boolean.segment_edge_mesh,
-        dim=n_segments,
-        inputs=[origins, endpoints],
-        outputs=[ray_positions, ray_faces, ray_mates, ray_normals],
-        device=device,
-    )
-    segment_box_lower, segment_box_upper = _positions_box(ray_positions)
-    scale = max(solid.scale, *(abs(x) for x in (*segment_box_lower, *segment_box_upper)))
-    pad = max(scale, 1.0) * 4.0 * _FLOAT32_EPSILON
-    # The face tree for the segments' ray walks: boxes padded past the walk's ``float32`` rounding.
-    lowers = _launch.empty(solid.n_faces, dtype=wp.vec3, device=device)
-    uppers = _launch.empty(solid.n_faces, dtype=wp.vec3, device=device)
-    _launch.launch(
-        kernel_boolean.operand_boxes,
-        dim=solid.n_faces,
-        inputs=[solid.positions, solid.faces, mates, pad],
-        outputs=[
-            lowers,
-            uppers,
-            _launch.full(solid.n_vertices, 2147483647, dtype=wp.int32, device=device),
-            _launch.zeros(1, dtype=wp.int32, device=device),
-        ],
-        device=device,
-    )
-    bvh = wp.Bvh(lowers, uppers)
-    shared = [
-        ray_faces,
-        ray_positions,
-        ray_normals,
-        ray_mates,
-        solid.faces,
-        solid.positions,
-        solid.vertex_normals,
-        solid.face_normals,
-        mates,
-        bvh.id,
-        pad,
-    ]
-    _launch.launch(
-        kernel_boolean.count_segment_hits,
-        dim=n_segments,
-        inputs=shared,
-        outputs=[counts],
-        device=device,
-    )
-    n_hits = scan_count(counts)
-    hit_faces = _launch.empty(n_hits, dtype=wp.int32, device=device)
-    parameters = _launch.empty(n_hits, dtype=wp.float64, device=device)
-    points = _launch.empty(n_hits, dtype=wp.vec3, device=device)
-    normals = _launch.empty(n_hits, dtype=wp.vec3, device=device)
-    assert solid.face_source is not None
-    if n_hits > 0:
-        _launch.launch(
-            kernel_boolean.write_segment_hits,
-            dim=n_segments,
-            inputs=[*shared, offsets, solid.face_source],
-            outputs=[hit_faces, parameters, points, normals],
-            device=device,
-        )
-    return hit_faces, parameters, points, normals, offsets
-
-
-def simplify(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], tolerance: float = 0.0
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
-    """
-    Return a closed mesh with its redundant vertices removed, its surface moved under ``tolerance``.
-
-    Faces within ``tolerance`` of one plane are treated as one face, and the vertices inside
-    such a face or along a straight edge between two are collapsed; slivers go too. The result
-    keeps a subset of the vertices.
-
-    Parameters
-    ----------
-    vertices, faces
-        ``(n_vertices,)`` and ``(3 * n_faces,)`` closed, consistently wound mesh.
-    tolerance
-        How far the surface may move. Zero, or less than the mesh's own precision
-        (``float32`` epsilon times its largest coordinate), uses that precision.
-
-    Returns
-    -------
-    vertices : wp.array[wp.vec3]
-        ``(n_vertices,)`` the vertices kept.
-    faces : wp.array[wp.int32]
-        ``(3 * n_faces,)`` result triangles.
-
-    Raises
-    ------
-    RuntimeError
-        If ``vertices`` and ``faces`` are not on one device.
-    ValueError
-        If the mesh is not closed, has an edge shared by more than two faces, or is not
-        consistently wound.
-
-    See Also
-    --------
-    [`remesh.quadric_decimate`][ordito.remesh.quadric_decimate]
-
-    Notes
-    -----
-    Manifold's ``Manifold.simplify``.
-
-    Examples
-    --------
-    A subdivided box simplifies back to its twelve triangles:
-
-    ```python
-    import ordito as od
-
-    vertices, faces = od.creation.box()
-    vertices, faces = od.remesh.subdivide(vertices, faces)
-    print(faces.size // 3)  # 48
-    vertices, faces = od.boolean.simplify(vertices, faces)
-    print(faces.size // 3)  # 12
-    ```
-    """
-    require_same_device(vertices=vertices, faces=faces)
-    device = vertices.device
-    solid = _solid_from_mesh(vertices, faces, 0, "")
-    if solid.is_empty:
-        return _mesh_from_solid(solid, device)
-    return _mesh_from_solid(_solid_simplify(solid, float(tolerance)), device)
-
-
-def level_set(
-    sdf: Callable[[wp.vec3d], wp.float64],
-    bounds: Sequence[float],
-    edge_length: float,
-    level: float = 0.0,
-    tolerance: float = -1.0,
-    *,
-    device: wp.DeviceLike = None,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
-    """
-    Return the closed surface where a signed distance function crosses ``level``, as a solid.
-
-    The function is sampled on a body-centred cubic grid over ``bounds`` (two cubic grids, one
-    shifted by half a cell) and the surface is cut out of its tetrahedra; grid points near the
-    surface snap onto it, which keeps short edges from forming. The function is positive inside.
-    The result is closed where it reaches the box: the box's faces cap it.
-
-    Parameters
-    ----------
-    sdf
-        A ``@wp.func`` (or Warp builtin) taking a ``wp.vec3d`` point and returning its
-        ``wp.float64`` value, positive inside. It need not be a true distance, nor continuous.
-    bounds
-        ``(6,)`` the box sampled: its lower corner, then its upper corner.
-    edge_length
-        The grid spacing to aim for, and about the longest edge of the result.
-    level
-        The value whose surface is extracted: positive insets the surface, negative outsets it.
-    tolerance
-        How far a vertex may lie from the true surface, refined by root finding along its grid
-        edge; zero or negative interpolates linearly between the two grid values.
-    device
-        Where to sample and build; the default device if not given.
-
-    Returns
-    -------
-    vertices : wp.array[wp.vec3]
-        ``(n_vertices,)`` the surface's vertices.
-    faces : wp.array[wp.int32]
-        ``(3 * n_faces,)`` outward-wound triangles; empty where the function never crosses
-        ``level`` in the box.
-
-    Raises
-    ------
-    ValueError
-        If ``bounds`` is not six finite values with the upper corner above the lower one, or
-        ``edge_length`` is not positive and finite, or the grid is too large to index.
-
-    See Also
-    --------
-    [`levelset.marching_cubes`][ordito.levelset.marching_cubes]
-
-    Notes
-    -----
-    Manifold's ``Manifold.level_set``: the same vertices and triangles in the same order. Each
-    new function compiles its own kernels on first use.
-
-    Examples
-    --------
-    Any ``@wp.func`` of a point serves; here the builtin ``wp.length``, positive away from the
-    origin, at level one: what is inside is the box less the unit ball, a cavity.
-
-    ```python
-    import warp as wp
-
-    import ordito as od
-
-    vertices, faces = od.boolean.level_set(wp.length, [-1.5, -1.5, -1.5, 1.5, 1.5, 1.5], 0.25, 1.0)
-    print(len(od.combine.split(vertices, faces)))  # 2
-    ```
-    """
-    device = wp.get_device(device)
-    box = [float(x) for x in bounds]
-    edge = float(edge_length)
-    if len(box) != 6 or not all(math.isfinite(x) for x in box):
-        raise ValueError("bounds must be six finite values: lower corner, then upper corner")
-    if any(box[3 + k] < box[k] for k in range(3)):
-        raise ValueError("bounds' upper corner must not lie below its lower corner")
-    if not (edge > 0.0 and math.isfinite(edge)):
-        raise ValueError(f"edge_length must be positive and finite, got {edge_length}")
-    grid = _level_set_grid(box, edge)
-    solid = _solid_level_set(sdf, grid, float(level), float(tolerance), device)
-    return _mesh_from_solid(solid, device)
-
-
-class _LevelSetGrid(NamedTuple):
-    """``CreateLevelSet``'s grid: origin, spacing, size, the index fields' bits and extents."""
-
-    origin: tuple[float, float, float]
-    spacing: tuple[float, float, float]
-    size: tuple[int, int, int]
-    pw: tuple[int, int, int]
-    max_index: int
-    n_points: int
-
-
-def _level_set_grid(box: list[float], edge: float) -> _LevelSetGrid:
-    """
-    Size the grid as ``CreateLevelSet`` does, in its ``float64`` operation order.
-
-    Raises
-    ------
-    ValueError
-        If the grid has fewer than two points along an axis or is too large to index.
-    """
-    dim = [box[3 + k] - box[k] for k in range(3)]
-    size_d = [d / edge + 1.0 for d in dim]
-    if max(size_d) > (1 << 28):
-        raise ValueError("the grid is too large: raise edge_length or shrink bounds")
-    size = tuple(int(x) for x in size_d)
-    if min(size) < 2:
-        raise ValueError("the grid needs two points along each axis: lower edge_length")
-    spacing = tuple(dim[k] / float(size[k] - 1) for k in range(3))
-    pw = tuple(_ceil_log2(n + 2 + 1) for n in size)
-    if 1 + sum(pw) + 3 > 64 or 1 + sum(pw) > 30:
-        raise ValueError("the grid is too large to index: raise edge_length or shrink bounds")
-    max_index = _level_set_encode((size[0] + 2, size[1] + 2, size[2] + 2, 1), pw)
-    n_points = _level_set_encode((size[0], size[1], size[2], 1), pw)
-    origin = (box[0], box[1], box[2])
-    return _LevelSetGrid(
-        origin,
-        (spacing[0], spacing[1], spacing[2]),
-        (size[0], size[1], size[2]),
-        (pw[0], pw[1], pw[2]),
-        max_index,
-        n_points,
-    )
-
-
-def _ceil_log2(value: int) -> int:
-    """``CeilLog2``: the bits of ``value - 1``, zero up to one."""
-    return 0 if value <= 1 else (value - 1).bit_length()
-
-
-def _level_set_encode(p: tuple[int, int, int, int], pw: tuple[int, ...]) -> int:
-    """``EncodeIndex`` on the host, for non-negative coordinates."""
-    return p[3] | p[2] << 1 | p[1] << (1 + pw[2]) | p[0] << (1 + pw[2] + pw[1])
-
-
-def _solid_level_set(
-    sdf: Callable[[wp.vec3d], wp.float64],
-    grid: _LevelSetGrid,
-    level: float,
-    tolerance: float,
-    device: wp.Device,
-) -> _Solid:
-    """``CreateLevelSet``: sample, find the near-surface points, build, then finish the solid."""
-    voxels_kernel, near_kernel, edge_kernel = (
-        cast(odt.Kernel, k) for k in kernel_boolean.level_set_kernels(sdf)
-    )
-    tol = tolerance if tolerance > 0 else math.inf
-    origin = wp.vec3d(*grid.origin)
-    spacing = wp.vec3d(*grid.spacing)
-    size = wp.vec3i(*grid.size)
-    pw = wp.vec3i(*grid.pw)
-    voxels = _launch.empty(grid.max_index, dtype=wp.float64, device=device)
-    _launch.launch(
-        voxels_kernel,
-        dim=grid.max_index,
-        inputs=[origin, spacing, size, pw, level],
-        outputs=[voxels],
-        device=device,
-    )
-    m = grid.n_points
-    keep_offsets, keep = offsets_buffer(m, device)
-    moved_dense = _launch.empty(m, dtype=wp.int32, device=device)
-    moved_pos_dense = _launch.empty(m, dtype=wp.vec3d, device=device)
-    mask = _launch.empty(m, dtype=wp.int32, device=device)
-    _launch.launch(
-        near_kernel,
-        dim=m,
-        inputs=[voxels, origin, spacing, size, pw, level, tol],
-        outputs=[keep, moved_dense, moved_pos_dense, mask],
-        device=device,
-    )
-    n_entries = scan_count(keep)
-    if n_entries == 0:
-        return _empty_solid(device)
-    entry_keys = _launch.empty(n_entries, dtype=wp.uint64, device=device)
-    moved_offsets, moved_flags = offsets_buffer(n_entries, device)
-    edge_verts = _launch.empty(7 * n_entries, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_boolean.level_set_entries,
-        dim=m,
-        inputs=[keep_offsets, moved_dense, mask],
-        outputs=[entry_keys, moved_flags, edge_verts],
-        device=device,
-    )
-    n_moved = scan_count(moved_flags)
-    entry_moved = _launch.empty(n_entries, dtype=wp.int32, device=device)
-    entry_distance = _launch.empty(n_entries, dtype=wp.float64, device=device)
-    moved_positions = _launch.empty(max(n_moved, 1), dtype=wp.vec3d, device=device)
-    _launch.launch(
-        kernel_boolean.level_set_number_moved,
-        dim=n_entries,
-        inputs=[moved_offsets, entry_keys, voxels, pw, moved_pos_dense],
-        outputs=[entry_moved, entry_distance, edge_verts, moved_positions],
-        device=device,
-    )
-    table_size = _level_set_table_size(grid, n_entries, moved_offsets, moved_positions)
-    keys = _launch.full(table_size, 0xFFFFFFFFFFFFFFFF, dtype=wp.uint64, device=device)
-    slot_entry = _launch.full(table_size, -1, dtype=wp.int32, device=device)
-    # The table is filled in one thread in index order, as Manifold's serial loop fills it.
-    insert_inputs: list[object] = [entry_keys, n_entries, table_size]
-    if device.is_cpu:
-        _launch.launch(
-            kernel_boolean.level_set_insert,
-            dim=1,
-            inputs=insert_inputs,
-            outputs=[keys, slot_entry],
-            device=device,
-        )
-    else:
-        _launch_on_host(kernel_boolean.level_set_insert, insert_inputs, [keys, slot_entry])
-    vert_offsets, vert_counts = offsets_buffer(table_size, device)
-    _launch.launch(
-        kernel_boolean.level_set_count_verts,
-        dim=table_size,
-        inputs=[voxels, keys, slot_entry, entry_keys, entry_distance, entry_moved, pw],
-        outputs=[vert_counts],
-        device=device,
-    )
-    n_edge = scan_count(vert_counts)
-    n_vertices = n_moved + n_edge
-    positions = _launch.empty(max(n_vertices, 1), dtype=wp.vec3d, device=device)
-    if n_moved > 0:
-        _launch.copy(positions, moved_positions, count=n_moved)
-    _launch.launch(
-        edge_kernel,
-        dim=table_size,
-        inputs=[
-            voxels,
-            keys,
-            slot_entry,
-            entry_keys,
-            entry_distance,
-            entry_moved,
-            vert_offsets,
-            n_moved,
-            origin,
-            spacing,
-            size,
-            pw,
-            level,
-            tol,
-        ],
-        outputs=[edge_verts, positions],
-        device=device,
-    )
-    tri_offsets, tri_counts = offsets_buffer(table_size, device)
-    scratch_tris = _launch.empty(1, dtype=wp.vec3i, device=device)
-    table = [keys, slot_entry, entry_keys, entry_distance, edge_verts, pw]
-    _launch.launch(
-        kernel_boolean.level_set_count_tris,
-        dim=table_size,
-        inputs=[*table, scratch_tris],
-        outputs=[tri_counts],
-        device=device,
-    )
-    n_tris = scan_count(tri_counts)
-    if n_tris == 0:
-        return _empty_solid(device)
-    tris = _launch.empty(n_tris, dtype=wp.vec3i, device=device)
-    _launch.launch(
-        kernel_boolean.level_set_write_tris,
-        dim=table_size,
-        inputs=[*table, tri_offsets],
-        outputs=[tris],
-        device=device,
-    )
-    return _level_set_solid(_launch.view(positions, 0, n_vertices), tris, device)
-
-
-def _level_set_table_size(
-    grid: _LevelSetGrid,
-    n_entries: int,
-    moved_offsets: wp.array[wp.int32],
-    moved_positions: wp.array[wp.vec3d],
-) -> int:
-    """
-    Return the hash table's size once Manifold's serial loop stops overflowing it.
-
-    It starts from the voxel count, and each overflow (the loop stops inserting once more than
-    half the slots are full) rescales it by how far through the grid the last snapped vertex
-    then was, or doubles it.
-    """
-    dense = 2 * grid.max_index
-    sparse = int(10 * math.sqrt(float(grid.max_index)))
-    requested = max(1, min(dense, sparse))
-    size = 1 << _ceil_log2(requested)
-    while 2 * n_entries > size:
-        cut = size // 2 + 1
-        # Host readback: the snapped vertices among the points inserted before the overflow.
-        n_moved = int(read_values(moved_offsets, cut, 1)[0])
-        ratio = math.inf
-        if n_moved > 0:
-            last = read_values(moved_positions, n_moved - 1, 1)[0]
-            cell = tuple(int((float(last[k]) - grid.origin[k]) / grid.spacing[k]) for k in range(3))
-            last_index = _level_set_encode((cell[0], cell[1], cell[2], 1), grid.pw)
-            ratio = grid.max_index / last_index if last_index > 0 else math.inf
-        requested = requested * 2 if ratio > 1000 else int(requested * ratio)
-        size = 1 << _ceil_log2(requested)
-    return size
-
-
-def _level_set_solid(
-    positions: wp.array[wp.vec3d], tris: wp.array[wp.vec3i], device: wp.Device
-) -> _Solid:
-    """
-    Finish the level set's triangles as ``CreateLevelSet`` does.
-
-    ``CreateHalfedges`` (opposed triangle pairs dropped, each edge's k-th backward halfedge
-    paired with its k-th forward one), ``CleanupTopology`` (pinched vertices split, duplicate
-    edges removed), ``RemoveUnreferencedVerts``, then the shape layout.
-    """
-    # Host readback: the pairing is a sort of the halfedges' edges on the host.
-    tris_np = _without_opposed_triangles(read_array(tris).astype(np.int64).reshape(-1, 3))
-    n_tris = len(tris_np)
-    starts = tris_np.reshape(-1)
-    ends = tris_np[:, [1, 2, 0]].reshape(-1)
-    low = np.minimum(starts, ends)
-    high = np.maximum(starts, ends)
-    halfedges = np.arange(3 * n_tris)
-    forward = starts < ends
-    backward_h = halfedges[~forward][
-        np.lexsort((halfedges[~forward], high[~forward], low[~forward]))
-    ]
-    forward_h = halfedges[forward][np.lexsort((halfedges[forward], high[forward], low[forward]))]
-    if len(backward_h) != len(forward_h) or not (
-        np.array_equal(low[backward_h], low[forward_h])
-        and np.array_equal(high[backward_h], high[forward_h])
-    ):
-        raise ValueError("the level set's triangles do not close: the function is degenerate")
-    pair = np.empty(3 * n_tris, dtype=np.int32)
-    pair[backward_h] = forward_h
-    pair[forward_h] = backward_h
-    n_vertices = int(positions.shape[0])
-    mesh = _halfedge_mesh(n_tris, n_vertices, positions, device)
-    _launch.copy(mesh.start, _launch.array(starts.astype(np.int32), dtype=wp.int32, device=device))
-    _launch.copy(mesh.pair, _launch.array(pair, dtype=wp.int32, device=device))
-    mesh.tri_mesh.zero_()
-    mesh.tri_coplanar.zero_()
-    mesh.tri_normal.zero_()
-    _simplify_topology(mesh, 0, 0.0, 0.0, device, cleanup_only=True)
-    n_h, n_v = (int(x) for x in read_values(mesh.sizes, 0, 2))
-    kept = _compacted(mesh, _launch.zeros(n_v, dtype=wp.vec3d, device=device), n_h // 3, n_v)
-    if kept is None:
-        return _empty_solid(device)
-    kept_positions, faces = kept[0], kept[1]
-    lower, upper = _positions_box(kept_positions)
-    epsilon = kernel_boolean.PRECISION * max(abs(x) for x in (*lower, *upper))
-    return _solid_from_positions(
-        kept_positions, faces, 0, epsilon, epsilon, lower, upper, "level set", sort_first=True
-    )
-
-
-def _without_opposed_triangles(triangles: np.ndarray) -> np.ndarray:
-    """Return the triangles less each pair over the same vertices wound opposite ways."""
-    ordered = np.sort(triangles, axis=1)
-    # A triangle's winding against its sorted corners: an even rotation of them or not.
-    even = (
-        (triangles == ordered).all(axis=1)
-        | (triangles == np.roll(ordered, 1, axis=1)).all(axis=1)
-        | (triangles == np.roll(ordered, 2, axis=1)).all(axis=1)
-    )
-    n = int(triangles.max()) + 1 if triangles.size else 1
-    if n < 2**21:
-        keys = (ordered[:, 0] * n + ordered[:, 1]) * n + ordered[:, 2]
-    else:
-        keys = np.unique(ordered, axis=0, return_inverse=True)[1].reshape(-1)
-    order = np.argsort(keys, kind="stable")
-    sorted_keys = keys[order]
-    repeated = np.flatnonzero(sorted_keys[1:] == sorted_keys[:-1])
-    keep = np.ones(len(triangles), dtype=bool)
-    for key in np.unique(sorted_keys[repeated]):
-        members = np.sort(
-            order[np.searchsorted(sorted_keys, key) : np.searchsorted(sorted_keys, key, "right")]
-        )
-        positive = members[even[members]]
-        negative = members[~even[members]]
-        pairs = min(len(positive), len(negative))
-        keep[positive[:pairs]] = False
-        keep[negative[:pairs]] = False
-    return triangles[keep]
-
-
-def smooth_out(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    n: int | None = None,
-    *,
-    length: float | None = None,
-    tolerance: float | None = None,
-    min_sharp_angle: float = 52.5,
-    min_smoothness: float = 0.0,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
-    """
-    Return a closed mesh refined onto a smooth surface through its vertices, keeping sharp edges.
-
-    Each edge becomes a curve leaving its ends along the surface's tangent planes, circular where
-    it can be, and each face a patch between its edges' curves. Edges bent past
-    ``min_sharp_angle`` stay creases; faces of three or more coplanar triangles stay flat, and
-    two coplanar triangles are smoothed as one quad. The refinement is chosen by exactly one of
-    ``n``, ``length`` and ``tolerance``.
-
-    Parameters
-    ----------
-    vertices, faces
-        ``(n_vertices,)`` and ``(3 * n_faces,)`` closed, consistently wound mesh.
-    n
-        The pieces each edge is split into, each face tiled to match; ``1`` returns the mesh as
-        [`union`][ordito.boolean.union] lays out a result.
-    length
-        Split each edge into ``floor(|edge| / length)`` added vertices instead, evenly spaced.
-    tolerance
-        Split each edge until the faceted result is within about this distance of the smooth
-        surface instead; curved regions take more vertices than flat ones.
-    min_sharp_angle
-        Degrees: edges whose faces meet at more than this stay sharp.
-    min_smoothness
-        How smooth a sharp edge still is, from ``0`` (a crease) to ``1`` (as smooth as any).
-
-    Returns
-    -------
-    vertices : wp.array[wp.vec3]
-        ``(n_vertices_out,)`` the input vertices and the added ones, on the smooth surface.
-    faces : wp.array[wp.int32]
-        ``(3 * n_faces_out,)`` result triangles.
-
-    Raises
-    ------
-    RuntimeError
-        If ``vertices`` and ``faces`` are not on one device.
-    ValueError
-        If not exactly one of ``n``, ``length`` and ``tolerance`` is given, ``n`` is below one,
-        ``length`` or ``tolerance`` is zero or not finite, or the mesh is not closed, has an edge
-        shared by more than two faces, or is not consistently wound.
-
-    See Also
-    --------
-    [`remesh.subdivide`][ordito.remesh.subdivide]
-    [`remesh.subdivide_to_size`][ordito.remesh.subdivide_to_size]
-
-    Notes
-    -----
-    Manifold's ``Manifold.smooth_out`` followed by ``refine``, ``refine_to_length`` or
-    ``refine_to_tolerance``.
-
-    Examples
-    --------
-    ```python
-    import ordito as od
-
-    vertices, faces = od.boolean.smooth_out(*od.creation.icosphere(subdivisions=1), 3)
-    print(faces.size // 3)  # 720
-    ```
-    """
-    require_same_device(vertices=vertices, faces=faces)
-    if sum(x is not None for x in (n, length, tolerance)) != 1:
-        raise ValueError("pass exactly one of n, length and tolerance")
-    if n is not None and n < 1:
-        raise ValueError(f"n must be at least 1, got {n}")
-    target = abs(float(length if length is not None else tolerance or 0.0))
-    if n is None and (target == 0.0 or not math.isfinite(target)):
-        raise ValueError(f"length or tolerance must be finite and nonzero, got {target}")
-    device = vertices.device
-    solid = _solid_from_mesh(vertices, faces, 0, "")
-    if solid.is_empty or n == 1:
-        return _mesh_from_solid(solid, device)
-    smoothed = _solid_smooth_out(
-        solid,
-        int(n) if n is not None else 1,
-        target if length is not None else 0.0,
-        target if tolerance is not None else 0.0,
-        float(min_sharp_angle),
-        float(min_smoothness),
-    )
-    return _mesh_from_solid(smoothed, device)
-
-
-def _solid_smooth_out(
-    solid: _Solid,
-    n: int,
-    length: float,
-    tolerance: float,
-    min_sharp_angle: float,
-    min_smoothness: float,
-) -> _Solid:
-    """
-    ``SmoothOut`` then ``Refine(n)``, ``RefineToLength`` or ``RefineToTolerance``.
-
-    Tangents from the geometry, then the refined vertices on the surface they define, normals
-    and coplanar groups recomputed and sorted in the new box.
-    """
-    device = solid.positions.device
-    n_h = solid.faces.size
-    n_v = solid.n_vertices
-    twins = halfedge_twins(solid.faces, n_v, validate=False)
-    tangents = _smoothing_tangents(solid, twins, min_sharp_angle, min_smoothness)
-    inside = _launch.empty(n_h, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_boolean.quad_diagonal_flags,
-        dim=n_h,
-        inputs=[tangents],
-        outputs=[inside],
-        device=device,
-    )
-    sub = _subdivide(solid, twins, inside, n - 1, length, tangents, tolerance)
-    positions = _launch.empty(sub.bary_tri.size, dtype=wp.vec3d, device=device)
-    _launch.launch(
-        kernel_boolean.interp_tri_positions,
-        dim=sub.bary_tri.size,
-        inputs=[solid.positions, solid.faces, twins, inside, tangents, sub.bary_tri, sub.bary_uvw],
-        outputs=[positions],
-        device=device,
-    )
-    lower, upper = _positions_box(positions)
-    return _solid_from_positions(
-        positions, sub.faces, 0, solid.epsilon, solid.tolerance, lower, upper, ""
-    )
-
-
-def _smoothing_tangents(
-    solid: _Solid, twins: wp.array[wp.int32], min_sharp_angle: float, min_smoothness: float
-) -> wp.array[wp.vec4d]:
-    """
-    ``CreateTangents(SharpenEdges(min_sharp_angle, min_smoothness))``.
-
-    Each halfedge's weighted cubic Bezier tangent, a quad's diagonal marked with weight ``-1``.
-    """
-    device = solid.positions.device
-    n_h = solid.faces.size
-    n_v = solid.n_vertices
-    n_t = solid.n_faces
-    first = _launch.full(n_v, 2147483647, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_boolean.least_outgoing_halfedges,
-        dim=n_h,
-        inputs=[solid.faces],
-        outputs=[first],
-        device=device,
-    )
-    flat = _launch.zeros(n_t, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_boolean.flat_faces,
-        dim=n_t,
-        inputs=[twins, solid.face_mesh, solid.face_coplanar],
-        outputs=[flat],
-        device=device,
-    )
-    normals = _launch.empty(n_v, dtype=wp.vec3d, device=device)
-    _launch.launch(
-        kernel_boolean.smoothing_vertex_normals,
-        dim=n_v,
-        inputs=[
-            twins,
-            solid.face_mesh,
-            solid.face_coplanar,
-            flat,
-            first,
-            solid.face_normals,
-            solid.vertex_normals,
-        ],
-        outputs=[normals],
-        device=device,
-    )
-    tangents = _launch.empty(n_h, dtype=wp.vec4d, device=device)
-    _launch.launch(
-        kernel_boolean.initial_tangents,
-        dim=n_h,
-        inputs=[
-            solid.positions,
-            solid.faces,
-            twins,
-            solid.face_mesh,
-            solid.face_coplanar,
-            solid.face_normals,
-            normals,
-        ],
-        outputs=[tangents],
-        device=device,
-    )
-    present = _launch.zeros(n_h, dtype=wp.int32, device=device)
-    smoothness = _launch.empty(n_h, dtype=wp.vec2d, device=device)
-    min_radians = max(min_sharp_angle, 1e-4) * math.pi / 180
-    _launch.launch(
-        kernel_boolean.edge_smoothness,
-        dim=n_h,
-        inputs=[
-            solid.faces,
-            twins,
-            solid.face_mesh,
-            solid.face_coplanar,
-            flat,
-            solid.face_normals,
-            min_radians,
-            min_smoothness,
-        ],
-        outputs=[present, smoothness],
-        device=device,
-    )
-    fixed = _launch.zeros(n_h, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_boolean.sharpen_vertex_tangents,
-        dim=n_v,
-        inputs=[solid.positions, solid.faces, twins, flat, first, present, smoothness],
-        outputs=[tangents, fixed],
-        device=device,
-    )
-    _launch.launch(
-        kernel_boolean.linearize_flat_tangents,
-        dim=n_h,
-        inputs=[solid.positions, solid.faces, twins],
-        outputs=[tangents],
-        device=device,
-    )
-    _launch.launch(
-        kernel_boolean.distribute_tangents,
-        dim=n_h,
-        inputs=[solid.positions, solid.faces, twins, solid.vertex_normals, fixed],
-        outputs=[tangents],
-        device=device,
-    )
-    return tangents
-
-
-class _Subdivision(NamedTuple):
-    """``Subdivide``'s triangles, their inherited attributes, and every vertex's barycentric."""
-
-    faces: wp.array[wp.int32]
-    face_normals: wp.array[wp.vec3d]
-    face_mesh: wp.array[wp.int32]
-    face_coplanar: wp.array[wp.int32]
-    bary_tri: wp.array[wp.int32]
-    bary_uvw: wp.array[wp.vec4d]
-
-
-def _subdivide(
-    solid: _Solid,
-    twins: wp.array[wp.int32],
-    inside: wp.array[wp.int32],
-    added: int,
-    length: float,
-    tangents: wp.array[wp.vec4d] | None = None,
-    tolerance: float = 0.0,
-) -> _Subdivision:
-    """
-    ``Impl::Subdivide``: split the edges and tile each face with its sides' cached partition.
-
-    A quad is the face whose diagonal ``inside`` marks. Vertices keep their indices, each edge's
-    added vertices follow in edge order, then each face's interior ones; every vertex records the
-    face (a quad's lower triangle) and the barycentric it sits at.
-    """
-    device = solid.positions.device
-    n_h = solid.faces.size
-    n_v = solid.n_vertices
-    n_t = solid.n_faces
-    ranks, forward = offsets_buffer(n_h, device)
-    _launch.launch(
-        kernel_boolean.forward_halfedge_flags,
-        dim=n_h,
-        inputs=[solid.faces],
-        outputs=[forward],
-        device=device,
-    )
-    # ``ranks[h]`` is then each forward halfedge's edge index.
-    n_edges = scan_count(forward)
-    added_offsets, added_counts = offsets_buffer(n_edges, device)
-    edge_halfedge = _launch.empty(n_edges, dtype=wp.int32, device=device)
-    if tangents is None:
-        tangents = _launch.empty(1, dtype=wp.vec4d, device=device)
-    # ``RefineToTolerance`` keeps some interior: its raw counts feed a second pass.
-    raw = added_counts
-    if tolerance > 0.0:
-        raw = _launch.zeros(n_edges, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_boolean.refine_edge_added,
-        dim=n_h,
-        inputs=[
-            solid.positions,
-            solid.faces,
-            twins,
-            ranks,
-            inside,
-            tangents,
-            added,
-            length,
-            tolerance,
-        ],
-        outputs=[raw, edge_halfedge],
-        device=device,
-    )
-    if tolerance > 0.0:
-        _launch.launch(
-            kernel_boolean.keep_interior_added,
-            dim=n_h,
-            inputs=[solid.faces, twins, ranks, inside, raw],
-            outputs=[added_counts],
-            device=device,
-        )
-    n_added = scan_count(added_counts)
-    keys = _launch.empty(n_t, dtype=wp.vec4i, device=device)
-    _launch.launch(
-        kernel_boolean.refine_face_keys,
-        dim=n_t,
-        inputs=[solid.faces, twins, ranks, inside, added_offsets],
-        outputs=[keys],
-        device=device,
-    )
-    # Host readback: the partitions are built on the host, one per distinct set of divisions.
-    unique_keys, face_key_np = np.unique(read_array(keys), axis=0, return_inverse=True)
-    partitions = [_partition((int(a), int(b), int(c), int(d))) for a, b, c, d in unique_keys]
-    key_triangles_np = np.cumsum([0] + [len(tris) for _, tris in partitions], dtype=np.int64)
-    key_vertices_np = np.cumsum([0] + [len(bary) for bary, _ in partitions], dtype=np.int64)
-    key_interior_np = np.diff(key_vertices_np) - unique_keys.sum(axis=1)
-    face_key_np = face_key_np.reshape(-1)
-    face_triangles_np = np.diff(key_triangles_np)[face_key_np]
-    face_interior_np = key_interior_np[face_key_np]
-    triangle_offsets_np = np.concatenate([[0], np.cumsum(face_triangles_np)])
-    interior_offsets_np = n_v + n_added + np.concatenate([[0], np.cumsum(face_interior_np)])
-    n_new_t = int(triangle_offsets_np[-1])
-    n_new_v = int(interior_offsets_np[-1])
-    partition_triangles = np.asarray(
-        [t for _, tris in partitions for t in tris], dtype=np.int32
-    ).reshape(-1, 3)
-    partition_bary = np.asarray(
-        [b for bary, _ in partitions for b in bary], dtype=np.float64
-    ).reshape(-1, 4)
-
-    def upload(values: np.ndarray) -> wp.array[wp.int32]:
-        return _launch.array(values.astype(np.int32), dtype=wp.int32, device=device)
-
-    bary_tri = _launch.empty(n_new_v, dtype=wp.int32, device=device)
-    bary_uvw = _launch.empty(n_new_v, dtype=wp.vec4d, device=device)
-    last = _launch.full(n_v, -1, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_boolean.last_corner_halfedges,
-        dim=n_h,
-        inputs=[solid.faces, inside],
-        outputs=[last],
-        device=device,
-    )
-    _launch.launch(
-        kernel_boolean.refine_retained_bary,
-        dim=n_v,
-        inputs=[twins, inside, last],
-        outputs=[bary_tri, bary_uvw],
-        device=device,
-    )
-    _launch.launch(
-        kernel_boolean.refine_edge_bary,
-        dim=n_edges,
-        inputs=[twins, inside, edge_halfedge, added_offsets, n_v],
-        outputs=[bary_tri, bary_uvw],
-        device=device,
-    )
-    faces = _launch.empty(3 * n_new_t, dtype=wp.int32, device=device)
-    face_normals = _launch.empty(n_new_t, dtype=wp.vec3d, device=device)
-    face_mesh = _launch.empty(n_new_t, dtype=wp.int32, device=device)
-    face_coplanar = _launch.empty(n_new_t, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_boolean.refine_faces,
-        dim=n_t,
-        inputs=[
-            solid.faces,
-            twins,
-            ranks,
-            inside,
-            added_offsets,
-            n_v,
-            upload(face_key_np),
-            upload(key_triangles_np),
-            upload(key_vertices_np),
-            _launch.array(partition_triangles, dtype=wp.vec3i, device=device),
-            _launch.array(partition_bary, dtype=wp.vec4d, device=device),
-            upload(triangle_offsets_np),
-            upload(interior_offsets_np),
-            solid.face_normals,
-            solid.face_mesh,
-            solid.face_coplanar,
-        ],
-        outputs=[faces, face_normals, face_mesh, face_coplanar, bary_tri, bary_uvw],
-        device=device,
-    )
-    return _Subdivision(faces, face_normals, face_mesh, face_coplanar, bary_tri, bary_uvw)
-
-
-def _partition(
-    n: tuple[int, int, int, int],
-) -> tuple[list[tuple[float, float, float, float]], list[tuple[int, int, int]]]:
-    """
-    ``Partition::GetCachedPartition`` of the sorted side divisions ``n``.
-
-    A quad's when ``n[3]`` is positive, a triangle's (``n[0] >= n[1] >= n[2]``) otherwise,
-    nothing for all zeros. Purely topological: each vertex's barycentric (corners, then each
-    side's added vertices, then the interior) and the sub-triangles over them, cached by the
-    divisions.
-    """
-    cached = _PARTITIONS.get(n)
-    if cached is not None:
-        return cached
-    bary: list[tuple[float, float, float, float]] = []
-    tris: list[tuple[int, int, int]] = []
-    if n[0] > 0 and n[3] > 0:  # quad
-        bary.extend(
-            [(1.0, 0.0, 0.0, 0.0), (0.0, 1.0, 0.0, 0.0), (0.0, 0.0, 1.0, 0.0), (0.0, 0.0, 0.0, 1.0)]
-        )
-        offsets = [4, 0, 0, 0]
-        for i in range(4):
-            if i > 0:
-                offsets[i] = offsets[i - 1] + n[i - 1] - 1
-            next_bary = bary[(i + 1) % 4]
-            for j in range(1, n[i]):
-                bary.append(_lerp4(bary[i], next_bary, j / n[i]))
-        _partition_quad(
-            tris, bary, [0, 1, 2, 3], offsets, [k - 1 for k in n], [True, True, True, True]
-        )
-    elif n[0] > 0:
-        _triangle_partition(bary, tris, (n[0], n[1], n[2]))
-    _PARTITIONS[n] = (bary, tris)
-    return bary, tris
-
-
-def _triangle_partition(
-    bary: list[tuple[float, float, float, float]],
-    tris: list[tuple[int, int, int]],
-    n: tuple[int, int, int],
-) -> None:
-    """``GetCachedPartition``'s triangle branch, sides of ``n[0] >= n[1] >= n[2]`` pieces."""
-    bary.extend([(1.0, 0.0, 0.0, 0.0), (0.0, 1.0, 0.0, 0.0), (0.0, 0.0, 1.0, 0.0)])
-    for i in range(3):
-        next_bary = bary[(i + 1) % 3]
-        for j in range(1, n[i]):
-            bary.append(_lerp4(bary[i], next_bary, j / n[i]))
-    offsets = (3, 3 + n[0] - 1, 3 + n[0] - 1 + n[1] - 1)
-    f = float(n[2] * n[2] + n[0] * n[0])
-    if n[1] == 1:
-        if n[0] == 1:
-            tris.append((0, 1, 2))
-        else:
-            _partition_fan(tris, (0, 1, 2), n[0] - 1, offsets[0])
-    elif n[1] * n[1] > f - math.sqrt(2.0) * n[0] * n[2]:  # acute-ish
-        tris.append((offsets[1] - 1, 1, offsets[1]))
-        _partition_quad(
-            tris,
-            bary,
-            [offsets[1] - 1, offsets[1], 2, 0],
-            [-1, offsets[1] + 1, offsets[2], offsets[0]],
-            [0, n[1] - 2, n[2] - 1, n[0] - 2],
-            [True, True, True, True],
-        )
-    else:  # obtuse: split into two acute
-        ns = min(n[0] - 2, int(_round_half_away((f - n[1] * n[1]) / (2 * n[0]))))
-        nh = int(max(1.0, _round_half_away(math.sqrt(n[2] * n[2] - ns * ns))))
-        h_offset = len(bary)
-        middle = bary[offsets[0] + ns - 1]
-        for j in range(1, nh):
-            bary.append(_lerp4(bary[2], middle, j / nh))
-        tris.append((offsets[1] - 1, 1, offsets[1]))
-        _partition_quad(
-            tris,
-            bary,
-            [offsets[1] - 1, offsets[1], 2, offsets[0] + ns - 1],
-            [-1, offsets[1] + 1, h_offset, offsets[0] + ns],
-            [0, n[1] - 2, nh - 1, n[0] - ns - 2],
-            [True, True, True, True],
-        )
-        if n[2] == 1:
-            _partition_fan(tris, (0, offsets[0] + ns - 1, 2), ns - 1, offsets[0])
-        elif ns == 1:
-            tris.append((h_offset, 2, offsets[2]))
-            _partition_quad(
-                tris,
-                bary,
-                [h_offset, offsets[2], 0, offsets[0]],
-                [-1, offsets[2] + 1, -1, h_offset + nh - 2],
-                [0, n[2] - 2, ns - 1, nh - 2],
-                [True, True, True, False],
-            )
-        else:
-            tris.append((h_offset - 1, 0, offsets[0]))
-            _partition_quad(
-                tris,
-                bary,
-                [h_offset - 1, offsets[0], offsets[0] + ns - 1, 2],
-                [-1, offsets[0] + 1, h_offset + nh - 2, offsets[2]],
-                [0, ns - 2, nh - 1, n[2] - 2],
-                [True, True, False, True],
-            )
-
-
-def _lerp4(
-    a: tuple[float, float, float, float], b: tuple[float, float, float, float], t: float
-) -> tuple[float, float, float, float]:
-    """``la::lerp`` of two barycentrics: ``a * (1 - t) + b * t``, component by component."""
-    s = 1.0 - t
-    return (a[0] * s + b[0] * t, a[1] * s + b[1] * t, a[2] * s + b[2] * t, a[3] * s + b[3] * t)
-
-
-def _round_half_away(x: float) -> float:
-    """``std::round``: to the nearest integer, halves away from zero."""
-    r = math.floor(abs(x))
-    if abs(x) - r >= 0.5:
-        r += 1.0
-    return math.copysign(r, x)
-
-
-def _partition_fan(
-    tris: list[tuple[int, int, int]], corners: tuple[int, int, int], added: int, offset: int
-) -> None:
-    """``PartitionFan``: side 0's added vertices fanned from corner 2."""
-    last = corners[0]
-    for i in range(added):
-        nxt = offset + i
-        tris.append((last, nxt, corners[2]))
-        last = nxt
-    tris.append((last, corners[1], corners[2]))
-
-
-def _partition_quad(
-    tris: list[tuple[int, int, int]],
-    bary: list[tuple[float, float, float, float]],
-    corners: list[int],
-    offsets: list[int],
-    added: list[int],
-    forward: list[bool],
-) -> None:
-    """``PartitionQuad``: strips parallel to side 0, or a terminal fan where two sides add none."""
-
-    def edge_vert(edge: int, index: int) -> int:
-        return offsets[edge] + (index if forward[edge] else -index)
-
-    corner = -1
-    last = 3
-    max_edge = -1
-    for i in range(4):
-        if corner == -1 and added[i] == 0 and added[last] == 0:
-            corner = i
-        if added[i] > 0:
-            max_edge = i if max_edge == -1 else -2
-        last = i
-    if corner >= 0:  # terminate
-        if max_edge >= 0:
-            edge = [(k + max_edge) % 4 for k in range(4)]
-            middle = added[max_edge] // 2
-            tris.append((corners[edge[2]], corners[edge[3]], edge_vert(max_edge, middle)))
-            prev = corners[edge[0]]
-            for i in range(middle + 1):
-                nxt = edge_vert(max_edge, i)
-                tris.append((corners[edge[3]], prev, nxt))
-                prev = nxt
-            prev = corners[edge[1]]
-            for i in range(added[max_edge] - 1, middle - 1, -1):
-                nxt = edge_vert(max_edge, i)
-                tris.append((corners[edge[2]], nxt, prev))
-                prev = nxt
-        else:
-            side_vert = corners[0]
-            for j in (1, 2):
-                side = (corner + j) % 4
-                if j == 2 and added[side] > 0:
-                    tris.append((corners[side], edge_vert(side, 0), side_vert))
-                else:
-                    side_vert = corners[side]
-                for i in range(added[side]):
-                    nxt = edge_vert(side, i)
-                    tris.append((corners[corner], side_vert, nxt))
-                    side_vert = nxt
-                if j == 2 or added[side] == 0:
-                    tris.append((corners[corner], side_vert, corners[(corner + j + 1) % 4]))
-        return
-    partitions = 1 + min(added[1], added[3])
-    new_corners = [corners[1], -1, -1, corners[0]]
-    new_offsets = [offsets[1], -1, edge_vert(3, added[3] + 1), offsets[0]]
-    new_added = [0, -1, 0, added[0]]
-    new_forward = [forward[1], True, forward[3], forward[0]]
-    for i in range(1, partitions):
-        corner_offset1 = (added[1] * i) // partitions
-        corner_offset3 = added[3] - 1 - (added[3] * i) // partitions
-        next_offset1 = edge_vert(1, corner_offset1 + 1)
-        next_offset3 = edge_vert(3, corner_offset3 + 1)
-        t = i / partitions
-        count = int(_round_half_away(float(added[0]) * (1.0 - t) + float(added[2]) * t))
-        new_corners[1] = edge_vert(1, corner_offset1)
-        new_corners[2] = edge_vert(3, corner_offset3)
-        new_added[0] = abs(next_offset1 - new_offsets[0]) - 1
-        new_added[1] = count
-        new_added[2] = abs(next_offset3 - new_offsets[2]) - 1
-        new_offsets[1] = len(bary)
-        new_offsets[2] = next_offset3
-        for j in range(count):
-            bary.append(
-                _lerp4(bary[new_corners[1]], bary[new_corners[2]], (j + 1.0) / (count + 1.0))
-            )
-        _partition_quad(
-            tris, bary, list(new_corners), list(new_offsets), list(new_added), list(new_forward)
-        )
-        new_corners[0] = new_corners[1]
-        new_corners[3] = new_corners[2]
-        new_added[3] = new_added[1]
-        new_offsets[0] = next_offset1
-        new_offsets[3] = new_offsets[1] + new_added[1] - 1
-        new_forward[3] = False
-    new_corners[1] = corners[2]
-    new_corners[2] = corners[3]
-    new_offsets[1] = offsets[2]
-    new_added[0] = added[1] - abs(new_offsets[0] - offsets[1])
-    new_added[1] = added[2]
-    new_added[2] = abs(new_offsets[2] - offsets[3]) - 1
-    new_offsets[2] = offsets[3]
-    new_forward[1] = forward[2]
-    _partition_quad(tris, bary, new_corners, new_offsets, new_added, new_forward)
-
-
-class _Solid(NamedTuple):
-    """
-    A closed mesh as Manifold's ``Impl`` carries it between operations.
-
-    ``float64`` positions and Morton-ordered vertices and faces (``SortGeometry``); each face's
-    normal (inherited from the face it was cut from, never recomputed), its mesh's id and its
-    coplanar group (``triRef``); each vertex's pseudo-normal; and the tolerances.
-    """
-
-    positions: wp.array[wp.vec3d]
-    faces: wp.array[wp.int32]
-    face_normals: wp.array[wp.vec3d]
-    vertex_normals: wp.array[wp.vec3d]
-    face_mesh: wp.array[wp.int32]
-    face_coplanar: wp.array[wp.int32]
-    epsilon: float
-    tolerance: float
-    lower: tuple[float, float, float]
-    upper: tuple[float, float, float]
-    # For a solid built from a caller's mesh: each face's index in that mesh.
-    face_source: wp.array[wp.int32] | None = None
-
-    @property
-    def n_vertices(self) -> int:
-        """The vertex count."""
-        return int(self.positions.shape[0])
-
-    @property
-    def n_faces(self) -> int:
-        """The face count."""
-        return self.faces.size // 3
-
-    @property
-    def is_empty(self) -> bool:
-        """Whether the solid has no faces."""
-        return self.faces.size == 0
-
-    @property
-    def scale(self) -> float:
-        """``Box::Scale``: the largest absolute coordinate of the box."""
-        if self.is_empty:
-            return 0.0
-        return max(abs(x) for x in (*self.lower, *self.upper))
+        return mesh_from_solid(first, device)
+    return mesh_from_solid(_solid_boolean(first, _batch_union(solids[1:]), "difference"), device)
 
 
 class _Operand(NamedTuple):
     """A solid with its halfedge pairing and face tree, ready for the crossing passes."""
 
-    solid: _Solid
+    solid: Solid
     mates: wp.array[wp.int32]
     first_halfedge: wp.array[wp.int32]
     bvh: wp.Bvh
-
-
-class _HalfedgeMesh(Protocol):
-    """
-    The fields of a ``kernel_boolean.HalfedgeMesh`` struct, for the type checker.
-
-    The result's halfedges, triangles and vertices as the topology passes edit them in place, and
-    their used ``sizes``.
-    """
-
-    start: wp.array[wp.int32]
-    pair: wp.array[wp.int32]
-    tri_mesh: wp.array[wp.int32]
-    tri_coplanar: wp.array[wp.int32]
-    tri_normal: wp.array[wp.vec3d]
-    pos: wp.array[wp.vec3d]
-    sizes: wp.array[wp.int32]
 
 
 class _Crossings(NamedTuple):
@@ -1958,15 +662,15 @@ def _boolean(
     require_same_device(
         vertices_a=vertices_a, faces_a=faces_a, vertices_b=vertices_b, faces_b=faces_b
     )
-    p = _solid_from_mesh(vertices_a, faces_a, 0, "a")
-    q = _solid_from_mesh(vertices_b, faces_b, 1, "b")
+    p = solid_from_mesh(vertices_a, faces_a, 0, "a")
+    q = solid_from_mesh(vertices_b, faces_b, 1, "b")
     if operation == "union":
         # ``a + b`` is a two-child ``BatchUnion``: meshes whose boxes are apart are composed.
-        return _mesh_from_solid(_batch_union([p, q]), vertices_a.device)
-    return _mesh_from_solid(_solid_boolean(p, q, operation), vertices_a.device)
+        return mesh_from_solid(_batch_union([p, q]), vertices_a.device)
+    return mesh_from_solid(_solid_boolean(p, q, operation), vertices_a.device)
 
 
-def _solid_boolean(p: _Solid, q: _Solid, operation: _Operation) -> _Solid:
+def _solid_boolean(p: Solid, q: Solid, operation: _Operation) -> Solid:
     """``SimpleBoolean``: one Boolean of two solids, as a solid."""
     early = _empty_operand_result(p, q, operation)
     if early is not None:
@@ -1977,7 +681,7 @@ def _solid_boolean(p: _Solid, q: _Solid, operation: _Operation) -> _Solid:
 
 def _batch_solids(
     meshes: Sequence[tuple[wp.array[wp.vec3], wp.array[wp.int32]]],
-) -> tuple[list[_Solid], wp.Device]:
+) -> tuple[list[Solid], wp.Device]:
     """
     Build each mesh's solid, numbered in order, and return them with their device.
 
@@ -1991,13 +695,13 @@ def _batch_solids(
     require_same_device(meshes=[array for mesh in meshes for array in mesh])
     device = wp.get_device(meshes[0][0].device)
     solids = [
-        _solid_from_mesh(vertices, faces, index, str(index))
+        solid_from_mesh(vertices, faces, index, str(index))
         for index, (vertices, faces) in enumerate(meshes)
     ]
     return solids, device
 
 
-def _batch_union(children: list[_Solid]) -> _Solid:
+def _batch_union(children: list[Solid]) -> Solid:
     """
     ``BatchUnion``: compose the meshes whose boxes are pairwise apart, then unite the groups.
 
@@ -2036,7 +740,7 @@ def _boxes_overlap(
     return all(a[0][i] <= b[1][i] and a[1][i] >= b[0][i] for i in range(3))
 
 
-def _batch_boolean(results: list[_Solid], operation: _Operation) -> _Solid:
+def _batch_boolean(results: list[Solid], operation: _Operation) -> Solid:
     """
     ``BatchBoolean``: combine pairwise, the two with the most vertices first, four pairs a round.
 
@@ -2051,7 +755,7 @@ def _batch_boolean(results: list[_Solid], operation: _Operation) -> _Solid:
     heapq.heapify(heap)
     next_serial = len(results)
     while len(heap) > 1:
-        done: list[tuple[int, int, int, _Solid]] = []
+        done: list[tuple[int, int, int, Solid]] = []
         for _ in range(4):
             if len(heap) <= 1:
                 break
@@ -2065,7 +769,7 @@ def _batch_boolean(results: list[_Solid], operation: _Operation) -> _Solid:
     return heap[0][3]
 
 
-def _compose(solids: list[_Solid]) -> _Solid:
+def _compose(solids: list[Solid]) -> Solid:
     """
     ``CsgLeafNode::Compose``: meshes known apart, joined into one solid.
 
@@ -2085,11 +789,11 @@ def _compose(solids: list[_Solid]) -> _Solid:
     face_normals = _concatenate([solid.face_normals for solid in solids], wp.vec3d, device)
     face_mesh = _concatenate([solid.face_mesh for solid in solids], wp.int32, device)
     face_coplanar = _concatenate([solid.face_coplanar for solid in solids], wp.int32, device)
-    epsilon = max(max(solid.epsilon, kernel_boolean.PRECISION * solid.scale) for solid in solids)
+    epsilon = max(max(solid.epsilon, kernel_manifold.PRECISION * solid.scale) for solid in solids)
     tolerance = max(solid.tolerance for solid in solids)
     lower = tuple(min(solid.lower[i] for solid in solids) for i in range(3))
     upper = tuple(max(solid.upper[i] for solid in solids) for i in range(3))
-    combined = _Solid(
+    combined = Solid(
         positions,
         faces,
         face_normals,
@@ -2101,10 +805,10 @@ def _compose(solids: list[_Solid]) -> _Solid:
         (lower[0], lower[1], lower[2]),
         (upper[0], upper[1], upper[2]),
     )
-    mesh = _halfedge_mesh_from_solid(combined)
-    _simplify_topology(mesh, 0, epsilon, tolerance, device, colinear=False)
+    mesh = halfedge_mesh_from_solid(combined)
+    simplify_topology(mesh, 0, epsilon, tolerance, device, colinear=False)
     # ``Compose`` sorts in the union of its parts' boxes, never recalculated.
-    return _finish_solid(mesh, epsilon, tolerance, device, (combined.lower, combined.upper))
+    return finish_solid(mesh, epsilon, tolerance, device, (combined.lower, combined.upper))
 
 
 def _concatenate(arrays: list[odt.ArrayNd], dtype: object, device: wp.DeviceLike) -> odt.ArrayNd:
@@ -2135,7 +839,7 @@ def _offset_faces(faces: wp.array[wp.int32], offset: int) -> wp.array[wp.int32]:
     return out
 
 
-def _solid_split(p: _Solid, q: _Solid) -> tuple[_Solid, _Solid]:
+def _solid_split(p: Solid, q: Solid) -> tuple[Solid, Solid]:
     """``Manifold::Split``: one ``Boolean3`` of a difference, read as both results."""
     if p.is_empty or q.is_empty:
         inside = _empty_operand_result(p, q, "intersection")
@@ -2147,83 +851,7 @@ def _solid_split(p: _Solid, q: _Solid) -> tuple[_Solid, _Solid]:
     return _result(crossings, "intersection"), _result(crossings, "difference")
 
 
-def _solid_simplify(solid: _Solid, tolerance: float) -> _Solid:
-    """
-    ``Manifold::Simplify``: the whole mesh's ``SimplifyTopology`` at a raised tolerance.
-
-    A tolerance above the solid's regroups its coplanar faces at it first
-    (``SetNormalsAndCoplanar`` on the sorted mesh); the result keeps the solid's own tolerance.
-    """
-    device = solid.positions.device
-    old_tolerance = solid.tolerance
-    if tolerance == 0.0:
-        tolerance = old_tolerance
-    if tolerance > old_tolerance:
-        solid = _regrouped_solid(solid, tolerance)
-    mesh = _halfedge_mesh_from_solid(solid)
-    _simplify_topology(mesh, 0, solid.epsilon, max(tolerance, old_tolerance), device)
-    # ``Simplify`` sorts in the box the solid had before (it does not ``CalculateBBox``).
-    return _finish_solid(mesh, solid.epsilon, old_tolerance, device, (solid.lower, solid.upper))
-
-
-def _regrouped_solid(solid: _Solid, tolerance: float) -> _Solid:
-    """``SetNormalsAndCoplanar`` again, at ``tolerance``, on the solid as it is ordered."""
-    device = solid.positions.device
-    n_faces = solid.n_faces
-    twins = halfedge_twins(solid.faces, solid.n_vertices, validate=False)
-    face_normals = _launch.empty(n_faces, dtype=wp.vec3d, device=device)
-    _launch.launch(
-        kernel_boolean.mesh_face_normals,
-        dim=n_faces,
-        inputs=[solid.positions, solid.faces],
-        outputs=[face_normals],
-        device=device,
-    )
-    coplanar = _coplanar_groups(solid.positions, solid.faces, twins, face_normals, tolerance)
-    first_halfedge = _launch.full(solid.n_vertices, 2147483647, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_boolean.operand_boxes,
-        dim=n_faces,
-        inputs=[solid.positions, solid.faces, twins, 0.0],
-        outputs=[
-            _launch.empty(n_faces, dtype=wp.vec3, device=device),
-            _launch.empty(n_faces, dtype=wp.vec3, device=device),
-            first_halfedge,
-            _launch.zeros(1, dtype=wp.int32, device=device),
-        ],
-        device=device,
-    )
-    vertex_normals = _launch.empty(solid.n_vertices, dtype=wp.vec3d, device=device)
-    _launch.launch(
-        kernel_boolean.vertex_pseudo_normals,
-        dim=solid.n_vertices,
-        inputs=[solid.faces, twins, solid.positions, face_normals, first_halfedge],
-        outputs=[vertex_normals],
-        device=device,
-    )
-    return solid._replace(
-        face_normals=face_normals,
-        vertex_normals=vertex_normals,
-        face_coplanar=coplanar,
-        tolerance=tolerance,
-    )
-
-
-def _halfedge_mesh_from_solid(solid: _Solid) -> _HalfedgeMesh:
-    """Return a solid's halfedges as the topology passes edit them."""
-    device = solid.positions.device
-    n_faces = solid.n_faces
-    mesh = _halfedge_mesh(n_faces, solid.n_vertices, solid.positions, device)
-    twins = halfedge_twins(solid.faces, solid.n_vertices, validate=False)
-    _launch.copy(mesh.start, solid.faces, count=solid.faces.size)
-    _launch.copy(mesh.pair, twins, count=solid.faces.size)
-    _launch.copy(mesh.tri_normal, solid.face_normals, count=n_faces)
-    _launch.copy(mesh.tri_mesh, solid.face_mesh, count=n_faces)
-    _launch.copy(mesh.tri_coplanar, solid.face_coplanar, count=n_faces)
-    return mesh
-
-
-def _empty_operand_result(p: _Solid, q: _Solid, operation: _Operation) -> _Solid | None:
+def _empty_operand_result(p: Solid, q: Solid, operation: _Operation) -> Solid | None:
     """``Boolean3::Result``'s answer when an operand is empty, else ``None``."""
     if p.is_empty:
         return q if operation == "union" else p
@@ -2232,456 +860,7 @@ def _empty_operand_result(p: _Solid, q: _Solid, operation: _Operation) -> _Solid
     return None
 
 
-def _solid_from_mesh(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], mesh_id: int, name: str
-) -> _Solid:
-    """
-    Build a solid from a ``float32`` mesh, as Manifold's ``MeshGL`` constructor does.
-
-    Raises
-    ------
-    ValueError
-        If the mesh is not closed, edge-manifold and consistently wound.
-    """
-    device = vertices.device
-    n_vertices = int(vertices.shape[0])
-    if faces.size == 0:
-        return _empty_solid(device)
-    widened = _launch.empty(n_vertices, dtype=wp.vec3d, device=device)
-    _launch.launch(
-        kernel_boolean.widen_positions,
-        dim=n_vertices,
-        inputs=[vertices],
-        outputs=[widened],
-        device=device,
-    )
-    lower, upper = _positions_box(widened)
-    scale = max(abs(x) for x in (*lower, *upper))
-    epsilon = kernel_boolean.PRECISION * scale
-    # ``SetEpsilon(-1, useSingle=true)``: a single-precision mesh's tolerance.
-    tolerance = max(epsilon, _FLOAT32_EPSILON * scale)
-    return _solid_from_positions(widened, faces, mesh_id, epsilon, tolerance, lower, upper, name)
-
-
-def _solid_from_positions(
-    positions: wp.array[wp.vec3d],
-    faces: wp.array[wp.int32],
-    mesh_id: int,
-    epsilon: float,
-    tolerance: float,
-    lower: tuple[float, float, float],
-    upper: tuple[float, float, float],
-    name: str,
-    *,
-    sort_first: bool = False,
-) -> _Solid:
-    """
-    Build a solid from ``float64`` positions: coplanar groups, normals and Morton order.
-
-    ``SetNormalsAndCoplanar`` (the coplanar groups and their normals, then the vertices'
-    pseudo-normals) in the given order, then ``SortGeometry``, as the ``MeshGL`` constructor runs
-    them; with ``sort_first`` the other way round, as Manifold's primitive shapes do. The coplanar
-    ids are triangle indices in the order the groups were formed in.
-
-    Raises
-    ------
-    ValueError
-        If the mesh is not closed, edge-manifold and consistently wound.
-    """
-    device = positions.device
-    n_vertices = int(positions.shape[0])
-    n_faces = faces.size // 3
-    if sort_first:
-        positions, faces, _, _, _, _, _ = _morton_sorted(positions, faces, lower, upper)
-    defects = _launch.zeros(3, dtype=wp.int32, device=device)
-    twins = halfedge_twins(faces, n_vertices, defect_counts=defects)
-    first_halfedge = _launch.full(n_vertices, 2147483647, dtype=wp.int32, device=device)
-    lowers = _launch.empty(n_faces, dtype=wp.vec3, device=device)
-    uppers = _launch.empty(n_faces, dtype=wp.vec3, device=device)
-    _launch.launch(
-        kernel_boolean.operand_boxes,
-        dim=n_faces,
-        inputs=[positions, faces, twins, 0.0],
-        outputs=[lowers, uppers, first_halfedge, _launch.view(defects, 2, 3)],
-        device=device,
-    )
-    # Host readback: whether the mesh is closed and paired decides whether there is a Boolean.
-    non_manifold, inconsistent, boundary = read_values(defects, 0, 3)
-    if non_manifold or inconsistent or boundary:
-        raise ValueError(
-            f"mesh {name} must be closed, edge-manifold and consistently wound: {boundary} "
-            f"boundary halfedges, {non_manifold} edges with three or more faces, {inconsistent} "
-            "edges whose faces wind the same way"
-        )
-    face_normals = _launch.empty(n_faces, dtype=wp.vec3d, device=device)
-    _launch.launch(
-        kernel_boolean.mesh_face_normals,
-        dim=n_faces,
-        inputs=[positions, faces],
-        outputs=[face_normals],
-        device=device,
-    )
-    coplanar = _coplanar_groups(positions, faces, twins, face_normals, tolerance)
-    vertex_normals = _launch.empty(n_vertices, dtype=wp.vec3d, device=device)
-    _launch.launch(
-        kernel_boolean.vertex_pseudo_normals,
-        dim=n_vertices,
-        inputs=[faces, twins, positions, face_normals, first_halfedge],
-        outputs=[vertex_normals],
-        device=device,
-    )
-    face_mesh = _launch.full(n_faces, mesh_id, dtype=wp.int32, device=device)
-    if sort_first:
-        return _Solid(
-            positions,
-            faces,
-            face_normals,
-            vertex_normals,
-            face_mesh,
-            coplanar,
-            epsilon,
-            tolerance,
-            lower,
-            upper,
-        )
-    return _sorted_solid(
-        positions,
-        faces,
-        vertex_normals,
-        face_normals,
-        face_mesh,
-        coplanar,
-        epsilon,
-        tolerance,
-        lower,
-        upper,
-    )
-
-
-def _empty_solid(device: wp.DeviceLike) -> _Solid:
-    """Return the empty solid."""
-    nothing = (0.0, 0.0, 0.0)
-    return _Solid(
-        _launch.empty(0, dtype=wp.vec3d, device=device),
-        _launch.empty(0, dtype=wp.int32, device=device),
-        _launch.empty(0, dtype=wp.vec3d, device=device),
-        _launch.empty(0, dtype=wp.vec3d, device=device),
-        _launch.empty(0, dtype=wp.int32, device=device),
-        _launch.empty(0, dtype=wp.int32, device=device),
-        -1.0,
-        -1.0,
-        nothing,
-        nothing,
-    )
-
-
-def _mesh_from_solid(
-    solid: _Solid, device: wp.DeviceLike
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
-    """
-    Return a solid as a ``float32`` mesh, as Manifold's ``MeshGL`` lays it out.
-
-    Vertices in the solid's Morton order; faces in it too, stably grouped by the input mesh each
-    came from (``GetMeshGL``'s runs).
-    """
-    n_vertices = solid.n_vertices
-    n_faces = solid.n_faces
-    vertices = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
-    if n_faces == 0:
-        return vertices, _launch.empty(0, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_boolean.narrow_positions,
-        dim=n_vertices,
-        inputs=[solid.positions],
-        outputs=[vertices],
-        device=device,
-    )
-    keys, order = _launch.sort_buffers(n_faces, wp.int32, device)
-    _launch.launch(
-        kernel_array.KEYS_AND_IDENTITY[wp.int32],
-        dim=n_faces,
-        inputs=[solid.face_mesh],
-        outputs=[keys, order],
-        device=device,
-    )
-    _launch.radix_sort_pairs(keys, order, n_faces)
-    faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_boolean.gather_faces,
-        dim=n_faces,
-        inputs=[solid.faces, order],
-        outputs=[faces],
-        device=device,
-    )
-    return vertices, faces
-
-
-def _positions_box(
-    positions: wp.array[wp.vec3d],
-) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
-    """``CalculateBBox`` over the finite positions, read back."""
-    device = positions.device
-    inf = float("inf")
-    box = _launch.array([inf, inf, inf, -inf, -inf, -inf], dtype=wp.float64, device=device)
-    _launch.launch(
-        kernel_boolean.positions_box,
-        dim=int(positions.shape[0]),
-        inputs=[positions],
-        outputs=[box],
-        device=device,
-    )
-    # Host readback: the box frames the Morton codes and sets the tolerances.
-    values = [float(x) for x in read_values(box, 0, 6)]
-    return (values[0], values[1], values[2]), (values[3], values[4], values[5])
-
-
-def _coplanar_groups(
-    positions: wp.array[wp.vec3d],
-    faces: wp.array[wp.int32],
-    twins: wp.array[wp.int32],
-    face_normals: wp.array[wp.vec3d],
-    tolerance: float,
-) -> wp.array[wp.int32]:
-    """
-    ``SetNormalsAndCoplanar``: each face's coplanar group, its normal set to its seed's.
-
-    Faces in decreasing area seed groups that spread across edges to neighbours within
-    ``tolerance`` of the seed's plane; ``face_normals`` is updated in place.
-    """
-    device = positions.device
-    n_faces = faces.size // 3
-    keys, order = _launch.sort_buffers(n_faces, wp.float64, device)
-    _launch.launch(
-        kernel_boolean.face_area_keys,
-        dim=n_faces,
-        inputs=[positions, faces],
-        outputs=[keys, order],
-        device=device,
-    )
-    _launch.radix_sort_pairs(keys, order, n_faces)
-    rank = _launch.empty(n_faces, dtype=wp.int32, device=device)
-    _, seed_flags = offsets_buffer(n_faces, device)
-    _launch.launch(
-        kernel_boolean.coplanar_seed_flags,
-        dim=n_faces,
-        inputs=[faces, twins, positions, face_normals, order, tolerance],
-        outputs=[rank, seed_flags],
-        device=device,
-    )
-    is_seed = _launch.clone(seed_flags)
-    n_seeds = scan_count(seed_flags)
-    coplanar = _launch.full(n_faces, -1, dtype=wp.int32, device=device)
-    if n_seeds > 0:
-        seeds = _launch.empty(n_seeds, dtype=wp.int32, device=device)
-        _launch.launch(
-            kernel_scatter.scatter_index_where_scanned,
-            dim=n_faces,
-            inputs=[seed_flags],
-            outputs=[seeds],
-            device=device,
-        )
-        flood = (faces, twins, positions, order, rank, is_seed, tolerance, face_normals, coplanar)
-        if n_seeds <= _SERIAL_FLOOD_SEEDS or wp.get_device(device).is_cpu:
-            _serial_flood(flood, seeds, n_seeds)
-        else:
-            _flood_in_rounds(flood, seeds, n_seeds)
-    _launch.launch(
-        kernel_boolean.own_coplanar_groups, dim=n_faces, inputs=[coplanar], device=device
-    )
-    return coplanar
-
-
-def _serial_flood(flood: tuple[object, ...], seeds: wp.array[wp.int32], n_seeds: int) -> None:
-    """Flood the seeds' coplanar groups one after another in one thread, in area order."""
-    faces, twins, positions, order, rank, is_seed, tolerance, face_normals, coplanar = flood
-    device = seeds.device
-    n_faces = rank.size  # pyright: ignore[reportAttributeAccessIssue]
-    inputs = [
-        faces,
-        twins,
-        positions,
-        seeds,
-        n_seeds,
-        order,
-        rank,
-        is_seed,
-        tolerance,
-        face_normals,
-        _launch.empty(2 * n_faces + 4, dtype=wp.int32, device=device),
-    ]
-    if wp.get_device(device).is_cpu or n_seeds <= _SERIAL_FLOOD_SEEDS:
-        _launch.launch(
-            kernel_boolean.flood_coplanar, dim=1, inputs=inputs, outputs=[coplanar], device=device
-        )
-    else:
-        # A long flood is a serial walk of dependent loads: one CPU thread runs it far faster.
-        _launch_on_host(kernel_boolean.flood_coplanar, inputs, [coplanar])
-
-
-def _flood_in_rounds(flood: tuple[object, ...], seeds: wp.array[wp.int32], n_seeds: int) -> None:
-    """
-    Flood the seeds' coplanar groups in parallel rounds, the same groups as the serial flood.
-
-    Each round every pending seed floods tentatively and bids on its region; the seeds holding
-    their region's lowest bid commit together (``kernels/boolean.tentative_flood``). Once a round
-    leaves more than half its seeds pending, the serial flood takes every seed left.
-    """
-    device = seeds.device
-    n_faces = flood[4].size  # pyright: ignore[reportAttributeAccessIssue]
-    bids = _launch.empty(n_faces, dtype=wp.int32, device=device)
-    scratch = _launch.empty(
-        n_seeds * 4 * kernel_boolean.COPLANAR_REGION, dtype=wp.int32, device=device
-    )
-    first_overflow = _launch.empty(1, dtype=wp.int32, device=device)
-    commit = _launch.empty(n_seeds, dtype=wp.int32, device=device)
-    pending = seeds
-    m = n_seeds
-    while m > 0:
-        bids.fill_(2147483647)
-        first_overflow.fill_(2147483647)
-        left_offsets, left = offsets_buffer(m, device)
-        _launch.launch(
-            kernel_boolean.coplanar_round_bids,
-            dim=m,
-            inputs=[*flood, pending, bids, scratch],
-            outputs=[first_overflow],
-            device=device,
-        )
-        _launch.launch(
-            kernel_boolean.coplanar_round_checks,
-            dim=m,
-            inputs=[*flood, pending, bids, scratch, first_overflow],
-            outputs=[commit],
-            device=device,
-        )
-        _launch.launch(
-            kernel_boolean.coplanar_round_commits,
-            dim=m,
-            inputs=[*flood, pending, bids, scratch, commit],
-            outputs=[left],
-            device=device,
-        )
-        # Host readback: the next round's width.
-        n_left = scan_count(left)
-        if 2 * n_left > m:
-            # Large regions overflow or overlap round after round (a round that commits nothing
-            # has an overflowing seed as its earliest): the serial flood takes every seed left,
-            # in order, from the claims so far (2026-11-21: an icosphere's 82 k faces at a loose
-            # tolerance 18 -> 4.2 ms; quad strips commit all but a few in their first round).
-            _serial_flood(flood, pending, m)
-            return
-        if n_left > 0:
-            remaining = _launch.empty(n_left, dtype=wp.int32, device=device)
-            _launch.launch(
-                kernel_boolean.compact_pending,
-                dim=m,
-                inputs=[pending, left_offsets],
-                outputs=[remaining],
-                device=device,
-            )
-            pending = remaining
-        m = n_left
-
-
-def _morton_sorted(
-    positions: wp.array[wp.vec3d],
-    faces: wp.array[wp.int32],
-    lower: tuple[float, float, float],
-    upper: tuple[float, float, float],
-    vertex_normals: wp.array[wp.vec3d] | None = None,
-    face_normals: wp.array[wp.vec3d] | None = None,
-    face_mesh: wp.array[wp.int32] | None = None,
-    face_coplanar: wp.array[wp.int32] | None = None,
-) -> tuple[
-    wp.array[wp.vec3d],
-    wp.array[wp.int32],
-    wp.array[wp.vec3d],
-    wp.array[wp.vec3d],
-    wp.array[wp.int32],
-    wp.array[wp.int32],
-    wp.array[wp.int32],
-]:
-    """
-    Renumber vertices and faces in Morton order within the box, as ``SortGeometry`` does.
-
-    Returns the sorted arrays, then each sorted face's old index.
-
-    The order decides nothing geometric; it is the order Manifold's ties fall in (which halfedge of
-    an edge is forward, which edge collapses first), so following it reproduces its answers in
-    the degenerate cases too. The attributes, where given, move with their vertex or face.
-    """
-    device = positions.device
-    n_vertices = int(positions.shape[0])
-    n_faces = faces.size // 3
-    low = wp.vec3d(*lower)
-    high = wp.vec3d(*upper)
-    keys, order = _launch.sort_buffers(n_vertices, wp.uint32, device)
-    _launch.launch(
-        kernel_boolean.vertex_morton_keys,
-        dim=n_vertices,
-        inputs=[positions, low, high],
-        outputs=[keys, order],
-        device=device,
-    )
-    _launch.radix_sort_pairs(keys, order, n_vertices)
-    with_normals = vertex_normals is not None
-    sorted_positions = _launch.empty(n_vertices, dtype=wp.vec3d, device=device)
-    sorted_normals = _launch.empty(n_vertices if with_normals else 0, dtype=wp.vec3d, device=device)
-    old_to_new = _launch.empty(n_vertices, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_boolean.renumber_vertices,
-        dim=n_vertices,
-        inputs=[
-            positions,
-            vertex_normals if vertex_normals is not None else positions,
-            order,
-            1 if with_normals else 0,
-        ],
-        outputs=[sorted_positions, sorted_normals, old_to_new],
-        device=device,
-    )
-    keys, order = _launch.sort_buffers(n_faces, wp.uint32, device)
-    _launch.launch(
-        kernel_boolean.face_morton_keys,
-        dim=n_faces,
-        inputs=[positions, faces, low, high],
-        outputs=[keys, order],
-        device=device,
-    )
-    _launch.radix_sort_pairs(keys, order, n_faces)
-    with_attributes = face_normals is not None
-    n_attributes = n_faces if with_attributes else 0
-    sorted_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
-    sorted_face_normals = _launch.empty(n_attributes, dtype=wp.vec3d, device=device)
-    sorted_face_mesh = _launch.empty(n_attributes, dtype=wp.int32, device=device)
-    sorted_face_coplanar = _launch.empty(n_attributes, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_boolean.renumber_faces,
-        dim=n_faces,
-        inputs=[
-            faces,
-            face_normals if face_normals is not None else positions,
-            face_mesh if face_mesh is not None else faces,
-            face_coplanar if face_coplanar is not None else faces,
-            order,
-            old_to_new,
-            1 if with_attributes else 0,
-        ],
-        outputs=[sorted_faces, sorted_face_normals, sorted_face_mesh, sorted_face_coplanar],
-        device=device,
-    )
-    return (
-        sorted_positions,
-        sorted_faces,
-        sorted_normals,
-        sorted_face_normals,
-        sorted_face_mesh,
-        sorted_face_coplanar,
-        _launch.view(order, 0, n_faces),
-    )
-
-
-def _operand(solid: _Solid) -> _Operand:
+def _operand(solid: Solid) -> _Operand:
     """Pair a solid's halfedges and build its face tree."""
     device = solid.positions.device
     n_faces = solid.n_faces
@@ -2690,7 +869,7 @@ def _operand(solid: _Solid) -> _Operand:
     lowers = _launch.empty(n_faces, dtype=wp.vec3, device=device)
     uppers = _launch.empty(n_faces, dtype=wp.vec3, device=device)
     _launch.launch(
-        kernel_boolean.operand_boxes,
+        kernel_manifold.operand_boxes,
         dim=n_faces,
         inputs=[solid.positions, solid.faces, twins, 0.0],
         outputs=[lowers, uppers, first_halfedge, _launch.zeros(1, dtype=wp.int32, device=device)],
@@ -2705,7 +884,7 @@ def _boolean3(p: _Operand, q: _Operand, expand: int) -> _Crossings:
     scale = max(p.solid.scale, q.solid.scale)
     # The face trees' query boxes are padded by a few float32 ulps of the scene: a superset of the
     # candidates the exact predicates then decide.
-    pad = max(scale, 1.0) * 4.0 * _FLOAT32_EPSILON
+    pad = max(scale, 1.0) * 4.0 * FLOAT32_EPSILON
     run_offsets_p, n12, pairs_p = _count_crossings(p, q, pad, expand, forward=True)
     run_offsets_q, n21, pairs_q = _count_crossings(q, p, pad, expand, forward=False)
     size = max(n12 + n21, 1)
@@ -2740,7 +919,7 @@ def _boolean3(p: _Operand, q: _Operand, expand: int) -> _Crossings:
     )
 
 
-def _result(crossings: _Crossings, operation: _Operation) -> _Solid:
+def _result(crossings: _Crossings, operation: _Operation) -> Solid:
     """``Boolean3::Result``: one operation's solid from the crossings and windings."""
     p, q = crossings.p, crossings.q
     device = p.solid.positions.device
@@ -2794,7 +973,7 @@ def _result(crossings: _Crossings, operation: _Operation) -> _Solid:
         )
     n_result_vertices = scan_count(abs_inclusion)
     if n_result_vertices == 0:
-        return _empty_solid(device)
+        return empty_solid(device)
     # Host readback: the retained vertices come first, and the simplification moves only those
     # after them, so it needs their count.
     first_new_vert = int(read_values(vertex_offsets, n_vp + n_vq, 1)[0])
@@ -2998,8 +1177,8 @@ def _result(crossings: _Crossings, operation: _Operation) -> _Solid:
         )
     n_triangles = scan_count(counts)
     if n_triangles == 0:
-        return _empty_solid(device)
-    mesh = _halfedge_mesh(n_triangles, n_result_vertices, positions, device)
+        return empty_solid(device)
+    mesh = halfedge_mesh(n_triangles, n_result_vertices, positions, device)
     slot_halfedge = _launch.full(max(n_sides, 1), -1, dtype=wp.int32, device=device)
     write_inputs: list[object] = [
         tri_offsets,
@@ -3064,8 +1243,8 @@ def _result(crossings: _Crossings, operation: _Operation) -> _Solid:
         outputs=[mesh.pair],
         device=device,
     )
-    _simplify_topology(mesh, first_new_vert, epsilon, tolerance, device)
-    return _finish_solid(mesh, epsilon, tolerance, device)
+    simplify_topology(mesh, first_new_vert, epsilon, tolerance, device)
+    return finish_solid(mesh, epsilon, tolerance, device)
 
 
 def _count_crossings(
@@ -3261,286 +1440,6 @@ def _ear_clip_state(
     return state, tris
 
 
-def _halfedge_mesh(
-    n_triangles: int, n_vertices: int, positions: wp.array[wp.vec3d], device: wp.DeviceLike
-) -> _HalfedgeMesh:
-    """Allocate the result's halfedges with room for the simplification to grow them."""
-    n_halfedges = 3 * n_triangles
-    capacity = 2 * n_halfedges + 64
-    start = _launch.empty(capacity, dtype=wp.int32, device=device)
-    pair = _launch.empty(capacity, dtype=wp.int32, device=device)
-    tri_mesh = _launch.empty(capacity // 3, dtype=wp.int32, device=device)
-    tri_coplanar = _launch.empty(capacity // 3, dtype=wp.int32, device=device)
-    tri_normal = _launch.empty(capacity // 3, dtype=wp.vec3d, device=device)
-    # The simplification appends vertices too: at most two a collapse or split, fewer than the
-    # halfedges.
-    pos = _launch.empty(n_vertices + capacity, dtype=wp.vec3d, device=device)
-    _launch.copy(pos, positions, count=n_vertices)
-    sizes = _launch.array(
-        [n_halfedges, n_vertices, capacity // 3 * 3, n_vertices + capacity],
-        dtype=wp.int32,
-        device=device,
-    )
-    struct = kernel_boolean.HalfedgeMesh()
-    struct.start = start
-    struct.pair = pair
-    struct.tri_mesh = tri_mesh
-    struct.tri_coplanar = tri_coplanar
-    struct.tri_normal = tri_normal
-    struct.pos = pos
-    struct.sizes = sizes
-    return cast(_HalfedgeMesh, struct)
-
-
-def _simplify_topology(
-    result: _HalfedgeMesh,
-    first_new_vert: int,
-    epsilon: float,
-    tolerance: float,
-    device: wp.DeviceLike,
-    *,
-    colinear: bool = True,
-    cleanup_only: bool = False,
-) -> None:
-    """
-    ``SimplifyTopology(firstNewVert)`` on the result's halfedges, in place.
-
-    Without ``colinear``, ``RemoveDegenerates``: the same less the collinear-edge collapses.
-    With ``cleanup_only``, ``CleanupTopology`` alone: pinched vertices split, duplicate edges
-    removed.
-    """
-    mesh = result
-    capacity = result.start.size
-    flags_offsets, flags = offsets_buffer(capacity, device)
-    flagged = _launch.empty(capacity, dtype=wp.int32, device=device)
-    collapsed = _launch.zeros(1, dtype=wp.int32, device=device)
-    # The serial passes' scratch: device buffers on the CPU device, host ones on CUDA.
-    on_cpu = wp.get_device(device).is_cpu
-    scratch_arg: object = (
-        _launch.empty(capacity, dtype=wp.int32, device=device) if on_cpu else _HostScratch(capacity)
-    )
-    swap_scratch: list[object] = (
-        [
-            _launch.full(capacity, -1, dtype=wp.int32, device=device),
-            _launch.empty(8 * capacity, dtype=wp.int32, device=device),
-        ]
-        if on_cpu
-        else [_HostScratch(capacity, -1), _HostScratch(8 * capacity)]
-    )
-
-    def sizes() -> tuple[int, int]:
-        # Host readback: the serial passes grow the mesh, and the next pass's grid follows it.
-        n_h, n_v = read_values(result.sizes, 0, 2)
-        return int(n_h), int(n_v)
-
-    def flag(kernel: odt.Kernel, inputs: list[object]) -> int:
-        n_h, _ = sizes()
-        # Every flag kernel writes its whole range, so the buffer is reused unzeroed.
-        _launch.launch(kernel, dim=n_h, inputs=[mesh, *inputs], outputs=[flags], device=device)
-        count = scan_count(_launch.view(flags, 0, n_h))
-        if count > 0:
-            _launch.launch(
-                kernel_scatter.scatter_index_where_scanned,
-                dim=n_h,
-                inputs=[flags],
-                outputs=[flagged],
-                device=device,
-            )
-        return count
-
-    # ``CleanupTopology``: split pinched vertices, then duplicate edges until none is left.
-    n_h, n_v = sizes()
-    fan_min = _launch.empty(capacity, dtype=wp.int32, device=device)
-    vertex_min = _launch.full(result.pos.shape[0], 2147483647, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_boolean.flag_pinched_fans,
-        dim=n_h,
-        inputs=[mesh],
-        outputs=[fan_min, vertex_min],
-        device=device,
-    )
-    _launch.launch(
-        kernel_boolean.count_pinched_fans,
-        dim=n_h,
-        inputs=[mesh, fan_min, vertex_min],
-        outputs=[flags],
-        device=device,
-    )
-    n_pinched = scan_count(_launch.view(flags, 0, n_h))
-    if n_pinched > 0:
-        _launch.launch(
-            kernel_boolean.split_pinched_fans,
-            dim=n_h,
-            inputs=[mesh, _launch.view(flags_offsets, 0, n_h + 1), n_v],
-            device=device,
-        )
-        _launch.copy(
-            result.sizes, _launch.array([n_v + n_pinched], dtype=wp.int32, device=device), 1
-        )
-    while True:
-        count = flag(kernel_boolean.flag_duplicate_edges, [])
-        if count == 0:
-            break
-        _launch_serial(result, kernel_boolean.dedupe_flagged, [_HostIn(flagged, count), count], [])
-    if cleanup_only:
-        return
-    # ``CollapseShortEdges`` (to ``tolerance`` only past the new vertices: everywhere it is
-    # ``epsilon``), ``CollapseColinearEdges``, ``SwapDegenerates``.
-    short_tolerance = tolerance if first_new_vert > 0 else epsilon
-    count = flag(kernel_boolean.flag_short_edges, [first_new_vert, short_tolerance, epsilon])
-    if count > 0:
-        _launch_serial(
-            result,
-            kernel_boolean.collapse_flagged,
-            [_HostIn(flagged, count), count, short_tolerance, first_new_vert, epsilon, scratch_arg],
-            [collapsed],
-        )
-    while colinear:
-        count = flag(kernel_boolean.flag_colinear_edges, [first_new_vert])
-        if count == 0:
-            break
-        _launch_serial(
-            result,
-            kernel_boolean.collapse_flagged,
-            [_HostIn(flagged, count), count, epsilon, 0, epsilon, scratch_arg],
-            [collapsed],
-        )
-        # Host readback: ``CollapseColinearEdges`` repeats until a pass collapses nothing.
-        if read_values(collapsed, 0, 1)[0] == 0:
-            break
-    count = flag(kernel_boolean.flag_swappable_edges, [first_new_vert, tolerance])
-    if count > 0:
-        _launch_serial(
-            result,
-            kernel_boolean.swap_flagged,
-            [_HostIn(flagged, count), count, tolerance, epsilon, *swap_scratch, scratch_arg],
-            [],
-        )
-
-
-def _launch_serial(
-    result: _HalfedgeMesh, kernel: odt.Kernel, inputs: list[object], outputs: list[object]
-) -> None:
-    """
-    Launch a one-thread pass over the result's halfedges, on the CPU when they are on CUDA.
-
-    The collapses and swaps are a serial walk of dependent loads, which one CPU thread runs far
-    faster than one GPU thread. Only the used prefixes travel: the halfedges, triangles and
-    vertices the sizes count, each ``_HostIn`` its count, each ``_HostScratch`` nothing (a fresh
-    host buffer, optionally filled); the outputs go back whole and the mesh's prefixes as the
-    pass left them.
-    """
-    device = result.start.device
-    if wp.get_device(device).is_cpu:
-        plain = [_device_value(value) for value in inputs]
-        _launch.launch(kernel, dim=1, inputs=[result, *plain], outputs=outputs, device=device)
-        return
-    host = wp.get_device("cpu")
-    # Host readback: the prefixes to move.
-    n_h, n_v = (int(x) for x in read_values(result.sizes, 0, 2))
-    struct = kernel_boolean.HalfedgeMesh()
-    prefixes = {
-        "start": n_h,
-        "pair": n_h,
-        "tri_mesh": n_h // 3,
-        "tri_coplanar": n_h // 3,
-        "tri_normal": n_h // 3,
-        "pos": n_v,
-    }
-    host_fields: dict[str, odt.ArrayNd] = {}
-    for name, count in prefixes.items():
-        array = getattr(result, name)
-        copy = _launch.empty(array.shape[0], dtype=array.dtype, device=host)
-        if count > 0:
-            _launch.copy(copy, array, count=count)
-        setattr(struct, name, copy)
-        host_fields[name] = copy
-    host_sizes = _launch.clone(result.sizes, device=host)
-    struct.sizes = host_sizes
-    host_inputs: list[object] = []
-    for value in inputs:
-        if isinstance(value, _HostIn):
-            copy = _launch.empty(value.array.shape[0], dtype=value.array.dtype, device=host)
-            if value.used > 0:
-                _launch.copy(copy, value.array, count=value.used)
-            host_inputs.append(copy)
-        elif isinstance(value, _HostScratch):
-            if value.fill is None:
-                host_inputs.append(_launch.empty(value.size, dtype=wp.int32, device=host))
-            else:
-                host_inputs.append(
-                    _launch.full(value.size, value.fill, dtype=wp.int32, device=host)
-                )
-        else:
-            host_inputs.append(value)
-    host_outputs = [_launch.clone(cast(odt.ArrayNd, value), device=host) for value in outputs]
-    _launch.launch(kernel, dim=1, inputs=[struct, *host_inputs], outputs=host_outputs, device=host)
-    sizes_np = read_array(host_sizes)
-    n_h, n_v = int(sizes_np[0]), int(sizes_np[1])
-    prefixes = {
-        k: (n_h if k in ("start", "pair") else n_v if k == "pos" else n_h // 3) for k in prefixes
-    }
-    for name, count in prefixes.items():
-        if count > 0:
-            _launch.copy(getattr(result, name), host_fields[name], count=count)
-    _launch.copy(result.sizes, host_sizes)
-    for array, copy in zip(outputs, host_outputs, strict=True):
-        _launch.copy(cast(odt.ArrayNd, array), copy)
-
-
-class _HostIn(NamedTuple):
-    """A serial pass's input array, of which the first ``used`` entries are read."""
-
-    array: wp.array[wp.int32]
-    used: int
-
-
-class _HostScratch(NamedTuple):
-    """A serial pass's scratch of ``size`` entries, arriving filled with ``fill`` if given."""
-
-    size: int
-    fill: int | None = None
-
-
-def _device_value(value: object) -> object:
-    """Return a serial pass's argument as the device launch takes it."""
-    if isinstance(value, _HostIn):
-        return value.array
-    if isinstance(value, _HostScratch):
-        raise AssertionError("a device launch is handed its scratch")
-    return value
-
-
-def _launch_on_host(
-    kernel: odt.Kernel,
-    inputs: list[object],
-    outputs: list[object],
-    struct_fields: dict[str, odt.ArrayNd] | None = None,
-) -> None:
-    """
-    Launch a one-thread kernel on the CPU over device arrays: each goes to the host and back.
-
-    The first input may be a struct whose ``struct_fields`` are filled with the host copies.
-    """
-    host = wp.get_device("cpu")
-    moved: list[tuple[odt.ArrayNd, odt.ArrayNd]] = []
-
-    def to_host(value: object) -> object:
-        if isinstance(value, wp.array):
-            copy = _launch.clone(value, device=host)
-            moved.append((value, copy))
-            return copy
-        return value
-
-    for name, array in (struct_fields or {}).items():
-        setattr(inputs[0], name, to_host(array))
-    host_inputs = [to_host(value) for value in inputs]
-    host_outputs = [to_host(value) for value in outputs]
-    _launch.launch(kernel, dim=1, inputs=host_inputs, outputs=host_outputs, device=host)
-    for array, copy in moved:
-        _launch.copy(array, copy)
-
-
 def _heavy_face_count(face_offsets: wp.array[wp.int32], n_faces: int) -> int:
     """Count the result faces of ``_HEAVY_FACE_SIDES`` or more polygon sides."""
     device = face_offsets.device
@@ -3595,175 +1494,31 @@ def _launch_heavy_faces(
         _launch.copy(array, copy)
 
 
-def _finish_solid(
-    result: _HalfedgeMesh,
-    epsilon: float,
-    tolerance: float,
-    device: wp.DeviceLike,
-    box: tuple[tuple[float, float, float], tuple[float, float, float]] | None = None,
-) -> _Solid:
-    """
-    Return the simplified result as a solid.
-
-    ``CalculateVertNormals`` (the end of ``SimplifyTopology``) on the halfedges as they stand,
-    ``RemoveUnreferencedVerts`` with the collapsed triangles, then ``SortGeometry`` in the kept
-    vertices' box (``CalculateBBox``), or in ``box`` where the caller never recalculates it.
-    """
-    mesh = result
-    # Host readback: the simplification grew the mesh, and the compaction's grid follows it.
-    n_h, n_v = (int(x) for x in read_values(result.sizes, 0, 2))
-    n_t = n_h // 3
-    first = _launch.full(n_v, 2147483647, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_boolean.least_outgoing_halfedges,
-        dim=n_h,
-        inputs=[mesh.start],
-        outputs=[first],
-        device=device,
-    )
-    vertex_normals = _launch.empty(n_v, dtype=wp.vec3d, device=device)
-    _launch.launch(
-        kernel_boolean.hm_vertex_normals,
-        dim=n_v,
-        inputs=[mesh, first],
-        outputs=[vertex_normals],
-        device=device,
-    )
-    kept = _compacted(result, vertex_normals, n_t, n_v)
-    if kept is None:
-        return _empty_solid(device)
-    positions, faces, kept_normals, face_normals, face_mesh, face_coplanar = kept
-    lower, upper = _positions_box(positions) if box is None else box
-    return _sorted_solid(
-        positions,
-        faces,
-        kept_normals,
-        face_normals,
-        face_mesh,
-        face_coplanar,
-        epsilon,
-        tolerance,
-        lower,
-        upper,
-    )
-
-
-def _compacted(
-    result: _HalfedgeMesh, vertex_normals: wp.array[wp.vec3d], n_t: int, n_v: int
-) -> (
-    tuple[
-        wp.array[wp.vec3d],
-        wp.array[wp.int32],
-        wp.array[wp.vec3d],
-        wp.array[wp.vec3d],
-        wp.array[wp.int32],
-        wp.array[wp.int32],
-    ]
-    | None
-):
-    """
-    ``RemoveUnreferencedVerts`` with the removed triangles, order kept.
-
-    Returns the kept positions, faces, vertex normals and each face's normal, mesh and coplanar
-    group, or ``None`` when no triangle is left.
-    """
-    mesh = result
-    device = result.start.device
-    tri_offsets, tri_kept = offsets_buffer(n_t, device)
-    vert_offsets, vert_used = offsets_buffer(n_v, device)
-    _launch.launch(
-        kernel_boolean.mark_kept,
-        dim=n_t,
-        inputs=[mesh],
-        outputs=[tri_kept, vert_used],
-        device=device,
-    )
-    n_kept = scan_count(tri_kept)
-    n_used = scan_count(vert_used)
-    if n_kept == 0:
-        return None
-    faces = _launch.empty(3 * n_kept, dtype=wp.int32, device=device)
-    face_normals = _launch.empty(n_kept, dtype=wp.vec3d, device=device)
-    face_mesh = _launch.empty(n_kept, dtype=wp.int32, device=device)
-    face_coplanar = _launch.empty(n_kept, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_boolean.write_kept_faces,
-        dim=n_t,
-        inputs=[mesh, tri_offsets, vert_offsets],
-        outputs=[faces, face_normals, face_mesh, face_coplanar],
-        device=device,
-    )
-    positions = _launch.empty(n_used, dtype=wp.vec3d, device=device)
-    kept_normals = _launch.empty(n_used, dtype=wp.vec3d, device=device)
-    _launch.launch(
-        kernel_boolean.write_kept_vertices,
-        dim=n_v,
-        inputs=[mesh, vertex_normals, vert_offsets],
-        outputs=[positions, kept_normals],
-        device=device,
-    )
-    return positions, faces, kept_normals, face_normals, face_mesh, face_coplanar
-
-
-def _sorted_solid(
-    positions: wp.array[wp.vec3d],
-    faces: wp.array[wp.int32],
-    vertex_normals: wp.array[wp.vec3d],
-    face_normals: wp.array[wp.vec3d],
-    face_mesh: wp.array[wp.int32],
-    face_coplanar: wp.array[wp.int32],
-    epsilon: float,
-    tolerance: float,
-    lower: tuple[float, float, float],
-    upper: tuple[float, float, float],
-) -> _Solid:
-    """``SortGeometry``: the solid with its vertices and faces in Morton order, attributes along."""
-    (
-        sorted_positions,
-        sorted_faces,
-        sorted_vertex_normals,
-        sorted_face_normals,
-        sorted_face_mesh,
-        sorted_face_coplanar,
-        face_source,
-    ) = _morton_sorted(
-        positions, faces, lower, upper, vertex_normals, face_normals, face_mesh, face_coplanar
-    )
-    return _Solid(
-        sorted_positions,
-        sorted_faces,
-        sorted_face_normals,
-        sorted_vertex_normals,
-        sorted_face_mesh,
-        sorted_face_coplanar,
-        epsilon,
-        tolerance,
-        lower,
-        upper,
-        face_source,
-    )
-
-
 # An affine transform as Manifold's ``mat3x4``: four columns of three rows.
 _Affine = tuple[tuple[float, float, float], ...]
 
 
-# -- Manifold's host math (``include/manifold/math.h``), for the half-space's frame ----------------
-#
-# The cutter's rotation is built from these, in ``float64``, as Manifold builds it; Python's
-# ``math`` would round some of them differently.
-
 _PIO2_HI = 1.57079632679489655800e00
+
+
 _PIO2_LO = 6.12323399573676603587e-17
+
+
 _HALF_PI = 1.57079632679489661923132169163975144
+
+
 _PI = 3.1415926535897931160e00
+
+
 _PI_LO = 1.2246467991473531772e-16
+
+
 _K_PI = 3.14159265358979323846264338327950288
 
 
 def _halfspace_solid(
-    solid: _Solid, normal: Sequence[float], origin_offset: float, mesh_id: int
-) -> _Solid:
+    solid: Solid, normal: Sequence[float], origin_offset: float, mesh_id: int
+) -> Solid:
     """
     Manifold's ``Halfspace``: a cube past the plane covering ``solid``'s box, as a solid.
 
@@ -3800,7 +1555,7 @@ def _halfspace_solid(
     return _transformed_solid(cube, transform)
 
 
-def _unit_cube_solid(mesh_id: int, device: wp.DeviceLike) -> _Solid:
+def _unit_cube_solid(mesh_id: int, device: wp.DeviceLike) -> Solid:
     """``Manifold::Cube(vec3(2.0), true)``: Manifold's cube, its vertices and faces in its order."""
     corners = [
         (0.0, 0.0, 0.0),
@@ -3818,9 +1573,9 @@ def _unit_cube_solid(mesh_id: int, device: wp.DeviceLike) -> _Solid:
     positions = _launch.array(positions_np, dtype=wp.vec3d, device=device)
     faces = _launch.array(np.array(triangles, dtype=np.int32), dtype=wp.int32, device=device)
     # ``SetEpsilon()`` on a box of scale one: both tolerances ``kPrecision``.
-    epsilon = kernel_boolean.PRECISION
+    epsilon = kernel_manifold.PRECISION
     box = ((-1.0, -1.0, -1.0), (1.0, 1.0, 1.0))
-    return _solid_from_positions(
+    return solid_from_positions(
         positions, faces, mesh_id, epsilon, epsilon, *box, "cube", sort_first=True
     )
 
@@ -4120,7 +1875,7 @@ def _mat3_mul(a: _Affine, b: _Affine) -> _Affine:
     return tuple(_mat_vec(a, column) for column in b)
 
 
-def _transformed_solid(solid: _Solid, transform: _Affine) -> _Solid:
+def _transformed_solid(solid: Solid, transform: _Affine) -> Solid:
     """``Impl::Transform``: positions and normals moved, the order and references kept."""
     device = solid.positions.device
     # Host readback: a cutter of eight vertices is transformed in ``float64`` on the host, in
@@ -4138,9 +1893,9 @@ def _transformed_solid(solid: _Solid, transform: _Affine) -> _Solid:
     spectral = float(np.linalg.svd(linear, compute_uv=False)[0])
     scale = max(abs(x) for x in (*lower, *upper))
     # ``SetEpsilon(epsilon * SpectralNorm)``, the tolerance at least the new epsilon.
-    epsilon = max(solid.epsilon * spectral, kernel_boolean.PRECISION * scale)
+    epsilon = max(solid.epsilon * spectral, kernel_manifold.PRECISION * scale)
     tolerance = max(solid.tolerance, epsilon)
-    return _Solid(
+    return Solid(
         _launch.array(moved, dtype=wp.vec3d, device=device),
         solid.faces,
         _launch.array(faces_n, dtype=wp.vec3d, device=device),

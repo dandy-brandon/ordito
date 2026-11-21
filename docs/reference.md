@@ -60,10 +60,6 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | union, intersection or difference of two solids | [`boolean`][ordito.boolean]: [`union`][ordito.boolean.union], [`intersection`][ordito.boolean.intersection], [`difference`][ordito.boolean.difference] |
 | the same for many solids at once | [`union_all`][ordito.boolean.union_all], [`intersection_all`][ordito.boolean.intersection_all], [`difference_all`][ordito.boolean.difference_all] |
 | cut a solid by another solid or a plane, capped | [`split_by_mesh`][ordito.boolean.split_by_mesh], [`split_by_plane`][ordito.boolean.split_by_plane], [`trim_by_plane`][ordito.boolean.trim_by_plane] |
-| every crossing of segments with a closed surface, exact at edges and vertices | [`boolean.segment_hits`][ordito.boolean.segment_hits] |
-| drop a closed mesh's redundant vertices within a tolerance | [`boolean.simplify`][ordito.boolean.simplify] |
-| refine a solid onto a smooth surface through its vertices, keeping creases | [`boolean.smooth_out`][ordito.boolean.smooth_out] |
-| a solid from a signed distance function | [`boolean.level_set`][ordito.boolean.level_set] |
 | triangulate a planar region with holes | [`polyline.triangulate_polygons`][ordito.polyline.triangulate_polygons], [`triangulate_polygons_from_offsets`][ordito.polyline.triangulate_polygons_from_offsets] |
 | keep a subset of faces | [`selection.submesh_from_face_mask`][ordito.selection.submesh_from_face_mask] |
 | grow a selection, or measure hops from it | [`selection.expand_vertex_mask`][ordito.selection.expand_vertex_mask], [`vertex_hop_distance`][ordito.selection.vertex_hop_distance] |
@@ -72,14 +68,18 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | read a per-vertex field at surface samples or query hits | [`interpolation.interpolate_barycentric`][ordito.interpolation.interpolate_barycentric], [`sample.sample_surface`][ordito.sample.sample_surface] with ``return_barycentric=True`` |
 | remesh to uniform edge lengths | [`remesh.isotropic_remesh`][ordito.remesh.isotropic_remesh] |
 | simplify (decimate) | [`remesh.quadric_decimate`][ordito.remesh.quadric_decimate], [`cluster_decimate`][ordito.remesh.cluster_decimate] |
+| drop a closed mesh's redundant vertices within a tolerance | [`remesh.simplify`][ordito.remesh.simplify] |
 | subdivide | [`remesh.subdivide`][ordito.remesh.subdivide], [`subdivide_loop`][ordito.remesh.subdivide_loop], [`subdivide_to_size`][ordito.remesh.subdivide_to_size] |
+| refine a solid onto a smooth surface through its vertices, keeping creases | [`remesh.subdivide_smooth`][ordito.remesh.subdivide_smooth] |
 | smooth | [`smoothing`][ordito.smoothing]: [`filter_taubin`][ordito.smoothing.filter_taubin], [`filter_laplacian`][ordito.smoothing.filter_laplacian], [`filter_implicit_fairing`][ordito.smoothing.filter_implicit_fairing] |
 | offset or thicken a surface | [`levelset.offset_mesh`][ordito.levelset.offset_mesh], [`levelset.thicken_mesh`][ordito.levelset.thicken_mesh] |
 | cut with a plane | [`intersection.slice_mesh_with_plane`][ordito.intersection.slice_mesh_with_plane], [`split_mesh_with_plane`][ordito.intersection.split_mesh_with_plane], [`mesh_with_plane`][ordito.intersection.mesh_with_plane] |
 | extract an isosurface | [`levelset.marching_cubes`][ordito.levelset.marching_cubes], [`intersection.marching_triangles`][ordito.intersection.marching_triangles] |
+| a solid from a signed distance function | [`levelset.function_level_set`][ordito.levelset.function_level_set] |
 | **Query** | |
 | closest point on a surface, signed distance | [`proximity.closest_point_on_mesh`][ordito.proximity.closest_point_on_mesh], [`signed_distance_on_mesh`][ordito.proximity.signed_distance_on_mesh], [`winding_number`][ordito.proximity.winding_number] |
 | cast rays | [`ray.intersects_first`][ordito.ray.intersects_first], [`intersects_location`][ordito.ray.intersects_location], [`first_hits`][ordito.ray.first_hits] |
+| every crossing of segments with a closed surface, exact at edges and vertices | [`ray.segment_hits`][ordito.ray.segment_hits] |
 | test which points are inside | [`ray.contains_points`][ordito.ray.contains_points] |
 | nearest neighbours, radius search | [`neighbors.query_nearest`][ordito.neighbors.query_nearest], [`query_ball`][ordito.neighbors.query_ball] |
 | sum or average a value over each point's neighbourhood without listing the neighbours | [`neighbors.query_ball_sum`][ordito.neighbors.query_ball_sum] |

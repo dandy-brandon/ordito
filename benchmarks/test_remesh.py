@@ -92,6 +92,10 @@ on ``dragon`` and would dominate the suite); the split paths stop at ``dragon`` 
 subdivision of ``happy_buddha`` / ``lucy`` does not fit a sane memory budget; the ``trimesh``
 reference for ``subdivide_to_size`` stops at ``bunny`` for a ratio the smaller meshes already
 establish, and the pymeshlab one skips ``sphere_large`` for the same reason.
+
+**manifold3d** is the reference of ``simplify`` and ``subdivide_smooth``, which port its
+``simplify`` and ``smooth_out`` then ``refine``; each row forces Manifold's lazy result with a
+face count. Their answers equal ordito's array for array (``tests/test_remesh.py``, Class A).
 """
 
 from __future__ import annotations
@@ -884,3 +888,35 @@ def test_quadric_decimate(bench_case: BenchCase, target_ratio: float) -> None:
         rounds=_ROUNDS,
     )
     assert decimated_faces.size // 3 <= bench_case.n_faces
+
+
+@pytest.mark.benchmark(group="simplify")
+@pytest.mark.benchlibs("ordito", "manifold3d")
+@pytest.mark.benchaxis("scale")
+def test_simplify(bench_case: BenchCase) -> None:
+    """``od.remesh.simplify`` at a tolerance of a thousandth of the sphere's size."""
+    vertices = np.asarray(bench_case.vertices_np, dtype=np.float64)
+    tolerance = 1e-3 * float(np.max(vertices.max(axis=0) - vertices.min(axis=0)))
+    if bench_case.kind == "manifold3d":
+        a_m3 = bench_case.manifold_m3
+        n_faces_m3 = bench_case.run(lambda: a_m3.simplify(tolerance).num_tri())
+        assert n_faces_m3 > 0
+        return
+    vertices_wp, faces_wp = bench_case.vertices_wp, bench_case.faces_wp
+    _, faces = bench_case.run(lambda: od.remesh.simplify(vertices_wp, faces_wp, tolerance))
+    assert faces.size > 0
+
+
+@pytest.mark.benchmark(group="subdivide_smooth")
+@pytest.mark.benchlibs("ordito", "manifold3d")
+@pytest.mark.benchaxis("scale")
+def test_subdivide_smooth(bench_case: BenchCase) -> None:
+    """``od.remesh.subdivide_smooth`` of the sphere into two pieces an edge."""
+    if bench_case.kind == "manifold3d":
+        a_m3 = bench_case.manifold_m3
+        n_faces_m3 = bench_case.run(lambda: a_m3.smooth_out().refine(2).num_tri())
+        assert n_faces_m3 > 0
+        return
+    vertices_wp, faces_wp = bench_case.vertices_wp, bench_case.faces_wp
+    _, faces = bench_case.run(lambda: od.remesh.subdivide_smooth(vertices_wp, faces_wp, 2))
+    assert faces.size == 4 * faces_wp.size
