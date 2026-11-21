@@ -276,49 +276,53 @@ def segment_direction(ray_pos: wp.array[wp.vec3d], s: wp.int32) -> wp.vec3:
 SEGMENT_REACH = wp.float32(1.0001)
 
 
-@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
-def count_segment_hits(
-    ray_faces: wp.array[wp.int32],
-    ray_pos: wp.array[wp.vec3d],
-    ray_normals: wp.array[wp.vec3d],
-    ray_mates: wp.array[wp.int32],
-    faces_b: wp.array[wp.int32],
-    pos_b: wp.array[wp.vec3d],
-    vnormal_b: wp.array[wp.vec3d],
-    fnormal_b: wp.array[wp.vec3d],
-    mates_b: wp.array[wp.int32],
-    bvh_b: wp.uint64,
-    pad: wp.float32,
-    out_counts: wp.array[wp.int32],
+# Each segment's hits are found in four passes, as ``boolean``'s edge crossings are: its ray walks
+# the face tree twice, counting its candidate faces and then writing them; ``segment_hit``
+# decides each (segment, face) candidate in a thread of its own; and a thread a segment moves its
+# hits into place in order along it. A thread a segment deciding its candidates in turn, once to
+# count and again to write, cost the walks twice over (2026-11-21: 10.9 + 5.3 ms device time for
+# 262 k random segments through a 328 k-face sphere).
+
+
+@wp.kernel(enable_backward=False, module="unique")
+def count_segment_candidates(
+    ray_pos: wp.array[wp.vec3d], bvh_b: wp.uint64, out_counts: wp.array[wp.int32]
 ) -> None:
-    # How many faces each segment crosses within its length.
+    # How many faces' boxes (padded past ``float32`` rounding) each segment passes through.
     s = wp.int32(wp.tid())
-    # The faces whose boxes (padded past ``float32`` rounding) the segment passes through; the
-    # exact predicate decides.
     query = wp.bvh_query_ray(bvh_b, wp.vec3(ray_pos[2 * s]), segment_direction(ray_pos, s))
     face = wp.int32(0)
     count = wp.int32(0)
     while wp.bvh_query_next(query, face, SEGMENT_REACH + wp.float32(0.0)):
-        hit, _t, _point = segment_hit(
-            s,
-            face,
-            ray_faces,
-            ray_pos,
-            ray_normals,
-            ray_mates,
-            faces_b,
-            pos_b,
-            vnormal_b,
-            fnormal_b,
-            mates_b,
-        )
-        if hit:
-            count += 1
+        count += 1
     out_counts[s] = count
 
 
+@wp.kernel(enable_backward=False, module="unique")
+def write_segment_candidates(
+    ray_pos: wp.array[wp.vec3d],
+    bvh_b: wp.uint64,
+    offsets: wp.array[wp.int32],
+    out_segment: wp.array[wp.int32],
+    out_face: wp.array[wp.int32],
+) -> None:
+    # The candidates ``count_segment_candidates`` counted, in the walk's order.
+    s = wp.int32(wp.tid())
+    slot = offsets[s]
+    stop = offsets[s + 1]
+    if slot == stop:
+        return
+    query = wp.bvh_query_ray(bvh_b, wp.vec3(ray_pos[2 * s]), segment_direction(ray_pos, s))
+    face = wp.int32(0)
+    while wp.bvh_query_next(query, face, SEGMENT_REACH + wp.float32(0.0)):
+        if slot < stop:
+            out_segment[slot] = s
+            out_face[slot] = face
+            slot += 1
+
+
 @wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
-def write_segment_hits(
+def decide_segment_candidates(
     ray_faces: wp.array[wp.int32],
     ray_pos: wp.array[wp.vec3d],
     ray_normals: wp.array[wp.vec3d],
@@ -328,44 +332,66 @@ def write_segment_hits(
     vnormal_b: wp.array[wp.vec3d],
     fnormal_b: wp.array[wp.vec3d],
     mates_b: wp.array[wp.int32],
-    bvh_b: wp.uint64,
-    pad: wp.float32,
-    offsets: wp.array[wp.int32],
+    segments: wp.array[wp.int32],
+    candidate_faces: wp.array[wp.int32],
+    out_offsets: wp.array[wp.int32],
+    out_parameters: wp.array[wp.float64],
+    out_points: wp.array[wp.vec3d],
+) -> None:
+    # ``segment_hit`` on one (segment, face) candidate: its parameter and crossing, and a hit flag
+    # into the unzeroed ``(n_candidates + 1,)`` offsets after their leading zero.
+    c = wp.int32(wp.tid())
+    if c == 0:
+        out_offsets[0] = 0
+    hit, t, point = segment_hit(
+        segments[c],
+        candidate_faces[c],
+        ray_faces,
+        ray_pos,
+        ray_normals,
+        ray_mates,
+        faces_b,
+        pos_b,
+        vnormal_b,
+        fnormal_b,
+        mates_b,
+    )
+    out_offsets[c + 1] = wp.where(hit, 1, 0)
+    out_parameters[c] = t
+    out_points[c] = point
+
+
+@wp.kernel(enable_backward=False, module="unique")
+def write_segment_hits(
+    candidate_offsets: wp.array[wp.int32],
+    hit_offsets: wp.array[wp.int32],
+    candidate_faces: wp.array[wp.int32],
+    parameters: wp.array[wp.float64],
+    points: wp.array[wp.vec3d],
+    fnormal_b: wp.array[wp.vec3d],
     face_to_input: wp.array[wp.int32],
+    out_offsets: wp.array[wp.int32],
     out_faces: wp.array[wp.int32],
     out_parameters: wp.array[wp.float64],
     out_points: wp.array[wp.vec3],
     out_normals: wp.array[wp.vec3],
 ) -> None:
-    # Each segment's hits in order along it, ties by the face's input index: the face (as the
-    # caller numbered it), the parameter, the crossing and the face's normal.
+    # Each segment's hits in order along it, ties by the face's input index then the walk's
+    # order: the face (as the caller numbered it), the parameter, the crossing and the face's
+    # normal; and its first hit's slot, a thread past the last segment writing the total.
     s = wp.int32(wp.tid())
-    first = offsets[s]
-    stop = offsets[s + 1]
-    if first == stop:
+    first_candidate = candidate_offsets[s]
+    first = hit_offsets[first_candidate]
+    out_offsets[s] = first
+    if s == candidate_offsets.shape[0] - 1:
         return
-    query = wp.bvh_query_ray(bvh_b, wp.vec3(ray_pos[2 * s]), segment_direction(ray_pos, s))
-    face = wp.int32(0)
     slot = first
-    while wp.bvh_query_next(query, face, SEGMENT_REACH + wp.float32(0.0)):
-        if slot >= stop:
+    for c in range(first_candidate, candidate_offsets[s + 1]):
+        if hit_offsets[c + 1] == hit_offsets[c]:
             continue
-        hit, t, point = segment_hit(
-            s,
-            face,
-            ray_faces,
-            ray_pos,
-            ray_normals,
-            ray_mates,
-            faces_b,
-            pos_b,
-            vnormal_b,
-            fnormal_b,
-            mates_b,
-        )
-        if not hit:
-            continue
+        face = candidate_faces[c]
         index = face_to_input[face]
+        t = parameters[c]
         at = slot
         while at > first and (
             out_parameters[at - 1] > t
@@ -378,7 +404,7 @@ def write_segment_hits(
             at -= 1
         out_faces[at] = index
         out_parameters[at] = t
-        out_points[at] = wp.vec3(point)
+        out_points[at] = wp.vec3(points[c])
         out_normals[at] = wp.vec3(fnormal_b[face])
         slot += 1
 

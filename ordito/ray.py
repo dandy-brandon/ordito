@@ -723,7 +723,7 @@ def segment_hits(
         )
     device = vertices.device
     solid = solid_from_mesh(vertices, faces, 0, "")
-    offsets, counts = offsets_buffer(n_segments, device)
+    offsets, _ = offsets_buffer(n_segments, device)
     if solid.is_empty or n_segments == 0:
         return (
             _launch.empty(0, dtype=wp.int32, device=device),
@@ -763,38 +763,80 @@ def segment_hits(
         device=device,
     )
     bvh = wp.Bvh(lowers, uppers)
-    shared = [
-        ray_faces,
-        ray_positions,
-        ray_normals,
-        ray_mates,
-        solid.faces,
-        solid.positions,
-        solid.vertex_normals,
-        solid.face_normals,
-        mates,
-        bvh.id,
-        pad,
-    ]
+    candidate_offsets, candidate_counts = offsets_buffer(n_segments, device)
     _launch.launch(
-        kernel_ray.count_segment_hits,
+        kernel_ray.count_segment_candidates,
         dim=n_segments,
-        inputs=shared,
-        outputs=[counts],
+        inputs=[ray_positions, bvh.id],
+        outputs=[candidate_counts],
         device=device,
     )
-    n_hits = scan_count(counts)
+    n_candidates = scan_count(candidate_counts)
+    if n_candidates == 0:
+        return (
+            _launch.empty(0, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=wp.float64, device=device),
+            _launch.empty(0, dtype=wp.vec3, device=device),
+            _launch.empty(0, dtype=wp.vec3, device=device),
+            offsets,
+        )
+    segments, candidate_faces, hit_offsets, candidate_parameters, candidate_points = (
+        _launch.carve_typed(
+            [
+                (wp.int32, n_candidates),
+                (wp.int32, n_candidates),
+                (wp.int32, n_candidates + 1),
+                (wp.float64, n_candidates),
+                (wp.vec3d, n_candidates),
+            ],
+            device,
+        )
+    )
+    _launch.launch(
+        kernel_ray.write_segment_candidates,
+        dim=n_segments,
+        inputs=[ray_positions, bvh.id, candidate_offsets],
+        outputs=[segments, candidate_faces],
+        device=device,
+    )
+    _launch.launch(
+        kernel_ray.decide_segment_candidates,
+        dim=n_candidates,
+        inputs=[
+            ray_faces,
+            ray_positions,
+            ray_normals,
+            ray_mates,
+            solid.faces,
+            solid.positions,
+            solid.vertex_normals,
+            solid.face_normals,
+            mates,
+            segments,
+            candidate_faces,
+        ],
+        outputs=[hit_offsets, candidate_parameters, candidate_points],
+        device=device,
+    )
+    n_hits = scan_count(_launch.view(hit_offsets, 1, n_candidates + 1))
     hit_faces = _launch.empty(n_hits, dtype=wp.int32, device=device)
     parameters = _launch.empty(n_hits, dtype=wp.float64, device=device)
     points = _launch.empty(n_hits, dtype=wp.vec3, device=device)
     normals = _launch.empty(n_hits, dtype=wp.vec3, device=device)
     assert solid.face_source is not None
-    if n_hits > 0:
-        _launch.launch(
-            kernel_ray.write_segment_hits,
-            dim=n_segments,
-            inputs=[*shared, offsets, solid.face_source],
-            outputs=[hit_faces, parameters, points, normals],
-            device=device,
-        )
+    _launch.launch(
+        kernel_ray.write_segment_hits,
+        dim=n_segments + 1,
+        inputs=[
+            candidate_offsets,
+            hit_offsets,
+            candidate_faces,
+            candidate_parameters,
+            candidate_points,
+            solid.face_normals,
+            solid.face_source,
+        ],
+        outputs=[offsets, hit_faces, parameters, points, normals],
+        device=device,
+    )
     return hit_faces, parameters, points, normals, offsets

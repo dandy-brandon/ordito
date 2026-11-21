@@ -5998,11 +5998,11 @@
  },
  "benchmarks/test_ray.py::test_segment_hits[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 21,
-   "alloc": 42,
+   "launch": 23,
+   "alloc": 44,
    "h2h": 3,
-   "readback": 5,
-   "scan": 2,
+   "readback": 6,
+   "scan": 3,
    "sort": 5
   }
  },

@@ -6608,13 +6608,13 @@
  },
  "benchmarks/test_ray.py::test_segment_hits[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 25,
-   "alloc": 43,
-   "memset": 10,
+   "launch": 27,
+   "alloc": 45,
+   "memset": 11,
    "d2d": 1,
    "h2d": 2,
-   "d2h": 5,
-   "scan": 4,
+   "d2h": 6,
+   "scan": 5,
    "sort": 3
   }
  },
