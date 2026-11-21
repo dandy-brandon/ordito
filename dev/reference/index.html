@@ -6564,6 +6564,30 @@ print is checked, so the output shown is the output you will get.</p>
 <td><a class="autorefs autorefs-internal" title="estimate_normals" href="../api/ordito/points/#ordito.points.estimate_normals"><code>points.estimate_normals</code></a></td>
 </tr>
 <tr>
+<td>orient or smooth normals</td>
+<td><a class="autorefs autorefs-internal" title="orient_normals" href="../api/ordito/points/#ordito.points.orient_normals"><code>points.orient_normals</code></a> (spanning-tree propagation), <a class="autorefs autorefs-internal" title="smooth_normals" href="../api/ordito/points/#ordito.points.smooth_normals"><code>smooth_normals</code></a></td>
+</tr>
+<tr>
+<td>smooth a point cloud</td>
+<td><a class="autorefs autorefs-internal" title="smooth_points" href="../api/ordito/points/#ordito.points.smooth_points"><code>points.smooth_points</code></a> (Laplacian or Taubin), <a class="autorefs autorefs-internal" title="smooth_points_mls" href="../api/ordito/points/#ordito.points.smooth_points_mls"><code>smooth_points_mls</code></a> (moving least squares), <a class="autorefs autorefs-internal" title="smooth_points_bilateral" href="../api/ordito/points/#ordito.points.smooth_points_bilateral"><code>smooth_points_bilateral</code></a></td>
+</tr>
+<tr>
+<td>per-point covariances and frames</td>
+<td><a class="autorefs autorefs-internal" title="point_covariances" href="../api/ordito/points/#ordito.points.point_covariances"><code>points.point_covariances</code></a>, <a class="autorefs autorefs-internal" title="point_frames" href="../api/ordito/points/#ordito.points.point_frames"><code>point_frames</code></a></td>
+</tr>
+<tr>
+<td>cluster a point cloud</td>
+<td><a class="autorefs autorefs-internal" title="cluster_labels" href="../api/ordito/points/#ordito.points.cluster_labels"><code>points.cluster_labels</code></a> (DBSCAN, Euclidean clusters)</td>
+</tr>
+<tr>
+<td>boundary points of a cloud</td>
+<td><a class="autorefs autorefs-internal" title="point_boundary_mask" href="../api/ordito/points/#ordito.points.point_boundary_mask"><code>points.point_boundary_mask</code></a></td>
+</tr>
+<tr>
+<td>points visible from a viewpoint</td>
+<td><a class="autorefs autorefs-internal" title="point_visible_mask" href="../api/ordito/points/#ordito.points.point_visible_mask"><code>points.point_visible_mask</code></a> (hidden point removal)</td>
+</tr>
+<tr>
 <td>down-sample</td>
 <td><a class="autorefs autorefs-internal" title="voxel_down_sample" href="../api/ordito/voxels/#ordito.voxels.voxel_down_sample"><code>voxels.voxel_down_sample</code></a>, <a class="autorefs autorefs-internal" title="farthest_point_sample" href="../api/ordito/points/#ordito.points.farthest_point_sample"><code>points.farthest_point_sample</code></a></td>
 </tr>
@@ -6844,7 +6868,7 @@ print is checked, so the output shown is the output you will get.</p>
 <tbody>
 <tr>
 <td><a href="../api/ordito/points/">points</a></td>
-<td>Point-cloud geometry: plane and line fits, covariance, normals, outliers, down-sampling, convex hull.</td>
+<td>Point-cloud geometry: plane and line fits, covariance, normals and their orientation, smoothing, clustering, outliers, down-sampling, convex hull, visibility.</td>
 </tr>
 <tr>
 <td><a href="../api/ordito/sample/">sample</a></td>
