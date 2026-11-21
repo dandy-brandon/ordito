@@ -779,6 +779,12 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # ``state`` is the multi-block rounds' persistent loop word (its scratch and arg-max slots are
     # written through ``@wp.func`` helpers this check does not follow).
     ("points", "farthest_point_round"): frozenset({"state"}),
+    # ``orient_normals``' Boruvka rounds over the neighbour table, ``validation``'s signed forest
+    # over its normal graph: each round's lightest edges (``best``), the rows already internal to
+    # their tree (``row_internal``), the union-find, the forest's edges (``tree_slot``) and the
+    # round's flag are the loop's state across rounds; the answer is the parity flattened after.
+    ("points", "normal_forest_candidates"): frozenset({"best", "row_internal"}),
+    ("points", "normal_forest_hook"): frozenset({"parents", "tree_slot", "hooked"}),
     # ``slot_count`` is the per-vertex atomic cursor picking which of the two neighbour slots each
     # scattered edge lands in: caller-allocated scratch, under a name that says what it holds. The
     # answer is ``out_neighbors``.
@@ -897,7 +903,6 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # merged" word. None is the answer, which is the parity the forest's edges then solve.
     ("validation", "signed_forest_candidates"): frozenset({"best"}),
     ("validation", "signed_forest_hook"): frozenset({"parents", "in_forest", "hooked"}),
-    ("validation", "forest_flatten"): frozenset({"parents"}),
     # ``ear_clip_rounds`` (the CPU's one-launch ear loop) writes each round's selection into the
     # scratch the multi-launch loop hands ``select_independent`` as ``out_selected``; the answers
     # are ``out_faces`` and the loop's carried ``out_state``.

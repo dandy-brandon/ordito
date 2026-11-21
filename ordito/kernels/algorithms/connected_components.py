@@ -11,6 +11,8 @@ Two variants over the same union-find core:
   See ``find_representative_parity`` for the packing that makes it work.
 """
 
+from typing import Any
+
 import warp as wp
 
 from ordito.kernels.reduce import peer_counted_add
@@ -395,3 +397,34 @@ def ecl_flatten_parity(
     if out_labels.shape[0] > 0:
         out_labels[v] = root
     out_parity[v] = parity
+
+
+# Boruvka's minimum spanning forest by integer atomics, shared by ``validation``'s signed forest
+# (an edge's key its row) and ``points``' normal graph (an edge's key its packed weight and slot):
+# each round every component root takes its lightest outgoing edge by ``atomic_min`` and hooks
+# across it, then every node relabels to its root.
+
+
+@wp.func
+def forest_root(parents: wp.array[wp.int32], v: wp.int32) -> wp.int32:
+    # ``v``'s root by path halving: a concurrent halving writes an ancestor over an ancestor, so
+    # the trees race but the roots do not.
+    x = v
+    p = parents[x]
+    while p != x:
+        grandparent = parents[p]
+        parents[x] = grandparent
+        x = grandparent
+        p = parents[x]
+    return x
+
+
+@wp.func
+def boruvka_hook_parent(r: wp.int32, other: wp.int32, other_key: Any, key: Any) -> wp.int32:
+    # The parent root ``r`` hooks onto across its lightest outgoing edge ``key``, which reaches the
+    # component rooted at ``other`` (whose own lightest edge is ``other_key``), or ``-1`` when ``r``
+    # stays a root: two roots that chose the same edge (the only cycle distinct keys allow) would
+    # hook onto each other, so the smaller stays.
+    if other_key == key and r < other:
+        return wp.int32(-1)
+    return other

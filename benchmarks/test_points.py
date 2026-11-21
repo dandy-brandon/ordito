@@ -736,9 +736,10 @@ def test_orient_normals(bench_case: BenchCase) -> None:
 
     open3d's ``orient_normals_consistent_tangent_plane`` builds its own k-d tree and a Delaunay
     tetrahedralization (for the Euclidean spanning tree it adds) every call, then runs Kruskal and
-    a breadth-first walk on one thread; ordito sorts the graph's weights, runs Boruvka rounds and a
-    parity union-find. The open3d call orients the cloud's normals in place, so later rounds start
-    from oriented normals, which changes no work. The tetrahedralization caps it at ``bunny``.
+    a breadth-first walk on one thread; ordito runs Boruvka rounds off the neighbour table, each
+    edge keyed by its packed weight and slot, and a parity union-find. The open3d call orients the
+    cloud's normals in place, so later rounds start from oriented normals, which changes no work.
+    The tetrahedralization caps it at ``bunny``.
     """
     knn = 10
     if bench_case.kind == "open3d":

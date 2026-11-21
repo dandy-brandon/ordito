@@ -90,14 +90,13 @@ from ordito._common import (
     tiled_ball_walk,
 )
 from ordito.config import is_deterministic
-from ordito.constants import INT32_MAX, TILE_1D, TOLERANCE_ZERO
+from ordito.constants import TILE_1D, TOLERANCE_ZERO
 from ordito.kernels import array as kernel_array
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import neighbors as kernel_neighbors
 from ordito.kernels import points as kernel_points
 from ordito.kernels import predicates as kernel_predicates
 from ordito.kernels import reduce as kernel_reduce
-from ordito.kernels import validation as kernel_validation
 from ordito.kernels.algorithms import connected_components as kernel_connected_components
 from ordito.kernels.algorithms import convex_hull as kernel_hull
 
@@ -1017,45 +1016,71 @@ def orient_normals(
     _require_point_rows(n, normals=normals, neighbor_idx=neighbor_idx)
     if n == 0:
         return _launch.empty(0, dtype=wp.vec3, device=device)
-    m = n * int(neighbor_idx.shape[1])
-    if m > 0:
-        # The graph's entries in ascending weight, so an edge's row is its Boruvka key: the
-        # minimum spanning forest under distinct keys is unique and is Kruskal's over the weights.
-        keys, order = _launch.sort_buffers(m, wp.float32, device)
-        _launch.launch(
-            kernel_points.normal_graph_keys,
-            dim=m,
-            inputs=[normals, neighbor_idx],
-            outputs=[keys, order],
-            device=device,
-        )
-        _, order = od.array.sort_and_argsort_in_place(keys, order)
-        edges = odt.empty_2d((m, 2), wp.int32, device=device)
-        signs = _launch.empty(m, dtype=wp.int32, device=device)
-        _launch.launch(
-            kernel_points.sorted_normal_edges,
-            dim=m,
-            inputs=[normals, neighbor_idx, order],
-            outputs=[edges, signs],
-            device=device,
-        )
-        labels, parity = _row_keyed_forest_parity(edges, signs, n)
-    else:
-        labels = od.array.arange(n, device=device)
-        parity = _launch.zeros(n, dtype=wp.int32, device=device)
-    lowest_z = _launch.full(n, math.inf, dtype=wp.float32, device=device)
+    # The call's tables, freed with it: those that must start at zero (``tree_slot`` holds a slot
+    # plus one, ``lowest`` a complemented key) and those every launch writes before reading.
+    lowest, tree_slot, row_internal = _launch.carve_typed(
+        [(wp.uint64, n), (wp.int32, n), (wp.int32, n)], device, zeroed=True
+    )
+    best, parents, labels, words, parity, hooked = _launch.carve_typed(
+        [(wp.uint64, n), (wp.int32, n), (wp.int32, n), (wp.int32, n), (wp.int32, n), (wp.int32, 1)],
+        device,
+    )
+    # Boruvka's rounds over the table's slots (``kernels/points.normal_forest_candidates``) find
+    # the minimum spanning forest of its normal graph, then the parity union-find over the forest's
+    # edges alone gives each point's tree root (its smallest point) and the XOR of the edge signs
+    # on its tree path to it.
     _launch.launch(
-        kernel_points.component_lowest_z,
+        kernel_points.normal_forest_init,
         dim=n,
-        inputs=[points, labels],
-        outputs=[lowest_z],
+        outputs=[parents, labels, best, hooked],
         device=device,
     )
-    lowest = _launch.full(n, INT32_MAX, dtype=wp.int32, device=device)
+    # Each round hooks every component with an outgoing edge, so at least halves their number:
+    # ``log2(n) + 1`` rounds bound it, and a round that hooks nothing ends it sooner. Reading the
+    # flag every second round instead (a round past the end hooks nothing) bought nothing: CUDA
+    # new/old 1.08x ``sphere_small``, 0.92-0.94x ``bunny`` / ``dragon``, 1.01x ``lucy``.
+    for _ in range(n.bit_length() + 1):
+        _launch.launch(
+            kernel_points.normal_forest_candidates,
+            dim=n,
+            inputs=[normals, neighbor_idx, labels, best, row_internal],
+            device=device,
+        )
+        _launch.launch(
+            kernel_points.normal_forest_hook,
+            dim=n,
+            inputs=[neighbor_idx, labels, best, parents, tree_slot, hooked],
+            device=device,
+        )
+        # Unavoidable: the round count is the components' merge depth, known only on the device.
+        if int(read_scalar(hooked, 0)) == 0:
+            break
+        _launch.launch(
+            kernel_points.normal_forest_flatten,
+            dim=n,
+            inputs=[parents],
+            outputs=[labels, best, hooked],
+            device=device,
+        )
+    _launch.launch(
+        kernel_connected_components.ecl_init_parent_parity, dim=n, inputs=[words], device=device
+    )
+    _launch.launch(
+        kernel_points.normal_forest_hook_parity,
+        dim=n,
+        inputs=[normals, neighbor_idx, tree_slot, words],
+        device=device,
+    )
+    _launch.launch(
+        kernel_connected_components.ecl_flatten_parity,
+        dim=n,
+        inputs=[words, labels, parity],
+        device=device,
+    )
     _launch.launch(
         kernel_points.component_lowest_point,
         dim=n,
-        inputs=[points, labels, lowest_z],
+        inputs=[points, labels],
         outputs=[lowest],
         device=device,
     )
@@ -1068,66 +1093,6 @@ def orient_normals(
         device=device,
     )
     return out_normals
-
-
-def _row_keyed_forest_parity(
-    edges: odt.Array2dInt32, signs: wp.array[wp.int32], n: int
-) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
-    """
-    ``(roots, parity)`` over the minimum spanning forest of a signed edge list keyed by row.
-
-    ``kernels/validation``'s Boruvka rounds (one readback each to stop) over ``edges``, whose
-    self-loops they skip, then the parity union-find over the forest's edges alone: each node's
-    tree root, its smallest node, and the XOR of the signs on its tree path to it.
-    """
-    device = edges.device
-    m = int(edges.shape[0])
-    graph = [None, None, edges, signs]
-    parents = od.array.arange(n, device=device)
-    roots = _launch.empty(n, dtype=wp.int32, device=device)
-    best = _launch.empty(n, dtype=wp.int32, device=device)
-    in_forest = _launch.zeros(m, dtype=wp.int32, device=device)
-    hooked = _launch.zeros(1, dtype=wp.int32, device=device)
-    # Each round hooks every component with an outgoing edge, so at least halves their number:
-    # ``log2(n) + 1`` rounds bound it, and a round that hooks nothing ends it sooner.
-    for _ in range(n.bit_length() + 1):
-        _launch.launch(
-            kernel_validation.forest_flatten, dim=n, inputs=[parents, roots, best], device=device
-        )
-        _launch.launch(
-            kernel_validation.signed_forest_candidates,
-            dim=m,
-            inputs=[*graph, roots, best],
-            device=device,
-        )
-        _launch.zero_(hooked)
-        _launch.launch(
-            kernel_validation.signed_forest_hook,
-            dim=n,
-            inputs=[*graph, roots, best, parents, in_forest, hooked],
-            device=device,
-        )
-        # Unavoidable: the round count is the components' merge depth, known only on the device.
-        if int(read_scalar(hooked, 0)) == 0:
-            break
-    words = _launch.empty(n, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_connected_components.ecl_init_parent_parity, dim=n, inputs=[words], device=device
-    )
-    _launch.launch(
-        kernel_validation.signed_forest_hook_parity,
-        dim=m,
-        inputs=[*graph, in_forest, words],
-        device=device,
-    )
-    parity = _launch.empty(n, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_connected_components.ecl_flatten_parity,
-        dim=n,
-        inputs=[words, roots, parity],
-        device=device,
-    )
-    return roots, parity
 
 
 def smooth_normals(

@@ -6116,11 +6116,10 @@
  },
  "benchmarks/test_points.py::test_orient_normals[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 29,
-   "alloc": 16,
-   "memset": 11,
-   "d2h": 7,
-   "sort": 1
+   "launch": 25,
+   "alloc": 6,
+   "memset": 2,
+   "d2h": 7
   }
  },
  "benchmarks/test_points.py::test_outlier_probability[sphere_med-ordito-cuda]": {

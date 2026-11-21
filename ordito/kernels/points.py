@@ -3,8 +3,14 @@ from typing import Any
 
 import warp as wp
 
-from ordito.constants import FLOAT32_INF_CONSTANT, INT32_MAX_CONSTANT, TILE_1D
-from ordito.kernels.algorithms.connected_components import ecl_hook_edge, find_representative
+from ordito.constants import FLOAT32_INF_CONSTANT, INT32_MAX_CONSTANT, TILE_1D, UINT64_MAX_CONSTANT
+from ordito.kernels.algorithms.connected_components import (
+    boruvka_hook_parent,
+    ecl_hook_edge,
+    ecl_hook_pair_parity,
+    find_representative,
+    forest_root,
+)
 from ordito.kernels.array import (
     LOOP_PROGRESS,
     LOOP_ROUND,
@@ -17,6 +23,7 @@ from ordito.kernels.array import (
     map_probe,
     map_probe_single,
     mat33_column,
+    ordered_float_bits,
     pack_farthest_key,
     to_vec3,
     to_vec3d,
@@ -951,75 +958,161 @@ def point_boundary_flags(
     out_mask[v] = widest > threshold
 
 
-@wp.kernel
-def normal_graph_keys(
-    normals: wp.array[wp.vec3],
-    neighbor_idx: wp.array2d[wp.int32],
-    out_keys: wp.array[wp.float32],
-    out_order: wp.array[wp.int32],
-) -> None:
-    # The Riemannian graph of Hoppe et al. over the neighbour table, one slot an entry: its weight
-    # ``1 - |n_i . n_j|`` (Open3D's ``NormalWeight``) as the sort key, ``+inf`` for a ``-1`` slot or
-    # the point itself so those sort last, and the identity payload, written straight into the
-    # radix sort's buffers.
-    slot = wp.int32(wp.tid())
+# Hoppe et al.'s Riemannian graph over a neighbour table and its minimum spanning forest. Slot
+# ``s`` of the ``(n, k)`` table is the edge ``(s // k, table[s])``, weighing ``1 - |n_i . n_j|``
+# (Open3D's ``NormalWeight``); a ``-1`` slot or the point itself is no edge. Its key packs the
+# weight's ordered bits over the slot, so keys are distinct and order as a stable sort of the
+# weights ranks the slots: the unique minimum spanning forest under these keys is Kruskal's over
+# the weights, and Boruvka's rounds (``connected_components.forest_root`` /
+# ``boruvka_hook_parent``) find it off the table, no edge list sorted or stored.
+
+
+@wp.func
+def normal_graph_edge(
+    neighbor_idx: wp.array2d[wp.int32], slot: wp.int32
+) -> tuple[wp.int32, wp.int32]:
+    # Slot ``slot``'s endpoints ``(v, nb)``; ``nb == v`` for a ``-1`` slot, a self-loop like the
+    # point itself.
     k = neighbor_idx.shape[1]
     v = slot // k
     nb = neighbor_idx[v, slot - v * k]
-    weight = FLOAT32_INF_CONSTANT
-    if nb >= 0 and nb != v:
-        weight = wp.float32(1.0) - wp.abs(wp.dot(normals[v], normals[nb]))
-    out_keys[slot] = weight
-    out_order[slot] = slot
+    return v, wp.where(nb < 0, v, nb)
+
+
+@wp.func
+def normal_graph_key(
+    normals: wp.array[wp.vec3], v: wp.int32, nb: wp.int32, slot: wp.int32
+) -> wp.uint64:
+    # The edge's Boruvka key: ``ordered_float_bits`` of its weight over its slot.
+    weight = wp.float32(1.0) - wp.abs(wp.dot(normals[v], normals[nb]))
+    return (wp.uint64(ordered_float_bits(weight)) << wp.uint64(32)) | wp.uint64(slot)
 
 
 @wp.kernel
-def sorted_normal_edges(
-    normals: wp.array[wp.vec3],
-    neighbor_idx: wp.array2d[wp.int32],
-    order: wp.array[wp.int32],
-    out_edges: wp.array2d[wp.int32],
-    out_signs: wp.array[wp.int32],
+def normal_forest_init(
+    out_parents: wp.array[wp.int32],
+    out_labels: wp.array[wp.int32],
+    out_best: wp.array[wp.uint64],
+    out_hooked: wp.array[wp.int32],
 ) -> None:
-    # Row ``r`` of the Riemannian graph's edge list in ascending weight: the slot the sort put at
-    # rank ``r``, its sign ``1`` where the two normals disagree (a negative dot, the flip Open3D's
-    # ``TestAndOrientNormal`` applies across a tree edge). A ``-1`` slot or the point itself is a
-    # sign-``0`` self-loop, which the forest and the parity hook both skip.
-    r = wp.int32(wp.tid())
-    slot = order[r]
-    k = neighbor_idx.shape[1]
-    v = slot // k
-    nb = neighbor_idx[v, slot - v * k]
-    if nb < 0:
-        nb = v
-    out_edges[r, 0] = v
-    out_edges[r, 1] = nb
-    out_signs[r] = wp.where(wp.dot(normals[v], normals[nb]) < 0.0, wp.int32(1), wp.int32(0))
-
-
-@wp.kernel
-def component_lowest_z(
-    points: wp.array[wp.vec3], labels: wp.array[wp.int32], out_lowest_z: wp.array[wp.float32]
-) -> None:
-    # Each tree's smallest ``z``, Open3D's traversal start, into an ``+inf``-filled
-    # ``out_lowest_z``. A float ``atomic_min`` is reproducible as it stands.
+    # The forest before its first round: every point its own tree, its slot cleared.
     v = wp.int32(wp.tid())
-    wp.atomic_min(out_lowest_z, labels[v], points[v][2])
+    out_parents[v] = v
+    out_labels[v] = v
+    out_best[v] = UINT64_MAX_CONSTANT
+    if v == 0:
+        out_hooked[0] = wp.int32(0)
+
+
+@wp.kernel
+def normal_forest_flatten(
+    parents: wp.array[wp.int32],
+    out_labels: wp.array[wp.int32],
+    out_best: wp.array[wp.uint64],
+    out_hooked: wp.array[wp.int32],
+) -> None:
+    # ``validation.forest_flatten`` over ``uint64`` keys: each point's root, its slot cleared, and
+    # the round's hook flag cleared (the host has read it).
+    v = wp.int32(wp.tid())
+    out_labels[v] = forest_root(parents, v)
+    out_best[v] = UINT64_MAX_CONSTANT
+    if v == 0:
+        out_hooked[0] = wp.int32(0)
+
+
+@wp.kernel
+def normal_forest_candidates(
+    normals: wp.array[wp.vec3],
+    neighbor_idx: wp.array2d[wp.int32],
+    labels: wp.array[wp.int32],
+    best: wp.array[wp.uint64],
+    row_internal: wp.array[wp.int32],
+) -> None:
+    # One thread a row: each edge joining two trees offers its key to the far tree, and the row's
+    # lightest such edge to the row's own. Trees only merge, so a row whose every edge is internal
+    # stays so: it is marked in ``row_internal`` and skipped by later rounds, which then read the
+    # table only where the forest still grows.
+    v = wp.int32(wp.tid())
+    if row_internal[v] != 0:
+        return
+    k = neighbor_idx.shape[1]
+    c0 = labels[v]
+    own = wp.uint64(UINT64_MAX_CONSTANT) + wp.uint64(0)
+    for j in range(k):
+        slot = v * k + j
+        nb = neighbor_idx[v, j]
+        if nb >= 0 and nb != v:
+            c1 = labels[nb]
+            if c1 != c0:
+                key = normal_graph_key(normals, v, nb, slot)
+                own = wp.min(own, key)
+                wp.atomic_min(best, c1, key)
+    if own == UINT64_MAX_CONSTANT:
+        row_internal[v] = wp.int32(1)
+    else:
+        wp.atomic_min(best, c0, own)
+
+
+@wp.kernel
+def normal_forest_hook(
+    neighbor_idx: wp.array2d[wp.int32],
+    labels: wp.array[wp.int32],
+    best: wp.array[wp.uint64],
+    parents: wp.array[wp.int32],
+    tree_slot: wp.array[wp.int32],
+    hooked: wp.array[wp.int32],
+) -> None:
+    # One thread a point; a tree root with an outgoing edge hooks across it and records the edge
+    # as its tree edge, ``slot + 1`` in a zeroed ``tree_slot``. A root hooks once at most (it is no
+    # root after), and every forest edge is the tree edge of the root that hooked across it, so
+    # ``tree_slot`` lists the forest.
+    r = wp.int32(wp.tid())
+    if labels[r] != r:
+        return
+    key = best[r]
+    if key == UINT64_MAX_CONSTANT:
+        return
+    slot = wp.int32(key & wp.uint64(0xFFFFFFFF))
+    v, nb = normal_graph_edge(neighbor_idx, slot)
+    other = labels[v]
+    if other == r:
+        other = labels[nb]
+    parent = boruvka_hook_parent(r, other, best[other], key)
+    if parent < 0:
+        return
+    parents[r] = parent
+    tree_slot[r] = slot + 1
+    hooked[0] = wp.int32(1)
+
+
+@wp.kernel
+def normal_forest_hook_parity(
+    normals: wp.array[wp.vec3],
+    neighbor_idx: wp.array2d[wp.int32],
+    tree_slot: wp.array[wp.int32],
+    words: wp.array[wp.int32],
+) -> None:
+    # The parity hook over the forest's edges, one a hooked point: sign ``1`` where the two normals
+    # disagree (a negative dot, the flip Open3D's ``TestAndOrientNormal`` applies across a tree
+    # edge).
+    slot = tree_slot[wp.int32(wp.tid())] - 1
+    if slot >= 0:
+        v, nb = normal_graph_edge(neighbor_idx, slot)
+        sign = wp.where(wp.dot(normals[v], normals[nb]) < 0.0, wp.int32(1), wp.int32(0))
+        ecl_hook_pair_parity(words, v, nb, sign)
 
 
 @wp.kernel
 def component_lowest_point(
-    points: wp.array[wp.vec3],
-    labels: wp.array[wp.int32],
-    lowest_z: wp.array[wp.float32],
-    out_lowest: wp.array[wp.int32],
+    points: wp.array[wp.vec3], labels: wp.array[wp.int32], out_lowest: wp.array[wp.uint64]
 ) -> None:
-    # The first point of each tree at its smallest ``z``, into an ``INT32_MAX``-filled
-    # ``out_lowest``: Open3D's strict ``<`` scan keeps the lowest index of a tie.
+    # Each tree's first point at its smallest ``z``, Open3D's traversal start (its strict ``<``
+    # scan keeps the lowest index of a tie), into a zeroed ``out_lowest``: the smallest key of the
+    # ``z``'s ordered bits over the index, complemented so an ``atomic_max`` takes it from zero, and
+    # skipped once beaten (a cloud of one tree bids on one address).
     v = wp.int32(wp.tid())
-    label = labels[v]
-    if points[v][2] == lowest_z[label]:
-        wp.atomic_min(out_lowest, label, v)
+    key = (wp.uint64(ordered_float_bits(points[v][2])) << wp.uint64(32)) | wp.uint64(v)
+    atomic_max_unless_above(out_lowest, labels[v], ~key)
 
 
 @wp.kernel
@@ -1027,7 +1120,7 @@ def orient_from_forest(
     normals: wp.array[wp.vec3],
     labels: wp.array[wp.int32],
     parity: wp.array[wp.int32],
-    lowest: wp.array[wp.int32],
+    lowest: wp.array[wp.uint64],
     out_normals: wp.array[wp.vec3],
 ) -> None:
     # Each normal flipped by its parity along the spanning tree, and the whole tree flipped once
@@ -1035,7 +1128,7 @@ def orient_from_forest(
     # of its traversal toward ``(0, 0, -1)`` and propagates across tree edges, which is this
     # parity.
     v = wp.int32(wp.tid())
-    start = lowest[labels[v]]
+    start = wp.int32(~lowest[labels[v]] & wp.uint64(0xFFFFFFFF))
     start_z = normals[start][2]
     start_z = wp.where(parity[start] != 0, -start_z, start_z)
     flip = (parity[v] != 0) != (start_z > 0.0)

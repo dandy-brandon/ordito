@@ -3,11 +3,13 @@ import warp as wp
 from ordito.constants import INT32_MAX_CONSTANT, TILE_1D
 from ordito.kernels.adjacency import edge_endpoints
 from ordito.kernels.algorithms.connected_components import (
+    boruvka_hook_parent,
     ecl_hook_pair,
     ecl_hook_pair_parity,
     ecl_prehook_pair,
     find_representative,
     find_representative_parity,
+    forest_root,
     parity_root_word,
 )
 from ordito.kernels.array import declare_block_dims, scanned_count
@@ -724,8 +726,7 @@ def signed_forest_hook(
     hooked: wp.array[wp.int32],
 ) -> None:
     # One thread per face; a component root with an outgoing edge takes it into the forest and
-    # hooks onto the component across it. Two roots that chose the same edge (the only cycle
-    # distinct keys allow) would hook onto each other, so the smaller stays the root.
+    # hooks onto the component across it (``boruvka_hook_parent``).
     r = wp.int32(wp.tid())
     if labels[r] != r:
         return
@@ -737,9 +738,10 @@ def signed_forest_hook(
     if other == r:
         other = labels[f1]
     in_forest[e] = wp.int32(1)
-    if best[other] == e and r < other:
+    parent = boruvka_hook_parent(r, other, best[other], e)
+    if parent < 0:
         return
-    parents[r] = other
+    parents[r] = parent
     hooked[0] = wp.int32(1)
 
 
@@ -747,17 +749,9 @@ def signed_forest_hook(
 def forest_flatten(
     parents: wp.array[wp.int32], out_labels: wp.array[wp.int32], out_best: wp.array[wp.int32]
 ) -> None:
-    # Each face's root, by path halving: a concurrent halving writes an ancestor over an ancestor,
-    # so the trees race but the roots do not. Also clears the face's slot for the next round.
+    # Each face's root (``forest_root``); also clears the face's slot for the next round.
     v = wp.int32(wp.tid())
-    x = v
-    p = parents[x]
-    while p != x:
-        grandparent = parents[p]
-        parents[x] = grandparent
-        x = grandparent
-        p = parents[x]
-    out_labels[v] = x
+    out_labels[v] = forest_root(parents, v)
     out_best[v] = INT32_MAX_CONSTANT
 
 
