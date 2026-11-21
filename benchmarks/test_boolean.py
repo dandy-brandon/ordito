@@ -26,6 +26,7 @@ is 5-17x slower than Manifold; the CPU device runs one thread against Manifold's
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 
 import manifold3d as m3
@@ -534,4 +535,36 @@ def test_revolve_region(bench_lib: BenchLibrary, ring_size: int) -> None:
     points = wp.array(loop_np, dtype=wp.vec2d, device=device)
     offsets = wp.array([0, ring_size], dtype=wp.int32, device=device)
     _, faces = bench_lib.run(lambda: od.boolean.revolve_region(points, offsets, 64))
+    assert faces.size > 0
+
+
+@wp.func
+def _torus_sdf(p: wp.vec3d) -> wp.float64:
+    # Warp's vector types carry no index stub.
+    x, y, z = p[0], p[1], p[2]  # pyright: ignore[reportIndexIssue]
+    q = wp.sqrt(x * x + y * y) - wp.float64(1.0)
+    return wp.float64(0.35) - wp.sqrt(q * q + z * z)
+
+
+def _torus_sdf_py(x: float, y: float, z: float) -> float:
+    q = math.sqrt(x * x + y * y) - 1.0
+    return 0.35 - math.sqrt(q * q + z * z)
+
+
+@pytest.mark.benchmark(group="level_set")
+@pytest.mark.benchlibs("ordito", "manifold3d")
+@pytest.mark.parametrize("edge_length", [0.1, 0.025])
+def test_level_set(bench_lib: BenchLibrary, edge_length: float) -> None:
+    """``od.boolean.level_set`` of a torus's distance (manifold3d evaluates its Python twin)."""
+    bounds = [-1.5, -1.5, -0.5, 1.5, 1.5, 0.5]
+    if bench_lib.kind == "manifold3d":
+        result_m3 = bench_lib.run(
+            lambda: _forced(m3.Manifold.level_set(_torus_sdf_py, bounds, edge_length))
+        )
+        assert result_m3.num_tri() > 0
+        return
+    device = bench_lib.device
+    _, faces = bench_lib.run(
+        lambda: od.boolean.level_set(_torus_sdf, bounds, edge_length, device=device)
+    )
     assert faces.size > 0

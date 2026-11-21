@@ -68,6 +68,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | refine a solid onto a smooth surface through its vertices, keeping creases | [`boolean.smooth_out`][ordito.boolean.smooth_out] |
 | the convex hull of points (or of meshes) as a solid | [`boolean.hull`][ordito.boolean.hull] |
 | a solid from a planar region: extruded (twisted, tapered) or revolved | [`boolean.extrude_region`][ordito.boolean.extrude_region], [`revolve`][ordito.boolean.revolve_region] |
+| a solid from a signed distance function | [`boolean.level_set`][ordito.boolean.level_set] |
 | a solid's separate pieces, each a solid | [`boolean.decompose`][ordito.boolean.decompose] |
 | triangulate a planar region with holes | [`polyline.triangulate_polygons`][ordito.polyline.triangulate_polygons], [`triangulate_polygons_from_offsets`][ordito.polyline.triangulate_polygons_from_offsets] |
 | keep a subset of faces | [`selection.submesh_from_face_mask`][ordito.selection.submesh_from_face_mask] |

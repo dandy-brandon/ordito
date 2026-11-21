@@ -507,6 +507,26 @@
    "sort": 32
   }
  },
+ "benchmarks/test_boolean.py::test_level_set[ordito-cpu-0.025]": {
+  "counts": {
+   "launch": 33,
+   "alloc": 69,
+   "h2h": 9,
+   "readback": 17,
+   "scan": 9,
+   "sort": 5
+  }
+ },
+ "benchmarks/test_boolean.py::test_level_set[ordito-cpu-0.1]": {
+  "counts": {
+   "launch": 33,
+   "alloc": 69,
+   "h2h": 9,
+   "readback": 17,
+   "scan": 9,
+   "sort": 5
+  }
+ },
  "benchmarks/test_boolean.py::test_min_gap[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 56,

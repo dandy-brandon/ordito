@@ -546,6 +546,30 @@
    "sort": 22
   }
  },
+ "benchmarks/test_boolean.py::test_level_set[ordito-cuda-0.025]": {
+  "counts": {
+   "launch": 41,
+   "alloc": 77,
+   "memset": 27,
+   "d2d": 5,
+   "h2d": 7,
+   "d2h": 22,
+   "scan": 12,
+   "sort": 4
+  }
+ },
+ "benchmarks/test_boolean.py::test_level_set[ordito-cuda-0.1]": {
+  "counts": {
+   "launch": 41,
+   "alloc": 77,
+   "memset": 27,
+   "d2d": 5,
+   "h2d": 7,
+   "d2h": 22,
+   "scan": 12,
+   "sort": 4
+  }
+ },
  "benchmarks/test_boolean.py::test_min_gap[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 66,

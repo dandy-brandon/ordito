@@ -24,7 +24,7 @@ import heapq
 import itertools
 import math
 import struct
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Literal, NamedTuple, cast
 
 import numpy as np
@@ -1624,6 +1624,362 @@ def _without_opposed_triangles(triangles: np.ndarray) -> np.ndarray:
         keep[positive[:pairs]] = False
         keep[negative[:pairs]] = False
     return triangles[keep]
+
+
+def level_set(
+    sdf: Callable[[wp.vec3d], wp.float64],
+    bounds: Sequence[float],
+    edge_length: float,
+    level: float = 0.0,
+    tolerance: float = -1.0,
+    *,
+    device: wp.DeviceLike = None,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    Return the closed surface where a signed distance function crosses ``level``, as a solid.
+
+    The function is sampled on a body-centred cubic grid over ``bounds`` (two cubic grids, one
+    shifted by half a cell) and the surface is cut out of its tetrahedra; grid points near the
+    surface snap onto it, which keeps short edges from forming. The function is positive inside.
+    The result is closed where it reaches the box: the box's faces cap it.
+
+    Parameters
+    ----------
+    sdf
+        A ``@wp.func`` (or Warp builtin) taking a ``wp.vec3d`` point and returning its
+        ``wp.float64`` value, positive inside. It need not be a true distance, nor continuous.
+    bounds
+        ``(6,)`` the box sampled: its lower corner, then its upper corner.
+    edge_length
+        The grid spacing to aim for, and about the longest edge of the result.
+    level
+        The value whose surface is extracted: positive insets the surface, negative outsets it.
+    tolerance
+        How far a vertex may lie from the true surface, refined by root finding along its grid
+        edge; zero or negative interpolates linearly between the two grid values.
+    device
+        Where to sample and build; the default device if not given.
+
+    Returns
+    -------
+    vertices : wp.array[wp.vec3]
+        ``(n_vertices,)`` the surface's vertices.
+    faces : wp.array[wp.int32]
+        ``(3 * n_faces,)`` outward-wound triangles; empty where the function never crosses
+        ``level`` in the box.
+
+    Raises
+    ------
+    ValueError
+        If ``bounds`` is not six finite values with the upper corner above the lower one, or
+        ``edge_length`` is not positive and finite, or the grid is too large to index.
+
+    See Also
+    --------
+    [`levelset.marching_cubes`][ordito.levelset.marching_cubes]
+
+    Notes
+    -----
+    Manifold's ``Manifold.level_set``: the same vertices and triangles in the same order. Each
+    new function compiles its own kernels on first use.
+
+    Examples
+    --------
+    Any ``@wp.func`` of a point serves; here the builtin ``wp.length``, positive away from the
+    origin, at level one: what is inside is the box less the unit ball, a cavity.
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.boolean.level_set(wp.length, [-1.5, -1.5, -1.5, 1.5, 1.5, 1.5], 0.25, 1.0)
+    print(len(od.boolean.decompose(vertices, faces)))  # 2
+    ```
+    """
+    device = wp.get_device(device)
+    box = [float(x) for x in bounds]
+    edge = float(edge_length)
+    if len(box) != 6 or not all(math.isfinite(x) for x in box):
+        raise ValueError("bounds must be six finite values: lower corner, then upper corner")
+    if any(box[3 + k] < box[k] for k in range(3)):
+        raise ValueError("bounds' upper corner must not lie below its lower corner")
+    if not (edge > 0.0 and math.isfinite(edge)):
+        raise ValueError(f"edge_length must be positive and finite, got {edge_length}")
+    grid = _level_set_grid(box, edge)
+    solid = _solid_level_set(sdf, grid, float(level), float(tolerance), device)
+    return _mesh_from_solid(solid, device)
+
+
+class _LevelSetGrid(NamedTuple):
+    """``CreateLevelSet``'s grid: origin, spacing, size, the index fields' bits and extents."""
+
+    origin: tuple[float, float, float]
+    spacing: tuple[float, float, float]
+    size: tuple[int, int, int]
+    pw: tuple[int, int, int]
+    max_index: int
+    n_points: int
+
+
+def _level_set_grid(box: list[float], edge: float) -> _LevelSetGrid:
+    """
+    Size the grid as ``CreateLevelSet`` does, in its ``float64`` operation order.
+
+    Raises
+    ------
+    ValueError
+        If the grid has fewer than two points along an axis or is too large to index.
+    """
+    dim = [box[3 + k] - box[k] for k in range(3)]
+    size_d = [d / edge + 1.0 for d in dim]
+    if max(size_d) > (1 << 28):
+        raise ValueError("the grid is too large: raise edge_length or shrink bounds")
+    size = tuple(int(x) for x in size_d)
+    if min(size) < 2:
+        raise ValueError("the grid needs two points along each axis: lower edge_length")
+    spacing = tuple(dim[k] / float(size[k] - 1) for k in range(3))
+    pw = tuple(_ceil_log2(n + 2 + 1) for n in size)
+    if 1 + sum(pw) + 3 > 64 or 1 + sum(pw) > 30:
+        raise ValueError("the grid is too large to index: raise edge_length or shrink bounds")
+    max_index = _level_set_encode((size[0] + 2, size[1] + 2, size[2] + 2, 1), pw)
+    n_points = _level_set_encode((size[0], size[1], size[2], 1), pw)
+    origin = (box[0], box[1], box[2])
+    return _LevelSetGrid(
+        origin,
+        (spacing[0], spacing[1], spacing[2]),
+        (size[0], size[1], size[2]),
+        (pw[0], pw[1], pw[2]),
+        max_index,
+        n_points,
+    )
+
+
+def _ceil_log2(value: int) -> int:
+    """``CeilLog2``: the bits of ``value - 1``, zero up to one."""
+    return 0 if value <= 1 else (value - 1).bit_length()
+
+
+def _level_set_encode(p: tuple[int, int, int, int], pw: tuple[int, ...]) -> int:
+    """``EncodeIndex`` on the host, for non-negative coordinates."""
+    return p[3] | p[2] << 1 | p[1] << (1 + pw[2]) | p[0] << (1 + pw[2] + pw[1])
+
+
+def _solid_level_set(
+    sdf: Callable[[wp.vec3d], wp.float64],
+    grid: _LevelSetGrid,
+    level: float,
+    tolerance: float,
+    device: wp.Device,
+) -> _Solid:
+    """``CreateLevelSet``: sample, find the near-surface points, build, then finish the solid."""
+    voxels_kernel, near_kernel, edge_kernel = (
+        cast(odt.Kernel, k) for k in kernel_boolean.level_set_kernels(sdf)
+    )
+    tol = tolerance if tolerance > 0 else math.inf
+    origin = wp.vec3d(*grid.origin)
+    spacing = wp.vec3d(*grid.spacing)
+    size = wp.vec3i(*grid.size)
+    pw = wp.vec3i(*grid.pw)
+    voxels = _launch.empty(grid.max_index, dtype=wp.float64, device=device)
+    _launch.launch(
+        voxels_kernel,
+        dim=grid.max_index,
+        inputs=[origin, spacing, size, pw, level],
+        outputs=[voxels],
+        device=device,
+    )
+    m = grid.n_points
+    keep_offsets, keep = offsets_buffer(m, device)
+    moved_dense = _launch.empty(m, dtype=wp.int32, device=device)
+    moved_pos_dense = _launch.empty(m, dtype=wp.vec3d, device=device)
+    mask = _launch.empty(m, dtype=wp.int32, device=device)
+    _launch.launch(
+        near_kernel,
+        dim=m,
+        inputs=[voxels, origin, spacing, size, pw, level, tol],
+        outputs=[keep, moved_dense, moved_pos_dense, mask],
+        device=device,
+    )
+    n_entries = scan_count(keep)
+    if n_entries == 0:
+        return _empty_solid(device)
+    entry_keys = _launch.empty(n_entries, dtype=wp.uint64, device=device)
+    moved_offsets, moved_flags = offsets_buffer(n_entries, device)
+    edge_verts = _launch.empty(7 * n_entries, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_boolean.level_set_entries,
+        dim=m,
+        inputs=[keep_offsets, moved_dense, mask],
+        outputs=[entry_keys, moved_flags, edge_verts],
+        device=device,
+    )
+    n_moved = scan_count(moved_flags)
+    entry_moved = _launch.empty(n_entries, dtype=wp.int32, device=device)
+    entry_distance = _launch.empty(n_entries, dtype=wp.float64, device=device)
+    moved_positions = _launch.empty(max(n_moved, 1), dtype=wp.vec3d, device=device)
+    _launch.launch(
+        kernel_boolean.level_set_number_moved,
+        dim=n_entries,
+        inputs=[moved_offsets, entry_keys, voxels, pw, moved_pos_dense],
+        outputs=[entry_moved, entry_distance, edge_verts, moved_positions],
+        device=device,
+    )
+    table_size = _level_set_table_size(grid, n_entries, moved_offsets, moved_positions)
+    keys = _launch.full(table_size, 0xFFFFFFFFFFFFFFFF, dtype=wp.uint64, device=device)
+    slot_entry = _launch.full(table_size, -1, dtype=wp.int32, device=device)
+    # The table is filled in one thread in index order, as Manifold's serial loop fills it.
+    insert_inputs: list[object] = [entry_keys, n_entries, table_size]
+    if device.is_cpu:
+        _launch.launch(
+            kernel_boolean.level_set_insert,
+            dim=1,
+            inputs=insert_inputs,
+            outputs=[keys, slot_entry],
+            device=device,
+        )
+    else:
+        _launch_on_host(kernel_boolean.level_set_insert, insert_inputs, [keys, slot_entry])
+    vert_offsets, vert_counts = offsets_buffer(table_size, device)
+    _launch.launch(
+        kernel_boolean.level_set_count_verts,
+        dim=table_size,
+        inputs=[voxels, keys, slot_entry, entry_keys, entry_distance, entry_moved, pw],
+        outputs=[vert_counts],
+        device=device,
+    )
+    n_edge = scan_count(vert_counts)
+    n_vertices = n_moved + n_edge
+    positions = _launch.empty(max(n_vertices, 1), dtype=wp.vec3d, device=device)
+    if n_moved > 0:
+        _launch.copy(positions, moved_positions, count=n_moved)
+    _launch.launch(
+        edge_kernel,
+        dim=table_size,
+        inputs=[
+            voxels,
+            keys,
+            slot_entry,
+            entry_keys,
+            entry_distance,
+            entry_moved,
+            vert_offsets,
+            n_moved,
+            origin,
+            spacing,
+            size,
+            pw,
+            level,
+            tol,
+        ],
+        outputs=[edge_verts, positions],
+        device=device,
+    )
+    tri_offsets, tri_counts = offsets_buffer(table_size, device)
+    scratch_tris = _launch.empty(1, dtype=wp.vec3i, device=device)
+    table = [keys, slot_entry, entry_keys, entry_distance, edge_verts, pw]
+    _launch.launch(
+        kernel_boolean.level_set_count_tris,
+        dim=table_size,
+        inputs=[*table, scratch_tris],
+        outputs=[tri_counts],
+        device=device,
+    )
+    n_tris = scan_count(tri_counts)
+    if n_tris == 0:
+        return _empty_solid(device)
+    tris = _launch.empty(n_tris, dtype=wp.vec3i, device=device)
+    _launch.launch(
+        kernel_boolean.level_set_write_tris,
+        dim=table_size,
+        inputs=[*table, tri_offsets],
+        outputs=[tris],
+        device=device,
+    )
+    return _level_set_solid(_launch.view(positions, 0, n_vertices), tris, device)
+
+
+def _level_set_table_size(
+    grid: _LevelSetGrid,
+    n_entries: int,
+    moved_offsets: wp.array[wp.int32],
+    moved_positions: wp.array[wp.vec3d],
+) -> int:
+    """
+    Return the hash table's size once Manifold's serial loop stops overflowing it.
+
+    It starts from the voxel count, and each overflow (the loop stops inserting once more than
+    half the slots are full) rescales it by how far through the grid the last snapped vertex
+    then was, or doubles it.
+    """
+    dense = 2 * grid.max_index
+    sparse = int(10 * math.sqrt(float(grid.max_index)))
+    requested = max(1, min(dense, sparse))
+    size = 1 << _ceil_log2(requested)
+    while 2 * n_entries > size:
+        cut = size // 2 + 1
+        # Host readback: the snapped vertices among the points inserted before the overflow.
+        n_moved = int(read_values(moved_offsets, cut, 1)[0])
+        ratio = math.inf
+        if n_moved > 0:
+            last = read_values(moved_positions, n_moved - 1, 1)[0]
+            cell = tuple(int((float(last[k]) - grid.origin[k]) / grid.spacing[k]) for k in range(3))
+            last_index = _level_set_encode((cell[0], cell[1], cell[2], 1), grid.pw)
+            ratio = grid.max_index / last_index if last_index > 0 else math.inf
+        requested = requested * 2 if ratio > 1000 else int(requested * ratio)
+        size = 1 << _ceil_log2(requested)
+    return size
+
+
+def _level_set_solid(
+    positions: wp.array[wp.vec3d], tris: wp.array[wp.vec3i], device: wp.Device
+) -> _Solid:
+    """
+    Finish the level set's triangles as ``CreateLevelSet`` does.
+
+    ``CreateHalfedges`` (opposed triangle pairs dropped, each edge's k-th backward halfedge
+    paired with its k-th forward one), ``CleanupTopology`` (pinched vertices split, duplicate
+    edges removed), ``RemoveUnreferencedVerts``, then the shape layout.
+    """
+    # Host readback: the pairing is a sort of the halfedges' edges on the host.
+    tris_np = _without_opposed_triangles(read_array(tris).astype(np.int64).reshape(-1, 3))
+    n_tris = len(tris_np)
+    starts = tris_np.reshape(-1)
+    ends = tris_np[:, [1, 2, 0]].reshape(-1)
+    low = np.minimum(starts, ends)
+    high = np.maximum(starts, ends)
+    halfedges = np.arange(3 * n_tris)
+    forward = starts < ends
+    backward_h = halfedges[~forward][
+        np.lexsort((halfedges[~forward], high[~forward], low[~forward]))
+    ]
+    forward_h = halfedges[forward][np.lexsort((halfedges[forward], high[forward], low[forward]))]
+    if len(backward_h) != len(forward_h) or not (
+        np.array_equal(low[backward_h], low[forward_h])
+        and np.array_equal(high[backward_h], high[forward_h])
+    ):
+        raise ValueError("the level set's triangles do not close: the function is degenerate")
+    pair = np.empty(3 * n_tris, dtype=np.int32)
+    pair[backward_h] = forward_h
+    pair[forward_h] = backward_h
+    n_vertices = int(positions.shape[0])
+    mesh = _halfedge_mesh(n_tris, n_vertices, positions, device)
+    _launch.copy(mesh.start, _launch.array(starts.astype(np.int32), dtype=wp.int32, device=device))
+    _launch.copy(mesh.pair, _launch.array(pair, dtype=wp.int32, device=device))
+    mesh.tri_mesh.zero_()
+    mesh.tri_coplanar.zero_()
+    mesh.tri_normal.zero_()
+    _simplify_topology(mesh, 0, 0.0, 0.0, device, cleanup_only=True)
+    n_h, n_v = (int(x) for x in read_values(mesh.sizes, 0, 2))
+    kept = _compacted(mesh, _launch.zeros(n_v, dtype=wp.vec3d, device=device), n_h // 3, n_v)
+    if kept is None:
+        return _empty_solid(device)
+    kept_positions, faces = kept[0], kept[1]
+    lower, upper = _positions_box(kept_positions)
+    epsilon = kernel_boolean.PRECISION * max(abs(x) for x in (*lower, *upper))
+    return _solid_from_positions(
+        kept_positions, faces, 0, epsilon, epsilon, lower, upper, "level set", sort_first=True
+    )
 
 
 def refine(
@@ -3929,11 +4285,14 @@ def _simplify_topology(
     device: wp.DeviceLike,
     *,
     colinear: bool = True,
+    cleanup_only: bool = False,
 ) -> None:
     """
     ``SimplifyTopology(firstNewVert)`` on the result's halfedges, in place.
 
     Without ``colinear``, ``RemoveDegenerates``: the same less the collinear-edge collapses.
+    With ``cleanup_only``, ``CleanupTopology`` alone: pinched vertices split, duplicate edges
+    removed.
     """
     mesh = result.struct
     capacity = result.start.size
@@ -4008,6 +4367,8 @@ def _simplify_topology(
         if count == 0:
             break
         _launch_serial(result, kernel_boolean.dedupe_flagged, [_HostIn(flagged, count), count], [])
+    if cleanup_only:
+        return
     # ``CollapseShortEdges`` (to ``tolerance`` only past the new vertices: everywhere it is
     # ``epsilon``), ``CollapseColinearEdges``, ``SwapDegenerates``.
     short_tolerance = tolerance if first_new_vert > 0 else epsilon
@@ -4251,6 +4612,46 @@ def _finish_solid(
         outputs=[vertex_normals],
         device=device,
     )
+    kept = _compacted(result, vertex_normals, n_t, n_v)
+    if kept is None:
+        return _empty_solid(device)
+    positions, faces, kept_normals, face_normals, face_mesh, face_coplanar = kept
+    lower, upper = _positions_box(positions) if box is None else box
+    return _sorted_solid(
+        positions,
+        faces,
+        kept_normals,
+        face_normals,
+        face_mesh,
+        face_coplanar,
+        epsilon,
+        tolerance,
+        lower,
+        upper,
+    )
+
+
+def _compacted(
+    result: _ResultMesh, vertex_normals: wp.array[wp.vec3d], n_t: int, n_v: int
+) -> (
+    tuple[
+        wp.array[wp.vec3d],
+        wp.array[wp.int32],
+        wp.array[wp.vec3d],
+        wp.array[wp.vec3d],
+        wp.array[wp.int32],
+        wp.array[wp.int32],
+    ]
+    | None
+):
+    """
+    ``RemoveUnreferencedVerts`` with the removed triangles, order kept.
+
+    Returns the kept positions, faces, vertex normals and each face's normal, mesh and coplanar
+    group, or ``None`` when no triangle is left.
+    """
+    mesh = result.struct
+    device = result.start.device
     tri_offsets, tri_kept = offsets_buffer(n_t, device)
     vert_offsets, vert_used = offsets_buffer(n_v, device)
     _launch.launch(
@@ -4263,7 +4664,7 @@ def _finish_solid(
     n_kept = scan_count(tri_kept)
     n_used = scan_count(vert_used)
     if n_kept == 0:
-        return _empty_solid(device)
+        return None
     faces = _launch.empty(3 * n_kept, dtype=wp.int32, device=device)
     face_normals = _launch.empty(n_kept, dtype=wp.vec3d, device=device)
     face_mesh = _launch.empty(n_kept, dtype=wp.int32, device=device)
@@ -4284,19 +4685,7 @@ def _finish_solid(
         outputs=[positions, kept_normals],
         device=device,
     )
-    lower, upper = _positions_box(positions) if box is None else box
-    return _sorted_solid(
-        positions,
-        faces,
-        kept_normals,
-        face_normals,
-        face_mesh,
-        face_coplanar,
-        epsilon,
-        tolerance,
-        lower,
-        upper,
-    )
+    return positions, faces, kept_normals, face_normals, face_mesh, face_coplanar
 
 
 def _sorted_solid(

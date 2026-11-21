@@ -11,6 +11,7 @@ import trimesh as tm
 import warp as wp
 
 import ordito as od
+from tests import level_set_functions
 from tests.conftest import CLOSED_MESHES
 from tests.conversions import numpy_to_warp, warp_empty
 
@@ -736,6 +737,51 @@ def test_revolve_region_matches_manifold3d(
     assert result_m3.num_tri() > 0
     points, offsets = _section_loops(section_m3, device)
     _assert_same_as_m3(od.boolean.revolve_region(points, offsets, segments, degrees), result_m3)
+
+
+_LEVEL_SETS = {
+    "torus": (level_set_functions.torus_sdf, level_set_functions.torus_sdf_py),
+    "cube": (level_set_functions.cube_sdf, level_set_functions.cube_sdf_py),
+    "blobs": (level_set_functions.blobs_sdf, level_set_functions.blobs_sdf_py),
+}
+
+
+@pytest.mark.parity("level_set", "manifold3d")
+@pytest.mark.parametrize("shape", list(_LEVEL_SETS))
+@pytest.mark.parametrize(
+    ("bounds", "edge_length", "level", "tolerance"),
+    [
+        ([-1.5, -1.5, -1.5, 1.5, 1.5, 1.5], 0.2, 0.0, -1.0),
+        ([-1.3, -1.1, -0.2, 1.2, 1.4, 0.25], 0.07, 0.05, -1.0),
+        ([-1.5, -1.5, -1.5, 1.5, 1.5, 1.5], 0.15, -0.05, 0.002),
+    ],
+    ids=["plain", "clipped", "refined"],
+)
+def test_level_set_matches_manifold3d(
+    device: str, shape: str, bounds: list[float], edge_length: float, level: float, tolerance: float
+) -> None:
+    """
+    ``level_set`` is Manifold's ``Manifold.level_set`` of the same function, array for array.
+
+    Class A. The function is a ``@wp.func`` here and its Python twin there, written to round the
+    same (``sqrt``, ``abs``, ``max``, arithmetic). A box clipping the surface caps it; a level
+    offsets it; a tolerance refines each vertex by root finding. The cube's flat faces snap whole
+    grid points onto the surface; the two blobs meet in a saddle; the fine grid overflows
+    Manifold's first hash table.
+    """
+    sdf, sdf_py = _LEVEL_SETS[shape]
+    result_m3 = m3.Manifold.level_set(sdf_py, bounds, edge_length, level, tolerance)
+    assert result_m3.num_tri() > 0
+    result = od.boolean.level_set(sdf, bounds, edge_length, level, tolerance, device=device)
+    _assert_same_as_m3(result, result_m3)
+
+
+def test_level_set_rejects_a_bad_grid(device: str) -> None:
+    """Inverted bounds and a zero edge length raise. Not a library comparison: guards."""
+    with pytest.raises(ValueError, match="upper corner"):
+        od.boolean.level_set(level_set_functions.cube_sdf, [1, 1, 1, 0, 0, 0], 0.1, device=device)
+    with pytest.raises(ValueError, match="edge_length"):
+        od.boolean.level_set(level_set_functions.cube_sdf, [0, 0, 0, 1, 1, 1], 0.0, device=device)
 
 
 def _manifold_mesh_tm(result_m3: m3.Manifold) -> tm.Trimesh:
