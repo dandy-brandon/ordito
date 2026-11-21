@@ -441,11 +441,11 @@
  "benchmarks/test_boolean.py::test_difference_all[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 274,
-   "alloc": 376,
+   "alloc": 358,
    "memset": 96,
    "d2d": 10,
-   "h2d": 26,
-   "d2h": 88,
+   "h2d": 10,
+   "d2h": 72,
    "scan": 61,
    "sort": 22
   }
@@ -465,11 +465,11 @@
  "benchmarks/test_boolean.py::test_intersection_all[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 271,
-   "alloc": 366,
+   "alloc": 357,
    "memset": 96,
    "d2d": 10,
-   "h2d": 18,
-   "d2h": 77,
+   "h2d": 10,
+   "d2h": 69,
    "scan": 60,
    "sort": 22
   }
@@ -489,11 +489,11 @@
  "benchmarks/test_boolean.py::test_split_by_plane[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 149,
-   "alloc": 276,
+   "alloc": 258,
    "memset": 49,
    "d2d": 6,
-   "h2d": 86,
-   "d2h": 121,
+   "h2d": 70,
+   "d2h": 105,
    "scan": 33,
    "sort": 14
   }
@@ -501,11 +501,11 @@
  "benchmarks/test_boolean.py::test_trim_by_plane[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 106,
-   "alloc": 182,
+   "alloc": 173,
    "memset": 37,
    "d2d": 4,
-   "h2d": 46,
-   "d2h": 66,
+   "h2d": 38,
+   "d2h": 58,
    "scan": 21,
    "sort": 10
   }
@@ -525,11 +525,11 @@
  "benchmarks/test_boolean.py::test_union_all[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 271,
-   "alloc": 366,
+   "alloc": 357,
    "memset": 96,
    "d2d": 10,
-   "h2d": 18,
-   "d2h": 77,
+   "h2d": 10,
+   "d2h": 69,
    "scan": 60,
    "sort": 22
   }

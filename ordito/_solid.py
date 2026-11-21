@@ -28,6 +28,16 @@ from ordito.kernels.algorithms import solid_topology as kernel_solid_topology
 FLOAT32_EPSILON = 1.1920929e-07
 
 
+# A collapse, dedupe or swap pass on CUDA of at most this many flagged edges, plus one for every
+# ``_SERIAL_DEVICE_HALFEDGES`` halfedges of the mesh, runs in one GPU thread; a longer one goes to
+# the CPU (``_launch_serial``). One GPU thread takes ~1.25 us a flagged edge, the CPU's round trip
+# of the mesh's used prefixes ~0.3 ms plus ~12 ns a halfedge (2026-11-21: passes of 2, 6 and 19
+# edges at 4 M halfedges paid 49-57 ms each for the trip, their host kernel 0.1 ms; 55 824
+# collapses took 73 ms in a GPU thread against 3.1 ms on the CPU).
+_SERIAL_DEVICE_BASE = 256
+_SERIAL_DEVICE_HALFEDGES = 128
+
+
 # Up to this many claiming seeds the coplanar flood runs in one thread, as Manifold's loop does;
 # above it in parallel rounds on CUDA (2026-11-21, quad-strip revolves: 64 seeds at par, 256
 # 0.39x, 2 048 0.07x, 16 384 0.008x). The CPU always takes the one thread: it runs a launch's
@@ -633,9 +643,31 @@ def simplify_topology(
     # The counts as they stand: only the serial passes and the pinch split change them, and each
     # hands back its new counts, so the flag passes' grids need no readback.
     known = list(sizes)
+    # A CUDA pass of few flagged edges for the mesh's size runs in one GPU thread, on device
+    # scratch made once.
+    device_scratch: dict[_HostScratch, odt.ArrayNd] = {}
 
     def serial(kernel: odt.Kernel, inputs: list[object], outputs: list[object]) -> None:
-        known[:] = _launch_serial(result, (known[0], known[1]), kernel, inputs, outputs)
+        count = cast(int, inputs[1])
+        if on_cpu or count > _SERIAL_DEVICE_BASE + known[0] // _SERIAL_DEVICE_HALFEDGES:
+            known[:] = _launch_serial(result, (known[0], known[1]), kernel, inputs, outputs)
+            return
+        plain: list[object] = []
+        for value in inputs:
+            if isinstance(value, _HostScratch):
+                if value not in device_scratch:
+                    device_scratch[value] = (
+                        _launch.empty(value.size, dtype=wp.int32, device=device)
+                        if value.fill is None
+                        else _launch.full(value.size, value.fill, dtype=wp.int32, device=device)
+                    )
+                plain.append(device_scratch[value])
+            else:
+                plain.append(_device_value(value))
+        _launch.launch(kernel, dim=1, inputs=[result, *plain], outputs=outputs, device=device)
+        # Host readback: the pass grew the mesh, and the next pass's grid follows it.
+        n_h, n_v = read_values(result.sizes, 0, 2)
+        known[:] = [int(n_h), int(n_v)]
 
     def flag(kernel: odt.Kernel, inputs: list[object]) -> int:
         n_h = known[0]
