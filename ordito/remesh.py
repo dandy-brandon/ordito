@@ -4122,11 +4122,14 @@ def flip_to_delaunay(
     Improve triangle quality by flipping interior edges toward the Delaunay criterion.
 
     For every interior edge whose two incident faces are both in ``region``, the shared diagonal
-    is flipped when doing so satisfies the local Delone (empty-circumcircle) test — subject to an
-    optional dihedral-angle-change gate and a surface-deviation gate, so the flips never distort
-    the surface. Rim edges (with a face
-    outside the region, or on the mesh boundary) are never flipped. Vertices, face count and
-    region membership are unchanged; only the triangulation of the region is rewritten.
+    is flipped when the two angles opposite it sum to more than pi: the local Delaunay test of a
+    surface, which on planar input is the empty-circumcircle test. Flips are subject to an
+    optional dihedral-angle-change gate and a surface-deviation gate, so they never distort the
+    surface. A flip that would fold the two faces onto each other, make a non-convex quadrangle
+    or duplicate an existing edge is never made, so an edge around a valence-3 vertex can stay
+    non-Delaunay. Rim edges (with a face outside the region, or on the mesh boundary) are never
+    flipped. Vertices, face count and region membership are unchanged; only the triangulation of
+    the region is rewritten.
 
     Parameters
     ----------
@@ -4227,6 +4230,7 @@ def flip_to_delaunay(
                 mac,
                 mdsq,
                 car,
+                kernel_remesh.DELONE_CRITERION_ANGLE,
                 None,
                 settled,
                 out_flip,
@@ -5649,8 +5653,10 @@ def subdivide_region_to_size(
     greater than ``max_edge`` is bisected, the incident faces are re-triangulated crack-free
     (the [`subdivide_to_size`][ordito.remesh.subdivide_to_size] 1/2/3-split templates, so faces
     outside the region that touch a split edge stay watertight), and — unless disabled — a
-    parallel Delaunay edge-flip pass ([`flip_to_delaunay`][ordito.remesh.flip_to_delaunay])
-    improves the region triangulation after each pass. New vertices are appended after the
+    parallel edge-flip pass improves the region triangulation after each pass. That pass keeps
+    the diagonal whose larger circumcircle is the smaller, which on planar input is
+    [`flip_to_delaunay`][ordito.remesh.flip_to_delaunay]'s Delaunay test and on a curved region
+    may differ from it. New vertices are appended after the
     originals, so the caller derives the new-vertex set as the index range
     ``[len(vertices), len(new_vertices))``.
 
@@ -6898,6 +6904,7 @@ def _flip_region_faces(
                 mac,
                 mdsq,
                 car,
+                kernel_remesh.DELONE_CRITERION_CIRCUMCIRCLE,
                 carried_flags,
                 settled,
                 out_flip,

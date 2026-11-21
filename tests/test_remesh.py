@@ -2898,23 +2898,24 @@ def test_flip_to_delaunay_reduces_violations(saddle_graded: tuple[tm.Trimesh, wp
 @pytest.mark.parity("flip_to_delaunay", "meshlib")
 def test_flip_to_delaunay_matches_meshlib(device: str) -> None:
     """
-    Class B: the same fixpoint, reached by a parallel pass instead of a serial queue.
+    Class B: the same planar fixpoint, reached by a parallel pass instead of a serial queue.
 
-    ``makeDeloneEdgeFlips`` is the same empty-circumcircle criterion and the same operation, and on
-    a decisive input the two agree exactly: a planar kite whose long diagonal is the non-Delaunay
-    one, where both flip that one edge and return the identical pair of triangles.
+    ``makeDeloneEdgeFlips`` keeps the diagonal whose larger circumcircle is the smaller, where
+    ``flip_to_delaunay`` flips on the angle sum opposite the diagonal. The two tests agree on every
+    planar quad, so on planar input the comparison is exact: a kite whose long diagonal is the
+    non-Delaunay one, where both flip that one edge and return the identical pair of triangles.
 
-    On a mesh with hundreds of violations the *outputs* differ, and that is a property of the
-    algorithms rather than of the criterion -- ordito commits a conflict-free independent set per
-    round where MeshLib works a queue, so which of two competing flips wins differs. What is
-    asserted there is the fixpoint, which is the actual claim either function makes: after ordito's
-    pass, **MeshLib finds 0 further flips to make**, against **942** in the input. That is a
-    stronger statement than a face-set comparison and it is checked with the reference's own
-    criterion, not ordito's.
+    On a planar mesh with hundreds of violations the *outputs* differ, and that is a property of
+    the algorithms rather than of the criterion -- ordito commits a conflict-free independent set
+    per round where MeshLib works a queue, so which of two competing flips wins differs. What is
+    asserted there is the fixpoint: after ordito's pass MeshLib finds **0** further flips to make,
+    checked with the reference's own criterion.
 
-    The converse is not symmetric and is asserted as measured rather than papered over: ordito
-    still changes **20 of 1 280** faces in MeshLib's output, so ordito's test is the stricter of
-    the two on near-cocircular quads.
+    On a curved surface the criteria part (measured 2026-11-21: on an ``icosphere(3)`` jittered by
+    0.08, MeshLib makes 394 further flips on ordito's output, whose every flippable edge satisfies
+    igl's angle test, see ``test_flip_to_delaunay_satisfies_igl_is_delaunay``; and on an
+    ``icosphere(4)`` jittered 20 % radially MeshLib's pass cycles without end), so the curved case
+    is not compared.
     """
     # A kite: the diagonal 0-2 (length 2.0) is longer than 1-3 (1.8), so it is the one to flip.
     kite_vertices_np = np.array(
@@ -2933,12 +2934,10 @@ def test_flip_to_delaunay_matches_meshlib(device: str) -> None:
         lexsort_rows(np.sort(np.asarray(flipped_ml, dtype=np.int32), axis=1)),
     )
 
-    # The fixpoint, on an input with hundreds of violations.
-    sphere_tm = tm.creation.icosphere(subdivisions=3)
-    jittered_np = sphere_tm.vertices + np.random.default_rng(1).normal(
-        scale=0.08, size=sphere_tm.vertices.shape
-    )
-    vertices_wp, faces_wp = numpy_to_warp(jittered_np, sphere_tm.faces, device)
+    # The fixpoint, on a planar input with hundreds of violations.
+    planar_np, grid_faces_np = _jittered_planar_grid(24, seed=3)
+    vertices_wp, faces_wp = numpy_to_warp(planar_np, grid_faces_np, device)
+    planar_np = vertices_wp.numpy().astype(np.float64)
     delaunay_np = (
         od.remesh.flip_to_delaunay(vertices_wp, wp.clone(faces_wp), max_iter=100)
         .numpy()
@@ -2946,10 +2945,10 @@ def test_flip_to_delaunay_matches_meshlib(device: str) -> None:
     )
 
     violations_before = mm.makeDeloneEdgeFlips(
-        numpy_to_meshlib(jittered_np, sphere_tm.faces), mm.DeloneSettings(), 100
+        numpy_to_meshlib(planar_np, grid_faces_np), mm.DeloneSettings(), 10_000
     )
     violations_after = mm.makeDeloneEdgeFlips(
-        numpy_to_meshlib(jittered_np, delaunay_np), mm.DeloneSettings(), 100
+        numpy_to_meshlib(planar_np, delaunay_np), mm.DeloneSettings(), 10_000
     )
     assert violations_before > 100  # non-vacuity: the input really is far from Delaunay
     assert violations_after == 0
@@ -2971,8 +2970,94 @@ def test_flip_to_delaunay_satisfies_igl_is_delaunay(device: str) -> None:
     face corners whose opposite edge igl calls non-Delaunay. ordito's pass must leave none,
     judged by igl's own predicate and on the ``float32`` positions both sides read.
     """
-    side = 24
-    rng = np.random.default_rng(3)
+    planar_np, faces_np = _jittered_planar_grid(24, seed=3)
+    vertices_wp, faces_wp = numpy_to_warp(planar_np, faces_np, device)
+    vertices_np = vertices_wp.numpy().astype(np.float64)
+
+    before_igl = np.asarray(igl.is_delaunay(vertices_np, faces_np.astype(np.int64))).astype(bool)
+    assert int((~before_igl).sum()) > 100  # non-vacuity: the input really is far from Delaunay
+
+    flipped_np = (
+        od.remesh.flip_to_delaunay(vertices_wp, faces_wp, max_iter=100).numpy().reshape(-1, 3)
+    )
+    after_igl = np.asarray(igl.is_delaunay(vertices_np, flipped_np.astype(np.int64))).astype(bool)
+    assert after_igl.shape == (faces_np.shape[0], 3)
+    assert after_igl.all()
+
+
+@pytest.mark.parity(
+    "flip_to_delaunay",
+    "igl",
+    benchmarked=False,
+    reason="igl.is_intrinsic_delaunay is a post-condition check, not a flip pass: libigl binds no "
+    "extrinsic edge-flip routine, so there is nothing of igl's to time beside flip_to_delaunay",
+)
+@pytest.mark.parametrize(("subdivisions", "jitter"), [(3, 0.2), (4, 0.1), (4, 0.2)])
+def test_flip_to_delaunay_is_intrinsic_delaunay_on_a_curved_surface(
+    subdivisions: int, jitter: float, device: str
+) -> None:
+    """
+    Class A on a curved surface: ``igl.is_intrinsic_delaunay`` holds on every flippable edge.
+
+    An icosphere jittered radially by ``jitter`` is non-Delaunay in igl's angle-sum test on
+    hundreds of corners. After the pass, every edge igl still flags is one no flip can change:
+    its other diagonal is already an edge of the mesh (a valence-3 vertex's spokes), so flipping
+    would duplicate it. The milder inputs have none of those and end with no flagged corner;
+    ``(4, 0.2)`` keeps 170 such edges (measured 2026-11-21, both devices). The angle-sum test is
+    what makes this hold: under MeshLib's circumcircle comparison
+    (``DELONE_CRITERION_CIRCUMCIRCLE``), 54 flippable edges of ``(4, 0.2)`` stay non-Delaunay, which
+    is the mutation this pins.
+    """
+    sphere_tm = tm.creation.icosphere(subdivisions=subdivisions)
+    rng = np.random.default_rng(1)
+    jittered_np = sphere_tm.vertices * (
+        1.0 + rng.uniform(-jitter, jitter, size=(sphere_tm.vertices.shape[0], 1))
+    )
+    vertices_wp, faces_wp = numpy_to_warp(jittered_np, sphere_tm.faces, device)
+    vertices_np = vertices_wp.numpy().astype(np.float64)
+    faces_np = sphere_tm.faces.astype(np.int64)
+
+    before_igl = np.asarray(
+        igl.is_intrinsic_delaunay(igl.edge_lengths(vertices_np, faces_np), faces_np)
+    ).astype(bool)
+    assert int((~before_igl).sum()) > 100  # non-vacuity
+
+    flipped_np = (
+        od.remesh.flip_to_delaunay(vertices_wp, faces_wp, max_iter=100)
+        .numpy()
+        .reshape(-1, 3)
+        .astype(np.int64)
+    )
+    after_igl = np.asarray(
+        igl.is_intrinsic_delaunay(igl.edge_lengths(vertices_np, flipped_np), flipped_np)
+    ).astype(bool)
+
+    flipped_tm = tm.Trimesh(vertices_np, flipped_np, process=False)
+    assert flipped_tm.is_watertight
+    assert flipped_tm.is_winding_consistent
+    edge_set = {tuple(edge) for edge in flipped_tm.edges_unique.tolist()}
+    flagged = {
+        tuple(sorted((int(flipped_np[f, (j + 1) % 3]), int(flipped_np[f, (j + 2) % 3]))))
+        for f, j in zip(*np.nonzero(~after_igl), strict=True)
+    }
+    unflippable = {
+        tuple(sorted(edge.tolist()))
+        for edge, other in zip(
+            flipped_tm.face_adjacency_edges, flipped_tm.face_adjacency_unshared, strict=True
+        )
+        if tuple(sorted(other.tolist())) in edge_set
+    }
+    assert flagged <= unflippable
+
+
+def _jittered_planar_grid(side: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Return a ``side x side`` jittered planar grid whose cells all take the same diagonal.
+
+    ``(side * side, 3)`` positions at ``z = 0`` and ``(2 (side - 1)^2, 3)`` faces: far from
+    Delaunay, and planar, where every flip criterion agrees.
+    """
+    rng = np.random.default_rng(seed)
     xs_np, ys_np = np.meshgrid(np.arange(side), np.arange(side), indexing="ij")
     planar_np = np.column_stack((xs_np.ravel(), ys_np.ravel())).astype(np.float64)
     planar_np += rng.uniform(-0.35, 0.35, size=planar_np.shape)
@@ -2980,20 +3065,7 @@ def test_flip_to_delaunay_satisfies_igl_is_delaunay(device: str) -> None:
     a, b = index_np[:-1, :-1].ravel(), index_np[1:, :-1].ravel()
     c, d = index_np[1:, 1:].ravel(), index_np[:-1, 1:].ravel()
     faces_np = np.concatenate([np.column_stack((a, b, c)), np.column_stack((a, c, d))])
-    vertices_wp, faces_wp = numpy_to_warp(
-        np.column_stack((planar_np, np.zeros(side * side))), faces_np, device
-    )
-    vertices_np = vertices_wp.numpy().astype(np.float64)
-
-    before_igl = np.asarray(igl.is_delaunay(vertices_np, faces_np.astype(np.int64)))
-    assert int((~before_igl).sum()) > 100  # non-vacuity: the input really is far from Delaunay
-
-    flipped_np = (
-        od.remesh.flip_to_delaunay(vertices_wp, faces_wp, max_iter=100).numpy().reshape(-1, 3)
-    )
-    after_igl = np.asarray(igl.is_delaunay(vertices_np, flipped_np.astype(np.int64)))
-    assert after_igl.shape == (faces_np.shape[0], 3)
-    assert after_igl.all()
+    return np.column_stack((planar_np, np.zeros(side * side))), faces_np.astype(np.int32)
 
 
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
@@ -3109,8 +3181,9 @@ def test_flip_topology_incremental_state_matches_a_fresh_build(
 
 @wp.kernel  # pyright: ignore[reportUntypedFunctionDecorator]  # wp.kernel has no return annotation
 def _probe_delone_verdicts(points: wp.array[wp.vec3], out_verdicts: wp.array[wp.int32]) -> None:
-    # Quad ``i`` is points ``4 i .. 4 i + 3``; its filtered verdict goes to ``2 i``, its ``float64``
-    # one (as ``delone_flip_candidates`` forms it) to ``2 i + 1``.
+    # Quad ``i`` is points ``4 i .. 4 i + 3``; its filtered circumcircle verdict goes to ``4 i``,
+    # its ``float64`` one (as ``delone_flip_candidates`` forms it) to ``4 i + 1``, the angle
+    # filter's keep (``1``) to ``4 i + 2`` and the ``float64`` angle verdict to ``4 i + 3``.
     # Warp's stubs type kernel scalars and array elements loosely, hence the per-line ignores.
     i = wp.int32(wp.tid())  # pyright: ignore[reportArgumentType]
     a = wp.int32(4 * i)  # pyright: ignore[reportArgumentType]
@@ -3123,24 +3196,46 @@ def _probe_delone_verdicts(points: wp.array[wp.vec3], out_verdicts: wp.array[wp.
         points[c],  # pyright: ignore[reportArgumentType]
         points[d],  # pyright: ignore[reportArgumentType]
     )
+    angle_keep = kernel_remesh._delone_angle_keep_f32(
+        points[a],  # pyright: ignore[reportArgumentType]
+        points[b],  # pyright: ignore[reportArgumentType]
+        points[c],  # pyright: ignore[reportArgumentType]
+        points[d],  # pyright: ignore[reportArgumentType]
+    )
     ap, bp, cp, dp = kernel_remesh.flip_quad_positions_d(points, a, b, c, d)
+    n_abc = kernel_predicates.triangle_normal(ap, bp, cp)
+    n_acd = kernel_predicates.triangle_normal(ap, cp, dp)
+    n_abd = kernel_predicates.triangle_normal(ap, bp, dp)
+    n_dbc = kernel_predicates.triangle_normal(dp, bp, cp)
     exact = kernel_remesh._delone_quadrangle_verdict_d(
         ap,
         bp,
         cp,
         dp,
-        kernel_predicates.triangle_normal(ap, bp, cp),  # pyright: ignore[reportArgumentType]
-        kernel_predicates.triangle_normal(ap, cp, dp),  # pyright: ignore[reportArgumentType]
-        kernel_predicates.triangle_normal(ap, bp, dp),  # pyright: ignore[reportArgumentType]
-        kernel_predicates.triangle_normal(dp, bp, cp),  # pyright: ignore[reportArgumentType]
+        n_abc,  # pyright: ignore[reportArgumentType]
+        n_acd,  # pyright: ignore[reportArgumentType]
+        n_abd,  # pyright: ignore[reportArgumentType]
+        n_dbc,  # pyright: ignore[reportArgumentType]
     )
-    out_verdicts[2 * i] = filtered  # pyright: ignore[reportIndexIssue]
-    out_verdicts[2 * i + 1] = exact  # pyright: ignore[reportIndexIssue, reportOperatorIssue]
+    exact_angle = kernel_remesh._delone_angle_verdict_d(
+        ap,
+        bp,
+        cp,
+        dp,
+        n_abc,  # pyright: ignore[reportArgumentType]
+        n_acd,  # pyright: ignore[reportArgumentType]
+        n_abd,  # pyright: ignore[reportArgumentType]
+        n_dbc,  # pyright: ignore[reportArgumentType]
+    )
+    out_verdicts[4 * i] = filtered  # pyright: ignore[reportIndexIssue]
+    out_verdicts[4 * i + 1] = exact  # pyright: ignore[reportIndexIssue, reportOperatorIssue]
+    out_verdicts[4 * i + 2] = wp.where(angle_keep, 1, 0)  # pyright: ignore[reportIndexIssue, reportOperatorIssue]
+    out_verdicts[4 * i + 3] = exact_angle  # pyright: ignore[reportIndexIssue, reportOperatorIssue]
 
 
 def test_delone_float32_filter_never_contradicts_float64(device: str) -> None:
     """
-    Ordito against ordito: the ``float32`` Delone filter decides only what ``float64`` decides.
+    Ordito against ordito: the ``float32`` Delone filters decide only what ``float64`` decides.
 
     ``delone_flip_candidates`` takes the filter's verdict wherever it gives one, so every decided
     quad must get the ``float64`` verdict; the filter's bounds are what make that so. The quads are
@@ -3190,14 +3285,14 @@ def test_delone_float32_filter_never_contradicts_float64(device: str) -> None:
     ]
     quads_np = np.concatenate(shapes + scaled).astype(np.float32)
 
-    verdicts = wp.zeros(2 * quads_np.shape[0], dtype=wp.int32, device=device)
+    verdicts = wp.zeros(4 * quads_np.shape[0], dtype=wp.int32, device=device)
     wp.launch(
         _probe_delone_verdicts,
         dim=quads_np.shape[0],
         inputs=[wp.array(quads_np.reshape(-1, 3), dtype=wp.vec3, device=device), verdicts],
         device=device,
     )
-    verdicts_np = verdicts.numpy().reshape(-1, 2)
+    verdicts_np = verdicts.numpy().reshape(-1, 4)
     decided = verdicts_np[:, 0] != int(kernel_remesh.DELONE_UNDECIDED)
     assert np.array_equal(verdicts_np[decided, 0], verdicts_np[decided, 1])
     # Both verdicts occur among the decided quads, it decides most random quads, and it leaves
@@ -3208,6 +3303,13 @@ def test_delone_float32_filter_never_contradicts_float64(device: str) -> None:
     }
     assert decided[:n].mean() > 0.5
     assert not decided[n : 2 * n].any()
+
+    # The angle test's filter proves only a keep, and every keep it proves is ``float64``'s.
+    angle_kept = verdicts_np[:, 2] == 1
+    assert np.all(verdicts_np[angle_kept, 3] == int(kernel_remesh.DELONE_KEEP))
+    flips = verdicts_np[:, 3] != int(kernel_remesh.DELONE_KEEP)
+    assert flips.any()  # non-vacuity: the hard kinds include flips the filter must leave alone
+    assert angle_kept[:n].mean() > 0.1  # and it decides a share of random quads
 
 
 def test_flip_loop_builds_inside_the_loop_keep_the_result(

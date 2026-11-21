@@ -75,6 +75,7 @@ from ordito.kernels.predicates import (
     segment_segment_distance_sq,
     triangle_aspect_ratio,
     triangle_normal,
+    vector_angle,
 )
 from ordito.kernels.reduce import (
     GROUP_SUM_NONFINITE,
@@ -1463,6 +1464,21 @@ DELONE_FLIP_UNLESS_TURNED = wp.int32(2)
 # ``_delone_verdict_filtered_f32``'s answer where only ``float64`` can decide.
 DELONE_UNDECIDED = wp.int32(3)
 
+# ``delone_flip_candidates``' warp-uniform criterion selector. ``CIRCUMCIRCLE`` is
+# ``checkDeloneQuadrangle``: keep the diagonal whose larger circumcircle is the smaller, the test
+# the region subdivision and the refiners port and must reproduce. ``ANGLE`` is the local
+# Delaunay test of a surface: flip when the two angles opposite the diagonal sum past pi, the test
+# ``igl::is_intrinsic_delaunay`` and geometry-central read. The two agree on every planar quad
+# (0 of 200 000 random convex quads) and part on a curved one (16 % at a height jitter of 0.3 of
+# the quad's width), where the circumcircle rule is not a potential: a serial circumcircle pass
+# cycled without end on an icosphere(4) jittered by 20 % radially, which the angle rule settles
+# in a few rounds. ``flip_to_delaunay`` takes ``ANGLE``.
+DELONE_CRITERION_CIRCUMCIRCLE = wp.int32(0)
+DELONE_CRITERION_ANGLE = wp.int32(1)
+# The angle sum must pass pi by this much (radians) for an ``ANGLE`` flip: a cocircular quad is
+# Delaunay both ways, so a tie is kept rather than flipped back and forth.
+DELONE_ANGLE_EPS = wp.float64(1e-10)
+
 # The ``float32`` filter's bounds. ``u`` is the ``float32`` unit roundoff ``2**-24``; a triangle's
 # condition ``kappa`` is its longest squared side over the length of its edge cross product (at
 # least 1, and the aspect ratio up to a constant). Every constant is about twice the one derived
@@ -1523,6 +1539,32 @@ def _delone_quadrangle_verdict_d(
     keep = metric_ac <= metric_bd + DELONE_EPS * (metric_ac + metric_bd)
     if wp.isinf(metric_ac):
         keep = wp.isinf(metric_bd) and wp.length_sq(a - c) <= wp.length_sq(b - d)
+    return wp.where(keep, DELONE_KEEP, DELONE_FLIP_UNLESS_TURNED)
+
+
+@wp.func
+def _delone_angle_verdict_d(
+    a: wp.vec3d,
+    b: wp.vec3d,
+    c: wp.vec3d,
+    d: wp.vec3d,
+    n_abc: wp.vec3d,
+    n_acd: wp.vec3d,
+    n_abd: wp.vec3d,
+    n_dbc: wp.vec3d,
+) -> wp.int32:
+    # ``DELONE_CRITERION_ANGLE``'s verdict on quad ``(a, b, c, d)`` with diagonal ``a-c``: the
+    # angles opposite it sit at ``b`` (in ``abc``) and ``d`` (in ``acd``). The pocket rule is
+    # ``_delone_quadrangle_verdict_d``'s: never flip into a fold, always flip out of one; two folds
+    # keep. The angle sum is the ``atan2`` form, flat in neither direction near pi (§12.3).
+    old_pocket = wp.dot(n_abc, n_acd) < DELONE_CRITICAL_DOT
+    new_pocket = wp.dot(n_abd, n_dbc) < DELONE_CRITICAL_DOT
+    if new_pocket:
+        return DELONE_KEEP
+    if old_pocket:
+        return DELONE_FLIP
+    opposite = vector_angle(a - b, c - b) + vector_angle(a - d, c - d)
+    keep = opposite <= wp.float64(3.141592653589793) + DELONE_ANGLE_EPS
     return wp.where(keep, DELONE_KEEP, DELONE_FLIP_UNLESS_TURNED)
 
 
@@ -2080,6 +2122,49 @@ def _delone_verdict_filtered_f32(a: wp.vec3, b: wp.vec3, c: wp.vec3, d: wp.vec3)
     return DELONE_UNDECIDED
 
 
+# ``_delone_angle_keep_f32``'s margin on a ``float32`` dot product, in units of ``u``: each edge
+# difference rounds once (``2 u`` on the products), the three-term dot accumulates ``3 u`` of
+# ``sum |u_i v_i| <= |u| |v|``, so a dot is within ``5 u |u| |v|`` of its value; doubled.
+DELONE_FILTER_ANGLE = wp.float32(10.0)
+
+
+@wp.func
+def _delone_angle_keep_f32(a: wp.vec3, b: wp.vec3, c: wp.vec3, d: wp.vec3) -> wp.bool:
+    # Whether ``float32`` arithmetic with rigorous bounds proves ``_delone_angle_verdict_d``'s
+    # KEEP: the two faces certainly meet unfolded (``_filtered_not_pocket_f32``, so the verdict
+    # never flips out of a pocket) and the angles ``beta`` at ``b`` and ``delta`` at ``d``,
+    # opposite ``a-c``, certainly sum below pi. With each angle's dot ``p`` and cross length ``q``
+    # (``|u| |v|`` times its cosine and sine), ``p_b q_d + p_d q_b`` is ``|u_b| |v_b| |u_d| |v_d|
+    # sin(beta + delta)``, positive exactly when the sum is below pi. Each ``q`` is a face's
+    # cross product, relative error ``DELONE_FILTER_CROSS u kappa``; each ``p`` is within
+    # ``DELONE_FILTER_ANGLE u |u| |v|``; the products' own roundings are folded into the 1.25.
+    # ``False`` leaves the quad to ``float64``.
+    c_abc, _m_abc, _r_abc, k_abc = _delone_triangle_f32(a, b, c)
+    c_acd, _m_acd, _r_acd, k_acd = _delone_triangle_f32(a, c, d)
+    if wp.max(k_abc, k_acd) > DELONE_FILTER_MAX_KAPPA:
+        return False
+    if not _filtered_not_pocket_f32(c_abc, k_abc, c_acd, k_acd):
+        return False
+    ub = a - b
+    vb = c - b
+    ud = a - d
+    vd = c - d
+    p_b = wp.dot(ub, vb)
+    p_d = wp.dot(ud, vd)
+    q_b = wp.length(c_abc)
+    q_d = wp.length(c_acd)
+    dot_error = DELONE_FILTER_ANGLE * DELONE_FILTER_U
+    q_error_b = DELONE_FILTER_CROSS * DELONE_FILTER_U * k_abc
+    q_error_d = DELONE_FILTER_CROSS * DELONE_FILTER_U * k_acd
+    total = p_b * q_d + p_d * q_b
+    bound = (
+        dot_error * (wp.length(ub) * wp.length(vb) * q_d + wp.length(ud) * wp.length(vd) * q_b)
+        + q_error_d * wp.abs(p_b) * q_d
+        + q_error_b * wp.abs(p_d) * q_b
+    )
+    return total > wp.float32(1.25) * bound + wp.float32(4.0) * DELONE_FILTER_U * wp.abs(total)
+
+
 @wp.func
 def _delone_flip_wanted(
     vertices: wp.array[wp.vec3],
@@ -2090,11 +2175,19 @@ def _delone_flip_wanted(
     max_angle_change: wp.float32,
     max_deviation_sq: wp.float32,
     critical_aspect: wp.float32,
+    criterion: wp.int32,
 ) -> wp.bool:
-    # ``delone_flip_candidates``' verdict on the resolved quad ``(a, b, c, d)``: the ``float32``
-    # filter's where it proves it, ``float64``'s elsewhere -- the same verdict either way.
-    verdict = _delone_verdict_filtered_f32(vertices[a], vertices[b], vertices[c], vertices[d])
-    if verdict == DELONE_KEEP:
+    # ``delone_flip_candidates``' verdict on the resolved quad ``(a, b, c, d)`` under
+    # ``criterion``. The circumcircle test takes the ``float32`` filter's verdict where it proves
+    # it and ``float64``'s elsewhere -- the same verdict either way; the angle test's filter proves
+    # only a keep (``_delone_angle_keep_f32``). Only the verdict differs between the two: the
+    # gates and the convexity test after it are shared.
+    verdict = DELONE_UNDECIDED
+    if criterion == DELONE_CRITERION_CIRCUMCIRCLE:
+        verdict = _delone_verdict_filtered_f32(vertices[a], vertices[b], vertices[c], vertices[d])
+        if verdict == DELONE_KEEP:
+            return False
+    elif _delone_angle_keep_f32(vertices[a], vertices[b], vertices[c], vertices[d]):
         return False
     ap, bp, cp, dp = flip_quad_positions_d(vertices, a, b, c, d)
     n_abc = triangle_normal(ap, bp, cp)
@@ -2102,7 +2195,10 @@ def _delone_flip_wanted(
     n_abd = triangle_normal(ap, bp, dp)
     n_dbc = triangle_normal(dp, bp, cp)
     if verdict == DELONE_UNDECIDED:
-        verdict = _delone_quadrangle_verdict_d(ap, bp, cp, dp, n_abc, n_acd, n_abd, n_dbc)
+        if criterion == DELONE_CRITERION_CIRCUMCIRCLE:
+            verdict = _delone_quadrangle_verdict_d(ap, bp, cp, dp, n_abc, n_acd, n_abd, n_dbc)
+        else:
+            verdict = _delone_angle_verdict_d(ap, bp, cp, dp, n_abc, n_acd, n_abd, n_dbc)
     # The gates below are pure tests a flip must pass, so they run after the verdict, only for a
     # flip it wants: the same mask in any order.
     if verdict == DELONE_KEEP:
@@ -2142,6 +2238,7 @@ def delone_flip_candidates(
     max_angle_change: wp.float32,
     max_deviation_sq: wp.float32,
     critical_aspect: wp.float32,
+    criterion: wp.int32,
     carried_flags: wp.array[wp.int32],
     settled: wp.array[wp.int32],
     out_flip: wp.array[wp.bool],
@@ -2174,7 +2271,7 @@ def delone_flip_candidates(
     wanted = wp.bool(False)
     if a >= 0:
         wanted = _delone_flip_wanted(
-            vertices, a, b, c, d, max_angle_change, max_deviation_sq, critical_aspect
+            vertices, a, b, c, d, max_angle_change, max_deviation_sq, critical_aspect, criterion
         )
     out_flip[k] = wanted
     settle_flip_row(round_state, settled, adjacency, a, wanted, k)

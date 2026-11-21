@@ -2895,11 +2895,11 @@ def fix_degeneracies(
     an edge no longer than ``tiny_edge_length``, grown by ``region_rings`` rings of neighbouring
     faces. Inside it, two local moves alternate until no collapse remains:
 
-    - **Flip** every edge that fails the Delaunay test, as
-      [`flip_to_delaunay`][ordito.remesh.flip_to_delaunay] does, when the flip moves the surface
-      by at most ``max_deviation`` and changes the dihedral angle across it by at most
-      ``max_angle_change`` (a quad holding a degenerate face may exceed the angle). This is what
-      fixes a *cap*, whose apex sits on its long edge.
+    - **Flip** every edge whose other diagonal makes the smaller larger circumcircle (on planar
+      input the Delaunay test of [`flip_to_delaunay`][ordito.remesh.flip_to_delaunay]), when the
+      flip moves the surface by at most ``max_deviation`` and changes the dihedral angle across it
+      by at most ``max_angle_change`` (a quad holding a degenerate face may exceed the angle).
+      This is what fixes a *cap*, whose apex sits on its long edge.
     - **Collapse** every edge no longer than ``max_deviation``, shortest first, into the endpoint
       whose removal moves the surface least. This is what fixes a *needle*. A collapse that would
       leave a face of aspect ratio above 20 is skipped, unless a face it touches was already worse

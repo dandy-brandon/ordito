@@ -22,6 +22,14 @@ from the one matching its tag — so prose sections do not belong between them.
 
 ## [Unreleased]
 
+### Changed
+
+- `remesh.flip_to_delaunay` flips on the local Delaunay test of a surface (the two angles
+  opposite an edge sum to at most pi) instead of comparing circumcircles. Planar results are
+  unchanged; on a curved mesh every edge a flip can reach now ends locally Delaunay, as
+  `igl.is_intrinsic_delaunay` reads it, and the pass settles in fewer rounds. Edges whose flip
+  would duplicate an existing edge (around a valence-3 vertex) are still left as they are.
+
 ## [0.4.0] - 2026-11-20
 
 ### Added
