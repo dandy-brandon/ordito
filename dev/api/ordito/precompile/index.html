@@ -4279,6 +4279,8 @@
       
         
       
+        
+      
     
     
     
@@ -4422,6 +4424,33 @@
     
   
   combine
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../boolean/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  boolean
 
     
   </span>
@@ -7043,8 +7072,7 @@ included. The Warp modules importing ordito creates (sparse, geometry) are liste
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/precompile.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">272</span>
-<span class="normal">273</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">273</span>
 <span class="normal">274</span>
 <span class="normal">275</span>
 <span class="normal">276</span>
@@ -7086,7 +7114,8 @@ included. The Warp modules importing ordito creates (sparse, geometry) are liste
 <span class="normal">312</span>
 <span class="normal">313</span>
 <span class="normal">314</span>
-<span class="normal">315</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">kernel_variants</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="o">...</span><span class="p">]]:</span>
+<span class="normal">315</span>
+<span class="normal">316</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">kernel_variants</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="o">...</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    List every Warp module ordito launches, with the CUDA launch widths it is built at.</span>
 

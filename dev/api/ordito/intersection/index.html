@@ -4281,6 +4281,8 @@
       
         
       
+        
+      
     
     
     
@@ -4424,6 +4426,33 @@
     
   
   combine
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../boolean/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  boolean
 
     
   </span>
@@ -7218,14 +7247,14 @@ section is the unit square of perimeter 4:</p>
         <span class="n">kernel_intersections</span><span class="o">.</span><span class="n">mesh_with_plane_flags</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">n_faces</span><span class="p">,</span>
         <span class="n">inputs</span><span class="o">=</span><span class="n">plane</span><span class="p">,</span>
-        <span class="n">outputs</span><span class="o">=</span><span class="n">cut</span><span class="o">.</span><span class="n">stored</span><span class="p">(),</span>
+        <span class="n">outputs</span><span class="o">=</span><span class="n">_stored_cut_flags</span><span class="p">(</span><span class="n">cut</span><span class="p">),</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="n">n_kept</span> <span class="o">=</span> <span class="n">cut</span><span class="o">.</span><span class="n">rank</span><span class="p">()</span>
+    <span class="n">n_kept</span> <span class="o">=</span> <span class="n">_rank_cut_flags</span><span class="p">(</span><span class="n">cut</span><span class="p">)</span>
     <span class="n">lines</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">empty_2d</span><span class="p">((</span><span class="n">n_kept</span><span class="p">,</span> <span class="mi">2</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">hit_faces</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_kept</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span> <span class="k">if</span> <span class="n">return_faces</span> <span class="k">else</span> <span class="kc">None</span>
     <span class="k">if</span> <span class="n">n_kept</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="n">dim</span><span class="p">,</span> <span class="n">ranked</span> <span class="o">=</span> <span class="n">cut</span><span class="o">.</span><span class="n">compaction</span><span class="p">(</span><span class="n">n_kept</span><span class="p">)</span>
+        <span class="n">dim</span><span class="p">,</span> <span class="n">ranked</span> <span class="o">=</span> <span class="n">_cut_compaction</span><span class="p">(</span><span class="n">cut</span><span class="p">,</span> <span class="n">n_kept</span><span class="p">)</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
             <span class="n">kernel_intersections</span><span class="o">.</span><span class="n">compact_plane_segments</span><span class="p">,</span>
             <span class="n">dim</span><span class="o">=</span><span class="n">dim</span><span class="p">,</span>
@@ -9812,9 +9841,7 @@ each keep two in the table and two in the overflow tail, 24 + 12 slots:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/intersection.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1430</span>
-<span class="normal">1431</span>
-<span class="normal">1432</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1432</span>
 <span class="normal">1433</span>
 <span class="normal">1434</span>
 <span class="normal">1435</span>
@@ -9914,7 +9941,9 @@ each keep two in the table and two in the overflow tail, 24 + 12 slots:</p>
 <span class="normal">1529</span>
 <span class="normal">1530</span>
 <span class="normal">1531</span>
-<span class="normal">1532</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_box_candidates</span><span class="p">(</span>
+<span class="normal">1532</span>
+<span class="normal">1533</span>
+<span class="normal">1534</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_box_candidates</span><span class="p">(</span>
     <span class="n">query_vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">query_faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">target_mesh</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">,</span>
@@ -10288,9 +10317,7 @@ open along the cut:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/intersection.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1627</span>
-<span class="normal">1628</span>
-<span class="normal">1629</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1629</span>
 <span class="normal">1630</span>
 <span class="normal">1631</span>
 <span class="normal">1632</span>
@@ -10390,7 +10417,9 @@ open along the cut:</p>
 <span class="normal">1726</span>
 <span class="normal">1727</span>
 <span class="normal">1728</span>
-<span class="normal">1729</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">slice_mesh_with_plane</span><span class="p">(</span>
+<span class="normal">1729</span>
+<span class="normal">1730</span>
+<span class="normal">1731</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">slice_mesh_with_plane</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">plane_normal</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span>
@@ -10840,9 +10869,9 @@ sides, adding eight vertices; the refined cube stays watertight, with both halve
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 4 places</summary>
+      <summary>Referenced by 5 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../remesh/#ordito.remesh">remesh</a> › <a href="../remesh/#ordito.remesh.split_edges">split_edges</a></span> · <span class="ordito-backlink"><a href="./#ordito.intersection">intersection</a> › <a href="./#ordito.intersection.split_faces_along_field">split_faces_along_field</a></span></p>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../boolean/#ordito.boolean">boolean</a> › <a href="../boolean/#ordito.boolean.split_by_plane">split_by_plane</a></span> · <span class="ordito-backlink"><a href="../remesh/#ordito.remesh">remesh</a> › <a href="../remesh/#ordito.remesh.split_edges">split_edges</a></span> · <span class="ordito-backlink"><a href="./#ordito.intersection">intersection</a> › <a href="./#ordito.intersection.split_faces_along_field">split_faces_along_field</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
 <span class="ordito-backlink"><a href="../../../examples/cutting/#cutting-slicing-and-selection">Cutting, slicing and selection</a> › <a href="../../../examples/cutting/#x2">Clipping and capping</a></span></p>
     </details>
@@ -10850,9 +10879,7 @@ sides, adding eight vertices; the refined cube stays watertight, with both halve
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/intersection.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1754</span>
-<span class="normal">1755</span>
-<span class="normal">1756</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1756</span>
 <span class="normal">1757</span>
 <span class="normal">1758</span>
 <span class="normal">1759</span>
@@ -11118,7 +11145,9 @@ sides, adding eight vertices; the refined cube stays watertight, with both halve
 <span class="normal">2019</span>
 <span class="normal">2020</span>
 <span class="normal">2021</span>
-<span class="normal">2022</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_mesh_with_plane</span><span class="p">(</span>
+<span class="normal">2022</span>
+<span class="normal">2023</span>
+<span class="normal">2024</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_mesh_with_plane</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">plane_normal</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span>
@@ -11717,9 +11746,7 @@ the <em>near</em> side, so the field enters negated:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/intersection.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2045</span>
-<span class="normal">2046</span>
-<span class="normal">2047</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2047</span>
 <span class="normal">2048</span>
 <span class="normal">2049</span>
 <span class="normal">2050</span>
@@ -11861,7 +11888,9 @@ the <em>near</em> side, so the field enters negated:</p>
 <span class="normal">2186</span>
 <span class="normal">2187</span>
 <span class="normal">2188</span>
-<span class="normal">2189</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">clip_mesh_with_field</span><span class="p">(</span>
+<span class="normal">2189</span>
+<span class="normal">2190</span>
+<span class="normal">2191</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">clip_mesh_with_field</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span>
@@ -12306,9 +12335,7 @@ result is as watertight as the input:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/intersection.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2512</span>
-<span class="normal">2513</span>
-<span class="normal">2514</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2514</span>
 <span class="normal">2515</span>
 <span class="normal">2516</span>
 <span class="normal">2517</span>
@@ -12433,7 +12460,9 @@ result is as watertight as the input:</p>
 <span class="normal">2636</span>
 <span class="normal">2637</span>
 <span class="normal">2638</span>
-<span class="normal">2639</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_faces_along_field</span><span class="p">(</span>
+<span class="normal">2639</span>
+<span class="normal">2640</span>
+<span class="normal">2641</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_faces_along_field</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span>

@@ -14,7 +14,7 @@
       
       
       
-        <link rel="prev" href="../combine/">
+        <link rel="prev" href="../boolean/">
       
       
         <link rel="next" href="../smoothing/">
@@ -4283,6 +4283,8 @@
       
         
       
+        
+      
     
     
     
@@ -4426,6 +4428,33 @@
     
   
   combine
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../boolean/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  boolean
 
     
   </span>
@@ -8114,83 +8143,7 @@ move their last bits from one call to the next. <code>"closest"</code> repeats e
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2298</span>
-<span class="normal">2299</span>
-<span class="normal">2300</span>
-<span class="normal">2301</span>
-<span class="normal">2302</span>
-<span class="normal">2303</span>
-<span class="normal">2304</span>
-<span class="normal">2305</span>
-<span class="normal">2306</span>
-<span class="normal">2307</span>
-<span class="normal">2308</span>
-<span class="normal">2309</span>
-<span class="normal">2310</span>
-<span class="normal">2311</span>
-<span class="normal">2312</span>
-<span class="normal">2313</span>
-<span class="normal">2314</span>
-<span class="normal">2315</span>
-<span class="normal">2316</span>
-<span class="normal">2317</span>
-<span class="normal">2318</span>
-<span class="normal">2319</span>
-<span class="normal">2320</span>
-<span class="normal">2321</span>
-<span class="normal">2322</span>
-<span class="normal">2323</span>
-<span class="normal">2324</span>
-<span class="normal">2325</span>
-<span class="normal">2326</span>
-<span class="normal">2327</span>
-<span class="normal">2328</span>
-<span class="normal">2329</span>
-<span class="normal">2330</span>
-<span class="normal">2331</span>
-<span class="normal">2332</span>
-<span class="normal">2333</span>
-<span class="normal">2334</span>
-<span class="normal">2335</span>
-<span class="normal">2336</span>
-<span class="normal">2337</span>
-<span class="normal">2338</span>
-<span class="normal">2339</span>
-<span class="normal">2340</span>
-<span class="normal">2341</span>
-<span class="normal">2342</span>
-<span class="normal">2343</span>
-<span class="normal">2344</span>
-<span class="normal">2345</span>
-<span class="normal">2346</span>
-<span class="normal">2347</span>
-<span class="normal">2348</span>
-<span class="normal">2349</span>
-<span class="normal">2350</span>
-<span class="normal">2351</span>
-<span class="normal">2352</span>
-<span class="normal">2353</span>
-<span class="normal">2354</span>
-<span class="normal">2355</span>
-<span class="normal">2356</span>
-<span class="normal">2357</span>
-<span class="normal">2358</span>
-<span class="normal">2359</span>
-<span class="normal">2360</span>
-<span class="normal">2361</span>
-<span class="normal">2362</span>
-<span class="normal">2363</span>
-<span class="normal">2364</span>
-<span class="normal">2365</span>
-<span class="normal">2366</span>
-<span class="normal">2367</span>
-<span class="normal">2368</span>
-<span class="normal">2369</span>
-<span class="normal">2370</span>
-<span class="normal">2371</span>
-<span class="normal">2372</span>
-<span class="normal">2373</span>
-<span class="normal">2374</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2374</span>
 <span class="normal">2375</span>
 <span class="normal">2376</span>
 <span class="normal">2377</span>
@@ -8480,7 +8433,83 @@ move their last bits from one call to the next. <code>"closest"</code> repeats e
 <span class="normal">2661</span>
 <span class="normal">2662</span>
 <span class="normal">2663</span>
-<span class="normal">2664</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">cluster_decimate</span><span class="p">(</span>
+<span class="normal">2664</span>
+<span class="normal">2665</span>
+<span class="normal">2666</span>
+<span class="normal">2667</span>
+<span class="normal">2668</span>
+<span class="normal">2669</span>
+<span class="normal">2670</span>
+<span class="normal">2671</span>
+<span class="normal">2672</span>
+<span class="normal">2673</span>
+<span class="normal">2674</span>
+<span class="normal">2675</span>
+<span class="normal">2676</span>
+<span class="normal">2677</span>
+<span class="normal">2678</span>
+<span class="normal">2679</span>
+<span class="normal">2680</span>
+<span class="normal">2681</span>
+<span class="normal">2682</span>
+<span class="normal">2683</span>
+<span class="normal">2684</span>
+<span class="normal">2685</span>
+<span class="normal">2686</span>
+<span class="normal">2687</span>
+<span class="normal">2688</span>
+<span class="normal">2689</span>
+<span class="normal">2690</span>
+<span class="normal">2691</span>
+<span class="normal">2692</span>
+<span class="normal">2693</span>
+<span class="normal">2694</span>
+<span class="normal">2695</span>
+<span class="normal">2696</span>
+<span class="normal">2697</span>
+<span class="normal">2698</span>
+<span class="normal">2699</span>
+<span class="normal">2700</span>
+<span class="normal">2701</span>
+<span class="normal">2702</span>
+<span class="normal">2703</span>
+<span class="normal">2704</span>
+<span class="normal">2705</span>
+<span class="normal">2706</span>
+<span class="normal">2707</span>
+<span class="normal">2708</span>
+<span class="normal">2709</span>
+<span class="normal">2710</span>
+<span class="normal">2711</span>
+<span class="normal">2712</span>
+<span class="normal">2713</span>
+<span class="normal">2714</span>
+<span class="normal">2715</span>
+<span class="normal">2716</span>
+<span class="normal">2717</span>
+<span class="normal">2718</span>
+<span class="normal">2719</span>
+<span class="normal">2720</span>
+<span class="normal">2721</span>
+<span class="normal">2722</span>
+<span class="normal">2723</span>
+<span class="normal">2724</span>
+<span class="normal">2725</span>
+<span class="normal">2726</span>
+<span class="normal">2727</span>
+<span class="normal">2728</span>
+<span class="normal">2729</span>
+<span class="normal">2730</span>
+<span class="normal">2731</span>
+<span class="normal">2732</span>
+<span class="normal">2733</span>
+<span class="normal">2734</span>
+<span class="normal">2735</span>
+<span class="normal">2736</span>
+<span class="normal">2737</span>
+<span class="normal">2738</span>
+<span class="normal">2739</span>
+<span class="normal">2740</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">cluster_decimate</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -9246,9 +9275,9 @@ evaluated when the pass is <em>issued</em>, so the captured graph does not conta
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 11 places</summary>
+      <summary>Referenced by 12 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../config/#ordito.config">config</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.cluster_decimate">cluster_decimate</a></span></p>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../config/#ordito.config">config</a></span> · <span class="ordito-backlink"><a href="../boolean/#ordito.boolean">boolean</a> › <a href="../boolean/#ordito.boolean.simplify">simplify</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.cluster_decimate">cluster_decimate</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
 <span class="ordito-backlink"><a href="../../../examples/remesh/#remeshing-and-simplification">Remeshing and simplification</a> › <a href="../../../examples/remesh/#r1">Quadric decimation</a></span> · <span class="ordito-backlink"><a href="../../../examples/remesh/#remeshing-and-simplification">Remeshing and simplification</a> › <a href="../../../examples/remesh/#r3">Subdivision: midpoint and Loop</a></span> · <span class="ordito-backlink"><a href="../../../examples/queries/#spatial-queries">Spatial queries</a> › <a href="../../../examples/queries/#q7">Chamfer and Hausdorff distances</a></span></p>
         <p><span class="ordito-backlinks-section">Migrating from another library</span>
@@ -9258,83 +9287,7 @@ evaluated when the pass is <em>issued</em>, so the captured graph does not conta
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2873</span>
-<span class="normal">2874</span>
-<span class="normal">2875</span>
-<span class="normal">2876</span>
-<span class="normal">2877</span>
-<span class="normal">2878</span>
-<span class="normal">2879</span>
-<span class="normal">2880</span>
-<span class="normal">2881</span>
-<span class="normal">2882</span>
-<span class="normal">2883</span>
-<span class="normal">2884</span>
-<span class="normal">2885</span>
-<span class="normal">2886</span>
-<span class="normal">2887</span>
-<span class="normal">2888</span>
-<span class="normal">2889</span>
-<span class="normal">2890</span>
-<span class="normal">2891</span>
-<span class="normal">2892</span>
-<span class="normal">2893</span>
-<span class="normal">2894</span>
-<span class="normal">2895</span>
-<span class="normal">2896</span>
-<span class="normal">2897</span>
-<span class="normal">2898</span>
-<span class="normal">2899</span>
-<span class="normal">2900</span>
-<span class="normal">2901</span>
-<span class="normal">2902</span>
-<span class="normal">2903</span>
-<span class="normal">2904</span>
-<span class="normal">2905</span>
-<span class="normal">2906</span>
-<span class="normal">2907</span>
-<span class="normal">2908</span>
-<span class="normal">2909</span>
-<span class="normal">2910</span>
-<span class="normal">2911</span>
-<span class="normal">2912</span>
-<span class="normal">2913</span>
-<span class="normal">2914</span>
-<span class="normal">2915</span>
-<span class="normal">2916</span>
-<span class="normal">2917</span>
-<span class="normal">2918</span>
-<span class="normal">2919</span>
-<span class="normal">2920</span>
-<span class="normal">2921</span>
-<span class="normal">2922</span>
-<span class="normal">2923</span>
-<span class="normal">2924</span>
-<span class="normal">2925</span>
-<span class="normal">2926</span>
-<span class="normal">2927</span>
-<span class="normal">2928</span>
-<span class="normal">2929</span>
-<span class="normal">2930</span>
-<span class="normal">2931</span>
-<span class="normal">2932</span>
-<span class="normal">2933</span>
-<span class="normal">2934</span>
-<span class="normal">2935</span>
-<span class="normal">2936</span>
-<span class="normal">2937</span>
-<span class="normal">2938</span>
-<span class="normal">2939</span>
-<span class="normal">2940</span>
-<span class="normal">2941</span>
-<span class="normal">2942</span>
-<span class="normal">2943</span>
-<span class="normal">2944</span>
-<span class="normal">2945</span>
-<span class="normal">2946</span>
-<span class="normal">2947</span>
-<span class="normal">2948</span>
-<span class="normal">2949</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2949</span>
 <span class="normal">2950</span>
 <span class="normal">2951</span>
 <span class="normal">2952</span>
@@ -9474,7 +9427,83 @@ evaluated when the pass is <em>issued</em>, so the captured graph does not conta
 <span class="normal">3086</span>
 <span class="normal">3087</span>
 <span class="normal">3088</span>
-<span class="normal">3089</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">quadric_decimate</span><span class="p">(</span>
+<span class="normal">3089</span>
+<span class="normal">3090</span>
+<span class="normal">3091</span>
+<span class="normal">3092</span>
+<span class="normal">3093</span>
+<span class="normal">3094</span>
+<span class="normal">3095</span>
+<span class="normal">3096</span>
+<span class="normal">3097</span>
+<span class="normal">3098</span>
+<span class="normal">3099</span>
+<span class="normal">3100</span>
+<span class="normal">3101</span>
+<span class="normal">3102</span>
+<span class="normal">3103</span>
+<span class="normal">3104</span>
+<span class="normal">3105</span>
+<span class="normal">3106</span>
+<span class="normal">3107</span>
+<span class="normal">3108</span>
+<span class="normal">3109</span>
+<span class="normal">3110</span>
+<span class="normal">3111</span>
+<span class="normal">3112</span>
+<span class="normal">3113</span>
+<span class="normal">3114</span>
+<span class="normal">3115</span>
+<span class="normal">3116</span>
+<span class="normal">3117</span>
+<span class="normal">3118</span>
+<span class="normal">3119</span>
+<span class="normal">3120</span>
+<span class="normal">3121</span>
+<span class="normal">3122</span>
+<span class="normal">3123</span>
+<span class="normal">3124</span>
+<span class="normal">3125</span>
+<span class="normal">3126</span>
+<span class="normal">3127</span>
+<span class="normal">3128</span>
+<span class="normal">3129</span>
+<span class="normal">3130</span>
+<span class="normal">3131</span>
+<span class="normal">3132</span>
+<span class="normal">3133</span>
+<span class="normal">3134</span>
+<span class="normal">3135</span>
+<span class="normal">3136</span>
+<span class="normal">3137</span>
+<span class="normal">3138</span>
+<span class="normal">3139</span>
+<span class="normal">3140</span>
+<span class="normal">3141</span>
+<span class="normal">3142</span>
+<span class="normal">3143</span>
+<span class="normal">3144</span>
+<span class="normal">3145</span>
+<span class="normal">3146</span>
+<span class="normal">3147</span>
+<span class="normal">3148</span>
+<span class="normal">3149</span>
+<span class="normal">3150</span>
+<span class="normal">3151</span>
+<span class="normal">3152</span>
+<span class="normal">3153</span>
+<span class="normal">3154</span>
+<span class="normal">3155</span>
+<span class="normal">3156</span>
+<span class="normal">3157</span>
+<span class="normal">3158</span>
+<span class="normal">3159</span>
+<span class="normal">3160</span>
+<span class="normal">3161</span>
+<span class="normal">3162</span>
+<span class="normal">3163</span>
+<span class="normal">3164</span>
+<span class="normal">3165</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">quadric_decimate</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -9951,83 +9980,7 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4021</span>
-<span class="normal">4022</span>
-<span class="normal">4023</span>
-<span class="normal">4024</span>
-<span class="normal">4025</span>
-<span class="normal">4026</span>
-<span class="normal">4027</span>
-<span class="normal">4028</span>
-<span class="normal">4029</span>
-<span class="normal">4030</span>
-<span class="normal">4031</span>
-<span class="normal">4032</span>
-<span class="normal">4033</span>
-<span class="normal">4034</span>
-<span class="normal">4035</span>
-<span class="normal">4036</span>
-<span class="normal">4037</span>
-<span class="normal">4038</span>
-<span class="normal">4039</span>
-<span class="normal">4040</span>
-<span class="normal">4041</span>
-<span class="normal">4042</span>
-<span class="normal">4043</span>
-<span class="normal">4044</span>
-<span class="normal">4045</span>
-<span class="normal">4046</span>
-<span class="normal">4047</span>
-<span class="normal">4048</span>
-<span class="normal">4049</span>
-<span class="normal">4050</span>
-<span class="normal">4051</span>
-<span class="normal">4052</span>
-<span class="normal">4053</span>
-<span class="normal">4054</span>
-<span class="normal">4055</span>
-<span class="normal">4056</span>
-<span class="normal">4057</span>
-<span class="normal">4058</span>
-<span class="normal">4059</span>
-<span class="normal">4060</span>
-<span class="normal">4061</span>
-<span class="normal">4062</span>
-<span class="normal">4063</span>
-<span class="normal">4064</span>
-<span class="normal">4065</span>
-<span class="normal">4066</span>
-<span class="normal">4067</span>
-<span class="normal">4068</span>
-<span class="normal">4069</span>
-<span class="normal">4070</span>
-<span class="normal">4071</span>
-<span class="normal">4072</span>
-<span class="normal">4073</span>
-<span class="normal">4074</span>
-<span class="normal">4075</span>
-<span class="normal">4076</span>
-<span class="normal">4077</span>
-<span class="normal">4078</span>
-<span class="normal">4079</span>
-<span class="normal">4080</span>
-<span class="normal">4081</span>
-<span class="normal">4082</span>
-<span class="normal">4083</span>
-<span class="normal">4084</span>
-<span class="normal">4085</span>
-<span class="normal">4086</span>
-<span class="normal">4087</span>
-<span class="normal">4088</span>
-<span class="normal">4089</span>
-<span class="normal">4090</span>
-<span class="normal">4091</span>
-<span class="normal">4092</span>
-<span class="normal">4093</span>
-<span class="normal">4094</span>
-<span class="normal">4095</span>
-<span class="normal">4096</span>
-<span class="normal">4097</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4097</span>
 <span class="normal">4098</span>
 <span class="normal">4099</span>
 <span class="normal">4100</span>
@@ -10078,7 +10031,83 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 <span class="normal">4145</span>
 <span class="normal">4146</span>
 <span class="normal">4147</span>
-<span class="normal">4148</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">flip_to_delaunay</span><span class="p">(</span>
+<span class="normal">4148</span>
+<span class="normal">4149</span>
+<span class="normal">4150</span>
+<span class="normal">4151</span>
+<span class="normal">4152</span>
+<span class="normal">4153</span>
+<span class="normal">4154</span>
+<span class="normal">4155</span>
+<span class="normal">4156</span>
+<span class="normal">4157</span>
+<span class="normal">4158</span>
+<span class="normal">4159</span>
+<span class="normal">4160</span>
+<span class="normal">4161</span>
+<span class="normal">4162</span>
+<span class="normal">4163</span>
+<span class="normal">4164</span>
+<span class="normal">4165</span>
+<span class="normal">4166</span>
+<span class="normal">4167</span>
+<span class="normal">4168</span>
+<span class="normal">4169</span>
+<span class="normal">4170</span>
+<span class="normal">4171</span>
+<span class="normal">4172</span>
+<span class="normal">4173</span>
+<span class="normal">4174</span>
+<span class="normal">4175</span>
+<span class="normal">4176</span>
+<span class="normal">4177</span>
+<span class="normal">4178</span>
+<span class="normal">4179</span>
+<span class="normal">4180</span>
+<span class="normal">4181</span>
+<span class="normal">4182</span>
+<span class="normal">4183</span>
+<span class="normal">4184</span>
+<span class="normal">4185</span>
+<span class="normal">4186</span>
+<span class="normal">4187</span>
+<span class="normal">4188</span>
+<span class="normal">4189</span>
+<span class="normal">4190</span>
+<span class="normal">4191</span>
+<span class="normal">4192</span>
+<span class="normal">4193</span>
+<span class="normal">4194</span>
+<span class="normal">4195</span>
+<span class="normal">4196</span>
+<span class="normal">4197</span>
+<span class="normal">4198</span>
+<span class="normal">4199</span>
+<span class="normal">4200</span>
+<span class="normal">4201</span>
+<span class="normal">4202</span>
+<span class="normal">4203</span>
+<span class="normal">4204</span>
+<span class="normal">4205</span>
+<span class="normal">4206</span>
+<span class="normal">4207</span>
+<span class="normal">4208</span>
+<span class="normal">4209</span>
+<span class="normal">4210</span>
+<span class="normal">4211</span>
+<span class="normal">4212</span>
+<span class="normal">4213</span>
+<span class="normal">4214</span>
+<span class="normal">4215</span>
+<span class="normal">4216</span>
+<span class="normal">4217</span>
+<span class="normal">4218</span>
+<span class="normal">4219</span>
+<span class="normal">4220</span>
+<span class="normal">4221</span>
+<span class="normal">4222</span>
+<span class="normal">4223</span>
+<span class="normal">4224</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">flip_to_delaunay</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">region</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -10512,83 +10541,7 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4154</span>
-<span class="normal">4155</span>
-<span class="normal">4156</span>
-<span class="normal">4157</span>
-<span class="normal">4158</span>
-<span class="normal">4159</span>
-<span class="normal">4160</span>
-<span class="normal">4161</span>
-<span class="normal">4162</span>
-<span class="normal">4163</span>
-<span class="normal">4164</span>
-<span class="normal">4165</span>
-<span class="normal">4166</span>
-<span class="normal">4167</span>
-<span class="normal">4168</span>
-<span class="normal">4169</span>
-<span class="normal">4170</span>
-<span class="normal">4171</span>
-<span class="normal">4172</span>
-<span class="normal">4173</span>
-<span class="normal">4174</span>
-<span class="normal">4175</span>
-<span class="normal">4176</span>
-<span class="normal">4177</span>
-<span class="normal">4178</span>
-<span class="normal">4179</span>
-<span class="normal">4180</span>
-<span class="normal">4181</span>
-<span class="normal">4182</span>
-<span class="normal">4183</span>
-<span class="normal">4184</span>
-<span class="normal">4185</span>
-<span class="normal">4186</span>
-<span class="normal">4187</span>
-<span class="normal">4188</span>
-<span class="normal">4189</span>
-<span class="normal">4190</span>
-<span class="normal">4191</span>
-<span class="normal">4192</span>
-<span class="normal">4193</span>
-<span class="normal">4194</span>
-<span class="normal">4195</span>
-<span class="normal">4196</span>
-<span class="normal">4197</span>
-<span class="normal">4198</span>
-<span class="normal">4199</span>
-<span class="normal">4200</span>
-<span class="normal">4201</span>
-<span class="normal">4202</span>
-<span class="normal">4203</span>
-<span class="normal">4204</span>
-<span class="normal">4205</span>
-<span class="normal">4206</span>
-<span class="normal">4207</span>
-<span class="normal">4208</span>
-<span class="normal">4209</span>
-<span class="normal">4210</span>
-<span class="normal">4211</span>
-<span class="normal">4212</span>
-<span class="normal">4213</span>
-<span class="normal">4214</span>
-<span class="normal">4215</span>
-<span class="normal">4216</span>
-<span class="normal">4217</span>
-<span class="normal">4218</span>
-<span class="normal">4219</span>
-<span class="normal">4220</span>
-<span class="normal">4221</span>
-<span class="normal">4222</span>
-<span class="normal">4223</span>
-<span class="normal">4224</span>
-<span class="normal">4225</span>
-<span class="normal">4226</span>
-<span class="normal">4227</span>
-<span class="normal">4228</span>
-<span class="normal">4229</span>
-<span class="normal">4230</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4230</span>
 <span class="normal">4231</span>
 <span class="normal">4232</span>
 <span class="normal">4233</span>
@@ -10685,7 +10638,83 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 <span class="normal">4324</span>
 <span class="normal">4325</span>
 <span class="normal">4326</span>
-<span class="normal">4327</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">flip_by_objective</span><span class="p">(</span>
+<span class="normal">4327</span>
+<span class="normal">4328</span>
+<span class="normal">4329</span>
+<span class="normal">4330</span>
+<span class="normal">4331</span>
+<span class="normal">4332</span>
+<span class="normal">4333</span>
+<span class="normal">4334</span>
+<span class="normal">4335</span>
+<span class="normal">4336</span>
+<span class="normal">4337</span>
+<span class="normal">4338</span>
+<span class="normal">4339</span>
+<span class="normal">4340</span>
+<span class="normal">4341</span>
+<span class="normal">4342</span>
+<span class="normal">4343</span>
+<span class="normal">4344</span>
+<span class="normal">4345</span>
+<span class="normal">4346</span>
+<span class="normal">4347</span>
+<span class="normal">4348</span>
+<span class="normal">4349</span>
+<span class="normal">4350</span>
+<span class="normal">4351</span>
+<span class="normal">4352</span>
+<span class="normal">4353</span>
+<span class="normal">4354</span>
+<span class="normal">4355</span>
+<span class="normal">4356</span>
+<span class="normal">4357</span>
+<span class="normal">4358</span>
+<span class="normal">4359</span>
+<span class="normal">4360</span>
+<span class="normal">4361</span>
+<span class="normal">4362</span>
+<span class="normal">4363</span>
+<span class="normal">4364</span>
+<span class="normal">4365</span>
+<span class="normal">4366</span>
+<span class="normal">4367</span>
+<span class="normal">4368</span>
+<span class="normal">4369</span>
+<span class="normal">4370</span>
+<span class="normal">4371</span>
+<span class="normal">4372</span>
+<span class="normal">4373</span>
+<span class="normal">4374</span>
+<span class="normal">4375</span>
+<span class="normal">4376</span>
+<span class="normal">4377</span>
+<span class="normal">4378</span>
+<span class="normal">4379</span>
+<span class="normal">4380</span>
+<span class="normal">4381</span>
+<span class="normal">4382</span>
+<span class="normal">4383</span>
+<span class="normal">4384</span>
+<span class="normal">4385</span>
+<span class="normal">4386</span>
+<span class="normal">4387</span>
+<span class="normal">4388</span>
+<span class="normal">4389</span>
+<span class="normal">4390</span>
+<span class="normal">4391</span>
+<span class="normal">4392</span>
+<span class="normal">4393</span>
+<span class="normal">4394</span>
+<span class="normal">4395</span>
+<span class="normal">4396</span>
+<span class="normal">4397</span>
+<span class="normal">4398</span>
+<span class="normal">4399</span>
+<span class="normal">4400</span>
+<span class="normal">4401</span>
+<span class="normal">4402</span>
+<span class="normal">4403</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">flip_by_objective</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -11122,83 +11151,7 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4371</span>
-<span class="normal">4372</span>
-<span class="normal">4373</span>
-<span class="normal">4374</span>
-<span class="normal">4375</span>
-<span class="normal">4376</span>
-<span class="normal">4377</span>
-<span class="normal">4378</span>
-<span class="normal">4379</span>
-<span class="normal">4380</span>
-<span class="normal">4381</span>
-<span class="normal">4382</span>
-<span class="normal">4383</span>
-<span class="normal">4384</span>
-<span class="normal">4385</span>
-<span class="normal">4386</span>
-<span class="normal">4387</span>
-<span class="normal">4388</span>
-<span class="normal">4389</span>
-<span class="normal">4390</span>
-<span class="normal">4391</span>
-<span class="normal">4392</span>
-<span class="normal">4393</span>
-<span class="normal">4394</span>
-<span class="normal">4395</span>
-<span class="normal">4396</span>
-<span class="normal">4397</span>
-<span class="normal">4398</span>
-<span class="normal">4399</span>
-<span class="normal">4400</span>
-<span class="normal">4401</span>
-<span class="normal">4402</span>
-<span class="normal">4403</span>
-<span class="normal">4404</span>
-<span class="normal">4405</span>
-<span class="normal">4406</span>
-<span class="normal">4407</span>
-<span class="normal">4408</span>
-<span class="normal">4409</span>
-<span class="normal">4410</span>
-<span class="normal">4411</span>
-<span class="normal">4412</span>
-<span class="normal">4413</span>
-<span class="normal">4414</span>
-<span class="normal">4415</span>
-<span class="normal">4416</span>
-<span class="normal">4417</span>
-<span class="normal">4418</span>
-<span class="normal">4419</span>
-<span class="normal">4420</span>
-<span class="normal">4421</span>
-<span class="normal">4422</span>
-<span class="normal">4423</span>
-<span class="normal">4424</span>
-<span class="normal">4425</span>
-<span class="normal">4426</span>
-<span class="normal">4427</span>
-<span class="normal">4428</span>
-<span class="normal">4429</span>
-<span class="normal">4430</span>
-<span class="normal">4431</span>
-<span class="normal">4432</span>
-<span class="normal">4433</span>
-<span class="normal">4434</span>
-<span class="normal">4435</span>
-<span class="normal">4436</span>
-<span class="normal">4437</span>
-<span class="normal">4438</span>
-<span class="normal">4439</span>
-<span class="normal">4440</span>
-<span class="normal">4441</span>
-<span class="normal">4442</span>
-<span class="normal">4443</span>
-<span class="normal">4444</span>
-<span class="normal">4445</span>
-<span class="normal">4446</span>
-<span class="normal">4447</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4447</span>
 <span class="normal">4448</span>
 <span class="normal">4449</span>
 <span class="normal">4450</span>
@@ -11302,7 +11255,83 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 <span class="normal">4548</span>
 <span class="normal">4549</span>
 <span class="normal">4550</span>
-<span class="normal">4551</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">intrinsic_delaunay</span><span class="p">(</span>
+<span class="normal">4551</span>
+<span class="normal">4552</span>
+<span class="normal">4553</span>
+<span class="normal">4554</span>
+<span class="normal">4555</span>
+<span class="normal">4556</span>
+<span class="normal">4557</span>
+<span class="normal">4558</span>
+<span class="normal">4559</span>
+<span class="normal">4560</span>
+<span class="normal">4561</span>
+<span class="normal">4562</span>
+<span class="normal">4563</span>
+<span class="normal">4564</span>
+<span class="normal">4565</span>
+<span class="normal">4566</span>
+<span class="normal">4567</span>
+<span class="normal">4568</span>
+<span class="normal">4569</span>
+<span class="normal">4570</span>
+<span class="normal">4571</span>
+<span class="normal">4572</span>
+<span class="normal">4573</span>
+<span class="normal">4574</span>
+<span class="normal">4575</span>
+<span class="normal">4576</span>
+<span class="normal">4577</span>
+<span class="normal">4578</span>
+<span class="normal">4579</span>
+<span class="normal">4580</span>
+<span class="normal">4581</span>
+<span class="normal">4582</span>
+<span class="normal">4583</span>
+<span class="normal">4584</span>
+<span class="normal">4585</span>
+<span class="normal">4586</span>
+<span class="normal">4587</span>
+<span class="normal">4588</span>
+<span class="normal">4589</span>
+<span class="normal">4590</span>
+<span class="normal">4591</span>
+<span class="normal">4592</span>
+<span class="normal">4593</span>
+<span class="normal">4594</span>
+<span class="normal">4595</span>
+<span class="normal">4596</span>
+<span class="normal">4597</span>
+<span class="normal">4598</span>
+<span class="normal">4599</span>
+<span class="normal">4600</span>
+<span class="normal">4601</span>
+<span class="normal">4602</span>
+<span class="normal">4603</span>
+<span class="normal">4604</span>
+<span class="normal">4605</span>
+<span class="normal">4606</span>
+<span class="normal">4607</span>
+<span class="normal">4608</span>
+<span class="normal">4609</span>
+<span class="normal">4610</span>
+<span class="normal">4611</span>
+<span class="normal">4612</span>
+<span class="normal">4613</span>
+<span class="normal">4614</span>
+<span class="normal">4615</span>
+<span class="normal">4616</span>
+<span class="normal">4617</span>
+<span class="normal">4618</span>
+<span class="normal">4619</span>
+<span class="normal">4620</span>
+<span class="normal">4621</span>
+<span class="normal">4622</span>
+<span class="normal">4623</span>
+<span class="normal">4624</span>
+<span class="normal">4625</span>
+<span class="normal">4626</span>
+<span class="normal">4627</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">intrinsic_delaunay</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">epsilon</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">TOLERANCE_MOLLIFY</span><span class="p">,</span>
@@ -11744,9 +11773,9 @@ endpoints, and a child face comes from its parent.</p>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 10 places</summary>
+      <summary>Referenced by 11 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.split_edges">split_edges</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.subdivide_loop">subdivide_loop</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.subdivide_to_size">subdivide_to_size</a></span> · <span class="ordito-backlink"><a href="../creation/#ordito.creation">creation</a> › <a href="../creation/#ordito.creation.icosphere">icosphere</a></span></p>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../boolean/#ordito.boolean">boolean</a> › <a href="../boolean/#ordito.boolean.smooth_out">smooth_out</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.split_edges">split_edges</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.subdivide_loop">subdivide_loop</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.subdivide_to_size">subdivide_to_size</a></span> · <span class="ordito-backlink"><a href="../creation/#ordito.creation">creation</a> › <a href="../creation/#ordito.creation.icosphere">icosphere</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
 <span class="ordito-backlink"><a href="../../../examples/remesh/#remeshing-and-simplification">Remeshing and simplification</a> › <a href="../../../examples/remesh/#r3">Subdivision: midpoint and Loop</a></span></p>
         <p><span class="ordito-backlinks-section">Migrating from another library</span>
@@ -11756,83 +11785,7 @@ endpoints, and a child face comes from its parent.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4572</span>
-<span class="normal">4573</span>
-<span class="normal">4574</span>
-<span class="normal">4575</span>
-<span class="normal">4576</span>
-<span class="normal">4577</span>
-<span class="normal">4578</span>
-<span class="normal">4579</span>
-<span class="normal">4580</span>
-<span class="normal">4581</span>
-<span class="normal">4582</span>
-<span class="normal">4583</span>
-<span class="normal">4584</span>
-<span class="normal">4585</span>
-<span class="normal">4586</span>
-<span class="normal">4587</span>
-<span class="normal">4588</span>
-<span class="normal">4589</span>
-<span class="normal">4590</span>
-<span class="normal">4591</span>
-<span class="normal">4592</span>
-<span class="normal">4593</span>
-<span class="normal">4594</span>
-<span class="normal">4595</span>
-<span class="normal">4596</span>
-<span class="normal">4597</span>
-<span class="normal">4598</span>
-<span class="normal">4599</span>
-<span class="normal">4600</span>
-<span class="normal">4601</span>
-<span class="normal">4602</span>
-<span class="normal">4603</span>
-<span class="normal">4604</span>
-<span class="normal">4605</span>
-<span class="normal">4606</span>
-<span class="normal">4607</span>
-<span class="normal">4608</span>
-<span class="normal">4609</span>
-<span class="normal">4610</span>
-<span class="normal">4611</span>
-<span class="normal">4612</span>
-<span class="normal">4613</span>
-<span class="normal">4614</span>
-<span class="normal">4615</span>
-<span class="normal">4616</span>
-<span class="normal">4617</span>
-<span class="normal">4618</span>
-<span class="normal">4619</span>
-<span class="normal">4620</span>
-<span class="normal">4621</span>
-<span class="normal">4622</span>
-<span class="normal">4623</span>
-<span class="normal">4624</span>
-<span class="normal">4625</span>
-<span class="normal">4626</span>
-<span class="normal">4627</span>
-<span class="normal">4628</span>
-<span class="normal">4629</span>
-<span class="normal">4630</span>
-<span class="normal">4631</span>
-<span class="normal">4632</span>
-<span class="normal">4633</span>
-<span class="normal">4634</span>
-<span class="normal">4635</span>
-<span class="normal">4636</span>
-<span class="normal">4637</span>
-<span class="normal">4638</span>
-<span class="normal">4639</span>
-<span class="normal">4640</span>
-<span class="normal">4641</span>
-<span class="normal">4642</span>
-<span class="normal">4643</span>
-<span class="normal">4644</span>
-<span class="normal">4645</span>
-<span class="normal">4646</span>
-<span class="normal">4647</span>
-<span class="normal">4648</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4648</span>
 <span class="normal">4649</span>
 <span class="normal">4650</span>
 <span class="normal">4651</span>
@@ -11866,7 +11819,83 @@ endpoints, and a child face comes from its parent.</p>
 <span class="normal">4679</span>
 <span class="normal">4680</span>
 <span class="normal">4681</span>
-<span class="normal">4682</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide</span><span class="p">(</span>
+<span class="normal">4682</span>
+<span class="normal">4683</span>
+<span class="normal">4684</span>
+<span class="normal">4685</span>
+<span class="normal">4686</span>
+<span class="normal">4687</span>
+<span class="normal">4688</span>
+<span class="normal">4689</span>
+<span class="normal">4690</span>
+<span class="normal">4691</span>
+<span class="normal">4692</span>
+<span class="normal">4693</span>
+<span class="normal">4694</span>
+<span class="normal">4695</span>
+<span class="normal">4696</span>
+<span class="normal">4697</span>
+<span class="normal">4698</span>
+<span class="normal">4699</span>
+<span class="normal">4700</span>
+<span class="normal">4701</span>
+<span class="normal">4702</span>
+<span class="normal">4703</span>
+<span class="normal">4704</span>
+<span class="normal">4705</span>
+<span class="normal">4706</span>
+<span class="normal">4707</span>
+<span class="normal">4708</span>
+<span class="normal">4709</span>
+<span class="normal">4710</span>
+<span class="normal">4711</span>
+<span class="normal">4712</span>
+<span class="normal">4713</span>
+<span class="normal">4714</span>
+<span class="normal">4715</span>
+<span class="normal">4716</span>
+<span class="normal">4717</span>
+<span class="normal">4718</span>
+<span class="normal">4719</span>
+<span class="normal">4720</span>
+<span class="normal">4721</span>
+<span class="normal">4722</span>
+<span class="normal">4723</span>
+<span class="normal">4724</span>
+<span class="normal">4725</span>
+<span class="normal">4726</span>
+<span class="normal">4727</span>
+<span class="normal">4728</span>
+<span class="normal">4729</span>
+<span class="normal">4730</span>
+<span class="normal">4731</span>
+<span class="normal">4732</span>
+<span class="normal">4733</span>
+<span class="normal">4734</span>
+<span class="normal">4735</span>
+<span class="normal">4736</span>
+<span class="normal">4737</span>
+<span class="normal">4738</span>
+<span class="normal">4739</span>
+<span class="normal">4740</span>
+<span class="normal">4741</span>
+<span class="normal">4742</span>
+<span class="normal">4743</span>
+<span class="normal">4744</span>
+<span class="normal">4745</span>
+<span class="normal">4746</span>
+<span class="normal">4747</span>
+<span class="normal">4748</span>
+<span class="normal">4749</span>
+<span class="normal">4750</span>
+<span class="normal">4751</span>
+<span class="normal">4752</span>
+<span class="normal">4753</span>
+<span class="normal">4754</span>
+<span class="normal">4755</span>
+<span class="normal">4756</span>
+<span class="normal">4757</span>
+<span class="normal">4758</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -12305,83 +12334,7 @@ ones:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4703</span>
-<span class="normal">4704</span>
-<span class="normal">4705</span>
-<span class="normal">4706</span>
-<span class="normal">4707</span>
-<span class="normal">4708</span>
-<span class="normal">4709</span>
-<span class="normal">4710</span>
-<span class="normal">4711</span>
-<span class="normal">4712</span>
-<span class="normal">4713</span>
-<span class="normal">4714</span>
-<span class="normal">4715</span>
-<span class="normal">4716</span>
-<span class="normal">4717</span>
-<span class="normal">4718</span>
-<span class="normal">4719</span>
-<span class="normal">4720</span>
-<span class="normal">4721</span>
-<span class="normal">4722</span>
-<span class="normal">4723</span>
-<span class="normal">4724</span>
-<span class="normal">4725</span>
-<span class="normal">4726</span>
-<span class="normal">4727</span>
-<span class="normal">4728</span>
-<span class="normal">4729</span>
-<span class="normal">4730</span>
-<span class="normal">4731</span>
-<span class="normal">4732</span>
-<span class="normal">4733</span>
-<span class="normal">4734</span>
-<span class="normal">4735</span>
-<span class="normal">4736</span>
-<span class="normal">4737</span>
-<span class="normal">4738</span>
-<span class="normal">4739</span>
-<span class="normal">4740</span>
-<span class="normal">4741</span>
-<span class="normal">4742</span>
-<span class="normal">4743</span>
-<span class="normal">4744</span>
-<span class="normal">4745</span>
-<span class="normal">4746</span>
-<span class="normal">4747</span>
-<span class="normal">4748</span>
-<span class="normal">4749</span>
-<span class="normal">4750</span>
-<span class="normal">4751</span>
-<span class="normal">4752</span>
-<span class="normal">4753</span>
-<span class="normal">4754</span>
-<span class="normal">4755</span>
-<span class="normal">4756</span>
-<span class="normal">4757</span>
-<span class="normal">4758</span>
-<span class="normal">4759</span>
-<span class="normal">4760</span>
-<span class="normal">4761</span>
-<span class="normal">4762</span>
-<span class="normal">4763</span>
-<span class="normal">4764</span>
-<span class="normal">4765</span>
-<span class="normal">4766</span>
-<span class="normal">4767</span>
-<span class="normal">4768</span>
-<span class="normal">4769</span>
-<span class="normal">4770</span>
-<span class="normal">4771</span>
-<span class="normal">4772</span>
-<span class="normal">4773</span>
-<span class="normal">4774</span>
-<span class="normal">4775</span>
-<span class="normal">4776</span>
-<span class="normal">4777</span>
-<span class="normal">4778</span>
-<span class="normal">4779</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4779</span>
 <span class="normal">4780</span>
 <span class="normal">4781</span>
 <span class="normal">4782</span>
@@ -12537,7 +12490,83 @@ ones:</p>
 <span class="normal">4932</span>
 <span class="normal">4933</span>
 <span class="normal">4934</span>
-<span class="normal">4935</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_loop</span><span class="p">(</span>
+<span class="normal">4935</span>
+<span class="normal">4936</span>
+<span class="normal">4937</span>
+<span class="normal">4938</span>
+<span class="normal">4939</span>
+<span class="normal">4940</span>
+<span class="normal">4941</span>
+<span class="normal">4942</span>
+<span class="normal">4943</span>
+<span class="normal">4944</span>
+<span class="normal">4945</span>
+<span class="normal">4946</span>
+<span class="normal">4947</span>
+<span class="normal">4948</span>
+<span class="normal">4949</span>
+<span class="normal">4950</span>
+<span class="normal">4951</span>
+<span class="normal">4952</span>
+<span class="normal">4953</span>
+<span class="normal">4954</span>
+<span class="normal">4955</span>
+<span class="normal">4956</span>
+<span class="normal">4957</span>
+<span class="normal">4958</span>
+<span class="normal">4959</span>
+<span class="normal">4960</span>
+<span class="normal">4961</span>
+<span class="normal">4962</span>
+<span class="normal">4963</span>
+<span class="normal">4964</span>
+<span class="normal">4965</span>
+<span class="normal">4966</span>
+<span class="normal">4967</span>
+<span class="normal">4968</span>
+<span class="normal">4969</span>
+<span class="normal">4970</span>
+<span class="normal">4971</span>
+<span class="normal">4972</span>
+<span class="normal">4973</span>
+<span class="normal">4974</span>
+<span class="normal">4975</span>
+<span class="normal">4976</span>
+<span class="normal">4977</span>
+<span class="normal">4978</span>
+<span class="normal">4979</span>
+<span class="normal">4980</span>
+<span class="normal">4981</span>
+<span class="normal">4982</span>
+<span class="normal">4983</span>
+<span class="normal">4984</span>
+<span class="normal">4985</span>
+<span class="normal">4986</span>
+<span class="normal">4987</span>
+<span class="normal">4988</span>
+<span class="normal">4989</span>
+<span class="normal">4990</span>
+<span class="normal">4991</span>
+<span class="normal">4992</span>
+<span class="normal">4993</span>
+<span class="normal">4994</span>
+<span class="normal">4995</span>
+<span class="normal">4996</span>
+<span class="normal">4997</span>
+<span class="normal">4998</span>
+<span class="normal">4999</span>
+<span class="normal">5000</span>
+<span class="normal">5001</span>
+<span class="normal">5002</span>
+<span class="normal">5003</span>
+<span class="normal">5004</span>
+<span class="normal">5005</span>
+<span class="normal">5006</span>
+<span class="normal">5007</span>
+<span class="normal">5008</span>
+<span class="normal">5009</span>
+<span class="normal">5010</span>
+<span class="normal">5011</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_loop</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -13035,9 +13064,9 @@ face comes from the input face it was refined from.</p>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 9 places</summary>
+      <summary>Referenced by 10 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.isotropic_remesh">isotropic_remesh</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.split_edges">split_edges</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.subdivide_loop">subdivide_loop</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.subdivide_region_to_size">subdivide_region_to_size</a></span> · <span class="ordito-backlink"><a href="../intersection/#ordito.intersection">intersection</a> › <a href="../intersection/#ordito.intersection.split_mesh_with_plane">split_mesh_with_plane</a></span></p>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../boolean/#ordito.boolean">boolean</a> › <a href="../boolean/#ordito.boolean.smooth_out">smooth_out</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.isotropic_remesh">isotropic_remesh</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.split_edges">split_edges</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.subdivide_loop">subdivide_loop</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.subdivide_region_to_size">subdivide_region_to_size</a></span> · <span class="ordito-backlink"><a href="../intersection/#ordito.intersection">intersection</a> › <a href="../intersection/#ordito.intersection.split_mesh_with_plane">split_mesh_with_plane</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
 <span class="ordito-backlink"><a href="../../../examples/remesh/#remeshing-and-simplification">Remeshing and simplification</a> › <a href="../../../examples/remesh/#r5">Refining to a size or to the surrounding density</a></span></p>
         <p><span class="ordito-backlinks-section">Migrating from another library</span>
@@ -13047,83 +13076,7 @@ face comes from the input face it was refined from.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5020</span>
-<span class="normal">5021</span>
-<span class="normal">5022</span>
-<span class="normal">5023</span>
-<span class="normal">5024</span>
-<span class="normal">5025</span>
-<span class="normal">5026</span>
-<span class="normal">5027</span>
-<span class="normal">5028</span>
-<span class="normal">5029</span>
-<span class="normal">5030</span>
-<span class="normal">5031</span>
-<span class="normal">5032</span>
-<span class="normal">5033</span>
-<span class="normal">5034</span>
-<span class="normal">5035</span>
-<span class="normal">5036</span>
-<span class="normal">5037</span>
-<span class="normal">5038</span>
-<span class="normal">5039</span>
-<span class="normal">5040</span>
-<span class="normal">5041</span>
-<span class="normal">5042</span>
-<span class="normal">5043</span>
-<span class="normal">5044</span>
-<span class="normal">5045</span>
-<span class="normal">5046</span>
-<span class="normal">5047</span>
-<span class="normal">5048</span>
-<span class="normal">5049</span>
-<span class="normal">5050</span>
-<span class="normal">5051</span>
-<span class="normal">5052</span>
-<span class="normal">5053</span>
-<span class="normal">5054</span>
-<span class="normal">5055</span>
-<span class="normal">5056</span>
-<span class="normal">5057</span>
-<span class="normal">5058</span>
-<span class="normal">5059</span>
-<span class="normal">5060</span>
-<span class="normal">5061</span>
-<span class="normal">5062</span>
-<span class="normal">5063</span>
-<span class="normal">5064</span>
-<span class="normal">5065</span>
-<span class="normal">5066</span>
-<span class="normal">5067</span>
-<span class="normal">5068</span>
-<span class="normal">5069</span>
-<span class="normal">5070</span>
-<span class="normal">5071</span>
-<span class="normal">5072</span>
-<span class="normal">5073</span>
-<span class="normal">5074</span>
-<span class="normal">5075</span>
-<span class="normal">5076</span>
-<span class="normal">5077</span>
-<span class="normal">5078</span>
-<span class="normal">5079</span>
-<span class="normal">5080</span>
-<span class="normal">5081</span>
-<span class="normal">5082</span>
-<span class="normal">5083</span>
-<span class="normal">5084</span>
-<span class="normal">5085</span>
-<span class="normal">5086</span>
-<span class="normal">5087</span>
-<span class="normal">5088</span>
-<span class="normal">5089</span>
-<span class="normal">5090</span>
-<span class="normal">5091</span>
-<span class="normal">5092</span>
-<span class="normal">5093</span>
-<span class="normal">5094</span>
-<span class="normal">5095</span>
-<span class="normal">5096</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5096</span>
 <span class="normal">5097</span>
 <span class="normal">5098</span>
 <span class="normal">5099</span>
@@ -13138,7 +13091,83 @@ face comes from the input face it was refined from.</p>
 <span class="normal">5108</span>
 <span class="normal">5109</span>
 <span class="normal">5110</span>
-<span class="normal">5111</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_to_size</span><span class="p">(</span>
+<span class="normal">5111</span>
+<span class="normal">5112</span>
+<span class="normal">5113</span>
+<span class="normal">5114</span>
+<span class="normal">5115</span>
+<span class="normal">5116</span>
+<span class="normal">5117</span>
+<span class="normal">5118</span>
+<span class="normal">5119</span>
+<span class="normal">5120</span>
+<span class="normal">5121</span>
+<span class="normal">5122</span>
+<span class="normal">5123</span>
+<span class="normal">5124</span>
+<span class="normal">5125</span>
+<span class="normal">5126</span>
+<span class="normal">5127</span>
+<span class="normal">5128</span>
+<span class="normal">5129</span>
+<span class="normal">5130</span>
+<span class="normal">5131</span>
+<span class="normal">5132</span>
+<span class="normal">5133</span>
+<span class="normal">5134</span>
+<span class="normal">5135</span>
+<span class="normal">5136</span>
+<span class="normal">5137</span>
+<span class="normal">5138</span>
+<span class="normal">5139</span>
+<span class="normal">5140</span>
+<span class="normal">5141</span>
+<span class="normal">5142</span>
+<span class="normal">5143</span>
+<span class="normal">5144</span>
+<span class="normal">5145</span>
+<span class="normal">5146</span>
+<span class="normal">5147</span>
+<span class="normal">5148</span>
+<span class="normal">5149</span>
+<span class="normal">5150</span>
+<span class="normal">5151</span>
+<span class="normal">5152</span>
+<span class="normal">5153</span>
+<span class="normal">5154</span>
+<span class="normal">5155</span>
+<span class="normal">5156</span>
+<span class="normal">5157</span>
+<span class="normal">5158</span>
+<span class="normal">5159</span>
+<span class="normal">5160</span>
+<span class="normal">5161</span>
+<span class="normal">5162</span>
+<span class="normal">5163</span>
+<span class="normal">5164</span>
+<span class="normal">5165</span>
+<span class="normal">5166</span>
+<span class="normal">5167</span>
+<span class="normal">5168</span>
+<span class="normal">5169</span>
+<span class="normal">5170</span>
+<span class="normal">5171</span>
+<span class="normal">5172</span>
+<span class="normal">5173</span>
+<span class="normal">5174</span>
+<span class="normal">5175</span>
+<span class="normal">5176</span>
+<span class="normal">5177</span>
+<span class="normal">5178</span>
+<span class="normal">5179</span>
+<span class="normal">5180</span>
+<span class="normal">5181</span>
+<span class="normal">5182</span>
+<span class="normal">5183</span>
+<span class="normal">5184</span>
+<span class="normal">5185</span>
+<span class="normal">5186</span>
+<span class="normal">5187</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_to_size</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">max_edge</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span>
@@ -13732,80 +13761,7 @@ it borders a refined edge, which keeps the mesh free of cracks:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5523</span>
-<span class="normal">5524</span>
-<span class="normal">5525</span>
-<span class="normal">5526</span>
-<span class="normal">5527</span>
-<span class="normal">5528</span>
-<span class="normal">5529</span>
-<span class="normal">5530</span>
-<span class="normal">5531</span>
-<span class="normal">5532</span>
-<span class="normal">5533</span>
-<span class="normal">5534</span>
-<span class="normal">5535</span>
-<span class="normal">5536</span>
-<span class="normal">5537</span>
-<span class="normal">5538</span>
-<span class="normal">5539</span>
-<span class="normal">5540</span>
-<span class="normal">5541</span>
-<span class="normal">5542</span>
-<span class="normal">5543</span>
-<span class="normal">5544</span>
-<span class="normal">5545</span>
-<span class="normal">5546</span>
-<span class="normal">5547</span>
-<span class="normal">5548</span>
-<span class="normal">5549</span>
-<span class="normal">5550</span>
-<span class="normal">5551</span>
-<span class="normal">5552</span>
-<span class="normal">5553</span>
-<span class="normal">5554</span>
-<span class="normal">5555</span>
-<span class="normal">5556</span>
-<span class="normal">5557</span>
-<span class="normal">5558</span>
-<span class="normal">5559</span>
-<span class="normal">5560</span>
-<span class="normal">5561</span>
-<span class="normal">5562</span>
-<span class="normal">5563</span>
-<span class="normal">5564</span>
-<span class="normal">5565</span>
-<span class="normal">5566</span>
-<span class="normal">5567</span>
-<span class="normal">5568</span>
-<span class="normal">5569</span>
-<span class="normal">5570</span>
-<span class="normal">5571</span>
-<span class="normal">5572</span>
-<span class="normal">5573</span>
-<span class="normal">5574</span>
-<span class="normal">5575</span>
-<span class="normal">5576</span>
-<span class="normal">5577</span>
-<span class="normal">5578</span>
-<span class="normal">5579</span>
-<span class="normal">5580</span>
-<span class="normal">5581</span>
-<span class="normal">5582</span>
-<span class="normal">5583</span>
-<span class="normal">5584</span>
-<span class="normal">5585</span>
-<span class="normal">5586</span>
-<span class="normal">5587</span>
-<span class="normal">5588</span>
-<span class="normal">5589</span>
-<span class="normal">5590</span>
-<span class="normal">5591</span>
-<span class="normal">5592</span>
-<span class="normal">5593</span>
-<span class="normal">5594</span>
-<span class="normal">5595</span>
-<span class="normal">5596</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5596</span>
 <span class="normal">5597</span>
 <span class="normal">5598</span>
 <span class="normal">5599</span>
@@ -14068,7 +14024,80 @@ it borders a refined edge, which keeps the mesh free of cracks:</p>
 <span class="normal">5856</span>
 <span class="normal">5857</span>
 <span class="normal">5858</span>
-<span class="normal">5859</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_region_to_size</span><span class="p">(</span>
+<span class="normal">5859</span>
+<span class="normal">5860</span>
+<span class="normal">5861</span>
+<span class="normal">5862</span>
+<span class="normal">5863</span>
+<span class="normal">5864</span>
+<span class="normal">5865</span>
+<span class="normal">5866</span>
+<span class="normal">5867</span>
+<span class="normal">5868</span>
+<span class="normal">5869</span>
+<span class="normal">5870</span>
+<span class="normal">5871</span>
+<span class="normal">5872</span>
+<span class="normal">5873</span>
+<span class="normal">5874</span>
+<span class="normal">5875</span>
+<span class="normal">5876</span>
+<span class="normal">5877</span>
+<span class="normal">5878</span>
+<span class="normal">5879</span>
+<span class="normal">5880</span>
+<span class="normal">5881</span>
+<span class="normal">5882</span>
+<span class="normal">5883</span>
+<span class="normal">5884</span>
+<span class="normal">5885</span>
+<span class="normal">5886</span>
+<span class="normal">5887</span>
+<span class="normal">5888</span>
+<span class="normal">5889</span>
+<span class="normal">5890</span>
+<span class="normal">5891</span>
+<span class="normal">5892</span>
+<span class="normal">5893</span>
+<span class="normal">5894</span>
+<span class="normal">5895</span>
+<span class="normal">5896</span>
+<span class="normal">5897</span>
+<span class="normal">5898</span>
+<span class="normal">5899</span>
+<span class="normal">5900</span>
+<span class="normal">5901</span>
+<span class="normal">5902</span>
+<span class="normal">5903</span>
+<span class="normal">5904</span>
+<span class="normal">5905</span>
+<span class="normal">5906</span>
+<span class="normal">5907</span>
+<span class="normal">5908</span>
+<span class="normal">5909</span>
+<span class="normal">5910</span>
+<span class="normal">5911</span>
+<span class="normal">5912</span>
+<span class="normal">5913</span>
+<span class="normal">5914</span>
+<span class="normal">5915</span>
+<span class="normal">5916</span>
+<span class="normal">5917</span>
+<span class="normal">5918</span>
+<span class="normal">5919</span>
+<span class="normal">5920</span>
+<span class="normal">5921</span>
+<span class="normal">5922</span>
+<span class="normal">5923</span>
+<span class="normal">5924</span>
+<span class="normal">5925</span>
+<span class="normal">5926</span>
+<span class="normal">5927</span>
+<span class="normal">5928</span>
+<span class="normal">5929</span>
+<span class="normal">5930</span>
+<span class="normal">5931</span>
+<span class="normal">5932</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_region_to_size</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">region</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
@@ -14321,7 +14350,7 @@ it borders a refined edge, which keeps the mesh free of cracks:</p>
         <span class="c1"># With the flags carried (not the provenance's face index), the split marks the faces the</span>
         <span class="c1"># last flip pass settled and leaves unchanged, for the next pass's first round.</span>
         <span class="n">settling</span> <span class="o">=</span> <span class="n">topology</span> <span class="k">if</span> <span class="n">face_index</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">topology</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="kc">None</span>
-        <span class="n">current_vertices</span><span class="p">,</span> <span class="n">current_faces</span><span class="p">,</span> <span class="n">carried</span> <span class="o">=</span> <span class="n">_split_ranked_edges</span><span class="p">(</span>
+        <span class="n">current_vertices</span><span class="p">,</span> <span class="n">current_faces</span><span class="p">,</span> <span class="n">carried</span><span class="p">,</span> <span class="n">_long_left</span> <span class="o">=</span> <span class="n">_split_ranked_edges</span><span class="p">(</span>
             <span class="n">current_vertices</span><span class="p">,</span>
             <span class="n">current_faces</span><span class="p">,</span>
             <span class="n">long_mask</span><span class="p">,</span>
@@ -14809,80 +14838,7 @@ already split) is refined until it matches its surroundings:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5946</span>
-<span class="normal">5947</span>
-<span class="normal">5948</span>
-<span class="normal">5949</span>
-<span class="normal">5950</span>
-<span class="normal">5951</span>
-<span class="normal">5952</span>
-<span class="normal">5953</span>
-<span class="normal">5954</span>
-<span class="normal">5955</span>
-<span class="normal">5956</span>
-<span class="normal">5957</span>
-<span class="normal">5958</span>
-<span class="normal">5959</span>
-<span class="normal">5960</span>
-<span class="normal">5961</span>
-<span class="normal">5962</span>
-<span class="normal">5963</span>
-<span class="normal">5964</span>
-<span class="normal">5965</span>
-<span class="normal">5966</span>
-<span class="normal">5967</span>
-<span class="normal">5968</span>
-<span class="normal">5969</span>
-<span class="normal">5970</span>
-<span class="normal">5971</span>
-<span class="normal">5972</span>
-<span class="normal">5973</span>
-<span class="normal">5974</span>
-<span class="normal">5975</span>
-<span class="normal">5976</span>
-<span class="normal">5977</span>
-<span class="normal">5978</span>
-<span class="normal">5979</span>
-<span class="normal">5980</span>
-<span class="normal">5981</span>
-<span class="normal">5982</span>
-<span class="normal">5983</span>
-<span class="normal">5984</span>
-<span class="normal">5985</span>
-<span class="normal">5986</span>
-<span class="normal">5987</span>
-<span class="normal">5988</span>
-<span class="normal">5989</span>
-<span class="normal">5990</span>
-<span class="normal">5991</span>
-<span class="normal">5992</span>
-<span class="normal">5993</span>
-<span class="normal">5994</span>
-<span class="normal">5995</span>
-<span class="normal">5996</span>
-<span class="normal">5997</span>
-<span class="normal">5998</span>
-<span class="normal">5999</span>
-<span class="normal">6000</span>
-<span class="normal">6001</span>
-<span class="normal">6002</span>
-<span class="normal">6003</span>
-<span class="normal">6004</span>
-<span class="normal">6005</span>
-<span class="normal">6006</span>
-<span class="normal">6007</span>
-<span class="normal">6008</span>
-<span class="normal">6009</span>
-<span class="normal">6010</span>
-<span class="normal">6011</span>
-<span class="normal">6012</span>
-<span class="normal">6013</span>
-<span class="normal">6014</span>
-<span class="normal">6015</span>
-<span class="normal">6016</span>
-<span class="normal">6017</span>
-<span class="normal">6018</span>
-<span class="normal">6019</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">6019</span>
 <span class="normal">6020</span>
 <span class="normal">6021</span>
 <span class="normal">6022</span>
@@ -15035,7 +14991,80 @@ already split) is refined until it matches its surroundings:</p>
 <span class="normal">6169</span>
 <span class="normal">6170</span>
 <span class="normal">6171</span>
-<span class="normal">6172</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">refine_region_to_density</span><span class="p">(</span>
+<span class="normal">6172</span>
+<span class="normal">6173</span>
+<span class="normal">6174</span>
+<span class="normal">6175</span>
+<span class="normal">6176</span>
+<span class="normal">6177</span>
+<span class="normal">6178</span>
+<span class="normal">6179</span>
+<span class="normal">6180</span>
+<span class="normal">6181</span>
+<span class="normal">6182</span>
+<span class="normal">6183</span>
+<span class="normal">6184</span>
+<span class="normal">6185</span>
+<span class="normal">6186</span>
+<span class="normal">6187</span>
+<span class="normal">6188</span>
+<span class="normal">6189</span>
+<span class="normal">6190</span>
+<span class="normal">6191</span>
+<span class="normal">6192</span>
+<span class="normal">6193</span>
+<span class="normal">6194</span>
+<span class="normal">6195</span>
+<span class="normal">6196</span>
+<span class="normal">6197</span>
+<span class="normal">6198</span>
+<span class="normal">6199</span>
+<span class="normal">6200</span>
+<span class="normal">6201</span>
+<span class="normal">6202</span>
+<span class="normal">6203</span>
+<span class="normal">6204</span>
+<span class="normal">6205</span>
+<span class="normal">6206</span>
+<span class="normal">6207</span>
+<span class="normal">6208</span>
+<span class="normal">6209</span>
+<span class="normal">6210</span>
+<span class="normal">6211</span>
+<span class="normal">6212</span>
+<span class="normal">6213</span>
+<span class="normal">6214</span>
+<span class="normal">6215</span>
+<span class="normal">6216</span>
+<span class="normal">6217</span>
+<span class="normal">6218</span>
+<span class="normal">6219</span>
+<span class="normal">6220</span>
+<span class="normal">6221</span>
+<span class="normal">6222</span>
+<span class="normal">6223</span>
+<span class="normal">6224</span>
+<span class="normal">6225</span>
+<span class="normal">6226</span>
+<span class="normal">6227</span>
+<span class="normal">6228</span>
+<span class="normal">6229</span>
+<span class="normal">6230</span>
+<span class="normal">6231</span>
+<span class="normal">6232</span>
+<span class="normal">6233</span>
+<span class="normal">6234</span>
+<span class="normal">6235</span>
+<span class="normal">6236</span>
+<span class="normal">6237</span>
+<span class="normal">6238</span>
+<span class="normal">6239</span>
+<span class="normal">6240</span>
+<span class="normal">6241</span>
+<span class="normal">6242</span>
+<span class="normal">6243</span>
+<span class="normal">6244</span>
+<span class="normal">6245</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">refine_region_to_density</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">region</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
@@ -15617,80 +15646,7 @@ splits just the two faces sharing that edge:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">6332</span>
-<span class="normal">6333</span>
-<span class="normal">6334</span>
-<span class="normal">6335</span>
-<span class="normal">6336</span>
-<span class="normal">6337</span>
-<span class="normal">6338</span>
-<span class="normal">6339</span>
-<span class="normal">6340</span>
-<span class="normal">6341</span>
-<span class="normal">6342</span>
-<span class="normal">6343</span>
-<span class="normal">6344</span>
-<span class="normal">6345</span>
-<span class="normal">6346</span>
-<span class="normal">6347</span>
-<span class="normal">6348</span>
-<span class="normal">6349</span>
-<span class="normal">6350</span>
-<span class="normal">6351</span>
-<span class="normal">6352</span>
-<span class="normal">6353</span>
-<span class="normal">6354</span>
-<span class="normal">6355</span>
-<span class="normal">6356</span>
-<span class="normal">6357</span>
-<span class="normal">6358</span>
-<span class="normal">6359</span>
-<span class="normal">6360</span>
-<span class="normal">6361</span>
-<span class="normal">6362</span>
-<span class="normal">6363</span>
-<span class="normal">6364</span>
-<span class="normal">6365</span>
-<span class="normal">6366</span>
-<span class="normal">6367</span>
-<span class="normal">6368</span>
-<span class="normal">6369</span>
-<span class="normal">6370</span>
-<span class="normal">6371</span>
-<span class="normal">6372</span>
-<span class="normal">6373</span>
-<span class="normal">6374</span>
-<span class="normal">6375</span>
-<span class="normal">6376</span>
-<span class="normal">6377</span>
-<span class="normal">6378</span>
-<span class="normal">6379</span>
-<span class="normal">6380</span>
-<span class="normal">6381</span>
-<span class="normal">6382</span>
-<span class="normal">6383</span>
-<span class="normal">6384</span>
-<span class="normal">6385</span>
-<span class="normal">6386</span>
-<span class="normal">6387</span>
-<span class="normal">6388</span>
-<span class="normal">6389</span>
-<span class="normal">6390</span>
-<span class="normal">6391</span>
-<span class="normal">6392</span>
-<span class="normal">6393</span>
-<span class="normal">6394</span>
-<span class="normal">6395</span>
-<span class="normal">6396</span>
-<span class="normal">6397</span>
-<span class="normal">6398</span>
-<span class="normal">6399</span>
-<span class="normal">6400</span>
-<span class="normal">6401</span>
-<span class="normal">6402</span>
-<span class="normal">6403</span>
-<span class="normal">6404</span>
-<span class="normal">6405</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">6405</span>
 <span class="normal">6406</span>
 <span class="normal">6407</span>
 <span class="normal">6408</span>
@@ -15817,7 +15773,84 @@ splits just the two faces sharing that edge:</p>
 <span class="normal">6529</span>
 <span class="normal">6530</span>
 <span class="normal">6531</span>
-<span class="normal">6532</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_edges</span><span class="p">(</span>
+<span class="normal">6532</span>
+<span class="normal">6533</span>
+<span class="normal">6534</span>
+<span class="normal">6535</span>
+<span class="normal">6536</span>
+<span class="normal">6537</span>
+<span class="normal">6538</span>
+<span class="normal">6539</span>
+<span class="normal">6540</span>
+<span class="normal">6541</span>
+<span class="normal">6542</span>
+<span class="normal">6543</span>
+<span class="normal">6544</span>
+<span class="normal">6545</span>
+<span class="normal">6546</span>
+<span class="normal">6547</span>
+<span class="normal">6548</span>
+<span class="normal">6549</span>
+<span class="normal">6550</span>
+<span class="normal">6551</span>
+<span class="normal">6552</span>
+<span class="normal">6553</span>
+<span class="normal">6554</span>
+<span class="normal">6555</span>
+<span class="normal">6556</span>
+<span class="normal">6557</span>
+<span class="normal">6558</span>
+<span class="normal">6559</span>
+<span class="normal">6560</span>
+<span class="normal">6561</span>
+<span class="normal">6562</span>
+<span class="normal">6563</span>
+<span class="normal">6564</span>
+<span class="normal">6565</span>
+<span class="normal">6566</span>
+<span class="normal">6567</span>
+<span class="normal">6568</span>
+<span class="normal">6569</span>
+<span class="normal">6570</span>
+<span class="normal">6571</span>
+<span class="normal">6572</span>
+<span class="normal">6573</span>
+<span class="normal">6574</span>
+<span class="normal">6575</span>
+<span class="normal">6576</span>
+<span class="normal">6577</span>
+<span class="normal">6578</span>
+<span class="normal">6579</span>
+<span class="normal">6580</span>
+<span class="normal">6581</span>
+<span class="normal">6582</span>
+<span class="normal">6583</span>
+<span class="normal">6584</span>
+<span class="normal">6585</span>
+<span class="normal">6586</span>
+<span class="normal">6587</span>
+<span class="normal">6588</span>
+<span class="normal">6589</span>
+<span class="normal">6590</span>
+<span class="normal">6591</span>
+<span class="normal">6592</span>
+<span class="normal">6593</span>
+<span class="normal">6594</span>
+<span class="normal">6595</span>
+<span class="normal">6596</span>
+<span class="normal">6597</span>
+<span class="normal">6598</span>
+<span class="normal">6599</span>
+<span class="normal">6600</span>
+<span class="normal">6601</span>
+<span class="normal">6602</span>
+<span class="normal">6603</span>
+<span class="normal">6604</span>
+<span class="normal">6605</span>
+<span class="normal">6606</span>
+<span class="normal">6607</span>
+<span class="normal">6608</span>
+<span class="normal">6609</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_edges</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">split_mask</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
@@ -15968,13 +16001,17 @@ splits just the two faces sharing that edge:</p>
 
     <span class="c1"># A bit a split edge, ranked: the scan both counts the split edges and assigns each one its new</span>
     <span class="c1"># vertex slot (its bit's rank), which is the indexing ``split_positions`` is documented against.</span>
+    <span class="c1"># A 32nd of ``array.mask_to_compact_ranks``' ``(m + 1,)`` offsets and of their scan, which on</span>
+    <span class="c1"># ``lucy``'s 42 M edges were 14 % of ``split_edges``' pool and its time. The refinement loops'</span>
+    <span class="c1"># flags come off the corner sort (``emit_long_edges``), not an edge-ordered launch a ballot</span>
+    <span class="c1"># could follow, and take ``store_counted_bit`` instead.</span>
     <span class="n">n_words</span> <span class="o">=</span> <span class="p">(</span><span class="n">n_edges</span> <span class="o">+</span> <span class="mi">31</span><span class="p">)</span> <span class="o">//</span> <span class="mi">32</span>
     <span class="n">bits</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">n_words</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">words</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view_as</span><span class="p">(</span><span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">bits</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">n_words</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">uint32</span><span class="p">)</span>
     <span class="n">word_ranks</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">bits</span><span class="p">,</span> <span class="n">n_words</span><span class="p">,</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">n_words</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">n_edges</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-            <span class="n">kernel_remesh</span><span class="o">.</span><span class="n">mark_split_bits</span><span class="p">,</span>
+            <span class="n">kernel_array</span><span class="o">.</span><span class="n">mask_ballot_bits</span><span class="p">,</span>
             <span class="n">dim</span><span class="o">=</span><span class="n">n_edges</span><span class="p">,</span>
             <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">split_mask</span><span class="p">,</span> <span class="n">words</span><span class="p">,</span> <span class="n">word_ranks</span><span class="p">],</span>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
@@ -15982,7 +16019,7 @@ splits just the two faces sharing that edge:</p>
         <span class="n">_launch</span><span class="o">.</span><span class="n">array_scan</span><span class="p">(</span><span class="n">word_ranks</span><span class="p">,</span> <span class="n">word_ranks</span><span class="p">,</span> <span class="n">inclusive</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
     <span class="c1"># Sizes the new vertices.</span>
     <span class="n">n_split</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">read_scalar</span><span class="p">(</span><span class="n">word_ranks</span><span class="p">))</span> <span class="k">if</span> <span class="n">n_edges</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="k">else</span> <span class="mi">0</span>
-    <span class="n">new_vertices</span><span class="p">,</span> <span class="n">new_faces</span><span class="p">,</span> <span class="n">new_index</span> <span class="o">=</span> <span class="n">_split_ranked_edges</span><span class="p">(</span>
+    <span class="n">new_vertices</span><span class="p">,</span> <span class="n">new_faces</span><span class="p">,</span> <span class="n">new_index</span><span class="p">,</span> <span class="n">_long_left</span> <span class="o">=</span> <span class="n">_split_ranked_edges</span><span class="p">(</span>
         <span class="n">vertices</span><span class="p">,</span>
         <span class="n">faces</span><span class="p">,</span>
         <span class="n">split_mask</span><span class="p">,</span>

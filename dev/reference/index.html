@@ -4477,6 +4477,8 @@
       
         
       
+        
+      
     
     
     
@@ -4620,6 +4622,33 @@
     
   
   combine
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/boolean/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  boolean
 
     
   </span>
@@ -6403,6 +6432,38 @@ print is checked, so the output shown is the output you will get.</p>
 <td><a class="autorefs autorefs-internal" title="concatenate" href="../api/ordito/combine/#ordito.combine.concatenate"><code>combine.concatenate</code></a>, <a class="autorefs autorefs-internal" title="split" href="../api/ordito/combine/#ordito.combine.split"><code>combine.split</code></a></td>
 </tr>
 <tr>
+<td>union, intersection or difference of two solids</td>
+<td><a class="autorefs autorefs-internal" title="ordito.boolean" href="../api/ordito/boolean/#ordito.boolean"><code>boolean</code></a>: <a class="autorefs autorefs-internal" title="union" href="../api/ordito/boolean/#ordito.boolean.union"><code>union</code></a>, <a class="autorefs autorefs-internal" title="intersection" href="../api/ordito/boolean/#ordito.boolean.intersection"><code>intersection</code></a>, <a class="autorefs autorefs-internal" title="difference" href="../api/ordito/boolean/#ordito.boolean.difference"><code>difference</code></a></td>
+</tr>
+<tr>
+<td>the same for many solids at once</td>
+<td><a class="autorefs autorefs-internal" title="union_all" href="../api/ordito/boolean/#ordito.boolean.union_all"><code>union_all</code></a>, <a class="autorefs autorefs-internal" title="intersection_all" href="../api/ordito/boolean/#ordito.boolean.intersection_all"><code>intersection_all</code></a>, <a class="autorefs autorefs-internal" title="difference_all" href="../api/ordito/boolean/#ordito.boolean.difference_all"><code>difference_all</code></a></td>
+</tr>
+<tr>
+<td>cut a solid by another solid or a plane, capped</td>
+<td><a class="autorefs autorefs-internal" title="split_by_mesh" href="../api/ordito/boolean/#ordito.boolean.split_by_mesh"><code>split_by_mesh</code></a>, <a class="autorefs autorefs-internal" title="split_by_plane" href="../api/ordito/boolean/#ordito.boolean.split_by_plane"><code>split_by_plane</code></a>, <a class="autorefs autorefs-internal" title="trim_by_plane" href="../api/ordito/boolean/#ordito.boolean.trim_by_plane"><code>trim_by_plane</code></a></td>
+</tr>
+<tr>
+<td>every crossing of segments with a closed surface, exact at edges and vertices</td>
+<td><a class="autorefs autorefs-internal" title="segment_hits" href="../api/ordito/boolean/#ordito.boolean.segment_hits"><code>boolean.segment_hits</code></a></td>
+</tr>
+<tr>
+<td>drop a closed mesh's redundant vertices within a tolerance</td>
+<td><a class="autorefs autorefs-internal" title="simplify" href="../api/ordito/boolean/#ordito.boolean.simplify"><code>boolean.simplify</code></a></td>
+</tr>
+<tr>
+<td>refine a solid onto a smooth surface through its vertices, keeping creases</td>
+<td><a class="autorefs autorefs-internal" title="smooth_out" href="../api/ordito/boolean/#ordito.boolean.smooth_out"><code>boolean.smooth_out</code></a></td>
+</tr>
+<tr>
+<td>a solid from a signed distance function</td>
+<td><a class="autorefs autorefs-internal" title="level_set" href="../api/ordito/boolean/#ordito.boolean.level_set"><code>boolean.level_set</code></a></td>
+</tr>
+<tr>
+<td>triangulate a planar region with holes</td>
+<td><a class="autorefs autorefs-internal" title="triangulate_polygons" href="../api/ordito/polyline/#ordito.polyline.triangulate_polygons"><code>polyline.triangulate_polygons</code></a>, <a class="autorefs autorefs-internal" title="triangulate_polygons_from_offsets" href="../api/ordito/polyline/#ordito.polyline.triangulate_polygons_from_offsets"><code>triangulate_polygons_from_offsets</code></a></td>
+</tr>
+<tr>
 <td>keep a subset of faces</td>
 <td><a class="autorefs autorefs-internal" title="submesh_from_face_mask" href="../api/ordito/selection/#ordito.selection.submesh_from_face_mask"><code>selection.submesh_from_face_mask</code></a></td>
 </tr>
@@ -6718,6 +6779,10 @@ print is checked, so the output shown is the output you will get.</p>
 <tr>
 <td><a href="../api/ordito/combine/">combine</a></td>
 <td>Assembling meshes from parts and splitting them back apart.</td>
+</tr>
+<tr>
+<td><a href="../api/ordito/boolean/">boolean</a></td>
+<td>Union, intersection and difference of closed meshes as solids, singly or in batches, and cuts by a mesh or a plane.</td>
 </tr>
 <tr>
 <td><a href="../api/ordito/remesh/">remesh</a></td>
