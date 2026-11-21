@@ -9066,7 +9066,13 @@ convex pair), folding it above a positive one:</p>
 <span class="normal">849</span>
 <span class="normal">850</span>
 <span class="normal">851</span>
-<span class="normal">852</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_adjacency_projections</span><span class="p">(</span>
+<span class="normal">852</span>
+<span class="normal">853</span>
+<span class="normal">854</span>
+<span class="normal">855</span>
+<span class="normal">856</span>
+<span class="normal">857</span>
+<span class="normal">858</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_adjacency_projections</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">face_adjacency</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -9156,7 +9162,13 @@ convex pair), folding it above a positive one:</p>
     <span class="p">)</span>
     <span class="k">if</span> <span class="n">_no_tables</span><span class="p">(</span><span class="n">face_adjacency</span><span class="p">,</span> <span class="n">face_adjacency_edges</span><span class="p">,</span> <span class="n">face_adjacency_unshared</span><span class="p">,</span> <span class="n">face_normals</span><span class="p">):</span>
         <span class="k">return</span> <span class="n">_sorted_pair_values</span><span class="p">(</span>
-            <span class="n">kernel_adjacency</span><span class="o">.</span><span class="n">emit_sorted_projections</span><span class="p">,</span> <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">vertices</span><span class="o">.</span><span class="n">size</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span>
+            <span class="n">kernel_adjacency</span><span class="o">.</span><span class="n">emit_sorted_projections</span><span class="p">,</span>
+            <span class="n">vertices</span><span class="p">,</span>
+            <span class="n">faces</span><span class="p">,</span>
+            <span class="n">vertices</span><span class="o">.</span><span class="n">size</span><span class="p">,</span>
+            <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span>
+            <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="mf">0.0</span><span class="p">),</span>
+            <span class="n">after</span><span class="o">=</span><span class="p">(</span><span class="kc">None</span><span class="p">,),</span>
         <span class="p">)</span>
     <span class="n">tables</span> <span class="o">=</span> <span class="n">_projection_tables</span><span class="p">(</span>
         <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">face_adjacency</span><span class="p">,</span> <span class="n">face_adjacency_edges</span><span class="p">,</span> <span class="n">face_adjacency_unshared</span><span class="p">,</span> <span class="n">face_normals</span>
@@ -9167,7 +9179,7 @@ convex pair), folding it above a positive one:</p>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_adjacency</span><span class="o">.</span><span class="n">face_adjacency_projections</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">out_projections</span><span class="o">.</span><span class="n">size</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="o">*</span><span class="n">tables</span><span class="p">,</span> <span class="n">out_projections</span><span class="p">],</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="o">*</span><span class="n">tables</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="mf">0.0</span><span class="p">),</span> <span class="n">out_projections</span><span class="p">,</span> <span class="kc">None</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">faces</span><span class="o">.</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="k">return</span> <span class="n">out_projections</span>
@@ -9431,13 +9443,7 @@ supplied <code>face_adjacency_unshared</code> has a different row count from <co
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/adjacency.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">855</span>
-<span class="normal">856</span>
-<span class="normal">857</span>
-<span class="normal">858</span>
-<span class="normal">859</span>
-<span class="normal">860</span>
-<span class="normal">861</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">861</span>
 <span class="normal">862</span>
 <span class="normal">863</span>
 <span class="normal">864</span>
@@ -9536,7 +9542,14 @@ supplied <code>face_adjacency_unshared</code> has a different row count from <co
 <span class="normal">957</span>
 <span class="normal">958</span>
 <span class="normal">959</span>
-<span class="normal">960</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_adjacency_convex</span><span class="p">(</span>
+<span class="normal">960</span>
+<span class="normal">961</span>
+<span class="normal">962</span>
+<span class="normal">963</span>
+<span class="normal">964</span>
+<span class="normal">965</span>
+<span class="normal">966</span>
+<span class="normal">967</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_adjacency_convex</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">face_adjacency</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -9619,12 +9632,13 @@ supplied <code>face_adjacency_unshared</code> has a different row count from <co
     <span class="p">)</span>
     <span class="k">if</span> <span class="n">_no_tables</span><span class="p">(</span><span class="n">face_adjacency</span><span class="p">,</span> <span class="n">face_adjacency_edges</span><span class="p">,</span> <span class="n">face_adjacency_unshared</span><span class="p">,</span> <span class="n">face_normals</span><span class="p">):</span>
         <span class="k">return</span> <span class="n">_sorted_pair_values</span><span class="p">(</span>
-            <span class="n">kernel_adjacency</span><span class="o">.</span><span class="n">emit_sorted_convex</span><span class="p">,</span>
+            <span class="n">kernel_adjacency</span><span class="o">.</span><span class="n">emit_sorted_projections</span><span class="p">,</span>
             <span class="n">vertices</span><span class="p">,</span>
             <span class="n">faces</span><span class="p">,</span>
             <span class="n">vertices</span><span class="o">.</span><span class="n">size</span><span class="p">,</span>
             <span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">,</span>
             <span class="n">TOLERANCE_MERGE_CONSTANT</span><span class="p">,</span>
+            <span class="kc">None</span><span class="p">,</span>
         <span class="p">)</span>
     <span class="n">tables</span> <span class="o">=</span> <span class="n">_projection_tables</span><span class="p">(</span>
         <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">face_adjacency</span><span class="p">,</span> <span class="n">face_adjacency_edges</span><span class="p">,</span> <span class="n">face_adjacency_unshared</span><span class="p">,</span> <span class="n">face_normals</span>
@@ -9636,9 +9650,9 @@ supplied <code>face_adjacency_unshared</code> has a different row count from <co
     <span class="c1"># row-for-row consistent.</span>
     <span class="n">out_convex</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">tables</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">faces</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_adjacency</span><span class="o">.</span><span class="n">face_adjacency_convex</span><span class="p">,</span>
+        <span class="n">kernel_adjacency</span><span class="o">.</span><span class="n">face_adjacency_projections</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">out_convex</span><span class="o">.</span><span class="n">size</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="o">*</span><span class="n">tables</span><span class="p">,</span> <span class="n">TOLERANCE_MERGE_CONSTANT</span><span class="p">,</span> <span class="n">out_convex</span><span class="p">],</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="o">*</span><span class="n">tables</span><span class="p">,</span> <span class="n">TOLERANCE_MERGE_CONSTANT</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="n">out_convex</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">faces</span><span class="o">.</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="k">return</span> <span class="n">out_convex</span>
@@ -9832,17 +9846,7 @@ smallest face index:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/adjacency.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1053</span>
-<span class="normal">1054</span>
-<span class="normal">1055</span>
-<span class="normal">1056</span>
-<span class="normal">1057</span>
-<span class="normal">1058</span>
-<span class="normal">1059</span>
-<span class="normal">1060</span>
-<span class="normal">1061</span>
-<span class="normal">1062</span>
-<span class="normal">1063</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1063</span>
 <span class="normal">1064</span>
 <span class="normal">1065</span>
 <span class="normal">1066</span>
@@ -9914,7 +9918,17 @@ smallest face index:</p>
 <span class="normal">1132</span>
 <span class="normal">1133</span>
 <span class="normal">1134</span>
-<span class="normal">1135</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_connected_component_labels</span><span class="p">(</span>
+<span class="normal">1135</span>
+<span class="normal">1136</span>
+<span class="normal">1137</span>
+<span class="normal">1138</span>
+<span class="normal">1139</span>
+<span class="normal">1140</span>
+<span class="normal">1141</span>
+<span class="normal">1142</span>
+<span class="normal">1143</span>
+<span class="normal">1144</span>
+<span class="normal">1145</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_connected_component_labels</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -9993,7 +10007,7 @@ smallest face index:</p>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_connected_components</span><span class="o">.</span><span class="n">ecl_flatten</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">n_faces</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">parents</span><span class="p">,</span> <span class="n">labels</span><span class="p">],</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">parents</span><span class="p">,</span> <span class="n">labels</span><span class="p">,</span> <span class="kc">None</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="k">return</span> <span class="n">labels</span>
@@ -10162,17 +10176,7 @@ shared edge <code>(1, 2)</code> (halfedges 1 and 3) sort next to each other:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/adjacency.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1200</span>
-<span class="normal">1201</span>
-<span class="normal">1202</span>
-<span class="normal">1203</span>
-<span class="normal">1204</span>
-<span class="normal">1205</span>
-<span class="normal">1206</span>
-<span class="normal">1207</span>
-<span class="normal">1208</span>
-<span class="normal">1209</span>
-<span class="normal">1210</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1210</span>
 <span class="normal">1211</span>
 <span class="normal">1212</span>
 <span class="normal">1213</span>
@@ -10215,7 +10219,17 @@ shared edge <code>(1, 2)</code> (halfedges 1 and 3) sort next to each other:</p>
 <span class="normal">1250</span>
 <span class="normal">1251</span>
 <span class="normal">1252</span>
-<span class="normal">1253</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sorted_face_edge_keys</span><span class="p">(</span>
+<span class="normal">1253</span>
+<span class="normal">1254</span>
+<span class="normal">1255</span>
+<span class="normal">1256</span>
+<span class="normal">1257</span>
+<span class="normal">1258</span>
+<span class="normal">1259</span>
+<span class="normal">1260</span>
+<span class="normal">1261</span>
+<span class="normal">1262</span>
+<span class="normal">1263</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sorted_face_edge_keys</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">uint64</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>

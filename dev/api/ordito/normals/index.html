@@ -7220,20 +7220,7 @@ there; only <code>"angle"</code> returns the symmetric diagonal:</p>
 <span class="normal">327</span>
 <span class="normal">328</span>
 <span class="normal">329</span>
-<span class="normal">330</span>
-<span class="normal">331</span>
-<span class="normal">332</span>
-<span class="normal">333</span>
-<span class="normal">334</span>
-<span class="normal">335</span>
-<span class="normal">336</span>
-<span class="normal">337</span>
-<span class="normal">338</span>
-<span class="normal">339</span>
-<span class="normal">340</span>
-<span class="normal">341</span>
-<span class="normal">342</span>
-<span class="normal">343</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vertex_normals</span><span class="p">(</span>
+<span class="normal">330</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vertex_normals</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -7352,18 +7339,14 @@ there; only <code>"angle"</code> returns the symmetric diagonal:</p>
         <span class="c1"># the weight depends on which, because the sine it divides out is already in the cross</span>
         <span class="c1"># product's magnitude. Either way one kernel forms the weights in registers and scatters</span>
         <span class="c1"># their products, so no normal or weight table is written.</span>
-        <span class="k">if</span> <span class="n">face_normals</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="k">return</span> <span class="n">accumulate_and_normalize</span><span class="p">(</span>
-                <span class="n">n_vertices</span><span class="p">,</span>
-                <span class="n">faces</span><span class="p">,</span>
-                <span class="n">kernel_normals</span><span class="o">.</span><span class="n">SCATTER_MAX_WEIGHTED_NORMALS</span><span class="p">[</span><span class="n">_ACCUMULATOR_DTYPE</span><span class="p">],</span>
-                <span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">],</span>
-            <span class="p">)</span>
-        <span class="n">_require_face_rows</span><span class="p">(</span><span class="n">n_faces</span><span class="p">,</span> <span class="n">face_normals</span><span class="o">=</span><span class="n">face_normals</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">face_normals</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">_require_face_rows</span><span class="p">(</span><span class="n">n_faces</span><span class="p">,</span> <span class="n">face_normals</span><span class="o">=</span><span class="n">face_normals</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">accumulate_and_normalize</span><span class="p">(</span>
             <span class="n">n_vertices</span><span class="p">,</span>
             <span class="n">faces</span><span class="p">,</span>
-            <span class="n">kernel_normals</span><span class="o">.</span><span class="n">SCATTER_MAX_WEIGHTED_UNIT_NORMALS</span><span class="p">[</span><span class="n">_ACCUMULATOR_DTYPE</span><span class="p">],</span>
+            <span class="n">kernel_normals</span><span class="o">.</span><span class="n">SCATTER_MAX_WEIGHTED_NORMALS</span><span class="p">[</span><span class="n">face_normals</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">][</span>
+                <span class="n">_ACCUMULATOR_DTYPE</span>
+            <span class="p">],</span>
             <span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">face_normals</span><span class="p">],</span>
         <span class="p">)</span>
 
@@ -7373,27 +7356,18 @@ there; only <code>"angle"</code> returns the symmetric diagonal:</p>
     <span class="c1"># rest in the thread (a missing table launches as ``None``), bit for bit the table it would</span>
     <span class="c1"># otherwise have written first. "area" weights per *face* rather than per corner, so it is</span>
     <span class="c1"># the cheaper of the two.</span>
-    <span class="k">if</span> <span class="n">face_normals</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">face_weights</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">derived</span> <span class="o">=</span> <span class="p">(</span>
-            <span class="n">kernel_normals</span><span class="o">.</span><span class="n">SCATTER_ANGLE_WEIGHTED_NORMALS</span>
-            <span class="k">if</span> <span class="n">weighting</span> <span class="o">==</span> <span class="s2">"angle"</span>
-            <span class="k">else</span> <span class="n">kernel_normals</span><span class="o">.</span><span class="n">SCATTER_AREA_WEIGHTED_NORMALS</span>
-        <span class="p">)</span>
-        <span class="k">return</span> <span class="n">accumulate_and_normalize</span><span class="p">(</span>
-            <span class="n">n_vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">derived</span><span class="p">[</span><span class="n">_ACCUMULATOR_DTYPE</span><span class="p">],</span> <span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">]</span>
-        <span class="p">)</span>
     <span class="n">key</span> <span class="o">=</span> <span class="p">(</span><span class="n">face_normals</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">,</span> <span class="n">face_weights</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">weighting</span> <span class="o">==</span> <span class="s2">"angle"</span><span class="p">:</span>
-        <span class="n">supplied</span> <span class="o">=</span> <span class="n">kernel_normals</span><span class="o">.</span><span class="n">SCATTER_SUPPLIED_ANGLE_WEIGHTED_NORMALS</span><span class="p">[</span><span class="n">key</span><span class="p">]</span>
+        <span class="n">kernels</span> <span class="o">=</span> <span class="n">kernel_normals</span><span class="o">.</span><span class="n">SCATTER_ANGLE_WEIGHTED_NORMALS</span><span class="p">[</span><span class="n">key</span><span class="p">]</span>
         <span class="k">if</span> <span class="n">face_weights</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
             <span class="n">face_weights</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_array2d</span><span class="p">(</span><span class="n">face_weights</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
     <span class="k">else</span><span class="p">:</span>
-        <span class="n">supplied</span> <span class="o">=</span> <span class="n">kernel_normals</span><span class="o">.</span><span class="n">SCATTER_SUPPLIED_AREA_WEIGHTED_NORMALS</span><span class="p">[</span><span class="n">key</span><span class="p">]</span>
+        <span class="n">kernels</span> <span class="o">=</span> <span class="n">kernel_normals</span><span class="o">.</span><span class="n">SCATTER_AREA_WEIGHTED_NORMALS</span><span class="p">[</span><span class="n">key</span><span class="p">]</span>
     <span class="n">_require_face_rows</span><span class="p">(</span><span class="n">n_faces</span><span class="p">,</span> <span class="n">face_normals</span><span class="o">=</span><span class="n">face_normals</span><span class="p">,</span> <span class="n">face_weights</span><span class="o">=</span><span class="n">face_weights</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">accumulate_and_normalize</span><span class="p">(</span>
         <span class="n">n_vertices</span><span class="p">,</span>
         <span class="n">faces</span><span class="p">,</span>
-        <span class="n">supplied</span><span class="p">[</span><span class="n">_ACCUMULATOR_DTYPE</span><span class="p">],</span>
+        <span class="n">kernels</span><span class="p">[</span><span class="n">_ACCUMULATOR_DTYPE</span><span class="p">],</span>
         <span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">face_normals</span><span class="p">,</span> <span class="n">face_weights</span><span class="p">],</span>
     <span class="p">)</span>
 </code></pre></div></td></tr></table></div>

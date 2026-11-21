@@ -8997,8 +8997,8 @@ triangles over each of its 16 boundary edges:</p>
     <span class="n">normal_sums</span><span class="p">,</span> <span class="n">normal_pass</span> <span class="o">=</span> <span class="n">scatter_normal_sums</span><span class="p">(</span>
         <span class="n">n_vertices</span><span class="p">,</span>
         <span class="n">faces</span><span class="p">,</span>
-        <span class="n">kernel_normals</span><span class="o">.</span><span class="n">SCATTER_ANGLE_WEIGHTED_NORMALS</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span>
-        <span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">],</span>
+        <span class="n">kernel_normals</span><span class="o">.</span><span class="n">SCATTER_ANGLE_WEIGHTED_NORMALS</span><span class="p">[</span><span class="kc">False</span><span class="p">,</span> <span class="kc">False</span><span class="p">][</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span>
+        <span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">],</span>
     <span class="p">)</span>
     <span class="n">rim</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">boundary</span><span class="o">.</span><span class="n">oriented_boundary_edges</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">mates</span><span class="o">=</span><span class="n">mates</span><span class="p">)</span>
     <span class="n">n_rim</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">rim</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
