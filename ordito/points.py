@@ -1800,7 +1800,7 @@ def point_boundary_mask(
     out_mask = _launch.empty(n, dtype=wp.bool, device=device)
     if n > 0:
         _launch.launch(
-            kernel_points.point_boundary_flags,
+            kernel_points.point_boundary_kernel(int(neighbor_idx.shape[1])),
             dim=n,
             inputs=[points, normals, neighbor_idx, wp.float32(max_gap)],
             outputs=[out_mask],

@@ -1379,8 +1379,9 @@ def test_local_triangulation_refuses_a_wide_table(device: str) -> None:
 
 
 @pytest.mark.parametrize("max_gap", [math.pi / 2.0, 0.75 * math.pi])
+@pytest.mark.parametrize("knn", [30, 48, 70])
 @pytest.mark.parity("point_boundary_mask", "open3d")
-def test_point_boundary_mask_matches_open3d(device: str, max_gap: float) -> None:
+def test_point_boundary_mask_matches_open3d(device: str, max_gap: float, knn: int) -> None:
     """
     Class A: Open3D's tensor ``compute_boundary_points`` on the same hybrid neighbourhoods.
 
@@ -1388,9 +1389,11 @@ def test_point_boundary_mask_matches_open3d(device: str, max_gap: float) -> None
     ``max_radius`` and ``k``. The threshold is swept across two values that flag different rims,
     and both answers are mixed (non-vacuity). Open3D's ``float32`` tensors sort true ``atan2``
     angles where ordito searches pseudo-angles; no gap here lies within rounding of either
-    threshold.
+    threshold. The table's width picks the kernel (a stored row of 32 or 64 slots, or none past
+    that, ``kernels/points.BOUNDARY_ROW_SIZES``); the radius keeps every row under ~20 entries,
+    so the three widths have one answer.
     """
-    knn, radius = 30, 0.12
+    radius = 0.12
     sphere_np = _fibonacci_sphere(4000)
     cap_np = sphere_np[sphere_np[:, 2] > 0.2].astype(np.float32)
     normals_np = cap_np / np.linalg.norm(cap_np, axis=1, keepdims=True)

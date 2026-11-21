@@ -465,6 +465,8 @@ def point_frames(
 # The neighbours a star's scratch rows hold: ``points.local_triangulation`` refuses a wider
 # table. geometry-central takes 30.
 LOCAL_TRIANGULATION_MAX_NEIGHBORS = 64
+# ``point_boundary_flags``' stored row sizes, narrowest first; ``0`` stores none.
+BOUNDARY_ROW_SIZES = (32, 64, 0)
 # geometry-central's ``DEGENERATE_THRESH``, in units of the neighbourhood's radius: a neighbour
 # this close to the point is pushed out to ten times it, and of two neighbours this close to one
 # direction the farther is dropped.
@@ -904,51 +906,109 @@ def tangent_angle(offset: wp.vec3, axis_u: wp.vec3, axis_v: wp.vec3) -> wp.float
     return wp.atan2(wp.dot(offset, axis_v), wp.dot(offset, axis_u))
 
 
-@wp.kernel
-def point_boundary_flags(
+@wp.func
+def store_tangent_row(
     points: wp.array[wp.vec3],
-    normals: wp.array[wp.vec3],
     neighbor_idx: wp.array2d[wp.int32],
-    threshold: wp.float32,
-    out_mask: wp.array[wp.bool],
-) -> None:
-    # PCL's ``BoundaryEstimation`` as Open3D's ``compute_boundary_points`` runs it: the row's
-    # offsets, the point itself and ``-1`` slots left out, projected into the plane of the point's
-    # normal; the point is on the boundary when the widest angular gap between consecutive offsets,
-    # the wrap-around included, exceeds ``threshold``. Open3D heap-sorts each row's angles in a
-    # scratch tensor; here each offset finds its successor in a quadratic search over pseudo-angles
-    # (no storage, no transcendental), and only the gap it closes takes two ``atan2``s. A row with
-    # no other entry is not a boundary point, as Open3D leaves it.
-    v = wp.int32(wp.tid())
-    n = wp.normalize(normals[v])
-    # Any orthonormal basis of the tangent plane gives the same gaps: the cross product with the
-    # axis least aligned with the normal.
-    a = wp.abs(n)
+    v: wp.int32,
+    axis_u: wp.vec3,
+    axis_v: wp.vec3,
+    keys: wp.array[wp.float32],
+    angles: wp.array[wp.float32],
+) -> wp.int32:
+    # Row ``v``'s offsets other than the point and ``-1`` slots, in table order, as their
+    # ``tangent_pseudo_angle`` and ``tangent_angle`` into ``keys`` / ``angles``; returns how many.
+    p = points[v]
+    m = wp.int32(0)
+    for i in range(neighbor_idx.shape[1]):
+        nb = neighbor_idx[v, i]
+        if nb >= 0 and nb != v:
+            offset = points[nb] - p
+            keys[m] = tangent_pseudo_angle(offset, axis_u, axis_v)
+            angles[m] = tangent_angle(offset, axis_u, axis_v)
+            m += 1
+    return m
+
+
+@wp.func
+def widest_stored_gap(
+    keys: wp.array[wp.float32], angles: wp.array[wp.float32], m: wp.int32, first_angle: wp.float32
+) -> wp.float32:
+    # ``point_boundary_flags``' widest gap over a stored row: each offset's successor is the first
+    # of the smallest keys above its own, the last closing the wrap-around to ``first_angle``.
+    widest = wp.float32(0.0)
+    for i in range(m):
+        key = keys[i]
+        successor = wp.int32(-1)
+        successor_key = wp.float32(0.0)
+        for j in range(m):
+            other_key = keys[j]
+            if other_key > key and (successor < 0 or other_key < successor_key):
+                successor = j
+                successor_key = other_key
+        gap = wp.float32(0.0)
+        if successor >= 0:
+            gap = angles[successor] - angles[i]
+        else:
+            gap = wp.float32(2.0 * wp.pi) - angles[i] + first_angle
+        widest = wp.max(widest, gap)
+    return widest
+
+
+@wp.func
+def tangent_axes(normal: wp.vec3) -> tuple[wp.vec3, wp.vec3]:
+    # An orthonormal basis of the plane of unit ``normal``: its cross product with the axis least
+    # aligned with it. Any basis gives ``point_boundary_flags`` the same gaps.
+    a = wp.abs(normal)
     helper = wp.vec3(1.0, 0.0, 0.0)
     if a[1] <= a[0] and a[1] <= a[2]:
         helper = wp.vec3(0.0, 1.0, 0.0)
     elif a[2] < a[0]:
         helper = wp.vec3(0.0, 0.0, 1.0)
-    axis_u = wp.normalize(wp.cross(n, helper))
-    axis_v = wp.cross(n, axis_u)
-    p = points[v]
-    k = neighbor_idx.shape[1]
+    axis_u = wp.normalize(wp.cross(normal, helper))
+    return axis_u, wp.cross(normal, axis_u)
 
-    # The smallest angle, which closes the wrap-around gap.
+
+@wp.func
+def first_tangent_angle(
+    points: wp.array[wp.vec3],
+    neighbor_idx: wp.array2d[wp.int32],
+    v: wp.int32,
+    axis_u: wp.vec3,
+    axis_v: wp.vec3,
+) -> tuple[wp.int32, wp.float32]:
+    # Row ``v``'s first offset at the smallest angle (``-1`` for a row with no other entry) and its
+    # angle, which closes the wrap-around gap.
+    p = points[v]
     first = wp.int32(-1)
     first_key = wp.float32(0.0)
-    for i in range(k):
+    for i in range(neighbor_idx.shape[1]):
         nb = neighbor_idx[v, i]
         if nb >= 0 and nb != v:
             key = tangent_pseudo_angle(points[nb] - p, axis_u, axis_v)
             if first < 0 or key < first_key:
                 first = nb
                 first_key = key
-    if first < 0:
-        out_mask[v] = False
-        return
-    first_angle = tangent_angle(points[first] - p, axis_u, axis_v)
+    first_angle = wp.float32(0.0)
+    if first >= 0:
+        first_angle = tangent_angle(points[first] - p, axis_u, axis_v)
+    return first, first_angle
 
+
+@wp.func
+def widest_searched_gap(
+    points: wp.array[wp.vec3],
+    neighbor_idx: wp.array2d[wp.int32],
+    v: wp.int32,
+    axis_u: wp.vec3,
+    axis_v: wp.vec3,
+    first_angle: wp.float32,
+) -> wp.float32:
+    # ``widest_stored_gap`` with no stored row, for a table wider than any: each offset's key and
+    # its candidates' recomputed in the quadratic search, and only the gap it closes takes two
+    # ``atan2``s.
+    p = points[v]
+    k = neighbor_idx.shape[1]
     widest = wp.float32(0.0)
     for i in range(k):
         nb = neighbor_idx[v, i]
@@ -970,7 +1030,59 @@ def point_boundary_flags(
             else:
                 gap = wp.float32(2.0 * wp.pi) - angle + first_angle
             widest = wp.max(widest, gap)
-    out_mask[v] = widest > threshold
+    return widest
+
+
+def _point_boundary_kernel(row_size: int, name: str) -> wp.Kernel:
+    # PCL's ``BoundaryEstimation`` as Open3D's ``compute_boundary_points`` runs it: the row's
+    # offsets, the point itself and ``-1`` slots left out, projected into the plane of the point's
+    # normal; the point is on the boundary when the widest angular gap between consecutive offsets,
+    # the wrap-around included, exceeds ``threshold``. Open3D heap-sorts each row's angles in a
+    # scratch tensor; here each offset finds its successor in a quadratic search over
+    # pseudo-angles, whose order is ``atan2``'s with no transcendental. A row with no other entry
+    # is not a boundary point, as Open3D leaves it.
+    #
+    # A table of at most ``row_size`` columns stores each row's keys and angles once, so the search
+    # reads them (dragon at 30 columns 0.15x the search with none). The row is zero-filled, so a
+    # 64-slot row cost 30 columns 1.3x, and a second row in one kernel cost them 1.18x though never
+    # taken: each width is a kernel of its own (``POINT_BOUNDARY_KERNELS``), ``row_size`` ``0`` the
+    # search with no row, for wider tables. The three differ by that alone.
+    def _kernel(
+        points: wp.array[wp.vec3],
+        normals: wp.array[wp.vec3],
+        neighbor_idx: wp.array2d[wp.int32],
+        threshold: wp.float32,
+        out_mask: wp.array[wp.bool],
+    ) -> None:
+        v = wp.int32(wp.tid())
+        axis_u, axis_v = tangent_axes(wp.normalize(normals[v]))
+        first, first_angle = first_tangent_angle(points, neighbor_idx, v, axis_u, axis_v)
+        if first < 0:
+            out_mask[v] = False
+            return
+        widest = wp.float32(0.0)
+        if wp.static(row_size > 0):
+            keys = wp.zeros(shape=row_size, dtype=wp.float32)
+            angles = wp.zeros(shape=row_size, dtype=wp.float32)
+            m = store_tangent_row(points, neighbor_idx, v, axis_u, axis_v, keys, angles)
+            widest = widest_stored_gap(keys, angles, m, first_angle)
+        else:
+            widest = widest_searched_gap(points, neighbor_idx, v, axis_u, axis_v, first_angle)
+        out_mask[v] = widest > threshold
+
+    return wp.kernel(_kernel, name=name)
+
+
+POINT_BOUNDARY_KERNELS = {
+    row_size: _point_boundary_kernel(row_size, f"point_boundary_flags_row{row_size}")
+    for row_size in BOUNDARY_ROW_SIZES
+}
+
+
+def point_boundary_kernel(width: int) -> wp.Kernel:
+    """Return the ``POINT_BOUNDARY_KERNELS`` entry for ``width`` columns: the narrowest row."""
+    row_size = next(size for size in BOUNDARY_ROW_SIZES if size == 0 or width <= size)
+    return POINT_BOUNDARY_KERNELS[row_size]
 
 
 # Hoppe et al.'s Riemannian graph over a neighbour table and its minimum spanning forest. Slot
