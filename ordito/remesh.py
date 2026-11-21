@@ -7326,7 +7326,7 @@ def _subdivide(
         device=device,
     )
     # Host readback: the partitions are built on the host, one per distinct set of divisions.
-    unique_keys, face_key_np = np.unique(read_array(keys), axis=0, return_inverse=True)
+    unique_keys, face_key_np = _unique_rows(read_array(keys))
     partitions = [_partition((int(a), int(b), int(c), int(d))) for a, b, c, d in unique_keys]
     key_triangles_np = np.cumsum([0] + [len(tris) for _, tris in partitions], dtype=np.int64)
     key_vertices_np = np.cumsum([0] + [len(bary) for bary, _ in partitions], dtype=np.int64)
@@ -7401,6 +7401,27 @@ def _subdivide(
         device=device,
     )
     return _Subdivision(faces, face_normals, face_mesh, face_coplanar, bary_tri, bary_uvw)
+
+
+def _unique_rows(rows: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """
+    ``np.unique(rows, axis=0, return_inverse=True)`` of small integer rows, through one key a row.
+
+    Each row packs into an ``int64``, its first entry most significant and every entry offset to
+    be non-negative, so the keys sort as the rows do lexicographically, where ``axis=0`` sorts a
+    structured view at many times the cost. Rows too wide to pack take ``axis=0``.
+    """
+    low = int(rows.min())
+    span = int(rows.max()) - low + 1
+    if span ** rows.shape[1] >= 1 << 62:
+        unique, inverse = np.unique(rows, axis=0, return_inverse=True)
+        return unique, inverse.reshape(-1)
+    shifted = rows.astype(np.int64) - low
+    packed = shifted[:, 0]
+    for column in range(1, rows.shape[1]):
+        packed = packed * span + shifted[:, column]
+    _, first, inverse = np.unique(packed, return_index=True, return_inverse=True)
+    return rows[first], inverse.reshape(-1)
 
 
 def _partition(
