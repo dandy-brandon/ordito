@@ -4065,11 +4065,15 @@ _declare_block_dims()
 # v3.5.5; Copyright 2021 The Manifold Authors): David Eberly's ear clipping, holes keyholed to
 # their outer polygon first, the sharpest valid ear clipped next, every geometric test within an
 # epsilon. ``ordito.boolean`` triangulates its cut faces with it. What differs from the C++: the
-# ``std::multiset`` of ears is a scan for the least ``(cost, insertion)`` pair, the 2-d tree a scan
-# of the polygon's vertices through the same box, and the recursion an explicit stack -- the
-# same choices in the same order. Built in ``float64``; Manifold's ``CCW`` and friends compare
-# near-zero areas against epsilon, so the arithmetic must not fuse (the callers' modules build
-# unfused, and so does this one's functions where those modules inline them).
+# ``std::multiset`` of ears is an indexed binary heap on the same ``(cost, insertion)`` key, the
+# 2-d tree the polygon's vertices sorted by x, searched for the box's slab, and the recursion
+# an explicit stack -- the same choices in the same order. A scan of every vertex for the least
+# ear and for each ear's intruders made a clip linear in the polygon (2026-11-21: an 8 000-point
+# wavy ring 0.5 s, 0.18 s after). A hashed 2-d grid of the vertices did not
+# serve: a ring fills a box's cells along a line, and walking the empty ones cost what the scan did.
+# Built in ``float64``; Manifold's ``CCW`` and friends compare near-zero areas against epsilon,
+# so the arithmetic must not fuse (the callers' modules build unfused, and so does this one's
+# functions where those modules inline them).
 
 
 @wp.func
@@ -4112,6 +4116,9 @@ class EarClipState:
     outers: wp.array[wp.int32]
     simples: wp.array[wp.int32]
     tris: wp.array[wp.vec3i]
+    heap: wp.array[wp.int32]
+    heap_pos: wp.array[wp.int32]
+    by_x: wp.array[wp.int32]
 
 
 @wp.func
@@ -4330,11 +4337,53 @@ def ec_signed_dist(
 
 
 @wp.func
+def ec_intrusion(
+    ec: EarClipState,
+    v: wp.int32,
+    test: wp.int32,
+    box_lo: wp.vec2d,
+    box_hi: wp.vec2d,
+    center: wp.vec2d,
+    open_side: wp.vec2d,
+    scale: wp.float64,
+    eps: wp.float64,
+    total: wp.float64,
+) -> wp.float64:
+    # One vertex's part of ``Vert::EarCost``: ``total`` raised to its intrusion into the ear if it
+    # lies in the ear's box and is not one of the ear's corners. A maximum, so the order the
+    # vertices come in (and a vertex coming twice) decides nothing.
+    p = ec.pos[test]
+    if p[0] < box_lo[0] or p[1] < box_lo[1] or p[0] > box_hi[0] or p[1] > box_hi[1]:
+        return total
+    left = ec.left[v]
+    tid = ec.idx[test]
+    if (
+        ec_clipped(ec, test)
+        or tid == ec.idx[v]
+        or tid == ec.idx[left]
+        or tid == ec.idx[ec.right[v]]
+    ):
+        return total
+    cost = wp.min(
+        ec_signed_dist(ec, v, test, ec.right_dir[v], eps),
+        ec_signed_dist(ec, v, test, ec.right_dir[left], eps),
+    )
+    cost = wp.min(cost, cross2(open_side, p - ec.pos[ec.right[v]]))
+    if cost < wp.float64(0.0) - eps:
+        diff = p - center
+        cost = wp.float64(0.0) - eps - scale * wp.dot(diff, diff)
+    if cost > total:
+        return cost
+    return total
+
+
+@wp.func
 def ec_ear_cost(
     ec: EarClipState, v: wp.int32, eps: wp.float64, collider_base: wp.int32, n_collider: wp.int32
 ) -> wp.float64:
     # ``Vert::EarCost``: how far the worst vertex in the ear's box intrudes, the Delaunay term
-    # ranking the valid ears.
+    # ranking the valid ears. The box's vertices are those of the slab of x it spans in the
+    # polygon's vertices sorted by x (``ec_sort_by_x``).
     left = ec.left[v]
     right = ec.right[v]
     open_side = ec.pos[left] - ec.pos[right]
@@ -4349,28 +4398,60 @@ def ec_ear_cost(
     box_hi = wp.vec2d(center[0] + radius, center[1] + radius)
     box_lo = wp.min(box_lo, ec.pos[v]) - wp.vec2d(eps, eps)
     box_hi = wp.max(box_hi, ec.pos[v]) + wp.vec2d(eps, eps)
-    lid = ec.idx[left]
-    rid = ec.idx[right]
-    vid = ec.idx[v]
-    for c in range(n_collider):
-        test = ec.collider[collider_base + c]
-        p = ec.pos[test]
-        if p[0] < box_lo[0] or p[1] < box_lo[1] or p[0] > box_hi[0] or p[1] > box_hi[1]:
-            continue
-        tid = ec.idx[test]
-        if ec_clipped(ec, test) or tid == vid or tid == lid or tid == rid:
-            continue
-        cost = wp.min(
-            ec_signed_dist(ec, v, test, ec.right_dir[v], eps),
-            ec_signed_dist(ec, v, test, ec.right_dir[left], eps),
-        )
-        cost = wp.min(cost, cross2(open_side, p - ec.pos[right]))
-        if cost < wp.float64(0.0) - eps:
-            diff = p - center
-            cost = wp.float64(0.0) - eps - scale * wp.dot(diff, diff)
-        if cost > total:
-            total = cost
+    # The first vertex at or past the slab's left side; a NaN bound finds none, as the box test
+    # would reject every vertex.
+    lo = wp.int32(0)
+    hi = n_collider
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if ec.pos[ec.by_x[collider_base + mid]][0] < box_lo[0]:
+            lo = mid + 1
+        else:
+            hi = mid
+    k = lo
+    while k < n_collider:
+        test = ec.by_x[collider_base + k]
+        if ec.pos[test][0] > box_hi[0]:
+            break
+        total = ec_intrusion(ec, v, test, box_lo, box_hi, center, open_side, scale, eps, total)
+        k += 1
     return total
+
+
+@wp.func
+def ec_sort_by_x(ec: EarClipState, base: wp.int32, n: wp.int32):
+    # The polygon's vertices (``ec.collider[base:]``) into ``ec.by_x[base:]`` in increasing x, by
+    # an in-place heapsort; ties fall anywhere, the queries reading a slab whole.
+    for c in range(n):
+        ec.by_x[base + c] = ec.collider[base + c]
+    end = n
+    k = n // 2
+    while end > 1:
+        if k > 0:
+            k -= 1
+        else:
+            end -= 1
+            top = ec.by_x[base]
+            ec.by_x[base] = ec.by_x[base + end]
+            ec.by_x[base + end] = top
+        parent = k
+        item = ec.by_x[base + parent]
+        x = ec.pos[item][0]
+        while True:
+            child = 2 * parent + 1
+            if child >= end:
+                break
+            if (
+                child + 1 < end
+                and ec.pos[ec.by_x[base + child + 1]][0] > ec.pos[ec.by_x[base + child]][0]
+            ):
+                child += 1
+            below = ec.by_x[base + child]
+            if not (ec.pos[below][0] > x):
+                break
+            ec.by_x[base + parent] = below
+            parent = child
+        ec.by_x[base + parent] = item
 
 
 @wp.func
@@ -4395,6 +4476,65 @@ def ec_process_ear(
         return next_seq + 1
     ec.cost[v] = wp.float64(1.0)
     return next_seq
+
+
+@wp.func
+def ec_heap_before(ec: EarClipState, a: wp.int32, b: wp.int32) -> wp.bool:
+    # The ear queue's order: the cheaper ear first, the earlier insertion on a tie.
+    return ec.cost[a] < ec.cost[b] or (ec.cost[a] == ec.cost[b] and ec.seq[a] < ec.seq[b])
+
+
+@wp.func
+def ec_heap_sift(ec: EarClipState, base: wp.int32, k: wp.int32, size: wp.int32):
+    # Move heap entry ``k`` up while it comes before its parent, else down while a child comes
+    # before it; each ear's place is kept in ``heap_pos`` for the updates.
+    v = ec.heap[base + k]
+    while k > 0:
+        parent = (k - 1) // 2
+        above = ec.heap[base + parent]
+        if not ec_heap_before(ec, v, above):
+            break
+        ec.heap[base + k] = above
+        ec.heap_pos[above] = k
+        k = parent
+    while True:
+        child = 2 * k + 1
+        if child >= size:
+            break
+        if child + 1 < size and ec_heap_before(
+            ec, ec.heap[base + child + 1], ec.heap[base + child]
+        ):
+            child += 1
+        below = ec.heap[base + child]
+        if not ec_heap_before(ec, below, v):
+            break
+        ec.heap[base + k] = below
+        ec.heap_pos[below] = k
+        k = child
+    ec.heap[base + k] = v
+    ec.heap_pos[v] = k
+
+
+@wp.func
+def ec_heap_fix(ec: EarClipState, base: wp.int32, v: wp.int32, size: wp.int32) -> wp.int32:
+    # Bring ear ``v``'s place in the queue in line with its key: queued (``seq >= 0``) at its
+    # (cost, insertion), out of the heap otherwise. Returns the heap's new size.
+    k = ec.heap_pos[v]
+    if ec.seq[v] >= 0:
+        if k < 0:
+            ec.heap[base + size] = v
+            ec_heap_sift(ec, base, size, size + 1)
+            return size + 1
+        ec_heap_sift(ec, base, k, size)
+        return size
+    if k < 0:
+        return size
+    ec.heap_pos[v] = -1
+    last = size - 1
+    if k < last:
+        ec.heap[base + k] = ec.heap[base + last]
+        ec_heap_sift(ec, base, k, last)
+    return last
 
 
 @wp.func
@@ -4464,18 +4604,28 @@ def ec_triangulate_poly(
     n_tris: wp.int32,
 ) -> wp.int32:
     # ``TriangulatePoly``: clip the cheapest ear until the polygon is spent; an empty queue (a
-    # geometrically invalid polygon) clips the backup vertex, so the result stays manifold.
+    # geometrically invalid polygon) clips the backup vertex, so the result stays manifold. The
+    # queue is a heap; a NaN cost, which the ``std::multiset`` orders by where it sits, sends the
+    # rest of the polygon to a scan in insertion order, as the port before the heap ran it.
     collect = ec_loop(ec, start, ec.collider, base, limit)
     n_collider = collect[0]
     if n_collider == 0:
         return n_tris
     for c in range(n_collider):
-        ec.seq[ec.collider[base + c]] = -1
+        u = ec.collider[base + c]
+        ec.seq[u] = -1
+        ec.heap_pos[u] = -1
+    ec_sort_by_x(ec, base, n_collider)
     num_tri = wp.int32(-2)
     next_seq = wp.int32(0)
+    size = wp.int32(0)
+    unordered = wp.bool(False)
     walk = ec_loop(ec, start, ec.visit, base, limit)
     for i in range(walk[0]):
-        next_seq = ec_process_ear(ec, ec.visit[base + i], eps, base, n_collider, next_seq)
+        u = ec.visit[base + i]
+        next_seq = ec_process_ear(ec, u, eps, base, n_collider, next_seq)
+        unordered = unordered or (ec.seq[u] >= 0 and wp.isnan(ec.cost[u]))
+        size = ec_heap_fix(ec, base, u, size)
         num_tri += 1
     if walk[1] != 0:
         return n_tris
@@ -4483,26 +4633,37 @@ def ec_triangulate_poly(
     count = n_tris
     while num_tri > 0:
         best = wp.int32(-1)
-        best_cost = wp.float64(0.0)
-        best_seq = wp.int32(0)
-        for c in range(n_collider):
-            u = ec.collider[base + c]
-            if ec.seq[u] >= 0:
-                if (
-                    best < 0
-                    or ec.cost[u] < best_cost
-                    or (ec.cost[u] == best_cost and ec.seq[u] < best_seq)
-                ):
-                    best = u
-                    best_cost = ec.cost[u]
-                    best_seq = ec.seq[u]
+        if unordered:
+            best_cost = wp.float64(0.0)
+            best_seq = wp.int32(0)
+            for c in range(n_collider):
+                u = ec.collider[base + c]
+                if ec.seq[u] >= 0:
+                    if (
+                        best < 0
+                        or ec.cost[u] < best_cost
+                        or (ec.cost[u] == best_cost and ec.seq[u] < best_seq)
+                    ):
+                        best = u
+                        best_cost = ec.cost[u]
+                        best_seq = ec.seq[u]
+        elif size > 0:
+            best = ec.heap[base]
         if best >= 0:
             v = best
             ec.seq[v] = -1
+            if not unordered:
+                size = ec_heap_fix(ec, base, v, size)
         count = ec_clip_ear(ec, v, base, count)
         num_tri -= 1
-        next_seq = ec_process_ear(ec, ec.left[v], eps, base, n_collider, next_seq)
-        next_seq = ec_process_ear(ec, ec.right[v], eps, base, n_collider, next_seq)
+        for side in range(2):
+            u = ec.left[v]
+            if side == 1:
+                u = ec.right[v]
+            next_seq = ec_process_ear(ec, u, eps, base, n_collider, next_seq)
+            unordered = unordered or (ec.seq[u] >= 0 and wp.isnan(ec.cost[u]))
+            if not unordered:
+                size = ec_heap_fix(ec, base, u, size)
         v = ec.right[v]
     return count
 
