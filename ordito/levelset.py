@@ -1939,8 +1939,9 @@ def _level_set_solid(
     mesh.tri_mesh.zero_()
     mesh.tri_coplanar.zero_()
     mesh.tri_normal.zero_()
-    simplify_topology(mesh, 0, 0.0, 0.0, device, cleanup_only=True)
-    n_h, n_v = (int(x) for x in read_values(mesh.sizes, 0, 2))
+    n_h, n_v = simplify_topology(
+        mesh, (3 * n_tris, n_vertices), 0, 0.0, 0.0, device, cleanup_only=True
+    )
     kept = compacted(mesh, _launch.zeros(n_v, dtype=wp.vec3d, device=device), n_h // 3, n_v)
     if kept is None:
         return empty_solid(device)

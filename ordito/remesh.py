@@ -7644,9 +7644,18 @@ def _solid_simplify(solid: Solid, tolerance: float) -> Solid:
     if tolerance > old_tolerance:
         solid = _regrouped_solid(solid, tolerance)
     mesh = halfedge_mesh_from_solid(solid)
-    simplify_topology(mesh, 0, solid.epsilon, max(tolerance, old_tolerance), device)
+    sizes = simplify_topology(
+        mesh,
+        (solid.faces.size, solid.n_vertices),
+        0,
+        solid.epsilon,
+        max(tolerance, old_tolerance),
+        device,
+    )
     # ``Simplify`` sorts in the box the solid had before (it does not ``CalculateBBox``).
-    return finish_solid(mesh, solid.epsilon, old_tolerance, device, (solid.lower, solid.upper))
+    return finish_solid(
+        mesh, sizes, solid.epsilon, old_tolerance, device, (solid.lower, solid.upper)
+    )
 
 
 def _regrouped_solid(solid: Solid, tolerance: float) -> Solid:

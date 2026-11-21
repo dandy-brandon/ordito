@@ -594,6 +594,7 @@ def halfedge_mesh(
 
 def simplify_topology(
     result: _HalfedgeMesh,
+    sizes: tuple[int, int],
     first_new_vert: int,
     epsilon: float,
     tolerance: float,
@@ -601,13 +602,14 @@ def simplify_topology(
     *,
     colinear: bool = True,
     cleanup_only: bool = False,
-) -> None:
+) -> tuple[int, int]:
     """
     ``SimplifyTopology(firstNewVert)`` on the result's halfedges, in place.
 
-    Without ``colinear``, ``RemoveDegenerates``: the same less the collinear-edge collapses.
-    With ``cleanup_only``, ``CleanupTopology`` alone: pinched vertices split, duplicate edges
-    removed.
+    ``sizes`` are the halfedge and vertex counts the mesh holds (its ``sizes``' first two
+    entries); the counts it holds afterwards are returned. Without ``colinear``,
+    ``RemoveDegenerates``: the same less the collinear-edge collapses. With ``cleanup_only``,
+    ``CleanupTopology`` alone: pinched vertices split, duplicate edges removed.
     """
     mesh = result
     capacity = result.start.size
@@ -628,13 +630,15 @@ def simplify_topology(
         else [_HostScratch(capacity, -1), _HostScratch(8 * capacity)]
     )
 
-    def sizes() -> tuple[int, int]:
-        # Host readback: the serial passes grow the mesh, and the next pass's grid follows it.
-        n_h, n_v = read_values(result.sizes, 0, 2)
-        return int(n_h), int(n_v)
+    # The counts as they stand: only the serial passes and the pinch split change them, and each
+    # hands back its new counts, so the flag passes' grids need no readback.
+    known = list(sizes)
+
+    def serial(kernel: odt.Kernel, inputs: list[object], outputs: list[object]) -> None:
+        known[:] = _launch_serial(result, (known[0], known[1]), kernel, inputs, outputs)
 
     def flag(kernel: odt.Kernel, inputs: list[object]) -> int:
-        n_h, _ = sizes()
+        n_h = known[0]
         # Every flag kernel writes its whole range, so the buffer is reused unzeroed.
         _launch.launch(kernel, dim=n_h, inputs=[mesh, *inputs], outputs=[flags], device=device)
         count = scan_count(_launch.view(flags, 0, n_h))
@@ -649,7 +653,7 @@ def simplify_topology(
         return count
 
     # ``CleanupTopology``: split pinched vertices, then duplicate edges until none is left.
-    n_h, n_v = sizes()
+    n_h, n_v = known
     fan_min = _launch.empty(capacity, dtype=wp.int32, device=device)
     vertex_min = _launch.full(result.pos.shape[0], 2147483647, dtype=wp.int32, device=device)
     _launch.launch(
@@ -677,22 +681,20 @@ def simplify_topology(
         _launch.copy(
             result.sizes, _launch.array([n_v + n_pinched], dtype=wp.int32, device=device), 1
         )
+        known[1] = n_v + n_pinched
     while True:
         count = flag(kernel_solid_topology.flag_duplicate_edges, [])
         if count == 0:
             break
-        _launch_serial(
-            result, kernel_solid_topology.dedupe_flagged, [_HostIn(flagged, count), count], []
-        )
+        serial(kernel_solid_topology.dedupe_flagged, [_HostIn(flagged, count), count], [])
     if cleanup_only:
-        return
+        return known[0], known[1]
     # ``CollapseShortEdges`` (to ``tolerance`` only past the new vertices: everywhere it is
     # ``epsilon``), ``CollapseColinearEdges``, ``SwapDegenerates``.
     short_tolerance = tolerance if first_new_vert > 0 else epsilon
     count = flag(kernel_solid_topology.flag_short_edges, [first_new_vert, short_tolerance, epsilon])
     if count > 0:
-        _launch_serial(
-            result,
+        serial(
             kernel_solid_topology.collapse_flagged,
             [_HostIn(flagged, count), count, short_tolerance, first_new_vert, epsilon, scratch_arg],
             [collapsed],
@@ -701,8 +703,7 @@ def simplify_topology(
         count = flag(kernel_solid_topology.flag_colinear_edges, [first_new_vert])
         if count == 0:
             break
-        _launch_serial(
-            result,
+        serial(
             kernel_solid_topology.collapse_flagged,
             [_HostIn(flagged, count), count, epsilon, 0, epsilon, scratch_arg],
             [collapsed],
@@ -712,34 +713,39 @@ def simplify_topology(
             break
     count = flag(kernel_solid_topology.flag_swappable_edges, [first_new_vert, tolerance])
     if count > 0:
-        _launch_serial(
-            result,
+        serial(
             kernel_solid_topology.swap_flagged,
             [_HostIn(flagged, count), count, tolerance, epsilon, *swap_scratch, scratch_arg],
             [],
         )
+    return known[0], known[1]
 
 
 def _launch_serial(
-    result: _HalfedgeMesh, kernel: odt.Kernel, inputs: list[object], outputs: list[object]
-) -> None:
+    result: _HalfedgeMesh,
+    sizes: tuple[int, int],
+    kernel: odt.Kernel,
+    inputs: list[object],
+    outputs: list[object],
+) -> tuple[int, int]:
     """
     Launch a one-thread pass over the result's halfedges, on the CPU when they are on CUDA.
 
     The collapses and swaps are a serial walk of dependent loads, which one CPU thread runs far
     faster than one GPU thread. Only the used prefixes travel: the halfedges, triangles and
-    vertices the sizes count, each ``_HostIn`` its count, each ``_HostScratch`` nothing (a fresh
-    host buffer, optionally filled); the outputs go back whole and the mesh's prefixes as the
-    pass left them.
+    vertices the ``sizes`` count, each ``_HostIn`` its count, each ``_HostScratch`` nothing (a
+    fresh host buffer, optionally filled); the outputs go back whole and the mesh's prefixes as
+    the pass left them. Returns the halfedge and vertex counts the pass left.
     """
     device = result.start.device
     if wp.get_device(device).is_cpu:
         plain = [_device_value(value) for value in inputs]
         _launch.launch(kernel, dim=1, inputs=[result, *plain], outputs=outputs, device=device)
-        return
+        # Host readback: the pass grew the mesh, and the next pass's grid follows it.
+        n_h, n_v = read_values(result.sizes, 0, 2)
+        return int(n_h), int(n_v)
     host = wp.get_device("cpu")
-    # Host readback: the prefixes to move.
-    n_h, n_v = (int(x) for x in read_values(result.sizes, 0, 2))
+    n_h, n_v = sizes
     struct = kernel_solid_topology.HalfedgeMesh()
     prefixes = {
         "start": n_h,
@@ -788,6 +794,7 @@ def _launch_serial(
     _launch.copy(result.sizes, host_sizes)
     for array, copy in zip(outputs, host_outputs, strict=True):
         _launch.copy(cast(odt.ArrayNd, array), copy)
+    return n_h, n_v
 
 
 class _HostIn(NamedTuple):
@@ -845,6 +852,7 @@ def launch_on_host(
 
 def finish_solid(
     result: _HalfedgeMesh,
+    sizes: tuple[int, int],
     epsilon: float,
     tolerance: float,
     device: wp.DeviceLike,
@@ -856,10 +864,10 @@ def finish_solid(
     ``CalculateVertNormals`` (the end of ``SimplifyTopology``) on the halfedges as they stand,
     ``RemoveUnreferencedVerts`` with the collapsed triangles, then ``SortGeometry`` in the kept
     vertices' box (``CalculateBBox``), or in ``box`` where the caller never recalculates it.
+    ``sizes`` are the halfedge and vertex counts ``simplify_topology`` returned.
     """
     mesh = result
-    # Host readback: the simplification grew the mesh, and the compaction's grid follows it.
-    n_h, n_v = (int(x) for x in read_values(result.sizes, 0, 2))
+    n_h, n_v = sizes
     n_t = n_h // 3
     first = _launch.full(n_v, 2147483647, dtype=wp.int32, device=device)
     _launch.launch(

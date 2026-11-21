@@ -864,9 +864,11 @@ def _compose(solids: list[Solid]) -> Solid:
         (upper[0], upper[1], upper[2]),
     )
     mesh = halfedge_mesh_from_solid(combined)
-    simplify_topology(mesh, 0, epsilon, tolerance, device, colinear=False)
+    sizes = simplify_topology(
+        mesh, (faces.size, combined.n_vertices), 0, epsilon, tolerance, device, colinear=False
+    )
     # ``Compose`` sorts in the union of its parts' boxes, never recalculated.
-    return finish_solid(mesh, epsilon, tolerance, device, (combined.lower, combined.upper))
+    return finish_solid(mesh, sizes, epsilon, tolerance, device, (combined.lower, combined.upper))
 
 
 def _concatenate(arrays: list[odt.ArrayNd], dtype: object, device: wp.DeviceLike) -> odt.ArrayNd:
@@ -1307,8 +1309,16 @@ def _result(
         outputs=[mesh.pair],
         device=device,
     )
-    simplify_topology(mesh, first_new_vert, epsilon, tolerance, device, colinear=collapse_collinear)
-    return finish_solid(mesh, epsilon, tolerance, device)
+    sizes = simplify_topology(
+        mesh,
+        (3 * n_triangles, n_result_vertices),
+        first_new_vert,
+        epsilon,
+        tolerance,
+        device,
+        colinear=collapse_collinear,
+    )
+    return finish_solid(mesh, sizes, epsilon, tolerance, device)
 
 
 def _count_crossings(
