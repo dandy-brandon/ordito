@@ -963,6 +963,176 @@ def vertex_inclusions(
     out_abs[v] = wp.abs(inclusion)
 
 
+# An operand of few edges crosses the other's faces pair by pair: one thread an (edge, face) pair
+# instead of a thread an edge walking the face tree, which leaves a large operand's faces to a
+# handful of threads when the few edges are long (a half-space cutter's). Flags scanned in edge-
+# major, face-minor order place each edge's run sorted by face, as ``write_edge_crossings``'
+# insertion leaves it; ``kernel12`` alone decides, so the box test only skips work.
+
+
+@wp.func
+def pair_crossing(
+    p: wp.int32,
+    n_faces_b: wp.int32,
+    faces_a: wp.array[wp.int32],
+    pos_a: wp.array[wp.vec3d],
+    vnormal_a: wp.array[wp.vec3d],
+    fnormal_a: wp.array[wp.vec3d],
+    mates_a: wp.array[wp.int32],
+    faces_b: wp.array[wp.int32],
+    pos_b: wp.array[wp.vec3d],
+    vnormal_b: wp.array[wp.vec3d],
+    fnormal_b: wp.array[wp.vec3d],
+    mates_b: wp.array[wp.int32],
+    lowers_b: wp.array[wp.vec3],
+    uppers_b: wp.array[wp.vec3],
+    pad: wp.float32,
+    expand: wp.int32,
+    forward: wp.int32,
+) -> tuple[wp.int32, wp.vec3d]:
+    h = p // n_faces_b
+    face = p - h * n_faces_b
+    start = faces_a[h]
+    end = faces_a[next_halfedge(h)]
+    if start >= end:
+        return 0, wp.vec3d()
+    lower, upper = edge_query_box(pos_a, start, end, pad)
+    lo = lowers_b[face]
+    hi = uppers_b[face]
+    if (
+        lower[0] > hi[0]
+        or lower[1] > hi[1]
+        or lower[2] > hi[2]
+        or lo[0] > upper[0]
+        or lo[1] > upper[1]
+        or lo[2] > upper[2]
+    ):
+        return 0, wp.vec3d()
+    return kernel12(
+        h,
+        face,
+        faces_a,
+        pos_a,
+        vnormal_a,
+        fnormal_a,
+        mates_a,
+        faces_b,
+        pos_b,
+        vnormal_b,
+        fnormal_b,
+        mates_b,
+        expand,
+        forward,
+    )
+
+
+@wp.kernel
+def count_pair_crossings(
+    n_faces_b: wp.int32,
+    faces_a: wp.array[wp.int32],
+    pos_a: wp.array[wp.vec3d],
+    vnormal_a: wp.array[wp.vec3d],
+    fnormal_a: wp.array[wp.vec3d],
+    mates_a: wp.array[wp.int32],
+    faces_b: wp.array[wp.int32],
+    pos_b: wp.array[wp.vec3d],
+    vnormal_b: wp.array[wp.vec3d],
+    fnormal_b: wp.array[wp.vec3d],
+    mates_b: wp.array[wp.int32],
+    lowers_b: wp.array[wp.vec3],
+    uppers_b: wp.array[wp.vec3],
+    pad: wp.float32,
+    expand: wp.int32,
+    forward: wp.int32,
+    out_flags: wp.array[wp.int32],
+) -> None:
+    p = wp.int32(wp.tid())
+    x12, _v12 = pair_crossing(
+        p,
+        n_faces_b,
+        faces_a,
+        pos_a,
+        vnormal_a,
+        fnormal_a,
+        mates_a,
+        faces_b,
+        pos_b,
+        vnormal_b,
+        fnormal_b,
+        mates_b,
+        lowers_b,
+        uppers_b,
+        pad,
+        expand,
+        forward,
+    )
+    out_flags[p] = wp.where(x12 != 0, 1, 0)
+
+
+@wp.kernel
+def edge_offsets_from_pairs(
+    pair_offsets: wp.array[wp.int32], n_faces_b: wp.int32, out_offsets: wp.array[wp.int32]
+) -> None:
+    # Each edge's first record: the scanned pairs at its first face.
+    h = wp.int32(wp.tid())
+    out_offsets[h] = pair_offsets[h * n_faces_b]
+
+
+@wp.kernel
+def write_pair_crossings(
+    n_faces_b: wp.int32,
+    faces_a: wp.array[wp.int32],
+    pos_a: wp.array[wp.vec3d],
+    vnormal_a: wp.array[wp.vec3d],
+    fnormal_a: wp.array[wp.vec3d],
+    mates_a: wp.array[wp.int32],
+    faces_b: wp.array[wp.int32],
+    pos_b: wp.array[wp.vec3d],
+    vnormal_b: wp.array[wp.vec3d],
+    fnormal_b: wp.array[wp.vec3d],
+    mates_b: wp.array[wp.int32],
+    lowers_b: wp.array[wp.vec3],
+    uppers_b: wp.array[wp.vec3],
+    pad: wp.float32,
+    expand: wp.int32,
+    forward: wp.int32,
+    pair_offsets: wp.array[wp.int32],
+    record_base: wp.int32,
+    out_edge: wp.array[wp.int32],
+    out_face: wp.array[wp.int32],
+    out_crossing: wp.array[wp.int32],
+    out_point: wp.array[wp.vec3d],
+) -> None:
+    p = wp.int32(wp.tid())
+    if pair_offsets[p + 1] == pair_offsets[p]:
+        return
+    x12, v12 = pair_crossing(
+        p,
+        n_faces_b,
+        faces_a,
+        pos_a,
+        vnormal_a,
+        fnormal_a,
+        mates_a,
+        faces_b,
+        pos_b,
+        vnormal_b,
+        fnormal_b,
+        mates_b,
+        lowers_b,
+        uppers_b,
+        pad,
+        expand,
+        forward,
+    )
+    r = record_base + pair_offsets[p]
+    h = p // n_faces_b
+    out_edge[r] = h
+    out_face[r] = p - h * n_faces_b
+    out_crossing[r] = x12
+    out_point[r] = v12
+
+
 @wp.kernel
 def crossing_inclusions(
     crossings: wp.array[wp.int32],
@@ -1513,6 +1683,8 @@ def triangulate_faces(
     n_faces_p: wp.int32,
     invert_q: wp.int32,
     eps: wp.float64,
+    heavy_sides: wp.int32,
+    heavy_pass: wp.int32,
     used: wp.array[wp.int32],
     order: wp.array[wp.int32],
     loop_heads: wp.array[wp.int32],
@@ -1521,9 +1693,12 @@ def triangulate_faces(
 ) -> None:
     # ``Face2Tri`` for one face of P or Q: a triangle as it is, a quad by its better diagonal,
     # anything else through the ear clipper, into ``ec.tris[tri_offsets[f]:]`` as result vertices.
+    # Faces of ``heavy_sides`` or more sides go in the heavy pass, the rest in the other.
     f = wp.int32(wp.tid())
     first = face_offsets[f]
     n = face_offsets[f + 1] - first
+    if (n >= heavy_sides) != (heavy_pass != 0):
+        return
     if n == 0:
         out_counts[f] = 0
         return
@@ -1991,6 +2166,16 @@ def own_coplanar_groups(coplanar: wp.array[wp.int32]) -> None:
 
 
 @wp.kernel
+def count_heavy_faces(
+    face_offsets: wp.array[wp.int32], heavy_sides: wp.int32, out_count: wp.array[wp.int32]
+) -> None:
+    # Faces of ``heavy_sides`` or more polygon sides, whose quadratic passes go to the CPU.
+    f = wp.int32(wp.tid())
+    if face_offsets[f + 1] - face_offsets[f] >= heavy_sides:
+        wp.atomic_add(out_count, 0, 1)
+
+
+@wp.kernel
 def write_result_halfedges(
     tri_offsets: wp.array[wp.int32],
     count_offsets: wp.array[wp.int32],
@@ -2006,6 +2191,8 @@ def write_result_halfedges(
     mesh_q: wp.array[wp.int32],
     n_faces_p: wp.int32,
     invert_q: wp.int32,
+    heavy_sides: wp.int32,
+    heavy_pass: wp.int32,
     slot_halfedge: wp.array[wp.int32],
     out_start: wp.array[wp.int32],
     out_pair: wp.array[wp.int32],
@@ -2025,6 +2212,8 @@ def write_result_halfedges(
         return
     first = face_offsets[f]
     n = face_offsets[f + 1] - first
+    if (n >= heavy_sides) != (heavy_pass != 0):
+        return
     mesh = wp.int32(0)
     coplanar = wp.int32(0)
     normal = wp.vec3d()

@@ -1188,6 +1188,13 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   (`repair.flatten_and_count_labels` 374 -> 21 us on dragon, `points.component_sizes` 185 -> 8 us,
   `cholesky.component_sizes` 15 -> 1.8 us on bunny), cluster members 0.5x; CPU at par.
 - **CPU code generation on Warp 1.19 (SLP vectorization):** 1.18 -> 1.19 over every ordito CPU benchmark row at `--size small` (two interleaved passes, CUDA hidden): geomean 0.876 / 0.885, 450 rows faster than 0.9x in both passes, 21 slower than 1.1x. The largest gains: `face_tangent_frames` 0.22-0.31x, `vertex_normals` 0.39-0.42x, `fast_marching_distance` 0.49x, `principal_curvature_taubin` and `marching_cubes_lewiner` 0.52x, `isotropic_remesh` and `flip_to_delaunay` 0.57x. SLP is nearly all of it: with `-fno-slp-vectorize` the same rows read 0.94-1.02x, and also dropping loop vectorization changes nothing further. The stable losses are SLP too: `mls_principal_curvature` rimls 1.18-1.26x and apss 1.12-1.21x (0.4-1.7 s rows; 0.98x without SLP), `upsample_polyline` 1.14-1.17x (0.93x without), and other polyline rows and `parametric_surface` at 1.13-1.2x (not flag-tested). Declined: a module-wide flag on `kernels/curvature.py` would forfeit taubin's 0.52x along with MLS's loss, and CUDA is the target (§9). Only MLS kernels in a module of their own could take it. CUDA over the same rows (`--size small,medium`): geomean 0.995 / 1.006 with pass-to-pass correlation 0.00, so nothing moved except `descend_field` 0.88x and the Laplacian rows 0.77-0.81x. Ray queries (GH-1840), hash grid (GH-2119 / GH-2163) and the newly unrolled `continue` loops (GH-1552) were flat at 0.975-1.009 module geomeans. The §14 CPU verdicts above were measured on 1.18; the one-launch forms sped up with everything else.
+- **A one-thread serial walk of dependent loads on CUDA data runs on the CPU device** (2026-11-21,
+  `boolean`: the topology collapses and swaps, the coplanar flood past its rounds, the ear clipping
+  and halfedge pairing of a polygon of 256 or more sides): one GPU thread waits a load's latency
+  each step. Collapses 279 -> 10 ms on an 82 k-face sphere, a plane cut's one-polygon cap 433 +
+  136 -> 13 + 6 ms; `simplify` there 0.81 -> 0.023 s, `split_by_plane` 61x -> 1.0x Manifold.
+  Move only used prefixes: whole capacity-sized halfedge arrays cost a `difference` 90 of 105 ms.
+  Many short independent walks stay on the device (the flood's rounds, the per-face passes).
 - **Shapes that lose:** a line-per-thread lattice pass absorbing a cell-per-thread one (`fill_orthographic`, 0.4-0.85x); a single-thread serial walk storing gathered values instead of computed indices (1.5-3x, polyline downsample); a per-face edge marker instead of a per-edge one plus a child-count launch (1.2x, remesh split).
 - **A serial walk counted then written walks once** (2026-11-07): a kernel launched to count each
   walk's points and again to write them (tracers, descents, the flip traces) repeats the whole
@@ -1418,8 +1425,3 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `offset_mesh(method="meshlib")` against MeshLib's `offsetMesh`, whose extraction is ported
   (`marching_cubes(method="openvdb")`, Class A) and whose OpenVDB `meshToLevelSet` band field is
   not. Scoped, with source availability and licensing, in `reference/component-status.md` (16.0b).
-- **`boolean`'s serial passes on planar-heavy inputs**: the result's edge collapses run as one
-  GPU thread, 5-17x Manifold's time where large planar faces are cut along long lines. The
-  coplanar flood runs in exact parallel rounds above 64 seeds (2026-11-21), but a region past
-  `kernels/boolean.COPLANAR_REGION` faces still takes the one-thread flood alone
-  (`reference/component-status.md`, 16.17).

@@ -25,7 +25,7 @@ import itertools
 import math
 import struct
 from collections.abc import Sequence
-from typing import Literal, NamedTuple
+from typing import Literal, NamedTuple, cast
 
 import numpy as np
 import warp as wp
@@ -54,6 +54,12 @@ _MAX_UNION_SIZE = 1000
 # 0.39x, 2 048 0.07x, 16 384 0.008x). The CPU always takes the one thread: it runs a launch's
 # threads in turn, so the rounds only add work.
 _SERIAL_FLOOD_SEEDS = 64
+# A result face of this many polygon sides or more is triangulated and paired on the CPU, whose
+# one thread runs those quadratic passes far faster than a GPU thread (2026-11-21: an 82 k-face
+# sphere's plane cut, whose cap is one polygon, 433 + 136 -> 13 + 6 ms; the copies are prefixes).
+_HEAVY_FACE_SIDES = 256
+# An operand with at most this many halfedges crosses the other's faces pair by pair.
+_PAIR_CROSSING_HALFEDGES = 384
 # ``Partition``'s cache: each sorted set of side divisions' barycentrics and sub-triangles.
 _PARTITIONS: dict[
     tuple[int, int, int, int],
@@ -3116,25 +3122,26 @@ def _serial_flood(flood: tuple[object, ...], seeds: wp.array[wp.int32], n_seeds:
     faces, twins, positions, order, rank, is_seed, tolerance, face_normals, coplanar = flood
     device = seeds.device
     n_faces = rank.size  # pyright: ignore[reportAttributeAccessIssue]
-    _launch.launch(
-        kernel_boolean.flood_coplanar,
-        dim=1,
-        inputs=[
-            faces,
-            twins,
-            positions,
-            seeds,
-            n_seeds,
-            order,
-            rank,
-            is_seed,
-            tolerance,
-            face_normals,
-            _launch.empty(2 * n_faces + 4, dtype=wp.int32, device=device),
-        ],
-        outputs=[coplanar],
-        device=device,
-    )
+    inputs = [
+        faces,
+        twins,
+        positions,
+        seeds,
+        n_seeds,
+        order,
+        rank,
+        is_seed,
+        tolerance,
+        face_normals,
+        _launch.empty(2 * n_faces + 4, dtype=wp.int32, device=device),
+    ]
+    if wp.get_device(device).is_cpu or n_seeds <= _SERIAL_FLOOD_SEEDS:
+        _launch.launch(
+            kernel_boolean.flood_coplanar, dim=1, inputs=inputs, outputs=[coplanar], device=device
+        )
+    else:
+        # A long flood is a serial walk of dependent loads: one CPU thread runs it far faster.
+        _launch_on_host(kernel_boolean.flood_coplanar, inputs, [coplanar])
 
 
 def _flood_in_rounds(flood: tuple[object, ...], seeds: wp.array[wp.int32], n_seeds: int) -> None:
@@ -3142,9 +3149,8 @@ def _flood_in_rounds(flood: tuple[object, ...], seeds: wp.array[wp.int32], n_see
     Flood the seeds' coplanar groups in parallel rounds, the same groups as the serial flood.
 
     Each round every pending seed floods tentatively and bids on its region; the seeds holding
-    their region's lowest bid commit together (``kernels/boolean.tentative_flood``). A round that
-    commits nothing has a seed whose region overflowed its scratch as its earliest; the serial
-    flood takes that one alone.
+    their region's lowest bid commit together (``kernels/boolean.tentative_flood``). Once a round
+    leaves more than half its seeds pending, the serial flood takes every seed left.
     """
     device = seeds.device
     n_faces = flood[4].size  # pyright: ignore[reportAttributeAccessIssue]
@@ -3183,12 +3189,13 @@ def _flood_in_rounds(flood: tuple[object, ...], seeds: wp.array[wp.int32], n_see
         )
         # Host readback: the next round's width.
         n_left = scan_count(left)
-        if n_left == m:
-            # The earliest pending seed overflowed: the serial flood takes it alone.
-            _serial_flood(flood, _launch.view(pending, 0, 1), 1)
-            pending = _launch.view(pending, 1, m)
-            m -= 1
-            continue
+        if 2 * n_left > m:
+            # Large regions overflow or overlap round after round (a round that commits nothing
+            # has an overflowing seed as its earliest): the serial flood takes every seed left,
+            # in order, from the claims so far (2026-11-21: an icosphere's 82 k faces at a loose
+            # tolerance 18 -> 4.2 ms; quad strips commit all but a few in their first round).
+            _serial_flood(flood, pending, m)
+            return
         if n_left > 0:
             remaining = _launch.empty(n_left, dtype=wp.int32, device=device)
             _launch.launch(
@@ -3325,16 +3332,16 @@ def _boolean3(p: _Operand, q: _Operand, expand: int) -> _Crossings:
     # The face trees' query boxes are padded by a few float32 ulps of the scene: a superset of the
     # candidates the exact predicates then decide.
     pad = max(scale, 1.0) * 4.0 * _FLOAT32_EPSILON
-    run_offsets_p, n12 = _count_crossings(p, q, pad, expand, forward=True)
-    run_offsets_q, n21 = _count_crossings(q, p, pad, expand, forward=False)
+    run_offsets_p, n12, pairs_p = _count_crossings(p, q, pad, expand, forward=True)
+    run_offsets_q, n21, pairs_q = _count_crossings(q, p, pad, expand, forward=False)
     size = max(n12 + n21, 1)
     record_edge = _launch.empty(size, dtype=wp.int32, device=device)
     record_face = _launch.empty(size, dtype=wp.int32, device=device)
     record_crossing = _launch.empty(size, dtype=wp.int32, device=device)
     record_point = _launch.empty(size, dtype=wp.vec3d, device=device)
     records = [record_edge, record_face, record_crossing, record_point]
-    _write_crossings(p, q, pad, expand, True, run_offsets_p, 0, records)
-    _write_crossings(q, p, pad, expand, False, run_offsets_q, n12, records)
+    _write_crossings(p, q, pad, expand, True, run_offsets_p, pairs_p, 0, records)
+    _write_crossings(q, p, pad, expand, False, run_offsets_q, pairs_q, n12, records)
     broken_p, labels_p, windings_p = _windings(p, q, record_edge, 0, n12, pad, expand, True)
     broken_q, labels_q, windings_q = _windings(q, p, record_edge, n12, n21, pad, expand, False)
     return _Crossings(
@@ -3575,56 +3582,107 @@ def _result(crossings: _Crossings, operation: _Operation) -> _Solid:
     count_offsets, counts = offsets_buffer(n_faces, device)
     state, triangles = _ear_clip_state(max(n_capacity, 1), device)
     scratch = max(n_sides, 1)
+    heavy = _heavy_face_count(face_offsets, n_faces)
+    triangulate_inputs: list[object] = [
+        face_offsets,
+        tri_offsets,
+        starts,
+        ends,
+        positions,
+        p.face_normals,
+        q.face_normals,
+        n_fp,
+        1 if invert_q else 0,
+        epsilon,
+        _HEAVY_FACE_SIDES,
+    ]
+    scratch_arrays = [_launch.empty(scratch, dtype=wp.int32, device=device) for _ in range(3)]
     _launch.launch(
         kernel_boolean.triangulate_faces,
         dim=n_faces,
-        inputs=[
-            face_offsets,
-            tri_offsets,
-            starts,
-            ends,
-            positions,
-            p.face_normals,
-            q.face_normals,
-            n_fp,
-            1 if invert_q else 0,
-            epsilon,
-            _launch.empty(scratch, dtype=wp.int32, device=device),
-            _launch.empty(scratch, dtype=wp.int32, device=device),
-            _launch.empty(scratch, dtype=wp.int32, device=device),
-            state,
-        ],
+        inputs=[*triangulate_inputs, 0, *scratch_arrays, state],
         outputs=[counts],
         device=device,
     )
+    if heavy > 0 and wp.get_device(device).is_cpu:
+        _launch.launch(
+            kernel_boolean.triangulate_faces,
+            dim=n_faces,
+            inputs=[*triangulate_inputs, 1, *scratch_arrays, state],
+            outputs=[counts],
+            device=device,
+        )
+    elif heavy > 0:
+        host_state, host_triangles = _ear_clip_state(max(n_capacity, 1), "cpu")
+        _launch_heavy_faces(
+            kernel_boolean.triangulate_faces,
+            n_faces,
+            [*triangulate_inputs, 1, *scratch_arrays],
+            [(triangles, host_triangles)],
+            host_state,
+            [counts],
+        )
     n_triangles = scan_count(counts)
     if n_triangles == 0:
         return _empty_solid(device)
     mesh = _halfedge_mesh(n_triangles, n_result_vertices, positions, device)
     slot_halfedge = _launch.full(max(n_sides, 1), -1, dtype=wp.int32, device=device)
+    write_inputs: list[object] = [
+        tri_offsets,
+        count_offsets,
+        triangles,
+        face_offsets,
+        starts,
+        ends,
+        p.face_normals,
+        q.face_normals,
+        p.solid.face_coplanar,
+        q.solid.face_coplanar,
+        p.solid.face_mesh,
+        q.solid.face_mesh,
+        n_fp,
+        1 if invert_q else 0,
+        _HEAVY_FACE_SIDES,
+    ]
+    write_outputs: list[object] = [
+        mesh.start,
+        mesh.pair,
+        mesh.tri_mesh,
+        mesh.tri_coplanar,
+        mesh.tri_normal,
+    ]
     _launch.launch(
         kernel_boolean.write_result_halfedges,
         dim=n_faces,
-        inputs=[
-            tri_offsets,
-            count_offsets,
-            triangles,
-            face_offsets,
-            starts,
-            ends,
-            p.face_normals,
-            q.face_normals,
-            p.solid.face_coplanar,
-            q.solid.face_coplanar,
-            p.solid.face_mesh,
-            q.solid.face_mesh,
-            n_fp,
-            1 if invert_q else 0,
-            slot_halfedge,
-        ],
-        outputs=[mesh.start, mesh.pair, mesh.tri_mesh, mesh.tri_coplanar, mesh.tri_normal],
+        inputs=[*write_inputs, 0, slot_halfedge],
+        outputs=write_outputs,
         device=device,
     )
+    if heavy > 0 and wp.get_device(device).is_cpu:
+        _launch.launch(
+            kernel_boolean.write_result_halfedges,
+            dim=n_faces,
+            inputs=[*write_inputs, 1, slot_halfedge],
+            outputs=write_outputs,
+            device=device,
+        )
+    elif heavy > 0:
+        # Only the written prefixes travel: the result's halfedges and triangles so far.
+        n_written = 3 * n_triangles
+        _launch_heavy_faces(
+            kernel_boolean.write_result_halfedges,
+            n_faces,
+            [*write_inputs, 1, slot_halfedge],
+            [],
+            None,
+            [
+                _launch.view(mesh.start, 0, n_written),
+                _launch.view(mesh.pair, 0, n_written),
+                _launch.view(mesh.tri_mesh, 0, n_triangles),
+                _launch.view(mesh.tri_coplanar, 0, n_triangles),
+                _launch.view(mesh.tri_normal, 0, n_triangles),
+            ],
+        )
     _launch.launch(
         kernel_boolean.pair_polygon_halfedges,
         dim=n_sides,
@@ -3638,32 +3696,77 @@ def _result(crossings: _Crossings, operation: _Operation) -> _Solid:
 
 def _count_crossings(
     a: _Operand, b: _Operand, pad: float, expand: int, *, forward: bool
-) -> tuple[wp.array[wp.int32], int]:
-    """Count each edge of ``a``'s crossings with ``b``'s faces; their offsets and total."""
-    offsets, counts = offsets_buffer(a.faces.size, a.positions.device)
+) -> tuple[wp.array[wp.int32], int, wp.array[wp.int32] | None]:
+    """
+    Count each edge of ``a``'s crossings with ``b``'s faces; their offsets and total.
+
+    An ``a`` of few edges against many faces goes pair by pair, and the pairs' scanned offsets
+    come third (``None`` for the walk of ``b``'s face tree).
+    """
+    device = a.positions.device
+    n_h = a.faces.size
+    n_faces_b = b.n_faces
+    offsets, counts = offsets_buffer(n_h, device)
+    if _crossings_by_pairs(n_h, n_faces_b):
+        pair_offsets, flags = offsets_buffer(n_h * n_faces_b, device)
+        _launch.launch(
+            kernel_boolean.count_pair_crossings,
+            dim=n_h * n_faces_b,
+            inputs=[n_faces_b, *_crossing_operands(a, b, pad, expand, forward, pairs=True)],
+            outputs=[flags],
+            device=device,
+        )
+        total = scan_count(flags)
+        _launch.launch(
+            kernel_boolean.edge_offsets_from_pairs,
+            dim=n_h + 1,
+            inputs=[pair_offsets, n_faces_b],
+            outputs=[offsets],
+            device=device,
+        )
+        return offsets, total, pair_offsets
     _launch.launch(
         kernel_boolean.count_edge_crossings,
-        dim=a.faces.size,
-        inputs=[
-            a.faces,
-            a.positions,
-            a.vertex_normals,
-            a.face_normals,
-            a.mates,
-            b.faces,
-            b.positions,
-            b.vertex_normals,
-            b.face_normals,
-            b.mates,
-            b.bvh.id,
-            pad,
-            expand,
-            1 if forward else 0,
-        ],
+        dim=n_h,
+        inputs=_crossing_operands(a, b, pad, expand, forward, pairs=False),
         outputs=[counts],
-        device=a.positions.device,
+        device=device,
     )
-    return offsets, scan_count(counts)
+    return offsets, scan_count(counts), None
+
+
+def _crossings_by_pairs(n_halfedges: int, n_faces_b: int) -> bool:
+    """
+    Whether an operand's edges cross the other's faces pair by pair rather than by tree walks.
+
+    Pairs pay where few edges each walk much of a large tree (2026-11-21: a half-space cutter's
+    18 edges against a sphere of 82 k faces, 263 -> 4 ms); a tree walk a thread fills the device
+    otherwise.
+    """
+    return n_halfedges <= _PAIR_CROSSING_HALFEDGES and n_halfedges * n_faces_b <= 1 << 24
+
+
+def _crossing_operands(
+    a: _Operand, b: _Operand, pad: float, expand: int, forward: bool, *, pairs: bool
+) -> list[object]:
+    """Return the crossing kernels' shared arguments: both operands, the search, the side."""
+    search: list[object] = [b.bvh.lowers, b.bvh.uppers] if pairs else [b.bvh.id]
+    return [
+        a.faces,
+        a.positions,
+        a.vertex_normals,
+        a.face_normals,
+        a.mates,
+        b.faces,
+        b.positions,
+        b.vertex_normals,
+        b.face_normals,
+        b.mates,
+        *search,
+        pad,
+        expand,
+        1 if forward else 0,
+    ]
 
 
 def _write_crossings(
@@ -3673,33 +3776,33 @@ def _write_crossings(
     expand: int,
     forward: bool,
     offsets: wp.array[wp.int32],
+    pair_offsets: wp.array[wp.int32] | None,
     record_base: int,
     records: list[odt.ArrayNd],
 ) -> None:
     """Write the crossings ``_count_crossings`` counted from ``record_base`` on."""
+    device = a.positions.device
+    if pair_offsets is not None:
+        n_faces_b = b.n_faces
+        _launch.launch(
+            kernel_boolean.write_pair_crossings,
+            dim=a.faces.size * n_faces_b,
+            inputs=[
+                n_faces_b,
+                *_crossing_operands(a, b, pad, expand, forward, pairs=True),
+                pair_offsets,
+                record_base,
+            ],
+            outputs=records,
+            device=device,
+        )
+        return
     _launch.launch(
         kernel_boolean.write_edge_crossings,
         dim=a.faces.size,
-        inputs=[
-            a.faces,
-            a.positions,
-            a.vertex_normals,
-            a.face_normals,
-            a.mates,
-            b.faces,
-            b.positions,
-            b.vertex_normals,
-            b.face_normals,
-            b.mates,
-            b.bvh.id,
-            pad,
-            expand,
-            1 if forward else 0,
-            offsets,
-            record_base,
-        ],
+        inputs=[*_crossing_operands(a, b, pad, expand, forward, pairs=False), offsets, record_base],
         outputs=records,
-        device=a.positions.device,
+        device=device,
     )
 
 
@@ -3833,8 +3936,20 @@ def _simplify_topology(
     capacity = result.start.size
     flags_offsets, flags = offsets_buffer(capacity, device)
     flagged = _launch.empty(capacity, dtype=wp.int32, device=device)
-    scratch = _launch.empty(capacity, dtype=wp.int32, device=device)
     collapsed = _launch.zeros(1, dtype=wp.int32, device=device)
+    # The serial passes' scratch: device buffers on the CPU device, host ones on CUDA.
+    on_cpu = wp.get_device(device).is_cpu
+    scratch_arg: object = (
+        _launch.empty(capacity, dtype=wp.int32, device=device) if on_cpu else _HostScratch(capacity)
+    )
+    swap_scratch: list[object] = (
+        [
+            _launch.full(capacity, -1, dtype=wp.int32, device=device),
+            _launch.empty(8 * capacity, dtype=wp.int32, device=device),
+        ]
+        if on_cpu
+        else [_HostScratch(capacity, -1), _HostScratch(8 * capacity)]
+    )
 
     def sizes() -> tuple[int, int]:
         # Host readback: the serial passes grow the mesh, and the next pass's grid follows it.
@@ -3889,52 +4004,218 @@ def _simplify_topology(
         count = flag(kernel_boolean.flag_duplicate_edges, [])
         if count == 0:
             break
-        _launch.launch(
-            kernel_boolean.dedupe_flagged, dim=1, inputs=[mesh, flagged, count], device=device
-        )
+        _launch_serial(result, kernel_boolean.dedupe_flagged, [_HostIn(flagged, count), count], [])
     # ``CollapseShortEdges`` (to ``tolerance`` only past the new vertices: everywhere it is
     # ``epsilon``), ``CollapseColinearEdges``, ``SwapDegenerates``.
     short_tolerance = tolerance if first_new_vert > 0 else epsilon
     count = flag(kernel_boolean.flag_short_edges, [first_new_vert, short_tolerance, epsilon])
     if count > 0:
-        _launch.launch(
+        _launch_serial(
+            result,
             kernel_boolean.collapse_flagged,
-            dim=1,
-            inputs=[mesh, flagged, count, short_tolerance, first_new_vert, epsilon, scratch],
-            outputs=[collapsed],
-            device=device,
+            [_HostIn(flagged, count), count, short_tolerance, first_new_vert, epsilon, scratch_arg],
+            [collapsed],
         )
     while colinear:
         count = flag(kernel_boolean.flag_colinear_edges, [first_new_vert])
         if count == 0:
             break
-        _launch.launch(
+        _launch_serial(
+            result,
             kernel_boolean.collapse_flagged,
-            dim=1,
-            inputs=[mesh, flagged, count, epsilon, 0, epsilon, scratch],
-            outputs=[collapsed],
-            device=device,
+            [_HostIn(flagged, count), count, epsilon, 0, epsilon, scratch_arg],
+            [collapsed],
         )
         # Host readback: ``CollapseColinearEdges`` repeats until a pass collapses nothing.
         if read_values(collapsed, 0, 1)[0] == 0:
             break
     count = flag(kernel_boolean.flag_swappable_edges, [first_new_vert, tolerance])
     if count > 0:
-        _launch.launch(
+        _launch_serial(
+            result,
             kernel_boolean.swap_flagged,
-            dim=1,
-            inputs=[
-                mesh,
-                flagged,
-                count,
-                tolerance,
-                epsilon,
-                _launch.full(capacity, -1, dtype=wp.int32, device=device),
-                _launch.empty(8 * capacity, dtype=wp.int32, device=device),
-                scratch,
-            ],
-            device=device,
+            [_HostIn(flagged, count), count, tolerance, epsilon, *swap_scratch, scratch_arg],
+            [],
         )
+
+
+def _launch_serial(
+    result: _ResultMesh, kernel: odt.Kernel, inputs: list[object], outputs: list[object]
+) -> None:
+    """
+    Launch a one-thread pass over the result's halfedges, on the CPU when they are on CUDA.
+
+    The collapses and swaps are a serial walk of dependent loads, which one CPU thread runs far
+    faster than one GPU thread. Only the used prefixes travel: the halfedges, triangles and
+    vertices the sizes count, each ``_HostIn`` its count, each ``_HostScratch`` nothing (a fresh
+    host buffer, optionally filled); the outputs go back whole and the mesh's prefixes as the
+    pass left them.
+    """
+    device = result.start.device
+    if wp.get_device(device).is_cpu:
+        plain = [_device_value(value) for value in inputs]
+        _launch.launch(
+            kernel, dim=1, inputs=[result.struct, *plain], outputs=outputs, device=device
+        )
+        return
+    host = wp.get_device("cpu")
+    # Host readback: the prefixes to move.
+    n_h, n_v = (int(x) for x in read_values(result.sizes, 0, 2))
+    struct = kernel_boolean.HalfedgeMesh()
+    prefixes = {
+        "start": n_h,
+        "pair": n_h,
+        "tri_mesh": n_h // 3,
+        "tri_coplanar": n_h // 3,
+        "tri_normal": n_h // 3,
+        "pos": n_v,
+    }
+    host_fields: dict[str, odt.ArrayNd] = {}
+    for name, count in prefixes.items():
+        array = getattr(result, name)
+        copy = _launch.empty(array.shape[0], dtype=array.dtype, device=host)
+        if count > 0:
+            _launch.copy(copy, array, count=count)
+        setattr(struct, name, copy)
+        host_fields[name] = copy
+    host_sizes = _launch.clone(result.sizes, device=host)
+    struct.sizes = host_sizes
+    host_inputs: list[object] = []
+    for value in inputs:
+        if isinstance(value, _HostIn):
+            copy = _launch.empty(value.array.shape[0], dtype=value.array.dtype, device=host)
+            if value.used > 0:
+                _launch.copy(copy, value.array, count=value.used)
+            host_inputs.append(copy)
+        elif isinstance(value, _HostScratch):
+            if value.fill is None:
+                host_inputs.append(_launch.empty(value.size, dtype=wp.int32, device=host))
+            else:
+                host_inputs.append(
+                    _launch.full(value.size, value.fill, dtype=wp.int32, device=host)
+                )
+        else:
+            host_inputs.append(value)
+    host_outputs = [_launch.clone(cast(odt.ArrayNd, value), device=host) for value in outputs]
+    _launch.launch(kernel, dim=1, inputs=[struct, *host_inputs], outputs=host_outputs, device=host)
+    sizes_np = read_array(host_sizes)
+    n_h, n_v = int(sizes_np[0]), int(sizes_np[1])
+    prefixes = {
+        k: (n_h if k in ("start", "pair") else n_v if k == "pos" else n_h // 3) for k in prefixes
+    }
+    for name, count in prefixes.items():
+        if count > 0:
+            _launch.copy(getattr(result, name), host_fields[name], count=count)
+    _launch.copy(result.sizes, host_sizes)
+    for array, copy in zip(outputs, host_outputs, strict=True):
+        _launch.copy(cast(odt.ArrayNd, array), copy)
+
+
+class _HostIn(NamedTuple):
+    """A serial pass's input array, of which the first ``used`` entries are read."""
+
+    array: wp.array[wp.int32]
+    used: int
+
+
+class _HostScratch(NamedTuple):
+    """A serial pass's scratch of ``size`` entries, arriving filled with ``fill`` if given."""
+
+    size: int
+    fill: int | None = None
+
+
+def _device_value(value: object) -> object:
+    """Return a serial pass's argument as the device launch takes it."""
+    if isinstance(value, _HostIn):
+        return value.array
+    if isinstance(value, _HostScratch):
+        raise AssertionError("a device launch is handed its scratch")
+    return value
+
+
+def _launch_on_host(
+    kernel: odt.Kernel,
+    inputs: list[object],
+    outputs: list[object],
+    struct_fields: dict[str, odt.ArrayNd] | None = None,
+) -> None:
+    """
+    Launch a one-thread kernel on the CPU over device arrays: each goes to the host and back.
+
+    The first input may be a struct whose ``struct_fields`` are filled with the host copies.
+    """
+    host = wp.get_device("cpu")
+    moved: list[tuple[odt.ArrayNd, odt.ArrayNd]] = []
+
+    def to_host(value: object) -> object:
+        if isinstance(value, wp.array):
+            copy = _launch.clone(value, device=host)
+            moved.append((value, copy))
+            return copy
+        return value
+
+    for name, array in (struct_fields or {}).items():
+        setattr(inputs[0], name, to_host(array))
+    host_inputs = [to_host(value) for value in inputs]
+    host_outputs = [to_host(value) for value in outputs]
+    _launch.launch(kernel, dim=1, inputs=host_inputs, outputs=host_outputs, device=host)
+    for array, copy in moved:
+        _launch.copy(array, copy)
+
+
+def _heavy_face_count(face_offsets: wp.array[wp.int32], n_faces: int) -> int:
+    """Count the result faces of ``_HEAVY_FACE_SIDES`` or more polygon sides."""
+    device = face_offsets.device
+    count = _launch.zeros(1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_boolean.count_heavy_faces,
+        dim=n_faces,
+        inputs=[face_offsets, _HEAVY_FACE_SIDES],
+        outputs=[count],
+        device=device,
+    )
+    # Host readback: whether a face is big enough to go to the CPU.
+    return int(read_values(count, 0, 1)[0])
+
+
+def _launch_heavy_faces(
+    kernel: odt.Kernel,
+    n_faces: int,
+    inputs: list[object],
+    paired: list[tuple[odt.ArrayNd, odt.ArrayNd]],
+    struct: StructInstance | None,
+    outputs: list[object],
+) -> None:
+    """
+    Run a per-face kernel's heavy pass on the CPU, over the arrays the CUDA pass left.
+
+    A face of many polygon sides costs its thread time quadratic in them, which one CPU thread
+    runs far faster than one GPU thread. Every array goes to the host and back whole: the heavy
+    pass writes only its faces' ranges, so the rest come back as they were. ``struct`` (the ear
+    clipper's scratch, allocated on the host) follows the inputs, and ``paired`` gives the device
+    array each of its host fields copies back to.
+    """
+    host = wp.get_device("cpu")
+    moved: list[tuple[odt.ArrayNd, odt.ArrayNd]] = []
+
+    def to_host(value: object) -> object:
+        if isinstance(value, wp.array):
+            copy = _launch.clone(value, device=host)
+            moved.append((value, copy))
+            return copy
+        return value
+
+    for device_array, host_array in paired:
+        _launch.copy(host_array, device_array)
+        moved.append((device_array, host_array))
+    host_inputs = [to_host(value) for value in inputs]
+    if struct is not None:
+        host_inputs.append(struct)
+    host_outputs = [to_host(value) for value in outputs]
+    _launch.launch(kernel, dim=n_faces, inputs=host_inputs, outputs=host_outputs, device=host)
+    for array, copy in moved:
+        _launch.copy(array, copy)
 
 
 def _finish_solid(
