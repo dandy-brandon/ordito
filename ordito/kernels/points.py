@@ -539,18 +539,6 @@ def cloud_frame(
 
 
 @wp.func
-def star_step(
-    order: wp.array[wp.int32], start: wp.int32, count: wp.int32, step: wp.int32
-) -> wp.int32:
-    # The next kept slot of the angular order after ``start`` (``step`` 1) or before it (``step``
-    # -1), cyclically; ``start`` itself when it is the only one. Dropped slots hold ``-1``.
-    i = (start + step + count) % count
-    while order[i] < 0:
-        i = (i + step + count) % count
-    return i
-
-
-@wp.func
 def star_gap(
     xs: wp.array[wp.float64], ys: wp.array[wp.float64], a: wp.int32, b: wp.int32
 ) -> wp.bool:
@@ -621,7 +609,10 @@ def local_triangulation_stars(
     xs = wp.zeros(shape=LOCAL_TRIANGULATION_MAX_NEIGHBORS, dtype=wp.float64)
     ys = wp.zeros(shape=LOCAL_TRIANGULATION_MAX_NEIGHBORS, dtype=wp.float64)
     angles = wp.zeros(shape=LOCAL_TRIANGULATION_MAX_NEIGHBORS, dtype=wp.float64)
+    lengths = wp.zeros(shape=LOCAL_TRIANGULATION_MAX_NEIGHBORS, dtype=wp.float64)
     order = wp.zeros(shape=LOCAL_TRIANGULATION_MAX_NEIGHBORS, dtype=wp.int32)
+    following = wp.zeros(shape=LOCAL_TRIANGULATION_MAX_NEIGHBORS, dtype=wp.int32)
+    preceding = wp.zeros(shape=LOCAL_TRIANGULATION_MAX_NEIGHBORS, dtype=wp.int32)
     center = wp.vec3d(points[p])
     m = wp.int32(0)
     scale_sq = wp.float64(0.0)
@@ -659,6 +650,7 @@ def local_triangulation_stars(
             ys[i] = radius * dy
     for i in range(m):
         length = wp.sqrt(xs[i] * xs[i] + ys[i] * ys[i])
+        lengths[i] = length
         angle = wp.atan2(ys[i] / length, xs[i] / length)
         angles[i] = wp.where(wp.isfinite(angle), angle, STAR_BAD_ANGLE)
         # Insertion sort by angle, stable among ties.
@@ -669,9 +661,24 @@ def local_triangulation_stars(
             order[slot] = order[slot - 1]
             slot -= 1
         order[slot] = i
+    # The kept slots of the angular order as a cyclic doubly linked list (``following`` /
+    # ``preceding``), so a slot's kept neighbours are one read and a drop unlinks it, where a walk
+    # over the dropped slots made each pass quadratic in the row.
+    first = wp.int32(-1)
+    last = wp.int32(-1)
     for i in range(m):
         if angles[order[i]] == STAR_BAD_ANGLE:
             order[i] = wp.int32(-1)
+        else:
+            if first < 0:
+                first = i
+            else:
+                following[last] = i
+                preceding[i] = last
+            last = i
+    if first >= 0:
+        following[last] = first
+        preceding[first] = last
 
     changed = wp.int32(1)
     while changed != 0:
@@ -680,14 +687,16 @@ def local_triangulation_stars(
             curr = order[middle]
             if curr < 0:
                 continue
-            prev = order[star_step(order, middle, m, wp.int32(-1))]
-            nxt = order[star_step(order, middle, m, wp.int32(1))]
+            before = preceding[middle]
+            after = following[middle]
+            prev = order[before]
+            nxt = order[after]
             if curr == prev or curr == nxt or prev == nxt:
                 continue
             # Of neighbours on one ray from the point, only the nearest stays.
-            length_prev = wp.sqrt(xs[prev] * xs[prev] + ys[prev] * ys[prev])
-            length_curr = wp.sqrt(xs[curr] * xs[curr] + ys[curr] * ys[curr])
-            length_next = wp.sqrt(xs[nxt] * xs[nxt] + ys[nxt] * ys[nxt])
+            length_prev = lengths[prev]
+            length_curr = lengths[curr]
+            length_next = lengths[nxt]
             if (
                 star_collinear(xs, ys, curr, nxt, length_curr, length_next)
                 and length_curr > length_next
@@ -696,12 +705,16 @@ def local_triangulation_stars(
                 and length_curr > length_prev
             ):
                 order[middle] = wp.int32(-1)
+                following[before] = after
+                preceding[after] = before
                 changed = wp.int32(1)
                 continue
             if star_gap(xs, ys, prev, curr) or star_gap(xs, ys, curr, nxt):
                 continue
             if not star_keeps(xs, ys, prev, curr, nxt):
                 order[middle] = wp.int32(-1)
+                following[before] = after
+                preceding[after] = before
                 changed = wp.int32(1)
 
     count = wp.int32(0)
@@ -709,10 +722,10 @@ def local_triangulation_stars(
         a = order[i]
         if a < 0:
             continue
-        following = star_step(order, i, m, wp.int32(1))
-        if following == i:
+        after = following[i]
+        if after == i:
             continue
-        b = order[following]
+        b = order[after]
         if not star_gap(xs, ys, a, b):
             out_stars[p, count, 0] = p
             out_stars[p, count, 1] = ids[a]
@@ -749,7 +762,9 @@ def laplacian_point_pass(
 ) -> None:
     # One umbrella step over the neighbour table, Open3D's ``ApplyIndexedLaplacianUpdate`` with
     # uniform weights: ``p + factor * (mean - p)`` over the row's entries other than the point
-    # itself and the ``-1`` slots; a row with none keeps its point.
+    # itself and the ``-1`` slots; a row with none keeps its point. The pass streams the table
+    # (bandwidth-bound): loading every entry at a clamped address and selecting after, as
+    # latency-bound rows do, cost 1.10x on ``dragon`` and 1.01x on ``lucy`` (2026-11-22).
     v = wp.int32(wp.tid())
     p = points[v]
     total = wp.vec3(0.0, 0.0, 0.0)
