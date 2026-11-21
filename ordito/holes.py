@@ -65,7 +65,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from itertools import pairwise
-from typing import TYPE_CHECKING, Literal, overload
+from typing import Literal, NamedTuple, overload
 
 import numpy as np
 import warp as wp
@@ -86,165 +86,70 @@ from ordito.kernels import boundary as kernel_boundary
 from ordito.kernels import holes as kernel_holes
 from ordito.kernels import scatter as kernel_scatter
 
-if TYPE_CHECKING:
-    import numpy.typing as npt
+
+class _LoopTables(NamedTuple):
+    """
+    The fill's device tables of a [`_PackedLoops`][ordito.holes._PackedLoops], one upload's views.
+
+    None of them is written, so one ``wp.array`` construction carries them all: its per-call cost
+    is several times a slice's.
+    """
+
+    dp_offsets: wp.array[wp.int32]
+    """``(n_loops,)`` start of each loop's ``B x B`` block in the ragged DP tables."""
+    triangle_offsets: wp.array[wp.int32]
+    """``(n_loops,)`` start of each loop's fill triangles."""
+    loop_id: wp.array[wp.int32]
+    """``(total,)`` the loop each packed position belongs to."""
 
 
-class _PackedLoops:
+class _PackedLoops(NamedTuple):
     """
     Every fillable loop of one mesh in one packed buffer, plus the host metadata to index it.
 
     ``flat_loops`` concatenates the loop vertex indices; loop ``ell`` occupies
     ``flat_loops[offsets[ell] : offsets[ell + 1]]`` (the package's total-terminated offsets, which
-    every kernel here reads a loop's extent from). ``loop_id`` inverts that mapping so a
-    ``dim=total`` kernel can find its own loop without a search, and ``dp_offsets`` is the exclusive
-    scan of ``sizes ** 2`` — where each loop's ``B x B`` dynamic-programming block begins in the
-    ragged tables, and ``triangle_offsets`` where its fill triangles begin.
+    every kernel here reads a loop's extent from). The fill's own tables
+    ([`_LoopTables`][ordito.holes._LoopTables]) invert that mapping (``loop_id``, so a
+    ``dim=total`` kernel can find its own loop without a search), and give where each loop's
+    ``B x B`` dynamic-programming block begins in the ragged tables (the exclusive scan of
+    ``sizes ** 2``) and where its fill triangles begin.
 
-    The device tables are uploaded once, on the first read of any of them, and shared by every
-    stage of the fill; a stage that reads none of them (the fan and the cone read only ``offsets``)
-    uploads nothing. ``offsets`` given is the device form the loops came with (the boundary walk's,
-    or the packing's), so the upload does not carry a second copy of it.
+    The fill's tables are uploaded by the fill itself ([`_loop_tables`][ordito.holes._loop_tables]),
+    so a stage that reads only ``offsets`` (the fan, the cone, the extension) uploads nothing.
+    Loops packed without device offsets (a compaction, a subset) upload them with the fill's tables
+    in one buffer when packed (``tables``), since every consumer reads the offsets at once.
     """
 
-    def __init__(
-        self,
-        flat_loops: wp.array[wp.int32],
-        sizes_np: np.ndarray,
-        offsets: wp.array[wp.int32] | None = None,
-    ) -> None:
-        device = flat_loops.device
-        self.device = device
-        self.flat_loops = flat_loops
-        self.sizes_np = sizes_np.astype(np.int64)
-        self.starts_np = np.concatenate([[0], np.cumsum(self.sizes_np)[:-1]]).astype(np.int64)
-
-        self.n_loops = sizes_np.size
-        self.total = int(self.sizes_np.sum())
-        self.max_size = int(self.sizes_np.max())
-        self.dp_total = int((self.sizes_np * self.sizes_np).sum())
-        self._offsets = offsets
-        self._tables: tuple[wp.array[wp.int32], ...] | None = None
-        # The perimeters a fill measured in its rim pass, with the positions it measured them on.
-        self.measured_perimeters: tuple[wp.array[wp.vec3], wp.array[wp.float32]] | None = None
-        # The loops an all-or-nothing traceback left whole because no triangulation covers them.
-        self.blocked_np: np.ndarray = np.empty(0, dtype=np.int64)
-
-    @property
-    def offsets(self) -> wp.array[wp.int32]:
-        """``(n_loops + 1,)`` total-terminated device offsets of the loops."""
-        if self._offsets is None:
-            self._offsets = self._upload()[0]
-        return self._offsets
-
-    @property
-    def dp_offsets(self) -> wp.array[wp.int32]:
-        """``(n_loops,)`` start of each loop's ``B x B`` block in the ragged DP tables."""
-        return self._upload()[1]
-
-    @property
-    def triangle_offsets(self) -> wp.array[wp.int32]:
-        """``(n_loops,)`` start of each loop's fill triangles."""
-        return self._upload()[2]
-
-    @property
-    def loop_id(self) -> wp.array[wp.int32]:
-        """``(total,)`` the loop each packed position belongs to."""
-        return self._upload()[3]
-
-    def _upload(self) -> tuple[wp.array[wp.int32], ...]:
-        """
-        Upload the device tables once, each a view into one buffer.
-
-        One upload for all of them: the per-call cost of a ``wp.array`` construction is several
-        times a slice's, and none of these is written. The offsets ride along only when the loops
-        came without them.
-        """
-        if self._tables is not None:
-            return self._tables
-        n = self.n_loops
-        triangle_sizes_np = np.maximum(self.sizes_np - 2, 0)
-        parts = [
-            np.concatenate([[0], np.cumsum(self.sizes_np * self.sizes_np)[:-1]]),
-            np.concatenate([[0], np.cumsum(triangle_sizes_np)[:-1]]),
-            np.repeat(np.arange(n, dtype=np.int64), self.sizes_np),
-        ]
-        with_offsets = self._offsets is None
-        if with_offsets:
-            parts.insert(0, np.append(self.starts_np, self.total))
-        tables = _launch.array(
-            np.concatenate(parts).astype(np.int32), dtype=wp.int32, device=self.device
-        )
-        start = 0
-        if with_offsets:
-            offsets = _table_view(tables, 0, n + 1)
-            start = n + 1
-        else:
-            assert self._offsets is not None
-            offsets = self._offsets
-        self._tables = (
-            offsets,
-            _table_view(tables, start, start + n),
-            _table_view(tables, start + n, start + 2 * n),
-            _table_view(tables, start + 2 * n, start + 2 * n + self.total),
-        )
-        return self._tables
-
-    def perimeters(self, vertices: wp.array[wp.vec3]) -> np.ndarray:
-        """
-        Measure the closed arc length of every packed loop, returning it on the host.
-
-        Delegates to
-        [`boundary.loop_perimeters_from_offsets`][ordito.boundary.loop_perimeters_from_offsets]
-        rather than launching the segmented kernel again here: the packed layout this class holds
-        *is* that function's argument list; the measure finds each position's loop from
-        ``offsets``, so the fill's per-slot tables are not uploaded for it. ``validate=False``:
-        ``offsets`` is built from
-        ``sizes_np`` right above in this class's own constructor, not handed in from outside, so it
-        already fits ``flat_loops`` by construction.
-        """
-        measured = self.measured_perimeters
-        if measured is not None and measured[0] is vertices:
-            perimeters = measured[1]
-        else:
-            perimeters = od.boundary.loop_perimeters_from_offsets(
-                vertices, self.flat_loops, self.offsets, validate=False
-            )
-        # Readback: the callers threshold, rank or average the perimeters on the host. A few loops
-        # come back through the cached scratch rather than a fresh host array.
-        if self.n_loops <= _FEW_LOOPS:
-            return np.asarray(read_values(perimeters, 0, self.n_loops), dtype=np.float32)
-        return read_array(perimeters)
-
-    def subset(self, selected_np: np.ndarray) -> _PackedLoops:
-        """Pack the loops ``selected_np`` names, in that order, into loops of their own."""
-        positions_np = np.concatenate(
-            [
-                np.arange(int(self.starts_np[ell]), int(self.starts_np[ell] + self.sizes_np[ell]))
-                for ell in selected_np
-            ]
-        )
-        positions = _launch.array(positions_np.astype(np.int32), dtype=wp.int32, device=self.device)
-        return _PackedLoops(od.array.gather(self.flat_loops, positions), self.sizes_np[selected_np])
+    flat_loops: wp.array[wp.int32]
+    sizes_np: np.ndarray
+    """``(n_loops,)`` host ``int64`` loop sizes."""
+    offsets: wp.array[wp.int32]
+    """``(n_loops + 1,)`` total-terminated device offsets of the loops."""
+    tables: _LoopTables | None
+    """The fill's tables, where they were uploaded with ``offsets``."""
+    n_loops: int
+    total: int
+    max_size: int
+    dp_total: int
 
 
-# Loop counts up to which ``_PackedLoops.perimeters`` reads back through ``read_values``, whose
-# scratch is cached per count.
+class _FilledLoops(NamedTuple):
+    """What [`_fill_packed_loops`][ordito.holes._fill_packed_loops] returns."""
+
+    faces: wp.array[wp.int32]
+    """``(3 * n_out_faces,)`` the input faces with the fill triangles appended."""
+    perimeters: wp.array[wp.float32] | None
+    """``(n_loops,)`` each loop's perimeter, where the rim pass measured them."""
+    blocked_np: np.ndarray
+    """The loops an all-or-nothing traceback left whole because no triangulation covers them."""
+
+
+# Loop counts up to which ``_packed_perimeters`` reads back through ``read_values``, whose scratch
+# is cached per count.
 _FEW_LOOPS = 4
 
 kernel_array.declare_block_dims(kernel_holes.__name__, (kernel_boundary.LOOP_SUM_BLOCK,))
-
-
-def _table_view(tables: wp.array[wp.int32], start: int, stop: int) -> wp.array[wp.int32]:
-    """
-    Dense view of ``tables[start:stop]``, or an empty buffer when the range is empty.
-
-    Warp raises on a zero-length slice at the end of a buffer, which is where an empty ``loop_id``
-    lands when every packed loop is empty.
-    """
-    if stop > start:
-        return _launch.view(tables, start, stop)
-    return _launch.empty(0, dtype=wp.int32, device=tables.device)
 
 
 @overload
@@ -524,140 +429,47 @@ _METRIC_COMBINE = {"max_dihedral": 1}
 _METRICS_WITH_BAD_TERMS = frozenset({"plane_normalized", "plane", "complex_fill"})
 
 
-class _EdgeTable:
+class _EdgeTable(NamedTuple):
     """
     Device rim-edge lookups for the pre-DP hole-fill stage.
 
-    ``rim_opposite`` finds, per rim edge, the opposite vertex of its single adjacent face (and
-    that it has exactly one); a ``(n_vertices,)`` slot scratch
-    supports the forbidden-chord mask of every loop at once. Both answers are rim-sized, so neither
-    builds a table of the mesh's edges: the one sort is of the rim's own keys. ``n_vertices`` is
-    given by a caller whose face indices are known to lie below it, and ``len(vertices)``
-    otherwise. ``flag`` is a zeroed one-entry view the two face passes raise when a corner lies
-    outside ``[0, n_vertices)``, skipping it rather than reading out of bounds; the caller reads it
-    back with its own last readback and raises (``_raise_face_range``).
+    [`_rim_opposite`][ordito.holes._rim_opposite] finds, per rim edge, the opposite vertex of its
+    single adjacent face (and that it has exactly one); a ``(n_vertices,)`` slot scratch supports
+    the forbidden-chord mask of every loop at once
+    ([`_mark_forbidden_chords`][ordito.holes._mark_forbidden_chords]). Both answers are rim-sized,
+    so neither builds a table of the mesh's edges: the one sort is of the rim's own keys.
+    ``n_vertices`` is given by a caller whose face indices are known to lie below it, and
+    ``len(vertices)`` otherwise. ``flag`` is a zeroed one-entry view the two face passes raise when
+    a corner lies outside ``[0, n_vertices)``, skipping it rather than reading out of bounds; the
+    caller reads it back with its own last readback and raises (``_raise_face_range``).
     """
 
-    def __init__(
-        self,
-        vertices: wp.array[wp.vec3],
-        faces: wp.array[wp.int32],
-        n_vertices: int | None,
-        flag: wp.array[wp.int32],
-    ) -> None:
-        device = faces.device
-        # Any bound above every index orders the rim keys alike, so the choice changes no answer;
-        # the range check is the face passes' own (``kernels/holes.corner_in_range``).
-        if n_vertices is None:
-            n_vertices = vertices.size
-        self.flag = flag
-        self.vertices = vertices
-        self.faces = faces
-        self.n_halfedges = faces.size // 3 * 3
-        self.base = wp.uint64(n_vertices)
-        # Every key packs two indices below ``n_vertices``, so it is below ``n_vertices ** 2`` and
-        # the sort orders only that many low bits.
-        self.key_bits = max(1, (n_vertices * n_vertices - 1).bit_length())
-        self.n_vertices = n_vertices
-        self.device = device
-        self._rim_ints: wp.array[wp.int32] | None = None
+    vertices: wp.array[wp.vec3]
+    faces: wp.array[wp.int32]
+    flag: wp.array[wp.int32]
+    n_vertices: int
+    base: wp.uint64
+    """The radix of the undirected rim keys, ``n_vertices``."""
+    key_bits: int
+    """The low bits the rim sort orders."""
 
-    def rim_sort_buffers(
-        self,
-        total: int,
-        keys: wp.array[wp.uint64] | None = None,
-        ints: wp.array[wp.int32] | None = None,
-    ) -> tuple[wp.array[wp.uint64], wp.array[wp.int32]]:
-        """
-        Return the rim sort's double-width key and slot buffers, for ``total`` rim slots.
 
-        A producer writes each slot's key and the identity payload into the first ``total``
-        entries (``kernels/holes.write_rim_sort_entry``); the upper halves are the sort's scratch.
-        The slots are the front half of ``ints``, a ``(4 * total,)`` ``RIM_NO_FACE``-filled buffer
-        whose back half is [`rim_opposite`][ordito.holes._EdgeTable.rim_opposite]'s face table and
-        validity, so the fill that table needs is this buffer's. ``keys`` (``(2 * total,)``) and
-        ``ints`` are views of a caller's shared buffers when it has them, allocated here otherwise.
-        """
-        if keys is None:
-            keys = _launch.empty(2 * total, dtype=wp.uint64, device=self.device)
-        if ints is None:
-            ints = self.rim_int_scratch(4 * total)
-        self._rim_ints = ints
-        return keys, _table_view(ints, 0, 2 * total)
+class _RimSort(NamedTuple):
+    """
+    The rim sort's double-width key and slot buffers, for ``total`` rim slots.
 
-    def rim_int_scratch(self, size: int) -> wp.array[wp.int32]:
-        """``(size,)`` ``int32`` scratch filled with ``RIM_NO_FACE``, cut up by the caller."""
-        return _launch.full(size, kernel_holes.RIM_NO_FACE, dtype=wp.int32, device=self.device)
+    A producer writes each slot's key and the identity payload into the first ``total`` entries
+    (``kernels/holes.write_rim_sort_entry``); the upper halves are the sort's scratch. The slots
+    are the front half of ``ints``, a ``(4 * total,)`` ``RIM_NO_FACE``-filled buffer whose back half
+    is [`_rim_opposite`][ordito.holes._rim_opposite]'s face table and validity, so the fill that
+    table needs is this buffer's.
+    """
 
-    def rim_opposite(
-        self,
-        total: int,
-        sort_buffers: tuple[wp.array[wp.uint64], wp.array[wp.int32]],
-        positions: wp.array[wp.vec3] | None = None,
-    ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
-        """
-        Opposite-vertex position + validity per rim edge, for every loop in one pass.
-
-        ``sort_buffers`` are ``rim_sort_buffers(total)`` holding the ``total`` rim edges' undirected
-        keys under ``self.base`` and the identity slots, written by the caller's own pass over the
-        rim (``write_rim_sort_entry``: the fill's ``loop_rim_metrics``, the stitch's
-        ``stitch_rolled_rims``). Sorted in place. ``positions`` is a ``(total,)`` view of a
-        caller's buffer for the positions, allocated here when ``None``; the validity is the back
-        quarter of ``rim_sort_buffers``' ``ints``.
-        """
-        keys, order = sort_buffers
-        if total > 0:
-            _launch.radix_sort_pairs(keys, order, count=total, end_bit=self.key_bits)
-        sorted_keys = odt.as_dense(keys[:total])
-        slots = odt.as_dense(order[:total])
-        ints = self._rim_ints
-        assert ints is not None
-        third = _table_view(ints, 2 * total, 3 * total)
-        _launch.launch(
-            kernel_holes.probe_rim_edges,
-            dim=self.faces.size // 3,
-            inputs=[self.faces, sorted_keys, slots, self.base, third, self.flag],
-            device=self.device,
-        )
-        if positions is None:
-            positions = _launch.empty(total, dtype=wp.vec3, device=self.device)
-        valid = _table_view(ints, 3 * total, 4 * total)
-        _launch.launch(
-            kernel_holes.rim_opposite_positions,
-            dim=total,
-            inputs=[self.vertices, third, positions, valid],
-            device=self.device,
-        )
-        return positions, valid
-
-    def forbidden_chords(
-        self, loops: _PackedLoops, flat_slot: wp.array[wp.int32], mask: wp.array[wp.int32]
-    ) -> None:
-        """
-        Mark the chords that already exist as mesh edges in ``mask``, for every loop at once.
-
-        ``mask`` is the zeroed ``(dp_total,)`` ragged chord mask.
-
-        ``flat_slot`` is the ``(n_vertices,)`` scratch the rim pass filled with each vertex's
-        *flat* slot (``kernels/holes.record_loop_position``) rather than its position within one
-        loop, which is what lets every loop's mask be marked by a single pass over the mesh edges
-        -- the per-loop version ran one full ``dim = 3 * n_faces`` pass per hole, and cleared the
-        scratch between them.
-        """
-        _launch.launch(
-            kernel_holes.mark_forbidden_chords,
-            dim=self.n_halfedges,
-            inputs=[
-                self.faces,
-                flat_slot,
-                loops.loop_id,
-                loops.offsets,
-                loops.dp_offsets,
-                mask,
-                self.flag,
-            ],
-            device=self.device,
-        )
+    keys: wp.array[wp.uint64]
+    """``(2 * total,)``."""
+    slots: wp.array[wp.int32]
+    """``(2 * total,)``, the front half of ``ints``."""
+    ints: wp.array[wp.int32]
 
 
 @overload
@@ -847,7 +659,7 @@ def fill_min_weight(
         resolve_multiple_edges,
         smooth_boundary,
         n_vertices=n_vertices,
-    )
+    ).faces
     return _faces_and_provenance(vertices, faces, filled, return_provenance)
 
 
@@ -976,7 +788,7 @@ def fill_loops_min_weight(
         resolve_multiple_edges,
         smooth_boundary,
         n_vertices=n_vertices,
-    )
+    ).faces
     return _faces_and_provenance(vertices, faces, filled, return_provenance)
 
 
@@ -991,7 +803,7 @@ def _fill_packed_loops(
     n_vertices: int | None = None,
     measure_perimeters: bool = False,
     all_or_nothing: bool = False,
-) -> wp.array[wp.int32]:
+) -> _FilledLoops:
     """
     Min-weight-triangulate every packed loop **together** and append the fill faces.
 
@@ -1003,9 +815,9 @@ def _fill_packed_loops(
     the host is two scalar reads of one small state buffer: whether any loop needs the fallback
     metric, and whether the traceback fell short of a full triangulation anywhere. ``n_vertices``
     is [`_EdgeTable`][ordito.holes._EdgeTable]'s. ``measure_perimeters`` has the rim pass also
-    measure every loop's perimeter into ``loops.measured_perimeters``, for a caller that derives a
-    target from them. ``all_or_nothing`` leaves a loop no triangulation covers without any fill
-    triangles and records it in ``loops.blocked_np``, for a caller that closes it another way.
+    measure every loop's perimeter, returned as ``perimeters``, for a caller that derives a target
+    from them. ``all_or_nothing`` leaves a loop no triangulation covers without any fill triangles
+    and returns it in ``blocked_np``, for a caller that closes it another way.
     """
     device = faces.device
     # The retry flag, the traceback's shortfall and the face range flag, read back at two different
@@ -1039,7 +851,7 @@ def _fill_packed_loops(
     state = _launch.view(zeroed, 0, n_slots)
     forbidden = _table_view(zeroed, n_slots, n_slots + loops.dp_total)
     bad_index = kernel_holes.FILL_STATE_BAD_INDEX
-    edge_table = _EdgeTable(
+    edge_table = _edge_table(
         vertices, faces, n_vertices, _launch.view(state, bad_index, bad_index + 1)
     )
     primary_id = _METRIC_IDS[metric]
@@ -1055,10 +867,10 @@ def _fill_packed_loops(
     # as "not zero", so ``-1`` marks every loop active as well.
     n_slot_scratch = edge_table.n_vertices if resolve_multiple_edges else 0
     n_ints = 4 * total + n_slot_scratch
-    rim_ints = edge_table.rim_int_scratch(n_ints + n_loops)
-    rim_keys, rim_slots = edge_table.rim_sort_buffers(
-        total, keys=rim_keys, ints=_table_view(rim_ints, 0, 4 * total)
+    rim_ints = _launch.full(
+        n_ints + n_loops, kernel_holes.RIM_NO_FACE, dtype=wp.int32, device=device
     )
+    rim_sort = _rim_sort(total, rim_keys, _table_view(rim_ints, 0, 4 * total))
     # Accumulated into, then finished in place: the finalize pass reads each loop's sum and writes
     # that loop's slot, so the plane normals overwrite the Newell sums and the ``char_area`` scales
     # overwrite the longest edges rather than taking two buffers of their own.
@@ -1071,20 +883,21 @@ def _fill_packed_loops(
     char_areas = _launch.view(rim_floats, 0, n_loops) if measure_perimeters else rim_floats
     perimeters = _launch.view(rim_floats, n_loops, 2 * n_loops) if measure_perimeters else None
     flat_slot = _table_view(rim_ints, 4 * total, 4 * total + n_slot_scratch)
+    loop_tables = _loop_tables(loops)
     _launch.launch(
         kernel_holes.loop_rim_metrics,
         dim=loops.total,
         inputs=[
             loops.flat_loops,
-            loops.loop_id,
+            loop_tables.loop_id,
             loops.offsets,
             vertices,
             edge_table.base,
             char_areas,
             plane_normals,
             loop_pos,
-            rim_keys,
-            rim_slots,
+            rim_sort.keys,
+            rim_sort.slots,
             flat_slot,
             perimeters,
         ],
@@ -1096,7 +909,7 @@ def _fill_packed_loops(
             dim=loops.n_loops,
             inputs=[
                 loops.flat_loops,
-                loops.loop_id,
+                loop_tables.loop_id,
                 loops.offsets,
                 vertices,
                 char_areas,
@@ -1114,13 +927,11 @@ def _fill_packed_loops(
             inputs=[char_areas, plane_normals, plane_normals, char_areas],
             device=device,
         )
-    if perimeters is not None:
-        loops.measured_perimeters = (vertices, perimeters)
 
     if resolve_multiple_edges:
-        edge_table.forbidden_chords(loops, flat_slot, forbidden)
-    rim_opp_pos, rim_opp_valid = edge_table.rim_opposite(
-        total, (rim_keys, rim_slots), _launch.view(positions, total, 2 * total)
+        _mark_forbidden_chords(edge_table, loops, loop_tables, flat_slot, forbidden)
+    rim_opp_pos, rim_opp_valid = _rim_opposite(
+        edge_table, total, rim_sort, _launch.view(positions, total, 2 * total)
     )
 
     # The predecessor table, then the traceback's per-loop counts and their scan: one table.
@@ -1128,6 +939,7 @@ def _fill_packed_loops(
     active = _table_view(rim_ints, n_ints, n_ints + n_loops)
     _run_hole_dp(
         loops,
+        loop_tables,
         loop_pos,
         plane_normals,
         forbidden,
@@ -1154,7 +966,7 @@ def _fill_packed_loops(
         _launch.launch(
             kernel_holes.flag_bad_triangulations,
             dim=loops.n_loops,
-            inputs=[loops.offsets, loops.dp_offsets, dp, active, state],
+            inputs=[loops.offsets, loop_tables.dp_offsets, dp, active, state],
             device=device,
         )
         # ...but *whether* any loop failed is worth one host read, because a pass with an all-zero
@@ -1170,6 +982,7 @@ def _fill_packed_loops(
         if read_scalar(state, kernel_holes.FILL_STATE_RETRY) > 0:
             _run_hole_dp(
                 loops,
+                loop_tables,
                 loop_pos,
                 plane_normals,
                 forbidden,
@@ -1191,21 +1004,66 @@ def _fill_packed_loops(
             )
 
     counts = _launch.view(prev_and_counts, loops.dp_total, loops.dp_total + 2 * n_loops)
-    return _traceback_fill_faces(
-        faces, loops, prev, state, edge_table.n_vertices, counts, stack, all_or_nothing
+    filled, blocked_np = _traceback_fill_faces(
+        faces, loops, loop_tables, prev, state, edge_table.n_vertices, counts, stack, all_or_nothing
     )
+    return _FilledLoops(filled, perimeters, blocked_np)
+
+
+def _mark_forbidden_chords(
+    table: _EdgeTable,
+    loops: _PackedLoops,
+    loop_tables: _LoopTables,
+    flat_slot: wp.array[wp.int32],
+    mask: wp.array[wp.int32],
+) -> None:
+    """
+    Mark the chords that already exist as mesh edges in ``mask``, for every loop at once.
+
+    ``mask`` is the zeroed ``(dp_total,)`` ragged chord mask.
+
+    ``flat_slot`` is the ``(n_vertices,)`` scratch the rim pass filled with each vertex's *flat*
+    slot (``kernels/holes.record_loop_position``) rather than its position within one loop, which
+    is what lets every loop's mask be marked by a single pass over the mesh edges -- the per-loop
+    version ran one full ``dim = 3 * n_faces`` pass per hole, and cleared the scratch between them.
+    """
+    faces = table.faces
+    _launch.launch(
+        kernel_holes.mark_forbidden_chords,
+        dim=faces.size // 3 * 3,
+        inputs=[
+            faces,
+            flat_slot,
+            loop_tables.loop_id,
+            loops.offsets,
+            loop_tables.dp_offsets,
+            mask,
+            table.flag,
+        ],
+        device=faces.device,
+    )
+
+
+def _loop_tables(loops: _PackedLoops) -> _LoopTables:
+    """Return the fill's tables of ``loops``: those packed with its offsets, or uploaded now."""
+    if loops.tables is not None:
+        return loops.tables
+    return _upload_loop_tables(loops.flat_loops.device, loops.sizes_np, loops.total, loops.offsets)[
+        1
+    ]
 
 
 def _traceback_fill_faces(
     faces: wp.array[wp.int32],
     loops: _PackedLoops,
+    loop_tables: _LoopTables,
     prev: wp.array[wp.int32],
     state: wp.array[wp.int32],
     n_vertices: int,
     counts_scratch: wp.array[wp.int32],
     stack: wp.array[wp.vec2i],
     all_or_nothing: bool,
-) -> wp.array[wp.int32]:
+) -> tuple[wp.array[wp.int32], np.ndarray]:
     """
     Walk every loop's DP predecessor table into fill faces, returned appended to ``faces``.
 
@@ -1224,18 +1082,20 @@ def _traceback_fill_faces(
     ``stack`` is the walk's ``(loops.total,)`` pending intervals: one slot per packed rim vertex,
     which is exactly enough (see ``traceback_fill_triangles``), caller-allocated because a kernel
     local cannot be sized by a runtime rim length. ``all_or_nothing`` is
-    [`_fill_packed_loops`][ordito.holes._fill_packed_loops]'s.
+    [`_fill_packed_loops`][ordito.holes._fill_packed_loops]'s; the loops it leaves whole are
+    returned beside the faces (empty unless it is set).
     """
-    device = loops.device
+    device = loops.flat_loops.device
+    blocked_np = np.empty(0, dtype=np.int64)
     triangle_sizes_np = np.maximum(loops.sizes_np - 2, 0)
     n_padded = int(triangle_sizes_np.sum())
     if n_padded == 0:
-        return _launch.clone(faces)
+        return _launch.clone(faces), blocked_np
     n_face_indices = faces.size
     filled = _launch.empty(n_face_indices + 3 * n_padded, dtype=wp.int32, device=device)
     _launch.copy(filled, faces, count=n_face_indices)
     padded = odt.as_dense(filled[n_face_indices:]).reshape((n_padded, 3))
-    triangle_offsets = loops.triangle_offsets
+    triangle_offsets = loop_tables.triangle_offsets
     counts = _launch.view(counts_scratch, 0, loops.n_loops)
     # Declined (2026-11-08): a warp a loop (``_launch.walk_lanes``): the traceback is 0.18 ms of a
     # 4.8 ms call on ``rim_short``, one loop that has a warp to itself already, and 5 us on
@@ -1246,7 +1106,7 @@ def _traceback_fill_faces(
         inputs=[
             loops.flat_loops,
             loops.offsets,
-            loops.dp_offsets,
+            loop_tables.dp_offsets,
             triangle_offsets,
             prev,
             int(all_or_nothing),
@@ -1262,14 +1122,14 @@ def _traceback_fill_faces(
     if bad_index != 0:
         _raise_face_range(faces, n_vertices, "faces")
     if shortfall == 0:
-        return filled
+        return filled, blocked_np
     if all_or_nothing:
         # Readback: which loops the walk left whole decides the loops the caller cones, on the host.
         counts_np = read_array(counts)
-        loops.blocked_np = np.flatnonzero((counts_np == 0) & (triangle_sizes_np > 0))
+        blocked_np = np.flatnonzero((counts_np == 0) & (triangle_sizes_np > 0))
     n_triangles = n_padded - shortfall
     if n_triangles == 0:
-        return _launch.clone(faces)
+        return _launch.clone(faces), blocked_np
     packed_ends = _launch.view(counts_scratch, loops.n_loops, 2 * loops.n_loops)
     _launch.array_scan(counts, packed_ends, inclusive=True)
     compacted = _launch.empty(n_face_indices + 3 * n_triangles, dtype=wp.int32, device=device)
@@ -1286,7 +1146,7 @@ def _traceback_fill_faces(
         ],
         device=device,
     )
-    return compacted
+    return compacted, blocked_np
 
 
 # The grid (loops times the longest loop's slots) from which the DP's span launches cover the loops
@@ -1296,6 +1156,7 @@ _HOLE_DP_ORDER_FROM = 1 << 15
 
 def _run_hole_dp(
     loops: _PackedLoops,
+    loop_tables: _LoopTables,
     loop_pos: wp.array[wp.vec3],
     plane_normals: wp.array[wp.vec3],
     forbidden: wp.array[wp.int32],
@@ -1368,7 +1229,7 @@ def _run_hole_dp(
     tiles holding that lane's own answer. With the constant it would silently minimize over every
     32nd apex instead.
     """
-    device = loops.device
+    device = loops.flat_loops.device
     resolved = wp.get_device(device)
     if tiled is None:
         tiled = not resolved.is_cpu
@@ -1388,7 +1249,7 @@ def _run_hole_dp(
             _launch.launch(
                 kernel_holes.init_dp_base,
                 dim=(loops.n_loops, loops.max_size),
-                inputs=[loops.offsets, loops.dp_offsets, active, dp, prev],
+                inputs=[loops.offsets, loop_tables.dp_offsets, active, dp, prev],
                 device=device,
             )
         if n_spans <= 0:
@@ -1415,7 +1276,7 @@ def _run_hole_dp(
             loops.n_loops
             - np.searchsorted(np.sort(loops.sizes_np), np.arange(loops.max_size + 1), "right")
         ).tolist()
-    tables.dp_offsets = loops.dp_offsets
+    tables.dp_offsets = loop_tables.dp_offsets
     tables.active = active
     tables.plane_normals = plane_normals
     tables.forbidden = forbidden
@@ -1506,7 +1367,7 @@ def _pack_loops(loops: list[wp.array[wp.int32]]) -> _PackedLoops:
     # ``copy=False``: every kernel below takes ``flat_loops`` as an input and none writes it.
     flat_loops, offsets = od.array.pack_1d_arrays(loops, copy=False)
     sizes_np = np.asarray([loop.size for loop in loops], dtype=np.int64)
-    return _PackedLoops(flat_loops, sizes_np, offsets)
+    return _packed_loops(flat_loops, sizes_np, offsets)
 
 
 @overload
@@ -1690,7 +1551,7 @@ def _fill_small(
     else:
         # One segmented-sum launch measures every rim, so the selection costs a single readback
         # rather than a copy of the whole vertex buffer plus one of each loop.
-        small_np = packed.perimeters(vertices) <= max_perimeter
+        small_np = _packed_perimeters(packed, vertices) <= max_perimeter
     if not small_np.any():
         return faces
     if not small_np.all():
@@ -1704,7 +1565,7 @@ def _fill_small(
         True,
         n_vertices=n_vertices,
         all_or_nothing=all_or_nothing,
-    )
+    ).faces
 
 
 @overload
@@ -2025,7 +1886,7 @@ def fill_smooth(
 
     n_faces_before = n_faces
     n_vertices_before = vertices.size
-    faces_filled = _fill_packed_loops(
+    filled_loops = _fill_packed_loops(
         vertices,
         faces,
         packed,
@@ -2036,10 +1897,11 @@ def fill_smooth(
         measure_perimeters=max_edge is None and not triangulate_only,
         all_or_nothing=True,
     )
+    faces_filled = filled_loops.faces
     vertices_filled = vertices
     blocked = None
-    if packed.blocked_np.size > 0:
-        blocked = packed.subset(packed.blocked_np)
+    if filled_loops.blocked_np.size > 0:
+        blocked = _subset_loops(packed, filled_loops.blocked_np)
         vertices_filled, faces_filled = _cone_packed_loops(vertices, faces_filled, blocked)
     n_faces_after = faces_filled.size // 3
     patch_mask = _patch_mask(n_faces_before, n_faces_after, device)
@@ -2058,7 +1920,9 @@ def fill_smooth(
             _launch.clone(vertices_filled), faces_filled, patch_mask, return_patch, filled
         )
 
-    target_edge = max_edge if max_edge is not None else _mean_rim_edge_length(vertices, packed)
+    target_edge = max_edge
+    if target_edge is None:
+        target_edge = _mean_rim_edge_length(vertices, packed, filled_loops.perimeters)
     return _refined_result(
         vertices_filled,
         faces_filled,
@@ -2077,6 +1941,20 @@ def fill_smooth(
         return_patch,
         filled,
     )
+
+
+def _subset_loops(loops: _PackedLoops, selected_np: np.ndarray) -> _PackedLoops:
+    """Pack the loops ``selected_np`` names, in that order, into loops of their own."""
+    starts_np = np.concatenate([[0], np.cumsum(loops.sizes_np)[:-1]]).astype(np.int64)
+    positions_np = np.concatenate(
+        [
+            np.arange(int(starts_np[ell]), int(starts_np[ell] + loops.sizes_np[ell]))
+            for ell in selected_np
+        ]
+    )
+    device = loops.flat_loops.device
+    positions = _launch.array(positions_np.astype(np.int32), dtype=wp.int32, device=device)
+    return _packed_loops(od.array.gather(loops.flat_loops, positions), loops.sizes_np[selected_np])
 
 
 def _cone_packed_loops(
@@ -2359,7 +2237,7 @@ def refill_region(
     packed = _pack_loops(new_loops)
     # The kept faces come out of the deletion's compaction, so every index is below the kept
     # vertex count by construction and the fill needs no reduction to bound them.
-    faces_filled = _fill_packed_loops(
+    filled_loops = _fill_packed_loops(
         kept_vertices,
         kept_faces,
         packed,
@@ -2369,6 +2247,7 @@ def refill_region(
         n_vertices=kept_vertices.size,
         measure_perimeters=max_edge is None and not triangulate_only,
     )
+    faces_filled = filled_loops.faces
     patch_mask = _patch_mask(n_kept_faces, faces_filled.size // 3, device)
     filled = None
     if deleted is not None:
@@ -2378,7 +2257,9 @@ def refill_region(
     if triangulate_only:
         return _patched_result(kept_vertices, faces_filled, patch_mask, return_patch, filled)
 
-    target_edge = max_edge if max_edge is not None else _mean_rim_edge_length(kept_vertices, packed)
+    target_edge = max_edge
+    if target_edge is None:
+        target_edge = _mean_rim_edge_length(kept_vertices, packed, filled_loops.perimeters)
     return _refined_result(
         kept_vertices,
         faces_filled,
@@ -3534,7 +3415,7 @@ def stitch_smooth(
         )
         target_edge = _mean_rim_edge_length(
             combined_vertices,
-            _PackedLoops(flat_rims, np.array([n_a, n_b], dtype=np.int64), rim_offsets),
+            _packed_loops(flat_rims, np.array([n_a, n_b], dtype=np.int64), rim_offsets),
         )
     return _refined_result(
         combined_vertices,
@@ -4339,8 +4220,8 @@ def stitch_loops_min_weight(
     )
     pair_and_count = _launch.view(ints, 0, 4)
     flag = _launch.view(pair_and_count, 2, 3)
-    table_a = _EdgeTable(vertices_a, faces_a, n_vertices_a, flag)
-    table_b = _EdgeTable(vertices_b, faces_b, n_vertices_b, flag)
+    table_a = _edge_table(vertices_a, faces_a, n_vertices_a, flag)
+    table_b = _edge_table(vertices_b, faces_b, n_vertices_b, flag)
     la_wp = _launch.view(ints, 4, 4 + n_a)
     lb_wp = _launch.view(ints, 4 + n_a, 4 + n_ab)
     col_min = _launch.view(ints, 4 + n_ab, 4 + n_ab + n_a)
@@ -4366,10 +4247,10 @@ def stitch_loops_min_weight(
     # The rolled rims: their positions, their vertex ids (the traceback's loops) and each rim's
     # edge keys for its rim-opposite probe, written by the pass that already holds both ends.
     keys = _launch.empty(2 * n_ab, dtype=wp.uint64, device=device)
-    sort_a = table_a.rim_sort_buffers(
+    sort_a = _rim_sort(
         n_a, _launch.view(keys, 0, 2 * n_a), _launch.view(ints, scratch, scratch + 4 * n_a)
     )
-    sort_b = table_b.rim_sort_buffers(
+    sort_b = _rim_sort(
         n_b,
         _launch.view(keys, 2 * n_a, 2 * n_ab),
         _launch.view(ints, scratch + 4 * n_a, scratch + 4 * n_ab),
@@ -4378,14 +4259,14 @@ def stitch_loops_min_weight(
         kernel_holes.stitch_rolled_rims,
         dim=n_ab,
         inputs=[vertices_a, loop_a, vertices_b, loop_b, pair_and_count, table_a.base, table_b.base],
-        outputs=[a_pos, b_pos, la_wp, lb_wp, *sort_a, *sort_b],
+        outputs=[a_pos, b_pos, la_wp, lb_wp, sort_a.keys, sort_a.slots, sort_b.keys, sort_b.slots],
         device=device,
     )
-    a_opp, a_opp_valid = table_a.rim_opposite(
-        n_a, sort_a, _launch.view(positions, n_ab, n_ab + n_a)
+    a_opp, a_opp_valid = _rim_opposite(
+        table_a, n_a, sort_a, _launch.view(positions, n_ab, n_ab + n_a)
     )
-    b_opp, b_opp_valid = table_b.rim_opposite(
-        n_b, sort_b, _launch.view(positions, n_ab + n_a, 2 * n_ab)
+    b_opp, b_opp_valid = _rim_opposite(
+        table_b, n_b, sort_b, _launch.view(positions, n_ab + n_a, 2 * n_ab)
     )
     up = wp.vec3(*(up_dir if up_dir is not None else (0.0, 0.0, 1.0)))
 
@@ -4441,6 +4322,63 @@ def stitch_loops_min_weight(
         combined_faces,
         return_provenance,
     )
+
+
+def _edge_table(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    n_vertices: int | None,
+    flag: wp.array[wp.int32],
+) -> _EdgeTable:
+    """Build a rim-edge lookup over ``faces``, whose indices lie below ``n_vertices``."""
+    # Any bound above every index orders the rim keys alike, so the choice changes no answer; the
+    # range check is the face passes' own (``kernels/holes.corner_in_range``).
+    if n_vertices is None:
+        n_vertices = vertices.size
+    # Every key packs two indices below ``n_vertices``, so it is below ``n_vertices ** 2`` and the
+    # sort orders only that many low bits.
+    key_bits = max(1, (n_vertices * n_vertices - 1).bit_length())
+    return _EdgeTable(vertices, faces, flag, n_vertices, wp.uint64(n_vertices), key_bits)
+
+
+def _rim_sort(total: int, keys: wp.array[wp.uint64], ints: wp.array[wp.int32]) -> _RimSort:
+    """Lay the rim sort out in ``keys`` (``(2 * total,)``) and ``ints`` (``(4 * total,)``)."""
+    return _RimSort(keys, _table_view(ints, 0, 2 * total), ints)
+
+
+def _rim_opposite(
+    table: _EdgeTable, total: int, sort: _RimSort, positions: wp.array[wp.vec3]
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    Opposite-vertex position + validity per rim edge, for every loop in one pass.
+
+    ``sort`` holds the ``total`` rim edges' undirected keys under ``table.base`` and the identity
+    slots, written by the caller's own pass over the rim (``write_rim_sort_entry``: the fill's
+    ``loop_rim_metrics``, the stitch's ``stitch_rolled_rims``). Sorted in place. ``positions`` is a
+    ``(total,)`` view of a caller's buffer for the positions; the validity is the back quarter of
+    ``sort.ints``.
+    """
+    device = table.faces.device
+    keys, order, ints = sort
+    if total > 0:
+        _launch.radix_sort_pairs(keys, order, count=total, end_bit=table.key_bits)
+    sorted_keys = odt.as_dense(keys[:total])
+    slots = odt.as_dense(order[:total])
+    third = _table_view(ints, 2 * total, 3 * total)
+    _launch.launch(
+        kernel_holes.probe_rim_edges,
+        dim=table.faces.size // 3,
+        inputs=[table.faces, sorted_keys, slots, table.base, third, table.flag],
+        device=device,
+    )
+    valid = _table_view(ints, 3 * total, 4 * total)
+    _launch.launch(
+        kernel_holes.rim_opposite_positions,
+        dim=total,
+        inputs=[table.vertices, third, positions, valid],
+        device=device,
+    )
+    return positions, valid
 
 
 def _stitched_result(
@@ -5258,25 +5196,30 @@ def join_closest_components(
         raise ValueError(f"max_joins must be non-negative, got {max_joins}")
     max_distance_sq = wp.float32(float("inf") if max_distance is None else float(max_distance) ** 2)
 
-    rim = _JoinRim.of(vertices, faces, max_joins)
+    rim = _join_rim(vertices, faces, max_joins)
     if rim is None or rim.rounds == 0:
         return _faces_and_provenance(vertices, faces, _launch.clone(faces), return_provenance)
     rounds = rim.rounds
     if wp.get_device(faces.device).is_cpu:
         # The CPU device runs every round in one launch, which stops itself at the first round
         # with no admissible pair.
-        rim.join(max_distance_sq, rounds)
+        _join_rounds(rim, max_distance_sq, rounds)
     else:
         for done in range(1, rounds + 1):
-            rim.join(max_distance_sq)
+            _join_rounds(rim, max_distance_sq)
             # Only a distance bound can stop the joins before the components run out: then look
             # at the device's verdict after rounds 1, 2, 4, ..., so a stop wastes at most as many
             # rounds as it ran.
-            if max_distance is not None and done < rounds and done & (done - 1) == 0 and rim.done():
+            if (
+                max_distance is not None
+                and done < rounds
+                and done & (done - 1) == 0
+                and _join_done(rim)
+            ):
                 break
 
     # The patch triangles, appended in join order: one read of how many there are.
-    n_patch = rim.patch_size()
+    n_patch = _join_patch_size(rim)
     if n_patch == 0:
         return _faces_and_provenance(vertices, faces, _launch.clone(faces), return_provenance)
     joined = _launch.empty(faces.size + n_patch, dtype=wp.int32, device=faces.device)
@@ -5290,7 +5233,7 @@ def join_closest_components(
 _NEAREST_KEY_SEED = (1 << 63) - 1
 
 
-class _JoinRim:
+class _JoinRim(NamedTuple):
     """
     ``join_closest_components``' boundary and component labels, kept current across its joins.
 
@@ -5313,174 +5256,174 @@ class _JoinRim:
     The table, the labels and the patch live on the device and each round is one launch of
     ``kernels/holes.join_round``, which pairs and bridges with nothing crossing to the host (on the
     CPU device every round is one launch, ``join_rounds``); the rim is read once, to rank its
-    labels, and the patch size once at the end.
+    labels, and the patch size once at the end. The fields are views of one uploaded buffer, in its
+    order: both halves of the rim table, the component of each original label, each vertex's
+    original label, the round state, each row's partner and the patch.
     """
 
-    def __init__(
-        self,
-        vertices: wp.array[wp.vec3],
-        table: wp.array[wp.int32],
-        n_rows: int,
-        n_labels: int,
-        rounds: int,
-    ) -> None:
-        self._vertices = vertices
-        self._radix = wp.int64(max(int(vertices.size), 1))
-        self._n_rows = n_rows
-        self.rounds = rounds
-        # Views of the one uploaded buffer, in its order: both halves of the rim table, the
-        # component of each original label, each vertex's original label, the round state, each
-        # row's partner and the patch.
-        bounds = np.cumsum(
-            [0, 6 * n_rows, n_labels, vertices.size, kernel_holes.JOIN_STATE_SIZE, n_rows]
-        ).tolist()
-        self._rows = odt.as_dense(table[: bounds[1]]).reshape((2, n_rows, 3))
-        self._component, self._vertex_label, self._state, self._partner = (
-            odt.as_dense(table[start:stop]) for start, stop in pairwise(bounds[1:])
-        )
-        self.patch = odt.as_dense(table[bounds[-1] :])
-        self._best = _launch.full(1, _NEAREST_KEY_SEED, dtype=wp.int64, device=vertices.device)
+    vertices: wp.array[wp.vec3]
+    radix: wp.int64
+    n_rows: int
+    rounds: int
+    """
+    The most joins there can be: each merges at least two of the rim's components, so
+    ``n_labels - 1`` exhaust them, and ``max_joins`` caps it. A round after the last join returns
+    at once on the device.
+    """
+    rows: wp.array[wp.int32]
+    """``(2, n_rows, 3)`` both halves of the rim table: each row's two ends and its component."""
+    component: wp.array[wp.int32]
+    vertex_label: wp.array[wp.int32]
+    state: wp.array[wp.int32]
+    partner: wp.array[wp.int32]
+    patch: wp.array[wp.int32]
+    best: wp.array[wp.int64]
 
-    @staticmethod
-    def of(
-        vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], max_joins: int | None = None
-    ) -> _JoinRim | None:
-        """
-        Build the rim of ``faces``, or return ``None`` when it has no boundary.
 
-        Its ``rounds`` is the most joins there can be: each merges at least two of the rim's
-        components, so ``n_labels - 1`` exhaust them, and ``max_joins`` caps it. A round after
-        the last join returns at once on the device.
-        """
-        device = faces.device
-        # One pairing for both the rim and the components; the rim rows come in halfedge order
-        # and are put in key order with the host read below.
-        mates = od.halfedge.halfedge_mates(faces, vertices.size)
-        boundary = od.boundary.oriented_boundary_edges(vertices, faces, mates=mates)
-        n_rows = int(boundary.shape[0])
-        if n_rows == 0:
-            return None
-        n_faces = faces.size // 3
-        face_labels = od.adjacency.face_connected_component_labels(faces, mates=mates)
-        vertex_labels = _launch.full(vertices.size, -1, dtype=wp.int32, device=device)
-        _launch.launch(
-            kernel_scatter.scatter_face_labels_to_vertices,
-            dim=3 * n_faces,
-            inputs=[faces, face_labels, vertex_labels],
+def _join_rim(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], max_joins: int | None = None
+) -> _JoinRim | None:
+    """Build the rim of ``faces``, or return ``None`` when it has no boundary."""
+    device = faces.device
+    # One pairing for both the rim and the components; the rim rows come in halfedge order and are
+    # put in key order with the host read below.
+    mates = od.halfedge.halfedge_mates(faces, vertices.size)
+    boundary = od.boundary.oriented_boundary_edges(vertices, faces, mates=mates)
+    n_rows = int(boundary.shape[0])
+    if n_rows == 0:
+        return None
+    n_faces = faces.size // 3
+    face_labels = od.adjacency.face_connected_component_labels(faces, mates=mates)
+    vertex_labels = _launch.full(vertices.size, -1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_scatter.scatter_face_labels_to_vertices,
+        dim=3 * n_faces,
+        inputs=[faces, face_labels, vertex_labels],
+        device=device,
+    )
+    table = odt.empty_2d((n_rows, 3), wp.int32, device=device)
+    _launch.launch(
+        kernel_holes.rim_rows_and_tail_labels,
+        dim=n_rows,
+        inputs=[boundary, vertex_labels, table],
+        device=device,
+    )
+    # The one host read of the rim: its rows and each row's tail component, to rank the labels.
+    # Only rim vertices are ever looked up (every one is some row's tail), so the compact names are
+    # ranked over the rim alone; ranking keeps their order, and only equality and the merge's
+    # minimum read them.
+    table_np = read_array(table)
+    # The rows in ascending undirected key (``kernels/holes.rim_edge_key``), ties kept in halfedge
+    # order, the order the round kernels' searches and tie-break read.
+    low = np.minimum(table_np[:, 0], table_np[:, 1]).astype(np.int64)
+    high = np.maximum(table_np[:, 0], table_np[:, 1]).astype(np.int64)
+    table_np = table_np[np.argsort(high * max(int(vertices.size), 1) + low, kind="stable")]
+    names, row_labels = np.unique(table_np[:, 2], return_inverse=True)
+    n_labels = int(names.size)
+    rounds = n_labels - 1 if max_joins is None else min(n_labels - 1, max_joins)
+    # One upload: the rows with their compact labels, the second (written) half of the table, the
+    # identity component map, each rim vertex's label, the round state, and room for the partners
+    # and the patch (at most two triangles a join), which need no values.
+    state = np.zeros(kernel_holes.JOIN_STATE_SIZE, dtype=np.int32)
+    state[kernel_holes.JOIN_COUNT] = n_rows
+    vertex_compact = np.full(vertices.size, -1, dtype=np.int32)
+    vertex_compact[table_np[:, 0]] = row_labels.reshape(-1)
+    host = np.concatenate(
+        [table_np[:, :2], row_labels.reshape(-1, 1).astype(np.int32)], axis=1
+    ).reshape(-1)
+    upload = np.concatenate(
+        [
+            host,
+            np.zeros(3 * n_rows, dtype=np.int32),
+            np.arange(n_labels, dtype=np.int32),
+            vertex_compact,
+            state,
+            np.zeros(n_rows + 6 * max(rounds, 1), dtype=np.int32),
+        ]
+    )
+    table_wp = _launch.array(upload, dtype=wp.int32, device=device)
+    bounds = np.cumsum(
+        [0, 6 * n_rows, n_labels, vertices.size, kernel_holes.JOIN_STATE_SIZE, n_rows]
+    ).tolist()
+    component, vertex_label, state_wp, partner = (
+        odt.as_dense(table_wp[start:stop]) for start, stop in pairwise(bounds[1:])
+    )
+    return _JoinRim(
+        vertices,
+        wp.int64(max(int(vertices.size), 1)),
+        n_rows,
+        rounds,
+        odt.as_dense(table_wp[: bounds[1]]).reshape((2, n_rows, 3)),
+        component,
+        vertex_label,
+        state_wp,
+        partner,
+        odt.as_dense(table_wp[bounds[-1] :]),
+        _launch.full(1, _NEAREST_KEY_SEED, dtype=wp.int64, device=vertices.device),
+    )
+
+
+def _join_rounds(
+    rim: _JoinRim, max_distance_sq: wp.float32, rounds: int = 1, *, serial: bool | None = None
+) -> None:
+    """
+    Run ``rounds`` rounds: each bridges the closest cross-component pair, if one is admissible.
+
+    ``serial`` runs them in one launch of one block (``kernels/holes.join_rounds``), else one
+    launch a round with a block a row (``join_round``); the two edit alike. ``None`` takes the one
+    launch on the CPU device, whose blocks run in turn, and a launch a round elsewhere.
+    """
+    device = rim.vertices.device
+    if serial is None:
+        serial = wp.get_device(device).is_cpu
+    seed = wp.int64(_NEAREST_KEY_SEED)
+    tables = [rim.state, rim.best, rim.partner, rim.patch]
+    if serial:
+        _launch.launch_tiled(
+            kernel_holes.join_rounds,
+            dim=[1],
+            inputs=[
+                rim.vertices,
+                rim.rows,
+                rim.component,
+                rim.vertex_label,
+                max_distance_sq,
+                rim.radix,
+                seed,
+                wp.int32(rounds),
+                *tables,
+            ],
+            block_dim=kernel_holes.CLOSEST_PAIR_BLOCK,
             device=device,
         )
-        table = odt.empty_2d((n_rows, 3), wp.int32, device=device)
-        _launch.launch(
-            kernel_holes.rim_rows_and_tail_labels,
-            dim=n_rows,
-            inputs=[boundary, vertex_labels, table],
+        return
+    for _ in range(rounds):
+        _launch.launch_tiled(
+            kernel_holes.join_round,
+            dim=[rim.n_rows],
+            inputs=[
+                rim.vertices,
+                rim.rows,
+                rim.component,
+                rim.vertex_label,
+                max_distance_sq,
+                rim.radix,
+                seed,
+                *tables,
+            ],
+            block_dim=kernel_holes.CLOSEST_PAIR_BLOCK,
             device=device,
         )
-        # The one host read of the rim: its rows and each row's tail component, to rank the labels.
-        # Only rim vertices are ever looked up (every one is some row's tail), so the compact names
-        # are ranked over the rim alone; ranking keeps their order, and only equality and the
-        # merge's minimum read them.
-        table_np = read_array(table)
-        # The rows in ascending undirected key (``kernels/holes.rim_edge_key``), ties kept in
-        # halfedge order, the order the round kernels' searches and tie-break read.
-        low = np.minimum(table_np[:, 0], table_np[:, 1]).astype(np.int64)
-        high = np.maximum(table_np[:, 0], table_np[:, 1]).astype(np.int64)
-        table_np = table_np[np.argsort(high * max(int(vertices.size), 1) + low, kind="stable")]
-        names, row_labels = np.unique(table_np[:, 2], return_inverse=True)
-        n_labels = int(names.size)
-        rounds = n_labels - 1 if max_joins is None else min(n_labels - 1, max_joins)
-        # One upload: the rows with their compact labels, the second (written) half of the table,
-        # the identity component map, each rim vertex's label, the round state, and room for the
-        # partners and the patch (at most two triangles a join), which need no values.
-        state = np.zeros(kernel_holes.JOIN_STATE_SIZE, dtype=np.int32)
-        state[kernel_holes.JOIN_COUNT] = n_rows
-        vertex_compact = np.full(vertices.size, -1, dtype=np.int32)
-        vertex_compact[table_np[:, 0]] = row_labels.reshape(-1)
-        host = np.concatenate(
-            [table_np[:, :2], row_labels.reshape(-1, 1).astype(np.int32)], axis=1
-        ).reshape(-1)
-        upload = np.concatenate(
-            [
-                host,
-                np.zeros(3 * n_rows, dtype=np.int32),
-                np.arange(n_labels, dtype=np.int32),
-                vertex_compact,
-                state,
-                np.zeros(n_rows + 6 * max(rounds, 1), dtype=np.int32),
-            ]
-        )
-        table_wp = _launch.array(upload, dtype=wp.int32, device=device)
-        return _JoinRim(vertices, table_wp, n_rows, n_labels, rounds)
 
-    def join(
-        self, max_distance_sq: wp.float32, rounds: int = 1, *, serial: bool | None = None
-    ) -> None:
-        """
-        Run ``rounds`` rounds: each bridges the closest cross-component pair, if one is admissible.
 
-        ``serial`` runs them in one launch of one block (``kernels/holes.join_rounds``), else one
-        launch a round with a block a row (``join_round``); the two edit alike. ``None`` takes the
-        one launch on the CPU device, whose blocks run in turn, and a launch a round elsewhere.
-        """
-        device = self._vertices.device
-        if serial is None:
-            serial = wp.get_device(device).is_cpu
-        seed = wp.int64(_NEAREST_KEY_SEED)
-        tables = [self._state, self._best, self._partner, self.patch]
-        if serial:
-            _launch.launch_tiled(
-                kernel_holes.join_rounds,
-                dim=[1],
-                inputs=[
-                    self._vertices,
-                    self._rows,
-                    self._component,
-                    self._vertex_label,
-                    max_distance_sq,
-                    self._radix,
-                    seed,
-                    wp.int32(rounds),
-                    *tables,
-                ],
-                block_dim=kernel_holes.CLOSEST_PAIR_BLOCK,
-                device=device,
-            )
-            return
-        for _ in range(rounds):
-            _launch.launch_tiled(
-                kernel_holes.join_round,
-                dim=[self._n_rows],
-                inputs=[
-                    self._vertices,
-                    self._rows,
-                    self._component,
-                    self._vertex_label,
-                    max_distance_sq,
-                    self._radix,
-                    seed,
-                    *tables,
-                ],
-                block_dim=kernel_holes.CLOSEST_PAIR_BLOCK,
-                device=device,
-            )
+def _join_done(rim: _JoinRim) -> bool:
+    """Whether a round has found no admissible pair (a readback)."""
+    return bool(read_scalar(rim.state, kernel_holes.JOIN_DONE))
 
-    def done(self) -> bool:
-        """Whether a round has found no admissible pair (a readback)."""
-        return bool(read_scalar(self._state, kernel_holes.JOIN_DONE))
 
-    def patch_size(self) -> int:
-        """Return the patch entries written so far (a readback)."""
-        return int(read_scalar(self._state, kernel_holes.JOIN_PATCH))
-
-    def rows(self) -> npt.NDArray[np.int32]:
-        """Return the ``(n_boundary, 2)`` oriented boundary rows, in the table's order."""
-        parity, count = read_values(self._state, kernel_holes.JOIN_PARITY, 2)
-        return read_array(self._rows)[int(parity), : int(count), :2]
-
-    def row_components(self) -> npt.NDArray[np.int32]:
-        """Return each row's current component, as a name only equality may read."""
-        parity, count = read_values(self._state, kernel_holes.JOIN_PARITY, 2)
-        return read_array(self._rows)[int(parity), : int(count), 2]
+def _join_patch_size(rim: _JoinRim) -> int:
+    """Return the patch entries written so far (a readback)."""
+    return int(read_scalar(rim.state, kernel_holes.JOIN_PATCH))
 
 
 def _require_distinct_edges(edge_a: tuple[int, int], edge_b: tuple[int, int]) -> None:
@@ -5609,19 +5552,22 @@ def _patch_mask(
     return mask
 
 
-def _mean_rim_edge_length(vertices: wp.array[wp.vec3], loops: _PackedLoops) -> float:
+def _mean_rim_edge_length(
+    vertices: wp.array[wp.vec3], loops: _PackedLoops, measured: wp.array[wp.float32] | None = None
+) -> float:
     """
     Mean edge length over the rims of the given loops (the derived subdivision target).
 
     Every rim is closed, so its edge count is its vertex count and the mean is the total perimeter
     over ``sum(sizes)`` -- which makes this one
-    [`_PackedLoops.perimeters`][ordito.holes._PackedLoops.perimeters] launch plus its one
-    readback, the same measurement [`fill_small`][ordito.holes.fill_small] already pays.
+    [`_packed_perimeters`][ordito.holes._packed_perimeters] launch plus its one readback, the same
+    measurement [`fill_small`][ordito.holes.fill_small] already pays. ``measured`` is the
+    perimeters a fill measured on ``vertices``, read back instead of measured again.
     """
     count = int(loops.sizes_np.sum())
     if count == 0:
         return 0.0
-    return float(loops.perimeters(vertices).sum()) / count
+    return float(_packed_perimeters(loops, vertices, measured).sum()) / count
 
 
 def _hole_loops(
@@ -5659,15 +5605,15 @@ def _hole_loops(
     flat_loops, sizes_np, offsets = packed
     keep_np = sizes_np >= 3
     if preserve_largest_hole and bool(keep_np.any()):
-        all_loops = _PackedLoops(flat_loops, sizes_np, offsets)
-        perimeter_np = all_loops.perimeters(vertices)
+        all_loops = _packed_loops(flat_loops, sizes_np, offsets)
+        perimeter_np = _packed_perimeters(all_loops, vertices)
         # Only a fillable loop can be the one preserved, matching the pre-filter order.
         candidates_np = np.flatnonzero(keep_np)
         keep_np[candidates_np[int(np.argmax(perimeter_np[candidates_np]))]] = False
     if not keep_np.any():
         return None
     if keep_np.all():
-        return _PackedLoops(flat_loops, sizes_np, offsets)
+        return _packed_loops(flat_loops, sizes_np, offsets)
     return _compact_packed_loops(flat_loops, sizes_np, keep_np)
 
 
@@ -5685,7 +5631,7 @@ def _compact_packed_loops(
     keep_index_wp = _launch.array(
         keep_index_np.astype(np.int32), dtype=wp.int32, device=flat_loops.device
     )
-    return _PackedLoops(od.array.gather(flat_loops, keep_index_wp), sizes_np[keep_np])
+    return _packed_loops(od.array.gather(flat_loops, keep_index_wp), sizes_np[keep_np])
 
 
 def _boundary_loops_packed(
@@ -5736,7 +5682,7 @@ def _packed_loop_argument(
     """
     if loops is None:
         packed = _boundary_loops_packed(vertices, faces)
-        return None if packed is None else _PackedLoops(*packed)
+        return None if packed is None else _packed_loops(*packed)
     loops = list(loops)
     for loop in loops:
         odt.ensure_ndim(loop, 1, dtype=wp.int32)
@@ -5832,7 +5778,7 @@ def _kept_then_sources(
 
 def _cone_operator(n_vertices: int, packed: _PackedLoops) -> odt.BsrMatrix[wp.float32]:
     """``(n_vertices + n_loops, n_vertices)`` the weights ``_cone_packed_loops`` places with."""
-    device = packed.device
+    device = packed.flat_loops.device
     n_entries = n_vertices + packed.total
     n_rows = n_vertices + packed.n_loops
     offsets = _launch.empty(n_rows + 1, dtype=wp.int32, device=device)
@@ -5846,3 +5792,101 @@ def _cone_operator(n_vertices: int, packed: _PackedLoops) -> odt.BsrMatrix[wp.fl
         device=device,
     )
     return od.array.bsr_from_csr(n_rows, n_vertices, offsets, columns, weights, nnz=n_entries)
+
+
+def _packed_loops(
+    flat_loops: wp.array[wp.int32], sizes_np: np.ndarray, offsets: wp.array[wp.int32] | None = None
+) -> _PackedLoops:
+    """
+    Pack ``flat_loops`` of host ``sizes_np`` into a [`_PackedLoops`][ordito.holes._PackedLoops].
+
+    ``offsets`` given is the device form the loops came with (the boundary walk's, or the
+    packing's), so the fill's upload does not carry a second copy of it. Without it, the offsets
+    are uploaded now, with the fill's tables in the same buffer.
+    """
+    sizes_np = sizes_np.astype(np.int64)
+    total = int(sizes_np.sum())
+    tables = None
+    if offsets is None:
+        offsets, tables = _upload_loop_tables(flat_loops.device, sizes_np, total, None)
+    return _PackedLoops(
+        flat_loops,
+        sizes_np,
+        offsets,
+        tables,
+        sizes_np.size,
+        total,
+        int(sizes_np.max()),
+        int((sizes_np * sizes_np).sum()),
+    )
+
+
+def _upload_loop_tables(
+    device: wp.DeviceLike, sizes_np: np.ndarray, total: int, offsets: wp.array[wp.int32] | None
+) -> tuple[wp.array[wp.int32], _LoopTables]:
+    """
+    Upload the fill's device tables once, each a view into one buffer, and return the offsets.
+
+    One upload for all of them: the per-call cost of a ``wp.array`` construction is several times a
+    slice's, and none of these is written. The offsets ride along only when ``offsets`` is
+    ``None``.
+    """
+    n = sizes_np.size
+    triangle_sizes_np = np.maximum(sizes_np - 2, 0)
+    parts = [
+        np.concatenate([[0], np.cumsum(sizes_np * sizes_np)[:-1]]),
+        np.concatenate([[0], np.cumsum(triangle_sizes_np)[:-1]]),
+        np.repeat(np.arange(n, dtype=np.int64), sizes_np),
+    ]
+    with_offsets = offsets is None
+    if with_offsets:
+        starts_np = np.concatenate([[0], np.cumsum(sizes_np)[:-1]]).astype(np.int64)
+        parts.insert(0, np.append(starts_np, total))
+    uploaded = _launch.array(np.concatenate(parts).astype(np.int32), dtype=wp.int32, device=device)
+    start = 0
+    if offsets is None:
+        offsets = _table_view(uploaded, 0, n + 1)
+        start = n + 1
+    return offsets, _LoopTables(
+        _table_view(uploaded, start, start + n),
+        _table_view(uploaded, start + n, start + 2 * n),
+        _table_view(uploaded, start + 2 * n, start + 2 * n + total),
+    )
+
+
+def _packed_perimeters(
+    loops: _PackedLoops, vertices: wp.array[wp.vec3], measured: wp.array[wp.float32] | None = None
+) -> np.ndarray:
+    """
+    Measure the closed arc length of every packed loop, returning it on the host.
+
+    ``measured`` is the perimeters a fill measured in its rim pass on ``vertices``, read back
+    instead. Delegates to
+    [`boundary.loop_perimeters_from_offsets`][ordito.boundary.loop_perimeters_from_offsets]
+    rather than launching the segmented kernel again here: the packed layout *is* that function's
+    argument list; the measure finds each position's loop from ``offsets``, so the fill's per-slot
+    tables are not uploaded for it. ``validate=False``: ``offsets`` is built from ``sizes_np`` by
+    the packing, not handed in from outside, so it already fits ``flat_loops`` by construction.
+    """
+    perimeters = measured
+    if perimeters is None:
+        perimeters = od.boundary.loop_perimeters_from_offsets(
+            vertices, loops.flat_loops, loops.offsets, validate=False
+        )
+    # Readback: the callers threshold, rank or average the perimeters on the host. A few loops come
+    # back through the cached scratch rather than a fresh host array.
+    if loops.n_loops <= _FEW_LOOPS:
+        return np.asarray(read_values(perimeters, 0, loops.n_loops), dtype=np.float32)
+    return read_array(perimeters)
+
+
+def _table_view(tables: wp.array[wp.int32], start: int, stop: int) -> wp.array[wp.int32]:
+    """
+    Dense view of ``tables[start:stop]``, or an empty buffer when the range is empty.
+
+    Warp raises on a zero-length slice at the end of a buffer, which is where an empty ``loop_id``
+    lands when every packed loop is empty.
+    """
+    if stop > start:
+        return _launch.view(tables, start, stop)
+    return _launch.empty(0, dtype=wp.int32, device=tables.device)

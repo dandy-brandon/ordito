@@ -249,14 +249,14 @@ def mesh_with_plane(
         kernel_intersections.mesh_with_plane_flags,
         dim=n_faces,
         inputs=plane,
-        outputs=cut.stored(),
+        outputs=_stored_cut_flags(cut),
         device=device,
     )
-    n_kept = cut.rank()
+    n_kept = _rank_cut_flags(cut)
     lines = odt.empty_2d((n_kept, 2), wp.vec3, device=device)
     hit_faces = _launch.empty(n_kept, dtype=wp.int32, device=device) if return_faces else None
     if n_kept > 0:
-        dim, ranked = cut.compaction(n_kept)
+        dim, ranked = _cut_compaction(cut, n_kept)
         _launch.launch(
             kernel_intersections.compact_plane_segments,
             dim=dim,
@@ -541,14 +541,14 @@ def _marching_curves(
         kernel_intersections.MARCHING_TRIANGLES_FLAGS[values.dtype],
         dim=n_faces,
         inputs=field,
-        outputs=cut.stored(),
+        outputs=_stored_cut_flags(cut),
         device=device,
     )
-    n_segments = cut.rank()
+    n_segments = _rank_cut_flags(cut)
     if n_segments == 0:
         return None
     compact = kernel_intersections.COMPACT_CUT_SEGMENT_KEYS[values.dtype]
-    dim, ranked = cut.compaction(n_segments)
+    dim, ranked = _cut_compaction(cut, n_segments)
     compact_inputs: list[object] = [*field, wp.int64(key_base), *ranked]
     return _link_curves(compact, compact_inputs, dim, n_segments, key_base, cut.device)
 
@@ -565,7 +565,7 @@ def _link_curves(
     Compact the cut segments and chain them into curves: ``(points, bounds, closed)``.
 
     ``compact`` is launched over ``compact_dim`` threads with ``compact_inputs`` (the field, the
-    key base and the ranked cut flags, ``_CutFlags.compaction``), then the outputs this link hands
+    key base and the ranked cut flags, ``_cut_compaction``), then the outputs this link hands
     it.
 
     ``points`` packs every curve in order, curve ``c`` occupying ``points[bounds[c] :
@@ -1154,7 +1154,7 @@ def _compact_crossing_candidates(candidates: _Candidates, *, segments: bool) -> 
     _launch.launch(
         kernel_intersections.crossing_slot_flags,
         dim=n_slots,
-        inputs=[*candidates.narrow_phase_inputs(), *tail, segments],
+        inputs=[*_narrow_phase_inputs(candidates), *tail, segments],
         outputs=[bits, word_ranks],
         device=device,
     )
@@ -1306,13 +1306,13 @@ def _mark_crossing_faces(
     _launch.launch(
         kernel_intersections.mark_crossing_slot_masks,
         dim=candidates.targets.size,
-        inputs=[*candidates.narrow_phase_inputs(), *marks],
+        inputs=[*_narrow_phase_inputs(candidates), *marks],
         device=device,
     )
     _launch.launch(
         kernel_intersections.mark_overflow_crossings,
         dim=candidates.counts.size,
-        inputs=[candidates.target_mesh.id, *candidates.narrow_phase_inputs(skip_targets=True),
+        inputs=[candidates.target_mesh.id, *_narrow_phase_inputs(candidates, skip_targets=True),
                 *marks],
         device=device,
     )  # fmt: skip
@@ -1333,15 +1333,17 @@ class _Candidates(NamedTuple):
     target_faces: wp.array[wp.int32]
     swapped: bool
 
-    def narrow_phase_inputs(self, *, skip_targets: bool = False) -> list[object]:
-        """
-        Return the leading launch arguments every narrow-phase kernel over the slots shares.
 
-        ``skip_targets`` leaves out the slot table, for the overflow walk that reads only counts.
-        """
-        meshes = [self.query_vertices, self.query_faces, self.target_vertices, self.target_faces]
-        table = [self.counts] if skip_targets else [self.targets, self.counts]
-        return [*meshes, *table, self.max_hits]
+def _narrow_phase_inputs(candidates: _Candidates, *, skip_targets: bool = False) -> list[object]:
+    """
+    Return the leading launch arguments every narrow-phase kernel over the slots shares.
+
+    ``skip_targets`` leaves out the slot table, for the overflow walk that reads only counts.
+    """
+    c = candidates
+    meshes = [c.query_vertices, c.query_faces, c.target_vertices, c.target_faces]
+    table = [c.counts] if skip_targets else [c.targets, c.counts]
+    return [*meshes, *table, c.max_hits]
 
 
 def _candidate_face_pairs(
@@ -3042,24 +3044,6 @@ class _CutFlags(NamedTuple):
     n_faces: int
     device: wp.Device
 
-    def stored(self) -> list[object]:
-        """Return the flag pass's three outputs (``kernels/array.store_flag_or_counted_bit``)."""
-        return [self.flags, self.words, self.ranks]
-
-    def rank(self) -> int:
-        """Scan the flags, or the words' counts, in place and return the cut count."""
-        # The cut count sizes every compacted output.
-        counts = self.flags if self.flags is not None else self.ranks
-        assert counts is not None
-        return scan_count(counts)
-
-    def compaction(self, n_cut: int) -> tuple[int, list[object]]:
-        """Return the compaction's ``dim`` and its ``launched_flag_or_bit`` inputs, once ranked."""
-        if self.flags is not None:
-            return self.n_faces, [self.flags, None, None, False]
-        dim, by_rank = _launch.set_bit_launch(self.n_faces, n_cut, self.device)
-        return dim, [None, self.words, self.ranks, by_rank]
-
 
 def _cut_flags(n_faces: int, device: wp.DeviceLike) -> _CutFlags:
     """Allocate a cut pass's flags, or its zeroed counted bits from ``_CUT_BITS_FROM_FACES``."""
@@ -3071,6 +3055,27 @@ def _cut_flags(n_faces: int, device: wp.DeviceLike) -> _CutFlags:
     buffer = _launch.zeros(2 * n_words, dtype=wp.int32, device=device)
     words = _launch.view_as(_launch.view(buffer, 0, n_words), wp.uint32)
     return _CutFlags(None, words, _launch.view(buffer, n_words, 2 * n_words), n_faces, device)
+
+
+def _stored_cut_flags(cut: _CutFlags) -> list[object]:
+    """Return the flag pass's three outputs (``kernels/array.store_flag_or_counted_bit``)."""
+    return [cut.flags, cut.words, cut.ranks]
+
+
+def _rank_cut_flags(cut: _CutFlags) -> int:
+    """Scan the flags, or the words' counts, in place and return the cut count."""
+    # The cut count sizes every compacted output.
+    counts = cut.flags if cut.flags is not None else cut.ranks
+    assert counts is not None
+    return scan_count(counts)
+
+
+def _cut_compaction(cut: _CutFlags, n_cut: int) -> tuple[int, list[object]]:
+    """Return the compaction's ``dim`` and its ``launched_flag_or_bit`` inputs, once ranked."""
+    if cut.flags is not None:
+        return cut.n_faces, [cut.flags, None, None, False]
+    dim, by_rank = _launch.set_bit_launch(cut.n_faces, n_cut, cut.device)
+    return dim, [None, cut.words, cut.ranks, by_rank]
 
 
 def _scan_cut_flags(cut: wp.array[wp.int32]) -> int:

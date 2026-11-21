@@ -48,7 +48,7 @@ import os
 import pkgutil
 import time
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, NamedTuple
 
 import warp as wp
 
@@ -208,18 +208,12 @@ def precompile(
     )
 
 
-@dataclasses.dataclass(frozen=True)
-class _Target:
+class _Target(NamedTuple):
     """One build target: a CUDA architecture (and whether as PTX), or the CPU (``arch=None``)."""
 
     arch: int | None
-    use_ptx: bool | None = None
-
-    @property
-    def label(self) -> str:
-        if self.arch is None:
-            return "cpu"
-        return f"sm_{self.arch}.ptx" if self.use_ptx else f"sm_{self.arch}"
+    use_ptx: bool | None
+    label: str
 
 
 def _targets(arch: int | Sequence[int] | None, cpu: bool) -> list[_Target]:
@@ -231,7 +225,7 @@ def _targets(arch: int | Sequence[int] | None, cpu: bool) -> list[_Target]:
         if low:
             listed = ", ".join(map(str, low))
             raise ValueError(f"arch takes compute capabilities such as 86 for sm_86, got {listed}")
-        targets = [_Target(value) for value in arches]
+        targets = [_target(value) for value in arches]
     else:
         # Compile for each GPU exactly as Warp would on first launch: its architecture, or the
         # PTX target Warp falls back to when its compiler cannot emit that architecture's binary.
@@ -243,7 +237,7 @@ def _targets(arch: int | Sequence[int] | None, cpu: bool) -> list[_Target]:
             use_ptx = device.get_cuda_output_format() == "ptx"
             if (compile_arch, use_ptx) not in seen:
                 seen.add((compile_arch, use_ptx))
-                targets.append(_Target(compile_arch, use_ptx))
+                targets.append(_target(compile_arch, use_ptx))
                 _LOGGER.info(
                     "precompile: no arch given: building for %s (%s, %s)",
                     targets[-1].label,
@@ -265,8 +259,15 @@ def _targets(arch: int | Sequence[int] | None, cpu: bool) -> list[_Target]:
             "precompile: CPU objects target this machine's instruction set (-march=native); "
             "run them on the same CPU type"
         )
-        targets.append(_Target(None))
+        targets.append(_target(None))
     return targets
+
+
+def _target(arch: int | None, use_ptx: bool | None = None) -> _Target:
+    """Return the target for ``arch`` (``None`` for the CPU), labelled as the report names it."""
+    if arch is None:
+        return _Target(None, None, "cpu")
+    return _Target(arch, use_ptx, f"sm_{arch}.ptx" if use_ptx else f"sm_{arch}")
 
 
 def kernel_variants() -> dict[str, tuple[int, ...]]:

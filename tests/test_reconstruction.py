@@ -2537,12 +2537,11 @@ def test_ball_pivoting_is_reproducible(device: str):
     bvh = od.neighbors.bvh_from_points(points_wp)
     raw_runs = []
     for _ in range(2):
-        state = od.reconstruction._BpaState(  # pyright: ignore[reportPrivateUsage]
+        cloud, budget = od.reconstruction._bpa_state(  # pyright: ignore[reportPrivateUsage]
             points_wp, normals_wp, grid, bvh, radius, 0.2, -1.0, 4 * n_points + 16
         )
-        od.reconstruction._bpa_run(state, 16 * n_points)  # pyright: ignore[reportPrivateUsage]
-        n_faces = int(state.counters.numpy()[kernel_bpa.CNT_FACE])
-        raw_runs.append(state.all_faces.numpy()[: n_faces * 3].reshape(-1, 3))
+        n_faces, budget = od.reconstruction._bpa_run(cloud, budget, 16 * n_points)  # pyright: ignore[reportPrivateUsage]
+        raw_runs.append(budget.all_faces.numpy()[: n_faces * 3].reshape(-1, 3))
 
     assert raw_runs[0].shape[0] > 0
     assert_unordered_rows_equal(canonical_winding(raw_runs[0]), canonical_winding(raw_runs[1]))
@@ -2582,12 +2581,11 @@ def test_ball_pivoting_seeds_no_triangle_twice(device: str):
 
     grid = od.neighbors.hashgrid_from_points(points_wp, radius)
     bvh = od.neighbors.bvh_from_points(points_wp)
-    state = od.reconstruction._BpaState(  # pyright: ignore[reportPrivateUsage]
+    cloud, budget = od.reconstruction._bpa_state(  # pyright: ignore[reportPrivateUsage]
         points_wp, normals_wp, grid, bvh, radius, 0.2, -1.0, 4 * n_points + 16
     )
-    od.reconstruction._bpa_run(state, 16 * n_points)  # pyright: ignore[reportPrivateUsage]
-    n_faces = int(state.counters.numpy()[kernel_bpa.CNT_FACE])
-    sorted_np = np.sort(state.all_faces.numpy()[: n_faces * 3].reshape(-1, 3), axis=1)
+    n_faces, budget = od.reconstruction._bpa_run(cloud, budget, 16 * n_points)  # pyright: ignore[reportPrivateUsage]
+    sorted_np = np.sort(budget.all_faces.numpy()[: n_faces * 3].reshape(-1, 3), axis=1)
     assert n_faces > 0
     assert np.unique(sorted_np, axis=0).shape[0] == n_faces
 
@@ -2609,11 +2607,11 @@ def test_ball_pivoting_grows_the_triangle_budget(device: str):
 
     faces_per_budget = []
     for start_budget in (64, 4 * points_np.shape[0] + 16):
-        state = od.reconstruction._BpaState(  # pyright: ignore[reportPrivateUsage]
+        cloud, budget = od.reconstruction._bpa_state(  # pyright: ignore[reportPrivateUsage]
             points_wp, normals_wp, grid, bvh, 0.2, 0.2, math.cos(math.pi / 2.0), start_budget
         )
-        od.reconstruction._bpa_run(state, 16 * points_np.shape[0])  # pyright: ignore[reportPrivateUsage]
-        counters_np = state.counters.numpy()
+        od.reconstruction._bpa_run(cloud, budget, 16 * points_np.shape[0])  # pyright: ignore[reportPrivateUsage]
+        counters_np = cloud.counters.numpy()
         assert counters_np[kernel_bpa.CNT_DONE] == 1
         faces_per_budget.append(int(counters_np[kernel_bpa.CNT_FACE]))
     grown, direct = faces_per_budget
@@ -2631,33 +2629,33 @@ def test_bpa_front_swap_tracks_the_waves_that_ran(
     ``_bpa_run`` queues ``_BPA_WAVES_PER_BATCH`` waves before it looks at the counters, and swaps
     ``front_in`` / ``front_out`` after each queued one -- but every wave kernel opens with
     ``if counters[CNT_CONTINUE] == 0: return``, so the waves after the device stops write nothing.
-    An odd number of those used to leave the pair exchanged, and the next ``compact()`` then read
+    An odd number of those used to leave the pair exchanged, and the next ``_bpa_compact`` then read
     the wrong buffer; in the first batch that buffer is the one ``wp.empty`` allocated and nothing
     ever wrote, so it was an unbounded out-of-bounds read of the edge table, not merely a stale
-    front. Measured before the fix: on a 40 962-point cloud, four of five ``compact()`` calls over a
-    seven-cloud sweep read the wrong buffer, and two of three such processes died with
+    front. Measured before the fix: on a 40 962-point cloud, four of five ``_bpa_compact`` calls
+    over a seven-cloud sweep read the wrong buffer, and two of three such processes died with
     ``CUDA error 700`` at an unrelated readback later on.
 
     ``max_waves`` is the parametrization because it *is* the trigger and it is exact: ``end_wave``
     clears ``CNT_CONTINUE`` once ``CNT_WAVE >= max_waves``, so an odd value ends the batch with an
     odd number of no-op waves on any cloud at all, and an even value is a control that passes
     either way: 1 and 7 are the odd ends of the batch, 8 fills it. A fixture large enough to reach
-    ``compact()`` on its own is ~25 000 points, far too slow for a unit test -- the parameter
+    ``_bpa_compact`` on its own is ~25 000 points, far too slow for a unit test -- the parameter
     reaches the same code path on 162.
 
-    Buffer *identity* is the assertion rather than any count: ``id(state.front_out)`` before a wave
+    Buffer *identity* is the assertion rather than any count: ``id(budget.front_out)`` before a wave
     that runs is the buffer that wave writes (on the CPU device, which runs a batch as one launch
     alternating the pair, the batch's waves write ``front_out`` and ``front_in`` by turns), and
-    ``grow()`` / ``compact()`` each re-establish the invariant themselves (one rebuilds ``front_in``
-    from the edge table, the other swaps after writing), so recording their result covers a run that
-    takes either.
+    ``_bpa_grow`` / ``_bpa_compact`` each re-establish the invariant themselves (one rebuilds
+    ``front_in`` from the edge table, the other swaps after writing), so recording their result
+    covers a run that takes either.
 
     The mutation probe bites on the final assert, and only for the odd values: reverting the parity
     correction fails every odd ``max_waves`` (1, 3 and 7 were probed) with *"front_in is not the
     buffer the last wave that ran wrote"* and leaves the even ones (2, 4 and 8) passing. The entry
-    assert inside ``compact()`` is a second guard on the one place a violation is actually *read*
-    rather than merely present; neither it nor the ``grow()`` arm fires at these wave caps, which is
-    the point of keeping the caps small.
+    assert inside ``_bpa_compact`` is a second guard on the one place a violation is actually
+    *read* rather than merely present; neither it nor the ``_bpa_grow`` arm fires at these wave
+    caps, which is the point of keeping the caps small.
     """
     points_np, normals_np = _sphere_cloud(2)
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
@@ -2665,7 +2663,7 @@ def test_bpa_front_swap_tracks_the_waves_that_ran(
     radius = 0.2
     grid = od.neighbors.hashgrid_from_points(points_wp, radius)
     bvh = od.neighbors.bvh_from_points(points_wp)
-    state = od.reconstruction._BpaState(  # pyright: ignore[reportPrivateUsage]
+    cloud, budget = od.reconstruction._bpa_state(  # pyright: ignore[reportPrivateUsage]
         points_wp, normals_wp, grid, bvh, radius, 0.2, -1.0, 4 * n_points + 16
     )
 
@@ -2673,17 +2671,24 @@ def test_bpa_front_swap_tracks_the_waves_that_ran(
     live: list[int] = []
     resyncs = 0
     unpatched_wave = od.reconstruction._bpa_wave  # pyright: ignore[reportPrivateUsage]
-    unpatched = {name: getattr(od.reconstruction._BpaState, name) for name in ("compact", "grow")}  # pyright: ignore[reportPrivateUsage]
+    unpatched = {name: getattr(od.reconstruction, name) for name in ("_bpa_compact", "_bpa_grow")}
 
-    def recording_wave(tracked: od.reconstruction._BpaState, waves: int, *, begin: bool) -> None:  # pyright: ignore[reportPrivateUsage]
+    def recording_wave(
+        tracked: od.reconstruction._BpaCloud,  # pyright: ignore[reportPrivateUsage]
+        front: od.reconstruction._BpaBudget,  # pyright: ignore[reportPrivateUsage]
+        waves: int,
+        *,
+        begin: bool,
+    ) -> None:
         if int(tracked.counters.numpy()[kernel_bpa.CNT_CONTINUE]):
-            live.append(id(tracked.front_out))
-        unpatched_wave(tracked, waves, begin=begin)
+            live.append(id(front.front_out))
+        unpatched_wave(tracked, front, waves, begin=begin)
 
     unpatched_serial = od.reconstruction._bpa_waves_serial  # pyright: ignore[reportPrivateUsage]
 
     def recording_serial(
-        tracked: od.reconstruction._BpaState,  # pyright: ignore[reportPrivateUsage]
+        tracked: od.reconstruction._BpaCloud,  # pyright: ignore[reportPrivateUsage]
+        front: od.reconstruction._BpaBudget,  # pyright: ignore[reportPrivateUsage]
         waves: int,
         *,
         begin: bool,
@@ -2691,38 +2696,44 @@ def test_bpa_front_swap_tracks_the_waves_that_ran(
         # The CPU device's batch of waves in one launch: wave ``k`` of it writes the buffer that
         # was ``front_out`` at the call when ``k`` is even, ``front_in`` when odd.
         before = int(tracked.counters.numpy()[kernel_bpa.CNT_WAVE])
-        written = (id(tracked.front_out), id(tracked.front_in))
-        unpatched_serial(tracked, waves, begin=begin)
+        written = (id(front.front_out), id(front.front_in))
+        unpatched_serial(tracked, front, waves, begin=begin)
         ran = int(tracked.counters.numpy()[kernel_bpa.CNT_WAVE]) - before
         live.extend(written[wave % 2] for wave in range(ran))
 
     def checked(name: str):
-        def wrapper(tracked: od.reconstruction._BpaState) -> None:  # pyright: ignore[reportPrivateUsage]
+        def wrapper(
+            tracked: od.reconstruction._BpaCloud,  # pyright: ignore[reportPrivateUsage]
+            front: od.reconstruction._BpaBudget,  # pyright: ignore[reportPrivateUsage]
+        ) -> od.reconstruction._BpaBudget:  # pyright: ignore[reportPrivateUsage]
             nonlocal resyncs
             resyncs += 1
-            if name == "compact":
-                assert id(tracked.front_in) == live[-1], (
-                    "compact() read a buffer no wave wrote: the host swapped for a wave that "
+            if name == "_bpa_compact":
+                assert id(front.front_in) == live[-1], (
+                    "_bpa_compact read a buffer no wave wrote: the host swapped for a wave that "
                     "did not run"
                 )
-            unpatched[name](tracked)
-            live.append(id(tracked.front_in))
+            result = unpatched[name](tracked, front)
+            live.append(id(result.front_in))
+            return result
 
         return wrapper
 
     monkeypatch.setattr(od.reconstruction, "_bpa_wave", recording_wave)
     monkeypatch.setattr(od.reconstruction, "_bpa_waves_serial", recording_serial)
     for name in unpatched:
-        monkeypatch.setattr(od.reconstruction._BpaState, name, checked(name))  # pyright: ignore[reportPrivateUsage]
-    od.reconstruction._bpa_run(state, max_waves)  # pyright: ignore[reportPrivateUsage]
+        monkeypatch.setattr(od.reconstruction, name, checked(name))
+    _, budget = od.reconstruction._bpa_run(cloud, budget, max_waves)  # pyright: ignore[reportPrivateUsage]
 
-    counters_np = state.counters.numpy()
+    counters_np = cloud.counters.numpy()
     waves_run = int(counters_np[kernel_bpa.CNT_WAVE])
     # Non-vacuity: the run must have reached the parametrized cap, so the batch really did end with
     # `_BPA_WAVES_PER_BATCH - max_waves` no-op waves rather than converging before the cap.
     assert waves_run == max_waves
     assert len(live) == waves_run + resyncs
-    assert id(state.front_in) == live[-1], "front_in is not the buffer the last wave that ran wrote"
+    assert id(budget.front_in) == live[-1], (
+        "front_in is not the buffer the last wave that ran wrote"
+    )
 
 
 def test_ball_pivoting_on_a_bvh_leaf_past_the_tile_walk_buffer(

@@ -2998,12 +2998,7 @@ def _poisson_workspace(
     """
     span, blocks, _fold = kernel_cg.cg_layout(res * res * res, od.linalg.CG_FOLD_MAX_BLOCKS)
     return _cg_workspace(
-        blocks * span,
-        blocks,
-        [*tables, _PoissonMultigrid.footprint(res)],
-        0,
-        device,
-        leading=leading,
+        blocks * span, blocks, [*tables, _mg_footprint(res)], 0, device, leading=leading
     )
 
 
@@ -3052,11 +3047,11 @@ def _solve_screened_poisson(
     gamma_old, alpha_old, gamma_new, alpha_new = work.recurrence
     state = work.state
     screen_f = wp.float32(screen)
-    multigrid = _PoissonMultigrid(weights, screen, res, smoother, work.extra[-1], w, device)
+    multigrid = _poisson_multigrid(weights, screen, res, smoother, work.extra[-1], w, device)
     # The V-cycle's first pre-smoothing sweep is pointwise, so the launches that produce the
     # residual write it too -- this one and every round's ``cg_update``, whose Jacobi apply with
     # ``smoother`` as the scaling is that sweep exactly.
-    start = multigrid.start
+    start = multigrid.levels[0].start
     _launch.launch_tiled(
         kernel_reconstruction.poisson_cg_initial,
         dim=(blocks,),
@@ -3074,7 +3069,7 @@ def _solve_screened_poisson(
         device=device,
     )
     if not (_MG_SWEEPS == 1 and wp.get_device(device).is_cpu):
-        multigrid.apply(r, u)
+        _mg_apply(multigrid, r, u)
     else:
         # The CPU device runs a launch's blocks one after another: the first V-cycle and every
         # round, its V-cycle included, in one launch, block by block in the launches' order
@@ -3164,7 +3159,7 @@ def _solve_screened_poisson(
             block_dim=tile,
             device=device,
         )
-        multigrid.apply(r, u)
+        _mg_apply(multigrid, r, u)
 
     # Declined (2026-11-10): two or four rounds a replayed body, to pay the conditional-graph test
     # (about 3 us a round) once a pair. A round past convergence takes no step (``cg_step_scalars``)
@@ -3191,7 +3186,7 @@ _MG_COARSEST = 3
 
 class _GridLevel(NamedTuple):
     """
-    One level of ``_PoissonMultigrid``: its grid, operator and working vectors.
+    One level of a ``_PoissonMultigrid``: its grid, operator and working vectors.
 
     ``b`` and ``x`` are ``None`` on the finest level, whose right-hand side and result are the
     caller's vectors, and its ``tmp`` and ``residual`` are one scratch vector of the caller's.
@@ -3208,7 +3203,7 @@ class _GridLevel(NamedTuple):
     residual: wp.array[wp.float32]
 
 
-class _PoissonMultigrid:
+class _PoissonMultigrid(NamedTuple):
     """
     Geometric V-cycle on the dense grid's nested node grids, as a conjugate-gradient preconditioner.
 
@@ -3224,8 +3219,8 @@ class _PoissonMultigrid:
     neighbour, so it is not a launch of its own: the launch that writes a level's right-hand side
     writes that sweep into the level's ``start`` too (``poisson_mg_restrict`` on the coarse levels;
     on the finest, the caller -- the conjugate gradient's initial-residual and update kernels --
-    into ``start`` before each ``apply``). A cycle is then four launches a level, which the CPU
-    device runs as one (``kernels/reconstruction.poisson_mg_vcycle_serial``).
+    into ``levels[0].start`` before each ``_mg_apply``). A cycle is then four launches a level,
+    which the CPU device runs as one (``kernels/reconstruction.poisson_mg_vcycle_serial``).
 
     The finest level's residual is read only by the restriction, before the prolongation writes
     the corrected start, so with one sweep a side the two share ``scratch``: a vector of the
@@ -3233,200 +3228,211 @@ class _PoissonMultigrid:
     update before the cycle and written by the next round's mat-vec after it).
     """
 
-    def __init__(
-        self,
-        weights: wp.array[wp.float32],
-        screen: float,
-        res: int,
-        smoother: wp.array[wp.float32],
-        storage: wp.array[wp.float32],
-        scratch: wp.array[wp.float32],
-        device: wp.DeviceLike,
-    ) -> None:
-        """Build the hierarchy below ``res`` in ``storage``, cut into the views ``widths(res)``."""
-        self._device = device
-        self._screen = wp.float32(screen)
-        self._storage = storage
-        self._scratch = scratch
-        self._levels: list[_GridLevel] = []
-        widths = _PoissonMultigrid.widths(res)
-        starts = itertools.accumulate((_mg_stride(width) for width in widths), initial=0)
-        views = (
-            _launch.view(storage, start, start + width)
-            for start, width in zip(starts, widths, strict=False)
-        )
-        lap = 1.0
-        w, smooth = weights, smoother
-        finest = True
-        # The CPU device runs a launch's threads one after another: every level's coarsening in
-        # one launch (``poisson_mg_coarsen_serial``), after the views are cut.
-        serial = wp.get_device(device).is_cpu
-        while True:
-            if finest:
-                vectors = [next(views), scratch, scratch]
-                b, x = None, None
-            else:
-                vectors = [next(views) for _ in range(5)]
-                b, x = vectors.pop(), vectors.pop()
-            self._levels.append(_GridLevel(res, wp.float32(lap), w, smooth, b, x, *vectors))
-            finest = False
-            if res <= _MG_COARSEST:
-                break
-            res_c = (res - 1) // 2 + 1
-            lap *= 2.0
-            w_c = next(views)
-            smooth_c = next(views)
-            if not serial:
-                _launch.launch(
-                    kernel_reconstruction.poisson_mg_coarsen,
-                    dim=(res_c, res_c, res_c),
-                    inputs=[w, res, res_c, wp.float32(lap), self._screen, wp.float32(_MG_OMEGA)],
-                    outputs=[w_c, smooth_c],
-                    device=device,
-                )
-            res, w, smooth = res_c, w_c, smooth_c
-        if serial and len(self._levels) > 1:
-            finest_level = self._levels[0]
+    device: wp.DeviceLike
+    screen: wp.float32
+    storage: wp.array[wp.float32]
+    scratch: wp.array[wp.float32]
+    levels: list[_GridLevel]
+
+
+def _poisson_multigrid(
+    weights: wp.array[wp.float32],
+    screen: float,
+    res: int,
+    smoother: wp.array[wp.float32],
+    storage: wp.array[wp.float32],
+    scratch: wp.array[wp.float32],
+    device: wp.DeviceLike,
+) -> _PoissonMultigrid:
+    """Build the hierarchy below ``res`` in ``storage``, cut into the views ``_mg_widths(res)``."""
+    screen_f = wp.float32(screen)
+    levels: list[_GridLevel] = []
+    widths = _mg_widths(res)
+    starts = itertools.accumulate((_mg_stride(width) for width in widths), initial=0)
+    views = (
+        _launch.view(storage, start, start + width)
+        for start, width in zip(starts, widths, strict=False)
+    )
+    lap = 1.0
+    w, smooth = weights, smoother
+    finest = True
+    # The CPU device runs a launch's threads one after another: every level's coarsening in
+    # one launch (``poisson_mg_coarsen_serial``), after the views are cut.
+    serial = wp.get_device(device).is_cpu
+    while True:
+        if finest:
+            vectors = [next(views), scratch, scratch]
+            b, x = None, None
+        else:
+            vectors = [next(views) for _ in range(5)]
+            b, x = vectors.pop(), vectors.pop()
+        levels.append(_GridLevel(res, wp.float32(lap), w, smooth, b, x, *vectors))
+        finest = False
+        if res <= _MG_COARSEST:
+            break
+        res_c = (res - 1) // 2 + 1
+        lap *= 2.0
+        w_c = next(views)
+        smooth_c = next(views)
+        if not serial:
             _launch.launch(
-                kernel_reconstruction.poisson_mg_coarsen_serial,
-                dim=1,
-                inputs=[
-                    finest_level.res,
-                    self._screen,
-                    _MG_COARSEST,
-                    wp.float32(_MG_OMEGA),
-                    finest_level.weights,
-                    storage,
-                ],
+                kernel_reconstruction.poisson_mg_coarsen,
+                dim=(res_c, res_c, res_c),
+                inputs=[w, res, res_c, wp.float32(lap), screen_f, wp.float32(_MG_OMEGA)],
+                outputs=[w_c, smooth_c],
                 device=device,
             )
-
-    @staticmethod
-    def widths(res: int) -> list[int]:
-        """
-        Return the widths of the vectors below a ``res`` grid, in the order ``__init__`` takes them.
-
-        Every vector is a view of one buffer (``footprint(res)`` long), each starting on a multiple
-        of ``kernels/reconstruction.POISSON_MG_ALIGN``, so the whole hierarchy is one allocation
-        (the caller's), laid out as ``kernels/reconstruction.poisson_mg_level_layout`` reads it.
-        """
-        widths = [res**3]
-        while res > _MG_COARSEST:
-            res = (res - 1) // 2 + 1
-            widths += [res**3] * 2
-            widths += [res**3] * 5
-        return widths
-
-    @staticmethod
-    def footprint(res: int) -> int:
-        """Return the length of the one buffer the vectors of ``widths(res)`` are cut from."""
-        return sum(_mg_stride(width) for width in _PoissonMultigrid.widths(res))
-
-    @property
-    def start(self) -> wp.array[wp.float32]:
-        """The finest level's zero-start sweep ``omega D^-1 b``, which ``apply``'s caller writes."""
-        return self._levels[0].start
-
-    def _smooth(
-        self,
-        level: _GridLevel,
-        b: wp.array[wp.float32],
-        x: wp.array[wp.float32],
-        out: wp.array[wp.float32],
-    ) -> None:
-        """One damped-Jacobi sweep at ``level`` from ``x`` into ``out``."""
-        res = level.res
+        res, w, smooth = res_c, w_c, smooth_c
+    if serial and len(levels) > 1:
+        finest_level = levels[0]
         _launch.launch(
-            kernel_reconstruction.poisson_mg_smooth,
-            dim=(res, res, res),
-            inputs=[res, level.lap, level.weights, self._screen, level.smoother, b, x],
-            outputs=[out],
-            device=self._device,
+            kernel_reconstruction.poisson_mg_coarsen_serial,
+            dim=1,
+            inputs=[
+                finest_level.res,
+                screen_f,
+                _MG_COARSEST,
+                wp.float32(_MG_OMEGA),
+                finest_level.weights,
+                storage,
+            ],
+            device=device,
         )
+    return _PoissonMultigrid(device, screen_f, storage, scratch, levels)
 
-    def _sweeps(
-        self,
-        level: _GridLevel,
-        b: wp.array[wp.float32],
-        x: wp.array[wp.float32],
-        count: int,
-        out: wp.array[wp.float32],
-    ) -> None:
-        """``count >= 1`` sweeps from ``x``, alternating with ``level.tmp``, the last in ``out``."""
-        cur = x
-        for sweep in range(count):
-            target = out if (count - 1 - sweep) % 2 == 0 else level.tmp
-            self._smooth(level, b, cur, target)
-            cur = target
 
-    def _cycle(self, index: int, b: wp.array[wp.float32], out: wp.array[wp.float32]) -> None:
-        """``out = V_index(b)`` from a zero guess, whose first sweep is already in ``start``."""
-        level = self._levels[index]
-        res = level.res
-        if index == len(self._levels) - 1:
-            self._sweeps(level, b, level.start, _MG_COARSE_SWEEPS - 1, out)
-            return
-        # The pre-smoothing's remaining sweeps, ping-ponging between ``tmp`` and ``out`` (neither is
-        # read before the post-smoothing writes it).
-        cur = level.start
-        for sweep in range(1, _MG_SWEEPS):
-            nxt = level.tmp if sweep % 2 == 1 else out
-            self._smooth(level, b, cur, nxt)
-            cur = nxt
+def _mg_apply(
+    multigrid: _PoissonMultigrid, source: wp.array[wp.float32], destination: wp.array[wp.float32]
+) -> None:
+    """``destination = M^-1 source`` by one V-cycle from zero; finest ``start`` holds its sweep."""
+    device = multigrid.device
+    if _MG_SWEEPS == 1 and wp.get_device(device).is_cpu:
+        finest = multigrid.levels[0]
         _launch.launch(
-            kernel_reconstruction.poisson_mg_residual,
-            dim=(res, res, res),
-            inputs=[res, level.lap, level.weights, self._screen, b, cur],
-            outputs=[level.residual],
-            device=self._device,
+            kernel_reconstruction.poisson_mg_vcycle_serial,
+            dim=1,
+            inputs=[
+                finest.res,
+                multigrid.screen,
+                _MG_COARSEST,
+                _MG_COARSE_SWEEPS,
+                finest.weights,
+                finest.smoother,
+                source,
+                multigrid.storage,
+                multigrid.scratch,
+            ],
+            outputs=[destination],
+            device=device,
         )
-        coarse = self._levels[index + 1]
-        assert coarse.b is not None
-        assert coarse.x is not None
-        res_c = coarse.res
-        _launch.launch(
-            kernel_reconstruction.poisson_mg_restrict,
-            dim=(res_c, res_c, res_c),
-            inputs=[level.residual, res, res_c, coarse.smoother],
-            outputs=[coarse.b, coarse.start],
-            device=self._device,
-        )
-        self._cycle(index + 1, coarse.b, coarse.x)
-        # Corrected into whichever of ``tmp`` / ``out`` lets the post-smoothing's alternation end in
-        # ``out``; in place when ``cur`` is already that vector, which the kernel allows.
-        corrected = level.tmp if _MG_SWEEPS % 2 == 1 else out
-        _launch.launch(
-            kernel_reconstruction.poisson_mg_prolong_add,
-            dim=(res, res, res),
-            inputs=[coarse.x, res_c, res, cur],
-            outputs=[corrected],
-            device=self._device,
-        )
-        self._sweeps(level, b, corrected, _MG_SWEEPS, out)
+        return
+    _mg_cycle(multigrid, 0, source, destination)
 
-    def apply(self, source: wp.array[wp.float32], destination: wp.array[wp.float32]) -> None:
-        """``destination = M^-1 source`` by one V-cycle from zero; ``start`` must hold its sweep."""
-        if _MG_SWEEPS == 1 and wp.get_device(self._device).is_cpu:
-            finest = self._levels[0]
-            _launch.launch(
-                kernel_reconstruction.poisson_mg_vcycle_serial,
-                dim=1,
-                inputs=[
-                    finest.res,
-                    self._screen,
-                    _MG_COARSEST,
-                    _MG_COARSE_SWEEPS,
-                    finest.weights,
-                    finest.smoother,
-                    source,
-                    self._storage,
-                    self._scratch,
-                ],
-                outputs=[destination],
-                device=self._device,
-            )
-            return
-        self._cycle(0, source, destination)
+
+def _mg_cycle(
+    multigrid: _PoissonMultigrid, index: int, b: wp.array[wp.float32], out: wp.array[wp.float32]
+) -> None:
+    """``out = V_index(b)`` from a zero guess, whose first sweep is already in ``start``."""
+    levels, device, screen = multigrid.levels, multigrid.device, multigrid.screen
+    level = levels[index]
+    res = level.res
+    if index == len(levels) - 1:
+        _mg_sweeps(level, screen, b, level.start, _MG_COARSE_SWEEPS - 1, out, device)
+        return
+    # The pre-smoothing's remaining sweeps, ping-ponging between ``tmp`` and ``out`` (neither is
+    # read before the post-smoothing writes it).
+    cur = level.start
+    for sweep in range(1, _MG_SWEEPS):
+        nxt = level.tmp if sweep % 2 == 1 else out
+        _mg_smooth(level, screen, b, cur, nxt, device)
+        cur = nxt
+    _launch.launch(
+        kernel_reconstruction.poisson_mg_residual,
+        dim=(res, res, res),
+        inputs=[res, level.lap, level.weights, screen, b, cur],
+        outputs=[level.residual],
+        device=device,
+    )
+    coarse = levels[index + 1]
+    assert coarse.b is not None
+    assert coarse.x is not None
+    res_c = coarse.res
+    _launch.launch(
+        kernel_reconstruction.poisson_mg_restrict,
+        dim=(res_c, res_c, res_c),
+        inputs=[level.residual, res, res_c, coarse.smoother],
+        outputs=[coarse.b, coarse.start],
+        device=device,
+    )
+    _mg_cycle(multigrid, index + 1, coarse.b, coarse.x)
+    # Corrected into whichever of ``tmp`` / ``out`` lets the post-smoothing's alternation end in
+    # ``out``; in place when ``cur`` is already that vector, which the kernel allows.
+    corrected = level.tmp if _MG_SWEEPS % 2 == 1 else out
+    _launch.launch(
+        kernel_reconstruction.poisson_mg_prolong_add,
+        dim=(res, res, res),
+        inputs=[coarse.x, res_c, res, cur],
+        outputs=[corrected],
+        device=device,
+    )
+    _mg_sweeps(level, screen, b, corrected, _MG_SWEEPS, out, device)
+
+
+def _mg_sweeps(
+    level: _GridLevel,
+    screen: wp.float32,
+    b: wp.array[wp.float32],
+    x: wp.array[wp.float32],
+    count: int,
+    out: wp.array[wp.float32],
+    device: wp.DeviceLike,
+) -> None:
+    """``count >= 1`` sweeps from ``x``, alternating with ``level.tmp``, the last in ``out``."""
+    cur = x
+    for sweep in range(count):
+        target = out if (count - 1 - sweep) % 2 == 0 else level.tmp
+        _mg_smooth(level, screen, b, cur, target, device)
+        cur = target
+
+
+def _mg_smooth(
+    level: _GridLevel,
+    screen: wp.float32,
+    b: wp.array[wp.float32],
+    x: wp.array[wp.float32],
+    out: wp.array[wp.float32],
+    device: wp.DeviceLike,
+) -> None:
+    """One damped-Jacobi sweep at ``level`` from ``x`` into ``out``."""
+    res = level.res
+    _launch.launch(
+        kernel_reconstruction.poisson_mg_smooth,
+        dim=(res, res, res),
+        inputs=[res, level.lap, level.weights, screen, level.smoother, b, x],
+        outputs=[out],
+        device=device,
+    )
+
+
+def _mg_footprint(res: int) -> int:
+    """Return the length of the one buffer the vectors of ``_mg_widths(res)`` are cut from."""
+    return sum(_mg_stride(width) for width in _mg_widths(res))
+
+
+def _mg_widths(res: int) -> list[int]:
+    """
+    Return the widths of the vectors below a ``res`` grid, in ``_poisson_multigrid``'s order.
+
+    Every vector is a view of one buffer (``_mg_footprint(res)`` long), each starting on a multiple
+    of ``kernels/reconstruction.POISSON_MG_ALIGN``, so the whole hierarchy is one allocation
+    (the caller's), laid out as ``kernels/reconstruction.poisson_mg_level_layout`` reads it.
+    """
+    widths = [res**3]
+    while res > _MG_COARSEST:
+        res = (res - 1) // 2 + 1
+        widths += [res**3] * 2
+        widths += [res**3] * 5
+    return widths
 
 
 def _mg_stride(width: int) -> int:
@@ -4914,12 +4920,14 @@ def ball_pivoting(
     bvh = od.neighbors.bvh_from_points(points)
     crease_cos = math.cos(crease_angle) if crease_angle < math.pi else -1.0
 
-    state = _BpaState(points, normals, grid, bvh, radius, clustering, crease_cos, 4 * n + 16)
-    count = _bpa_run(state, max_waves if max_waves > 0 else 16 * n)
+    cloud, budget = _bpa_state(
+        points, normals, grid, bvh, radius, clustering, crease_cos, 4 * n + 16
+    )
+    count, budget = _bpa_run(cloud, budget, max_waves if max_waves > 0 else 16 * n)
     # A prefix view, not a copy: nothing writes the face buffer after the run, and the cleanup
     # below returns faces of its own, so the view never reaches the caller.
     faces = (
-        odt.as_dense(state.all_faces[: count * 3])
+        odt.as_dense(budget.all_faces[: count * 3])
         if count > 0
         else _launch.empty(0, dtype=wp.int32, device=device)
     )
@@ -4933,208 +4941,131 @@ def ball_pivoting(
     return _clean_reconstruction(points, faces, crit_hole_length, orient=False)
 
 
-class _BpaState:
+class _BpaCloud(NamedTuple):
     """
-    Every buffer a ball-pivoting run touches, allocated once and mutated in place.
+    A ball-pivoting run's parameters and cloud-sized buffers, allocated once and mutated in place.
 
     The wave loop does no allocation and no host synchronisation, which is what keeps it cheap.
+    What scales with the triangle budget is a ``_BpaBudget``, which only ``_bpa_grow`` replaces.
     """
 
-    def __init__(
-        self,
-        points: wp.array[wp.vec3],
-        normals: wp.array[wp.vec3],
-        grid: wp.HashGrid,
-        bvh: wp.Bvh,
-        radius: float,
-        clustering: float,
-        crease_cos: float,
-        max_faces: int,
-    ) -> None:
-        """Allocate the persistent state for a cloud of ``points`` and a triangle budget."""
-        self.points = points
-        self.normals = normals
-        self.grid = grid
-        self.bvh = bvh
-        self.radius = wp.float32(radius)
-        self.clustering = wp.float32(clustering)
-        self.crease_cos = wp.float32(crease_cos)
-        self.device = points.device
-        self.n = points.size
-        self.key_base = wp.uint64(self.n)
+    points: wp.array[wp.vec3]
+    normals: wp.array[wp.vec3]
+    grid: wp.HashGrid
+    bvh: wp.Bvh
+    radius: wp.float32
+    clustering: wp.float32
+    crease_cos: wp.float32
+    device: wp.DeviceLike
+    n: int
+    key_base: wp.uint64
+    boundary_degree: wp.array[wp.int32]
+    seed_failed_wave: wp.array[wp.int32]
+    counters: wp.array[wp.int32]
+    overfull: wp.array[wp.int32]
+    point_used: wp.array[wp.bool]
+    seed_blocker: wp.array[wp.int32]
+    owner: wp.array[wp.uint64]
 
-        # One zeroed allocation holds the counters and, after them, the node bitset of the point
-        # BVH's leaves too large for ``pivot_front_edges``' cooperative walk
-        # (``kernel_bpa.mark_overfull_point_leaves``); a binary tree over ``n`` points has fewer
-        # than ``2 * n`` nodes. ``counters`` is a prefix view, so its readbacks stay small.
-        #
-        # The bitset is filled only where a block runs more than one lane
-        # (``prefers_tiled_reduction``: CUDA, or the CPU under ``wp.config.enable_cpu_blocks``).
-        # On the plain cpu device the cooperative walk is a serial query with no result buffer to
-        # overrun, so the bitset stays zero there and every pivot search takes the builtin.
-        n_nodes = 2 * self.n
-        # ``boundary_degree`` and ``seed_failed_wave`` are zeroed too, and ride in the same
-        # allocation. ``seed_failed_wave`` persists across every seeding wave for the run's whole
-        # lifetime -- see ``kernel_bpa.seed_triangles`` for why a point that once exhausted its
-        # candidates without seeding can never succeed later (its candidate set only shrinks),
-        # which is what makes never resetting it safe.
-        state_words, self.boundary_degree, self.seed_failed_wave = _launch.carve(
-            wp.int32,
-            [kernel_bpa.BPA_COUNTERS + (n_nodes + 31) // 32, self.n, self.n],
-            self.device,
-            zeroed=True,
-        )
-        self.counters = odt.as_dense(state_words[: kernel_bpa.BPA_COUNTERS])
-        self.overfull = odt.as_dense(state_words[kernel_bpa.BPA_COUNTERS :])
-        if prefers_tiled_reduction(self.device):
-            _launch.launch(
-                kernel_bpa.mark_overfull_point_leaves,
-                dim=n_nodes,
-                inputs=[bvh.id, self.overfull],
-                device=self.device,
-            )
-        _launch.fill_(self.counters[kernel_bpa.CNT_SEEDING : kernel_bpa.CNT_SEEDING + 1], 1)
-        self.point_used = _launch.zeros(self.n, dtype=wp.bool, device=self.device)
-        # The orphan each point last deferred to, or whether it can ever seed; see the same kernel.
-        self.seed_blocker = _launch.full(
-            self.n, int(kernel_bpa.SEED_UNKNOWN), dtype=wp.int32, device=self.device
-        )
-        # ``uint64`` because the per-wave vertex claim is a ``wp.atomic_min`` over a *packed vertex
-        # pair* rather than over a proposal index — see ``kernel_bpa.proposal_key``, which is what
-        # makes a run reproducible. Doubling one n-sized buffer is the whole memory cost.
-        self.owner = _launch.empty(self.n, dtype=wp.uint64, device=self.device)
-        self._allocate_budget(max_faces)
 
-    def _allocate_budget(self, max_faces: int) -> None:
-        """(Re)size everything that scales with the triangle budget."""
-        self.max_faces = max_faces
-        # A triangle soup of ``max_faces`` faces has at most ``3 * max_faces`` distinct edges, and
-        # the insert probe does not terminate on a full table, so the hash is sized for a load
-        # factor of at most 3/4 at that bound; a real run fills about an eighth of it (``dragon``:
-        # ~1 M edges in 8.4 M slots), so the probes stay short. The front and the proposal list
-        # share a smaller bound, the cloud plus half the budget: a seeding wave proposes at most a
-        # triangle a point and a pivot wave one a front edge, so the proposals never outgrow it
-        # while the front fits, and a front that would outgrow it raises the same grow request
-        # the budget does, after which ``grow`` rebuilds it from the table
-        # (``kernel_bpa.push_front_edge``).
-        capacity = 1 << (4 * max_faces - 1).bit_length()
-        front_capacity = min(3 * max_faces + self.n, self.n + max_faces // 2)
-        self.edge_mask = wp.int32(capacity - 1)
-        # The zeroed tables in one allocation, and the unfilled ones in another.
-        self.edge_key, self.edge_count, self.edge_state = _launch.carve_typed(
-            ((wp.uint64, capacity), (wp.int32, capacity), (wp.int32, capacity)),
-            self.device,
-            zeroed=True,
-        )
-        unfilled = [max_faces * 3] + [capacity] * 2 + [front_capacity] * 5
-        (
-            self.all_faces,
-            self.edge_opp,
-            self.edge_cand,
-            self.front_in,
-            self.front_out,
-            self.tri_a,
-            self.tri_b,
-            self.tri_c,
-        ) = _launch.carve(wp.int32, unfilled, self.device)
-        self._bind_edge_table()
+class _BpaBudget(NamedTuple):
+    """
+    Every ball-pivoting buffer that scales with the triangle budget ``max_faces``.
 
-        # Grid-stride bounds: fixed launch dimensions, which a captured graph requires. Sized from
-        # the cloud, not from the budget — the live front peaks well below the point count, and a
-        # fixed 64k-wide launch spent most of a small mesh's wave scheduling no-op threads.
-        self.front_capacity = front_capacity
-        self.front_grid = min(front_capacity, max(_BPA_MIN_GRID, self.n))
-        self.claim_grid = self.front_grid
+    ``front_in`` holds the live front; a wave reads it and writes ``front_out``, and the host swaps
+    the pair after each wave (``_bpa_swap_fronts``).
+    """
 
-    def _bind_edge_table(self) -> None:
-        """Rebuild the ``BpaEdgeTable`` view of the edge arrays: once here, never per launch."""
-        # Seven of the wave kernels' arguments live in here, so binding these once here rather than
-        # per launch avoids re-marshalling them across the whole wave loop. Call this after
-        # anything that *reallocates* an edge array, which is only ``grow``.
-        table = kernel_bpa.BpaEdgeTable()
-        table.key = self.edge_key
-        table.count = self.edge_count
-        table.opp = self.edge_opp
-        table.state = self.edge_state
-        table.cand = self.edge_cand
-        table.mask = self.edge_mask
-        table.key_base = self.key_base
-        self.edge_table = table
+    max_faces: int
+    edge_mask: wp.int32
+    edge_key: wp.array[wp.uint64]
+    edge_count: wp.array[wp.int32]
+    edge_state: wp.array[wp.int32]
+    all_faces: wp.array[wp.int32]
+    edge_opp: wp.array[wp.int32]
+    edge_cand: wp.array[wp.int32]
+    front_in: wp.array[wp.int32]
+    front_out: wp.array[wp.int32]
+    tri_a: wp.array[wp.int32]
+    tri_b: wp.array[wp.int32]
+    tri_c: wp.array[wp.int32]
+    front_capacity: int
+    front_grid: int
+    claim_grid: int
+    # The ``BpaEdgeTable`` view of the edge arrays.
+    edge_table: object
 
-    def grow(self) -> None:
-        """
-        Double the triangle budget in place, preserving the run in progress.
 
-        Slot indices move when the edge table is rehashed, so the front list is rebuilt from the
-        new table rather than remapped.
-        """
-        old = (self.edge_key, self.edge_count, self.edge_opp, self.edge_state, self.edge_cand)
-        old_capacity = self.edge_key.size
-        old_faces = self.all_faces
-        old_count = min(int(read_scalar(self.counters, kernel_bpa.CNT_FACE)), self.max_faces)
+def _bpa_state(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    grid: wp.HashGrid,
+    bvh: wp.Bvh,
+    radius: float,
+    clustering: float,
+    crease_cos: float,
+    max_faces: int,
+) -> tuple[_BpaCloud, _BpaBudget]:
+    """Allocate the persistent state for a cloud of ``points`` and a triangle budget."""
+    device = points.device
+    n = points.size
+    key_base = wp.uint64(n)
 
-        self._allocate_budget(2 * self.max_faces)
-        if old_count > 0:
-            # The guard is the API's, not the algorithm's: ``wp.copy`` reads ``count=0`` as "copy
-            # the entire source" for backwards compatibility, so a budget grown before the first
-            # triangle commits would copy the whole stale buffer instead of nothing. In bounds
-            # (the destination is twice the size) and unreachable today, since the initial budget
-            # is ``4 n + 16`` and a wave proposes at most one triangle per front edge -- but the
-            # count is derived from device state, which is exactly the shape that rule is about.
-            _launch.copy(self.all_faces, old_faces, count=old_count * 3)
+    # One zeroed allocation holds the counters and, after them, the node bitset of the point
+    # BVH's leaves too large for ``pivot_front_edges``' cooperative walk
+    # (``kernel_bpa.mark_overfull_point_leaves``); a binary tree over ``n`` points has fewer
+    # than ``2 * n`` nodes. ``counters`` is a prefix view, so its readbacks stay small.
+    #
+    # The bitset is filled only where a block runs more than one lane
+    # (``prefers_tiled_reduction``: CUDA, or the CPU under ``wp.config.enable_cpu_blocks``).
+    # On the plain cpu device the cooperative walk is a serial query with no result buffer to
+    # overrun, so the bitset stays zero there and every pivot search takes the builtin.
+    n_nodes = 2 * n
+    # ``boundary_degree`` and ``seed_failed_wave`` are zeroed too, and ride in the same
+    # allocation. ``seed_failed_wave`` persists across every seeding wave for the run's whole
+    # lifetime -- see ``kernel_bpa.seed_triangles`` for why a point that once exhausted its
+    # candidates without seeding can never succeed later (its candidate set only shrinks),
+    # which is what makes never resetting it safe.
+    state_words, boundary_degree, seed_failed_wave = _launch.carve(
+        wp.int32, [kernel_bpa.BPA_COUNTERS + (n_nodes + 31) // 32, n, n], device, zeroed=True
+    )
+    counters = odt.as_dense(state_words[: kernel_bpa.BPA_COUNTERS])
+    overfull = odt.as_dense(state_words[kernel_bpa.BPA_COUNTERS :])
+    if prefers_tiled_reduction(device):
         _launch.launch(
-            kernel_bpa.rehash_edges,
-            dim=old_capacity,
-            inputs=[
-                *old,
-                self.edge_mask,
-                self.edge_key,
-                self.edge_count,
-                self.edge_opp,
-                self.edge_state,
-                self.edge_cand,
-            ],
-            device=self.device,
+            kernel_bpa.mark_overfull_point_leaves,
+            dim=n_nodes,
+            inputs=[bvh.id, overfull],
+            device=device,
         )
-        # The over-increment from the losing threads of the overflowing wave never wrote a face.
-        counters = read_array(self.counters)
-        counters[kernel_bpa.CNT_FACE] = old_count
-        counters[kernel_bpa.CNT_NEXT_FRONT] = 0
-        counters[kernel_bpa.CNT_GROW] = 0
-        self.counters.assign(counters)
-        _launch.launch(
-            kernel_bpa.collect_front_from_table,
-            dim=self.edge_key.size,
-            inputs=[wp.int32(self.front_capacity), self.counters, self.edge_table],
-            outputs=[self.front_in],
-            device=self.device,
-        )
-        self._adopt_next_front()
-
-    def compact(self) -> None:
-        """Drop closed and retired edges from the front list."""
-        _launch.zero_(self.counters[kernel_bpa.CNT_NEXT_FRONT : kernel_bpa.CNT_NEXT_FRONT + 1])
-        _launch.launch(
-            kernel_bpa.compact_front,
-            dim=self.front_grid,
-            inputs=[
-                self.front_in,
-                self.front_grid,
-                wp.int32(self.front_capacity),
-                self.counters,
-                self.edge_table,
-                self.front_out,
-            ],
-            device=self.device,
-        )
-        self.front_in, self.front_out = self.front_out, self.front_in
-        self._adopt_next_front()
-
-    def _adopt_next_front(self) -> None:
-        _launch.copy(
-            self.counters[kernel_bpa.CNT_FRONT : kernel_bpa.CNT_FRONT + 1],
-            self.counters[kernel_bpa.CNT_NEXT_FRONT : kernel_bpa.CNT_NEXT_FRONT + 1],
-        )
+    _launch.fill_(counters[kernel_bpa.CNT_SEEDING : kernel_bpa.CNT_SEEDING + 1], 1)
+    point_used = _launch.zeros(n, dtype=wp.bool, device=device)
+    # The orphan each point last deferred to, or whether it can ever seed; see the same kernel.
+    seed_blocker = _launch.full(n, int(kernel_bpa.SEED_UNKNOWN), dtype=wp.int32, device=device)
+    # ``uint64`` because the per-wave vertex claim is a ``wp.atomic_min`` over a *packed vertex
+    # pair* rather than over a proposal index — see ``kernel_bpa.proposal_key``, which is what
+    # makes a run reproducible. Doubling one n-sized buffer is the whole memory cost.
+    owner = _launch.empty(n, dtype=wp.uint64, device=device)
+    cloud = _BpaCloud(
+        points,
+        normals,
+        grid,
+        bvh,
+        wp.float32(radius),
+        wp.float32(clustering),
+        wp.float32(crease_cos),
+        device,
+        n,
+        key_base,
+        boundary_degree,
+        seed_failed_wave,
+        counters,
+        overfull,
+        point_used,
+        seed_blocker,
+        owner,
+    )
+    return cloud, _bpa_budget(cloud, max_faces)
 
 
 def _mean_positive_finite(values: odt.ArrayNdFloat32) -> float | None:
@@ -5186,11 +5117,12 @@ _BPA_WAVES_PER_BATCH = 8
 _BPA_MAX_BATCHES = 1 << 16
 
 
-def _bpa_run(state: _BpaState, max_waves: int) -> int:
+def _bpa_run(cloud: _BpaCloud, budget: _BpaBudget, max_waves: int) -> tuple[int, _BpaBudget]:
     """
-    Drive the wave loop until the front and the orphan set are both exhausted; return the faces.
+    Drive the wave loop until the front and the orphan set are both exhausted.
 
-    The face count comes off the last batch's counter readback.
+    Return the face count, off the last batch's counter readback, and the budget the faces are in
+    (a grown one when the run outgrew ``budget``).
 
     The host is woken once per batch, and only acts when the device asks it to — to grow the
     triangle budget, to compact a sparse front, or to stop.
@@ -5200,47 +5132,48 @@ def _bpa_run(state: _BpaState, max_waves: int) -> int:
     the next one. The batch is queued blind, though, and the device may stop partway through it —
     every wave kernel opens with ``if counters[CNT_CONTINUE] == 0: return`` — so the trailing waves
     of a batch write nothing while the loop below swaps for them regardless. An odd number of those
-    leaves the pair exchanged, and ``compact()`` then reads the buffer the *previous* wave wrote
+    leaves the pair exchanged, and ``_bpa_compact`` then reads the buffer the *previous* wave wrote
     (in the first batch, one that ``wp.empty`` never wrote at all). ``CNT_WAVE`` counts only the
     waves that ran, and the batch's counter readback is already paid for, so the correction is a
     parity test on a number the host is holding.
     """
-    _launch.fill_(state.counters[kernel_bpa.CNT_CONTINUE : kernel_bpa.CNT_CONTINUE + 1], 1)
+    counters_d = cloud.counters
+    _launch.fill_(counters_d[kernel_bpa.CNT_CONTINUE : kernel_bpa.CNT_CONTINUE + 1], 1)
     waves_run = 0
     # A batch that follows one the device kept going through starts from the reset its last
     # ``end_wave`` did, so only the first batch and one resuming a loop the host stopped open with
     # ``begin_wave``.
     resumed = True
     # The CPU device runs a launch's threads one after another, so a batch is one launch there.
-    serial = wp.get_device(state.device).is_cpu
+    serial = wp.get_device(cloud.device).is_cpu
     for _ in range(_BPA_MAX_BATCHES):
         if serial:
-            _bpa_waves_serial(state, max_waves, begin=resumed)
+            _bpa_waves_serial(cloud, budget, max_waves, begin=resumed)
         for wave in range(_BPA_WAVES_PER_BATCH):
             if not serial:
-                _bpa_wave(state, max_waves, begin=resumed and wave == 0)
-            state.front_in, state.front_out = state.front_out, state.front_in
+                _bpa_wave(cloud, budget, max_waves, begin=resumed and wave == 0)
+            budget = _bpa_swap_fronts(budget)
         resumed = False
-        counters = read_array(state.counters)
+        counters = read_array(counters_d)
         no_op_waves = _BPA_WAVES_PER_BATCH - (int(counters[kernel_bpa.CNT_WAVE]) - waves_run)
         waves_run = int(counters[kernel_bpa.CNT_WAVE])
         if no_op_waves % 2:
-            state.front_in, state.front_out = state.front_out, state.front_in
+            budget = _bpa_swap_fronts(budget)
         if counters[kernel_bpa.CNT_CONTINUE]:
             continue
         if counters[kernel_bpa.CNT_DONE] or counters[kernel_bpa.CNT_WAVE] >= max_waves:
-            return int(counters[kernel_bpa.CNT_FACE])
+            return int(counters[kernel_bpa.CNT_FACE]), budget
         if counters[kernel_bpa.CNT_GROW]:
-            state.grow()
+            budget = _bpa_grow(cloud, budget)
         else:
-            state.compact()
-        _launch.fill_(state.counters[kernel_bpa.CNT_CONTINUE : kernel_bpa.CNT_CONTINUE + 1], 1)
+            budget = _bpa_compact(cloud, budget)
+        _launch.fill_(counters_d[kernel_bpa.CNT_CONTINUE : kernel_bpa.CNT_CONTINUE + 1], 1)
         resumed = True
     # Out of batches: the counters have moved since the last read.
-    return int(read_scalar(state.counters, kernel_bpa.CNT_FACE))
+    return int(read_scalar(counters_d, kernel_bpa.CNT_FACE)), budget
 
 
-def _bpa_waves_serial(state: _BpaState, max_waves: int, *, begin: bool) -> None:
+def _bpa_waves_serial(cloud: _BpaCloud, budget: _BpaBudget, max_waves: int, *, begin: bool) -> None:
     """
     Queue a batch of ``_BPA_WAVES_PER_BATCH`` waves on the CPU device as one launch.
 
@@ -5254,136 +5187,285 @@ def _bpa_waves_serial(state: _BpaState, max_waves: int, *, begin: bool) -> None:
         inputs=[
             _BPA_WAVES_PER_BATCH,
             1 if begin else 0,
-            state.n,
-            state.front_grid,
-            state.claim_grid,
+            cloud.n,
+            budget.front_grid,
+            budget.claim_grid,
             max_waves,
-            state.max_faces,
-            state.points,
-            state.normals,
-            state.seed_failed_wave,
-            state.seed_blocker,
-            state.grid.id,
-            state.bvh.id,
-            state.overfull,
-            state.radius,
-            state.clustering,
-            state.crease_cos,
-            wp.int32(state.front_capacity),
-            state.point_used,
-            state.boundary_degree,
-            state.counters,
-            state.edge_table,
-            state.owner,
-            state.front_in,
-            state.front_out,
-            state.tri_a,
-            state.tri_b,
-            state.tri_c,
+            budget.max_faces,
+            cloud.points,
+            cloud.normals,
+            cloud.seed_failed_wave,
+            cloud.seed_blocker,
+            cloud.grid.id,
+            cloud.bvh.id,
+            cloud.overfull,
+            cloud.radius,
+            cloud.clustering,
+            cloud.crease_cos,
+            wp.int32(budget.front_capacity),
+            cloud.point_used,
+            cloud.boundary_degree,
+            cloud.counters,
+            budget.edge_table,
+            cloud.owner,
+            budget.front_in,
+            budget.front_out,
+            budget.tri_a,
+            budget.tri_b,
+            budget.tri_c,
         ],
-        outputs=[state.all_faces],
+        outputs=[budget.all_faces],
         block_dim=1,
-        device=state.device,
+        device=cloud.device,
     )
 
 
-def _bpa_wave(state: _BpaState, max_waves: int, *, begin: bool) -> None:
+def _bpa_wave(cloud: _BpaCloud, budget: _BpaBudget, max_waves: int, *, begin: bool) -> None:
     """
     Queue one wave: seed or pivot, claim, commit, advance. No allocations, no readbacks.
 
     ``begin`` opens a batch with the counter reset; otherwise the previous wave's ``end_wave``
     has done it already.
     """
-    device = state.device
+    device = cloud.device
     if begin:
-        _launch.launch(kernel_bpa.begin_wave, dim=1, inputs=[state.counters], device=device)
+        _launch.launch(kernel_bpa.begin_wave, dim=1, inputs=[cloud.counters], device=device)
     _launch.launch_tiled(
         kernel_bpa.seed_triangles,
-        dim=[(state.n + kernel_bpa.BPA_SEED_BLOCK - 1) // kernel_bpa.BPA_SEED_BLOCK],
+        dim=[(cloud.n + kernel_bpa.BPA_SEED_BLOCK - 1) // kernel_bpa.BPA_SEED_BLOCK],
         block_dim=kernel_bpa.BPA_SEED_BLOCK,
         inputs=[
-            state.n,
-            state.points,
-            state.normals,
-            state.point_used,
-            state.seed_failed_wave,
-            state.seed_blocker,
-            state.grid.id,
-            state.radius,
-            state.clustering,
-            wp.int32(state.front_capacity),
-            state.counters,
-            state.owner,
-            state.tri_a,
-            state.tri_b,
-            state.tri_c,
+            cloud.n,
+            cloud.points,
+            cloud.normals,
+            cloud.point_used,
+            cloud.seed_failed_wave,
+            cloud.seed_blocker,
+            cloud.grid.id,
+            cloud.radius,
+            cloud.clustering,
+            wp.int32(budget.front_capacity),
+            cloud.counters,
+            cloud.owner,
+            budget.tri_a,
+            budget.tri_b,
+            budget.tri_c,
         ],
         device=device,
     )
     _launch.launch_tiled(
         kernel_bpa.pivot_front_edges,
-        dim=[state.front_grid],
+        dim=[budget.front_grid],
         block_dim=kernel_bpa.BPA_PIVOT_BLOCK,
         inputs=[
-            state.points,
-            state.normals,
-            state.grid.id,
-            state.bvh.id,
-            state.overfull,
-            state.radius,
-            state.clustering,
-            state.crease_cos,
-            state.point_used,
-            state.boundary_degree,
-            state.front_in,
-            state.front_grid,
-            wp.int32(state.front_capacity),
-            state.counters,
-            state.edge_table,
-            state.owner,
-            state.front_out,
-            state.tri_a,
-            state.tri_b,
-            state.tri_c,
+            cloud.points,
+            cloud.normals,
+            cloud.grid.id,
+            cloud.bvh.id,
+            cloud.overfull,
+            cloud.radius,
+            cloud.clustering,
+            cloud.crease_cos,
+            cloud.point_used,
+            cloud.boundary_degree,
+            budget.front_in,
+            budget.front_grid,
+            wp.int32(budget.front_capacity),
+            cloud.counters,
+            budget.edge_table,
+            cloud.owner,
+            budget.front_out,
+            budget.tri_a,
+            budget.tri_b,
+            budget.tri_c,
         ],
         device=device,
     )
     _launch.launch(
         kernel_bpa.claim_triangle_vertices,
-        dim=state.claim_grid,
+        dim=budget.claim_grid,
         inputs=[
-            state.tri_a,
-            state.tri_b,
-            state.tri_c,
-            state.claim_grid,
-            wp.int32(state.front_capacity),
-            state.counters,
-            state.owner,
+            budget.tri_a,
+            budget.tri_b,
+            budget.tri_c,
+            budget.claim_grid,
+            wp.int32(budget.front_capacity),
+            cloud.counters,
+            cloud.owner,
         ],
         device=device,
     )
     _launch.launch(
         kernel_bpa.commit_triangles,
-        dim=state.claim_grid,
+        dim=budget.claim_grid,
         inputs=[
-            state.tri_a,
-            state.tri_b,
-            state.tri_c,
-            state.owner,
-            wp.int32(state.max_faces),
-            state.claim_grid,
-            state.point_used,
-            state.boundary_degree,
-            wp.int32(state.front_capacity),
-            state.counters,
-            state.edge_table,
-            state.front_out,
-            state.all_faces,
+            budget.tri_a,
+            budget.tri_b,
+            budget.tri_c,
+            cloud.owner,
+            wp.int32(budget.max_faces),
+            budget.claim_grid,
+            cloud.point_used,
+            cloud.boundary_degree,
+            wp.int32(budget.front_capacity),
+            cloud.counters,
+            budget.edge_table,
+            budget.front_out,
+            budget.all_faces,
         ],
         device=device,
     )
     _launch.launch(
-        kernel_bpa.end_wave, dim=1, inputs=[wp.int32(max_waves), state.counters], device=device
+        kernel_bpa.end_wave, dim=1, inputs=[wp.int32(max_waves), cloud.counters], device=device
+    )
+
+
+def _bpa_swap_fronts(budget: _BpaBudget) -> _BpaBudget:
+    """Hand the front a wave wrote (``front_out``) to the next wave as ``front_in``."""
+    return budget._replace(front_in=budget.front_out, front_out=budget.front_in)
+
+
+def _bpa_grow(cloud: _BpaCloud, budget: _BpaBudget) -> _BpaBudget:
+    """
+    Return the budget doubled, preserving the run in progress.
+
+    Slot indices move when the edge table is rehashed, so the front list is rebuilt from the
+    new table rather than remapped.
+    """
+    device, counters_d = cloud.device, cloud.counters
+    old_capacity = budget.edge_key.size
+    old_count = min(int(read_scalar(counters_d, kernel_bpa.CNT_FACE)), budget.max_faces)
+
+    grown = _bpa_budget(cloud, 2 * budget.max_faces)
+    if old_count > 0:
+        # The guard is the API's, not the algorithm's: ``wp.copy`` reads ``count=0`` as "copy
+        # the entire source" for backwards compatibility, so a budget grown before the first
+        # triangle commits would copy the whole stale buffer instead of nothing. In bounds
+        # (the destination is twice the size) and unreachable today, since the initial budget
+        # is ``4 n + 16`` and a wave proposes at most one triangle per front edge -- but the
+        # count is derived from device state, which is exactly the shape that rule is about.
+        _launch.copy(grown.all_faces, budget.all_faces, count=old_count * 3)
+    _launch.launch(
+        kernel_bpa.rehash_edges,
+        dim=old_capacity,
+        inputs=[
+            budget.edge_key,
+            budget.edge_count,
+            budget.edge_opp,
+            budget.edge_state,
+            budget.edge_cand,
+            grown.edge_mask,
+            grown.edge_key,
+            grown.edge_count,
+            grown.edge_opp,
+            grown.edge_state,
+            grown.edge_cand,
+        ],
+        device=device,
+    )
+    # The over-increment from the losing threads of the overflowing wave never wrote a face.
+    counters = read_array(counters_d)
+    counters[kernel_bpa.CNT_FACE] = old_count
+    counters[kernel_bpa.CNT_NEXT_FRONT] = 0
+    counters[kernel_bpa.CNT_GROW] = 0
+    counters_d.assign(counters)
+    _launch.launch(
+        kernel_bpa.collect_front_from_table,
+        dim=grown.edge_key.size,
+        inputs=[wp.int32(grown.front_capacity), counters_d, grown.edge_table],
+        outputs=[grown.front_in],
+        device=device,
+    )
+    _bpa_adopt_next_front(counters_d)
+    return grown
+
+
+def _bpa_compact(cloud: _BpaCloud, budget: _BpaBudget) -> _BpaBudget:
+    """Drop closed and retired edges from the front list; return the budget with it in front."""
+    counters_d = cloud.counters
+    _launch.zero_(counters_d[kernel_bpa.CNT_NEXT_FRONT : kernel_bpa.CNT_NEXT_FRONT + 1])
+    _launch.launch(
+        kernel_bpa.compact_front,
+        dim=budget.front_grid,
+        inputs=[
+            budget.front_in,
+            budget.front_grid,
+            wp.int32(budget.front_capacity),
+            counters_d,
+            budget.edge_table,
+            budget.front_out,
+        ],
+        device=cloud.device,
+    )
+    budget = _bpa_swap_fronts(budget)
+    _bpa_adopt_next_front(counters_d)
+    return budget
+
+
+def _bpa_adopt_next_front(counters: wp.array[wp.int32]) -> None:
+    """Make the front count the last pass wrote the live one."""
+    _launch.copy(
+        counters[kernel_bpa.CNT_FRONT : kernel_bpa.CNT_FRONT + 1],
+        counters[kernel_bpa.CNT_NEXT_FRONT : kernel_bpa.CNT_NEXT_FRONT + 1],
+    )
+
+
+def _bpa_budget(cloud: _BpaCloud, max_faces: int) -> _BpaBudget:
+    """Allocate everything that scales with the triangle budget."""
+    n, device = cloud.n, cloud.device
+    # A triangle soup of ``max_faces`` faces has at most ``3 * max_faces`` distinct edges, and
+    # the insert probe does not terminate on a full table, so the hash is sized for a load
+    # factor of at most 3/4 at that bound; a real run fills about an eighth of it (``dragon``:
+    # ~1 M edges in 8.4 M slots), so the probes stay short. The front and the proposal list
+    # share a smaller bound, the cloud plus half the budget: a seeding wave proposes at most a
+    # triangle a point and a pivot wave one a front edge, so the proposals never outgrow it
+    # while the front fits, and a front that would outgrow it raises the same grow request
+    # the budget does, after which ``_bpa_grow`` rebuilds it from the table
+    # (``kernel_bpa.push_front_edge``).
+    capacity = 1 << (4 * max_faces - 1).bit_length()
+    front_capacity = min(3 * max_faces + n, n + max_faces // 2)
+    edge_mask = wp.int32(capacity - 1)
+    # The zeroed tables in one allocation, and the unfilled ones in another.
+    edge_key, edge_count, edge_state = _launch.carve_typed(
+        ((wp.uint64, capacity), (wp.int32, capacity), (wp.int32, capacity)), device, zeroed=True
+    )
+    unfilled = [max_faces * 3] + [capacity] * 2 + [front_capacity] * 5
+    all_faces, edge_opp, edge_cand, front_in, front_out, tri_a, tri_b, tri_c = _launch.carve(
+        wp.int32, unfilled, device
+    )
+    # Seven of the wave kernels' arguments live in the ``BpaEdgeTable`` view, so binding them
+    # once here rather than per launch avoids re-marshalling them across the whole wave loop.
+    table = kernel_bpa.BpaEdgeTable()
+    table.key = edge_key
+    table.count = edge_count
+    table.opp = edge_opp
+    table.state = edge_state
+    table.cand = edge_cand
+    table.mask = edge_mask
+    table.key_base = cloud.key_base
+
+    # Grid-stride bounds: fixed launch dimensions, which a captured graph requires. Sized from
+    # the cloud, not from the budget — the live front peaks well below the point count, and a
+    # fixed 64k-wide launch spent most of a small mesh's wave scheduling no-op threads.
+    front_grid = min(front_capacity, max(_BPA_MIN_GRID, n))
+    return _BpaBudget(
+        max_faces,
+        edge_mask,
+        edge_key,
+        edge_count,
+        edge_state,
+        all_faces,
+        edge_opp,
+        edge_cand,
+        front_in,
+        front_out,
+        tri_a,
+        tri_b,
+        tri_c,
+        front_capacity,
+        front_grid,
+        front_grid,
+        table,
     )
 
 

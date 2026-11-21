@@ -18,6 +18,7 @@ numbering and each DP diagonal are batched (NumPy), and the device receives the 
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable, Iterator, Sequence
 from typing import Any, NamedTuple
 
@@ -30,60 +31,24 @@ _TRIANGLES_PER_PART = 32768
 _MAX_PARTS = 64
 
 
-class _VertexRows:
+class _VertexRows(NamedTuple):
     """
-    Each vertex's weights over input vertices: its own vertex for the first ones, unless replaced.
+    Each vertex's weights over input vertices, as rows of ``{input vertex: weight}``.
 
-    Rows are read and replaced whole, never edited in place.
+    A vertex below ``n_identity`` is its own input vertex and a later one has no row, unless
+    ``replaced`` holds its row. Rows are read and replaced whole, never edited in place.
     """
 
-    def __init__(self, n_identity: int, n_rows: int) -> None:
-        self.n_identity = n_identity
-        self.n_rows = n_rows
-        self.replaced: dict[int, dict[int, float]] = {}
-
-    def __len__(self) -> int:
-        return self.n_rows
-
-    def __getitem__(self, v: int) -> dict[int, float]:
-        row = self.replaced.get(v)
-        if row is not None:
-            return row
-        return {v: 1.0} if v < self.n_identity else {}
-
-    def __setitem__(self, v: int, row: dict[int, float]) -> None:
-        self.replaced[v] = row
-
-    def append(self, row: dict[int, float]) -> None:
-        """Add one row."""
-        self.replaced[self.n_rows] = row
-        self.n_rows += 1
-
-    def extend_to(self, n_rows: int) -> None:
-        """Add empty rows up to ``n_rows``."""
-        self.n_rows = max(self.n_rows, n_rows)
-
-    def table(self, kept: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """``(len(kept), width)`` sources (``-1`` padded) and weights of rows ``kept``."""
-        replaced = {r: self.replaced[v] for r, v in enumerate(kept.tolist()) if v in self.replaced}
-        width = max(1, max((len(row) for row in replaced.values()), default=1))
-        sources = np.full((kept.size, width), -1, dtype=np.int32)
-        weights = np.zeros((kept.size, width), dtype=np.float32)
-        own = kept < self.n_identity
-        sources[own, 0] = kept[own]
-        weights[own, 0] = 1.0
-        for r, row in replaced.items():
-            sources[r] = -1
-            weights[r] = 0.0
-            for k, (v, w) in enumerate(sorted(row.items())):
-                sources[r, k] = v
-                weights[r, k] = w
-        return sources, weights
+    n_identity: int
+    replaced: dict[int, dict[int, float]]
 
 
 class Topology:
     """
     A half-edge mesh connectivity whose element ids follow the serial reference allocation.
+
+    Its relinking edits are methods; read-only walks are module functions (``org_ring``,
+    ``left_ring`` and the rest), which take this or its ``reader`` view alike.
 
     Attributes
     ----------
@@ -96,10 +61,10 @@ class Topology:
     """
 
     __slots__ = (
-        "_arrays",
         "edge_per_face",
         "edge_per_vertex",
         "face_source",
+        "held",
         "lft",
         "nxt",
         "org",
@@ -108,9 +73,9 @@ class Topology:
     )
 
     def __init__(self) -> None:
-        # A field is held in one form at a time: here as an array (after the builder or a native
-        # kernel), or as its list once Python code reads a field (``_HeldTopology``).
-        self._arrays: dict[str, np.ndarray] = {}
+        # A field is held in one form at a time: in ``held`` as an array (after the builder or a
+        # native kernel), or as its list once Python code reads a field (``_HeldTopology``).
+        self.held: dict[str, np.ndarray] = {}
         self.nxt: list[int] = []
         self.prv: list[int] = []
         self.org: list[int] = []
@@ -122,20 +87,16 @@ class Topology:
         self.vertex_rows: _VertexRows | None = None
         self.face_source: list[int] | None = None
 
-    def reader(self) -> _Reader:
-        """Return the fields for a read-only walk, converting none."""
-        return _Reader(self)
-
     def array(self, name: str) -> np.ndarray:
         """Field ``name`` as an integer array to read; a list field stays a list."""
-        held = self._arrays.get(name)
+        held = self.held.get(name)
         if held is not None:
             return held
         return np.asarray(getattr(self, name), dtype=np.int64)
 
     def set_array(self, name: str, values: np.ndarray) -> None:
         """Hold field ``name`` as ``values`` until Python code next reads a field."""
-        self._arrays[name] = values
+        self.held[name] = values
         try:
             object.__delattr__(self, name)
         except AttributeError:
@@ -146,23 +107,9 @@ class Topology:
         object.__setattr__(self, "__class__", _HeldTopology)
 
     def size(self, name: str) -> int:
-        """Length of field ``name``, whichever form holds it."""
-        held = self._arrays.get(name)
+        """Length of field ``name``, whichever form holds it, converting none."""
+        held = self.held.get(name)
         return held.shape[0] if held is not None else len(getattr(self, name))
-
-    def vertex_count(self) -> int:
-        """Return the number of vertex ids, invalid ones included."""
-        return self.size("edge_per_vertex")
-
-    def face_count(self) -> int:
-        """Return the number of face ids, invalid ones included."""
-        return self.size("edge_per_face")
-
-    def track(self, n_input_vertices: int) -> None:
-        """Start recording where every vertex and face came from, the current ones their own."""
-        n_verts = self.vertex_count()
-        self.vertex_rows = _VertexRows(n_verts, max(n_verts, n_input_vertices))
-        self.face_source = list(range(self.face_count()))
 
     # -- element allocation ------------------------------------------------------------------
 
@@ -178,8 +125,6 @@ class Topology:
     def add_vert(self) -> int:
         """Append one vertex id, invalid until an edge takes it as origin."""
         self.edge_per_vertex.append(-1)
-        if self.vertex_rows is not None:
-            self.vertex_rows.append({})
         return len(self.edge_per_vertex) - 1
 
     def add_face(self) -> int:
@@ -189,65 +134,14 @@ class Topology:
             self.face_source.append(-1)
         return len(self.edge_per_face) - 1
 
-    def edge_count(self) -> int:
-        """Return the number of half-edges, lone ones included."""
-        return self.size("nxt")
-
-    # -- navigation --------------------------------------------------------------------------
-
-    def org_ring(self, e: int) -> Iterator[int]:
-        """Half-edges leaving ``org(e)``, counter-clockwise from ``e``."""
-        i = e
-        while True:
-            yield i
-            i = self.nxt[i]
-            if i == e:
-                return
-
-    def left_ring(self, e: int) -> Iterator[int]:
-        """Half-edges around ``left(e)`` from ``e``, each the previous one's successor there."""
-        i = e
-        while True:
-            yield i
-            i = self.prv[i ^ 1]
-            if i == e:
-                return
-
-    def is_left_tri(self, e: int) -> bool:
-        """Report whether the left of ``e`` closes after exactly three half-edges."""
-        a = self.prv[e ^ 1]
-        if a == e:
-            return False
-        b = self.prv[a ^ 1]
-        if b == e:
-            return False
-        return self.prv[b ^ 1] == e
-
-    def find_edge(self, o: int, d: int) -> int:
-        """Find a half-edge from ``o`` to ``d`` around ``o`` from its stored edge, else ``-1``."""
-        e0 = self.edge_per_vertex[o] if o < self.vertex_count() else -1
-        if e0 < 0:
-            return -1
-        e = e0
-        while True:
-            if self.org[e ^ 1] == d:
-                return e
-            e = self.nxt[e]
-            if e == e0:
-                return -1
-
-    def tri_verts(self, e: int) -> tuple[int, int, int]:
-        """Return the left triangle's vertices of ``e``: ``org(e)``, ``dest(e)``, the third."""
-        return self.org[e], self.org[e ^ 1], self.org[self.prv[e ^ 1] ^ 1]
-
     # -- linking -----------------------------------------------------------------------------
 
     def _set_org_ring(self, a: int, v: int) -> None:
-        for i in self.org_ring(a):
+        for i in org_ring(self, a):
             self.org[i] = v
 
     def _set_left_ring(self, a: int, f: int) -> None:
-        for i in self.left_ring(a):
+        for i in left_ring(self, a):
             self.lft[i] = f
 
     def set_org(self, a: int, v: int) -> None:
@@ -271,12 +165,6 @@ class Topology:
             self.edge_per_face[old] = -1
         if f >= 0:
             self.edge_per_face[f] = a
-
-    def _same_org_ring(self, a: int, b: int) -> bool:
-        return any(i == b for i in self.org_ring(a))
-
-    def _same_left_ring(self, a: int, b: int) -> bool:
-        return any(i == b for i in self.left_ring(a))
 
     def splice(self, a: int, b: int) -> None:
         """Join or split the origin rings (and left rings) of ``a`` and ``b``."""
@@ -302,12 +190,12 @@ class Topology:
         if same_org and org[b] >= 0:
             self._set_org_ring(b, -1)
             v = org[a]
-            if not self._same_org_ring(self.edge_per_vertex[v], a):
+            if a not in org_ring(self, self.edge_per_vertex[v]):
                 self.edge_per_vertex[v] = a
         if same_left and lft[b] >= 0:
             self._set_left_ring(b, -1)
             f = lft[a]
-            if not self._same_left_ring(self.edge_per_face[f], a):
+            if a not in left_ring(self, self.edge_per_face[f]):
                 self.edge_per_face[f] = a
 
     # -- editing -----------------------------------------------------------------------------
@@ -370,54 +258,59 @@ class Topology:
         new_vert = self.add_vert()
         self.set_org(e, new_vert)
         if self.vertex_rows is not None:
-            row: dict[int, float] = {}
-            for end in ends:
-                for v, w in self.vertex_rows[end].items():
-                    row[v] = row.get(v, 0.0) + 0.5 * w
-            self.vertex_rows[new_vert] = row
+            self.vertex_rows.replaced[new_vert] = _midpoint_row(self.vertex_rows, *ends)
         return e0
-
-    # -- export ------------------------------------------------------------------------------
-
-    def triangles(self) -> np.ndarray:
-        """``(n_faces, 3)`` vertex triples of every face id, ``-1`` rows for invalid ones."""
-        edges = self.array("edge_per_face").astype(np.int64)
-        out = np.full((edges.size, 3), -1, dtype=np.int32)
-        valid = edges >= 0
-        e = edges[valid]
-        org = self.array("org")
-        prv = self.array("prv").astype(np.int64)
-        out[valid] = np.stack((org[e], org[e ^ 1], org[prv[e ^ 1] ^ 1]), axis=1)
-        return out
 
 
 class _HeldTopology(Topology):
-    """A [`Topology`][ordito._serial_mesh.Topology] holding some fields as arrays."""
+    """
+    A [`Topology`][ordito._serial_mesh.Topology] holding some fields as arrays.
+
+    Not a variant but a state: ``set_array`` switches a topology's class to this one and the first
+    read of a held field switches it back, so the attribute hooks cost nothing while every field
+    is a list (see ``Topology.set_array``).
+    """
 
     __slots__ = ()
 
     def __getattr__(self, name: str) -> list[int]:
         # Reached only for a field held as an array: every held field becomes its list, which
         # Python code edits, and the topology a plain one again.
-        arrays = object.__getattribute__(self, "_arrays")
-        if name not in arrays:
+        held = object.__getattribute__(self, "held")
+        if name not in held:
             raise AttributeError(name)
-        for field, values in arrays.items():
+        for field, values in held.items():
             object.__setattr__(self, field, values.tolist())
-        arrays.clear()
+        held.clear()
         object.__setattr__(self, "__class__", Topology)
         return object.__getattribute__(self, name)
 
     def __setattr__(self, name: str, value: object) -> None:
         # Assigning a field replaces its held array.
-        arrays = object.__getattribute__(self, "_arrays")
-        arrays.pop(name, None)
+        held = object.__getattribute__(self, "held")
+        held.pop(name, None)
         object.__setattr__(self, name, value)
-        if not arrays:
+        if not held:
             object.__setattr__(self, "__class__", Topology)
 
 
-class _Reader:
+def _midpoint_row(rows: _VertexRows, o: int, d: int) -> dict[int, float]:
+    """Return the row of a vertex placed halfway between vertices ``o`` and ``d``."""
+    row: dict[int, float] = {}
+    for end in (o, d):
+        for v, w in _vertex_row(rows, end).items():
+            row[v] = row.get(v, 0.0) + 0.5 * w
+    return row
+
+
+def _vertex_row(rows: _VertexRows, v: int) -> dict[int, float]:
+    row = rows.replaced.get(v)
+    if row is not None:
+        return row
+    return {v: 1.0} if v < rows.n_identity else {}
+
+
+class _Reader(NamedTuple):
     """
     A topology's fields for a read-only walk: its lists, or views of the arrays it holds.
 
@@ -425,31 +318,92 @@ class _Reader:
     reads a held field where it lies instead of converting every field to lists.
     """
 
-    __slots__ = ("edge_per_vertex", "lft", "nxt", "org", "prv")
     edge_per_vertex: Sequence[int]
     lft: Sequence[int]
     nxt: Sequence[int]
     org: Sequence[int]
     prv: Sequence[int]
 
-    def __init__(self, topology: Topology) -> None:
-        arrays = topology._arrays  # pyright: ignore[reportPrivateUsage]
-        for name in self.__slots__:
-            held = arrays.get(name)
-            setattr(self, name, getattr(topology, name) if held is None else held.data)
 
-    def org_ring(self, e: int) -> Iterator[int]:
-        """Half-edges leaving ``org(e)``, counter-clockwise from ``e``."""
-        i = e
-        while True:
-            yield i
-            i = self.nxt[i]
-            if i == e:
-                return
+def reader(topology: Topology) -> _Reader:
+    """Return the fields of ``topology`` for a read-only walk, converting none."""
+
+    def field(name: str) -> Sequence[int]:
+        held = topology.held.get(name)
+        return getattr(topology, name) if held is None else held.data
+
+    return _Reader(*(field(name) for name in ("edge_per_vertex", "lft", "nxt", "org", "prv")))
 
 
 # A walk that only reads takes either.
 _Walk = Topology | _Reader
+
+
+def org_ring(walk: _Walk, e: int) -> Iterator[int]:
+    """Half-edges leaving ``org(e)``, counter-clockwise from ``e``."""
+    nxt = walk.nxt
+    i = e
+    while True:
+        yield i
+        i = nxt[i]
+        if i == e:
+            return
+
+
+def left_ring(walk: _Walk, e: int) -> Iterator[int]:
+    """Half-edges around ``left(e)`` from ``e``, each the previous one's successor there."""
+    prv = walk.prv
+    i = e
+    while True:
+        yield i
+        i = prv[i ^ 1]
+        if i == e:
+            return
+
+
+def is_left_tri(walk: _Walk, e: int) -> bool:
+    """Report whether the left of ``e`` closes after exactly three half-edges."""
+    prv = walk.prv
+    a = prv[e ^ 1]
+    if a == e:
+        return False
+    b = prv[a ^ 1]
+    if b == e:
+        return False
+    return prv[b ^ 1] == e
+
+
+def find_edge(walk: _Walk, o: int, d: int) -> int:
+    """Find a half-edge from ``o`` to ``d`` around ``o`` from its stored edge, else ``-1``."""
+    epv = walk.edge_per_vertex
+    e0 = epv[o] if o < len(epv) else -1
+    if e0 < 0:
+        return -1
+    e = e0
+    while True:
+        if walk.org[e ^ 1] == d:
+            return e
+        e = walk.nxt[e]
+        if e == e0:
+            return -1
+
+
+def tri_verts(walk: _Walk, e: int) -> tuple[int, int, int]:
+    """Return the left triangle's vertices of ``e``: ``org(e)``, ``dest(e)``, the third."""
+    org = walk.org
+    return org[e], org[e ^ 1], org[walk.prv[e ^ 1] ^ 1]
+
+
+def triangles(topology: Topology) -> np.ndarray:
+    """``(n_faces, 3)`` vertex triples of every face id, ``-1`` rows for invalid ones."""
+    edges = topology.array("edge_per_face").astype(np.int64)
+    out = np.full((edges.size, 3), -1, dtype=np.int32)
+    valid = edges >= 0
+    e = edges[valid]
+    org = topology.array("org")
+    prv = topology.array("prv").astype(np.int64)
+    out[valid] = np.stack((org[e], org[e ^ 1], org[prv[e ^ 1] ^ 1]), axis=1)
+    return out
 
 
 # ---------------------------------------------------------------------------------------------
@@ -671,7 +625,7 @@ def _build_partitioned(tris: list[tuple[int, int, int]], n_parts: int) -> Topolo
     topology.edge_per_face = [-1] * len(tris)
     region = list(border)
     for sub, fmap, vmap, rem in parts:
-        offset = topology.edge_count()
+        offset = topology.size("nxt")
         for v, e in enumerate(sub.edge_per_vertex):
             if e >= 0:
                 topology.edge_per_vertex[vmap[v]] = e + offset
@@ -801,29 +755,30 @@ _FLT_MAX = F32(np.finfo(np.float32).max)
 BAD_METRIC = 1e10
 
 
+@dataclasses.dataclass(slots=True)
 class Points:
-    """A growable ``(n, 3)`` ``float32`` position table, indexed by vertex id."""
+    """A growable ``float32`` position table indexed by vertex id: ``data[:size]`` is in use."""
 
-    __slots__ = ("data", "size")
+    data: np.ndarray
+    size: int
 
-    def __init__(self, points: np.ndarray) -> None:
-        points = np.asarray(points, dtype=np.float32).reshape(-1, 3)
-        self.size = points.shape[0]
-        self.data = np.empty((max(16, 2 * self.size), 3), dtype=np.float32)
-        self.data[: self.size] = points
 
-    def set(self, v: int, p: np.ndarray) -> None:
-        """Store position ``p`` at vertex ``v``, growing the table to hold it."""
-        if v >= self.data.shape[0]:
-            grown = np.empty((2 * v + 16, 3), dtype=np.float32)
-            grown[: self.size] = self.data[: self.size]
-            self.data = grown
-        self.size = max(self.size, v + 1)
-        self.data[v] = p
+def point_table(points: np.ndarray) -> Points:
+    """Return a position table holding ``points`` with room to grow."""
+    points = np.asarray(points, dtype=np.float32).reshape(-1, 3)
+    data = np.empty((max(16, 2 * points.shape[0]), 3), dtype=np.float32)
+    data[: points.shape[0]] = points
+    return Points(data, points.shape[0])
 
-    def array(self) -> np.ndarray:
-        """Return the used ``(n, 3)`` prefix."""
-        return self.data[: self.size]
+
+def set_point(points: Points, v: int, p: np.ndarray) -> None:
+    """Store position ``p`` at vertex ``v``, growing the table to hold it."""
+    if v >= points.data.shape[0]:
+        grown = np.empty((2 * v + 16, 3), dtype=np.float32)
+        grown[: points.size] = points.data[: points.size]
+        points.data = grown
+    points.size = max(points.size, v + 1)
+    points.data[v] = p
 
 
 def _lsq(v: np.ndarray) -> np.ndarray:
@@ -891,56 +846,32 @@ def _dihedral(left: np.ndarray, right: np.ndarray, edge: np.ndarray) -> np.ndarr
 Term = Callable[..., np.ndarray]
 
 
-class Metric:
-    """A triangle term, an edge term over ``(a, b, left, right)`` and how terms combine."""
+class Metric(NamedTuple):
+    """
+    A fill or band metric: its terms, how they combine, and its native ids and parameters.
 
-    def __init__(
-        self,
-        triangle: Term | None = None,
-        edge: Term | None = None,
-        use_max: bool = False,
-        kernel_id: int = -1,
-        normal: np.ndarray | None = None,
-        inverse_area: float = 0.0,
-        band_id: int = -1,
-        up: tuple[float, float, float] | None = None,
-    ) -> None:
-        self.triangle_term = triangle
-        self.edge_term = edge
-        self.use_max = use_max
-        # The id of the same metric in ``kernels/holes.serial_fill_dp_diagonal``, -1 when it has
-        # none (a metric with transcendental terms, which the devices round differently).
-        self.kernel_id = kernel_id
-        self.normal = np.zeros(3) if normal is None else normal
-        self.inverse_area = inverse_area
-        # The id of the same band metric in ``kernels/holes.serial_band_search``, -1 for none.
-        self.band_id = band_id
-        self.up = up
+    ``triangle`` evaluates each ``(a, b, c)``; ``edge`` each edge ``a b`` between triangles
+    reaching ``left`` and ``right``; either is ``None`` when the metric has no such term. Terms
+    add, or take the larger when ``use_max``.
+    """
 
-    @property
-    def has_triangle(self) -> bool:
-        """Report whether the metric has a triangle term."""
-        return self.triangle_term is not None
+    triangle: Term | None = None
+    edge: Term | None = None
+    use_max: bool = False
+    # The id of the same metric in ``kernels/holes.serial_fill_dp_diagonal``, -1 when it has
+    # none (a metric with transcendental terms, which the devices round differently).
+    kernel_id: int = -1
+    normal: np.ndarray | tuple[float, float, float] = (0.0, 0.0, 0.0)
+    inverse_area: float = 0.0
+    # The id of the same band metric in ``kernels/holes.serial_band_search``, -1 for none.
+    band_id: int = -1
+    up: tuple[float, float, float] | None = None
 
-    @property
-    def has_edge(self) -> bool:
-        """Report whether the metric has an edge term."""
-        return self.edge_term is not None
 
-    def combine(self, a: Any, b: Any) -> Any:
-        """Add (or take the larger of) two accumulated weights; an unreachable one stays so."""
-        with np.errstate(over="ignore"):
-            return np.maximum(a, b) if self.use_max else a + b
-
-    def triangle(self, a: np.ndarray, b: np.ndarray, c: np.ndarray) -> np.ndarray:
-        """Evaluate the triangle term of each ``(a, b, c)``."""
-        assert self.triangle_term is not None
-        return self.triangle_term(a, b, c)
-
-    def edge(self, a: np.ndarray, b: np.ndarray, lft: np.ndarray, rgt: np.ndarray) -> np.ndarray:
-        """Evaluate the term of each edge ``a b`` between triangles reaching ``lft``, ``rgt``."""
-        assert self.edge_term is not None
-        return self.edge_term(a, b, lft, rgt)
+def combine(metric: Metric, a: Any, b: Any) -> Any:
+    """Add (or take the larger of) two accumulated weights; an unreachable one stays so."""
+    with np.errstate(over="ignore"):
+        return np.maximum(a, b) if metric.use_max else a + b
 
 
 def _f64(points: np.ndarray, i: np.ndarray) -> np.ndarray:
@@ -1095,7 +1026,7 @@ def fill_metric(name: str, topology: Topology, points: np.ndarray, rim_edge: int
         return Metric(triangle=_circumscribed(points), kernel_id=0)
     if name in ("plane", "plane_normalized"):
         n = np.zeros(3)
-        for e in topology.left_ring(rim_edge):
+        for e in left_ring(topology, rim_edge):
             o = points[topology.org[e]].astype(np.float64)
             d = points[topology.org[e ^ 1]].astype(np.float64)
             n = n + _cross(o, d)
@@ -1118,7 +1049,7 @@ def fill_metric(name: str, topology: Topology, points: np.ndarray, rim_edge: int
         return Metric(edge=_max_dihedral_edge(points), use_max=True)
     if name == "complex_fill":
         longest = F32(0)
-        for e in topology.left_ring(rim_edge):
+        for e in left_ring(topology, rim_edge):
             v = points[topology.org[e ^ 1]] - points[topology.org[e]]
             longest = max(longest, F32(_lsq(v)))
         inverse = F32(1) / longest if longest > 0 else F32(1)
@@ -1170,12 +1101,12 @@ def _apex_offsets(steps: int, max_subdivisions: int) -> list[int]:
 
 def hole_representatives(topology: Topology) -> list[int]:
     """Return the lowest half-edge of every hole (no left face), in increasing order."""
-    seen = [False] * topology.edge_count()
+    seen = [False] * topology.size("nxt")
     out: list[int] = []
-    for e in range(topology.edge_count()):
+    for e in range(topology.size("nxt")):
         if seen[e] or topology.lft[e] >= 0 or topology.org[e] < 0:
             continue
-        for i in topology.left_ring(e):
+        for i in left_ring(topology, e):
             seen[i] = True
         out.append(e)
     return out
@@ -1225,7 +1156,8 @@ def plan_fill(
     linked: list[set[int]] = []
     if avoid_existing:
         for e in loop:
-            linked.append({org[i ^ 1] for i in topology.org_ring(e)})
+            linked.append({org[i ^ 1] for i in org_ring(topology, e)})
+    triangle, edge = metric.triangle, metric.edge
     native = metric.kernel_id >= 0 and points is not None and device is not None
     if native:
         assert points is not None
@@ -1242,22 +1174,18 @@ def plan_fill(
         i_idx = np.repeat(rows, offsets.size)
         c_idx = np.repeat(ends, offsets.size)
         v_idx = (i_idx + 1 + np.tile(offsets, n)) % n
-        w = metric.combine(weight[i_idx, v_idx], weight[v_idx, c_idx])
+        w = combine(metric, weight[i_idx, v_idx], weight[v_idx, c_idx])
         va, vv, vc = vert[i_idx], vert[v_idx], vert[c_idx]
         with np.errstate(over="ignore", invalid="ignore"):
-            if metric.has_triangle:
-                w = metric.combine(w, metric.triangle(va, vv, vc))
-            if metric.has_edge:
+            if triangle is not None:
+                w = combine(metric, w, triangle(va, vv, vc))
+            if edge is not None:
                 left = _apex_vertex(apex[i_idx, v_idx], vert, across[i_idx], smooth_rim)
                 right = _apex_vertex(apex[v_idx, c_idx], vert, across[v_idx], smooth_rim)
                 has = left >= 0
-                w = np.where(
-                    has, metric.combine(w, metric.edge(va, vv, np.maximum(left, 0), vc)), w
-                )
+                w = np.where(has, combine(metric, w, edge(va, vv, np.maximum(left, 0), vc)), w)
                 has = right >= 0
-                w = np.where(
-                    has, metric.combine(w, metric.edge(vv, vc, np.maximum(right, 0), va)), w
-                )
+                w = np.where(has, combine(metric, w, edge(vv, vc, np.maximum(right, 0), va)), w)
         w = np.where(va == vc, np.inf, w)
         w = np.where(np.isnan(w), np.inf, w).reshape(n, offsets.size)
         best = np.argmin(w, axis=1)
@@ -1270,8 +1198,8 @@ def plan_fill(
     fin = -1
     for i in range(n):
         c = (i + 2) % n
-        w = metric.combine(weight[i, c], weight[c, i])
-        if metric.has_edge:
+        w = combine(metric, weight[i, c], weight[c, i])
+        if edge is not None:
             lv = int(vert[apex[i, c]]) if apex[i, c] >= 0 else -1
             if lv < 0 and smooth_rim:
                 lv = int(across[i])
@@ -1279,11 +1207,11 @@ def plan_fill(
             if rv < 0 and smooth_rim:
                 rv = int(across[c])
             if lv >= 0 and rv >= 0:
-                term = metric.edge(
+                term = edge(
                     np.array([vert[i]]), np.array([vert[c]]), np.array([lv]), np.array([rv])
                 )[0]
                 with np.errstate(over="ignore", invalid="ignore"):
-                    w = metric.combine(w, term)
+                    w = combine(metric, w, term)
         if w < fin_w:
             fin_w = float(w)
             fin = i
@@ -1354,8 +1282,8 @@ def _fill_dp_on_device(
     dp.linked = wp.array(linked_flat, dtype=wp.int32, device=device)
     dp.offsets = wp.array(flat, dtype=wp.int32, device=device)
     dp.metric = metric.kernel_id
-    dp.has_triangle = int(metric.has_triangle)
-    dp.has_edge = int(metric.has_edge)
+    dp.has_triangle = int(metric.triangle is not None)
+    dp.has_edge = int(metric.edge is not None)
     dp.smooth_rim = int(smooth_rim)
     dp.normal = wp.vec3d(*(float(x) for x in metric.normal))
     dp.inverse_area = float(metric.inverse_area)
@@ -1417,7 +1345,7 @@ def execute_fill(
     """Create the chords and faces of ``plan`` in the hole left of ``a0``."""
     chords, n_tris = plan
     if not chords:
-        if topology.is_left_tri(a0):
+        if is_left_tri(topology, a0):
             f = topology.add_face()
             new_faces.append(f)
             topology.set_left(a0, f)
@@ -1443,18 +1371,18 @@ def cone_fill(topology: Topology, points: Points, a: int, new_faces: list[int]) 
     """Close the hole left of ``a`` with a fan around a new vertex at its rim's centroid."""
     total = np.zeros(3)
     degree = 0
-    for e in topology.left_ring(a):
+    for e in left_ring(topology, a):
         total = total + points.data[topology.org[e]].astype(np.float64)
         degree += 1
     center = (total * (1.0 / float(degree))).astype(np.float32)
     center_vert = topology.add_vert()
     if topology.vertex_rows is not None:
         row: dict[int, float] = {}
-        for e in topology.left_ring(a):
-            for v, w in topology.vertex_rows[topology.org[e]].items():
+        for e in left_ring(topology, a):
+            for v, w in _vertex_row(topology.vertex_rows, topology.org[e]).items():
                 row[v] = row.get(v, 0.0) + w / degree
-        topology.vertex_rows[center_vert] = row
-    points.set(center_vert, center)
+        topology.vertex_rows.replaced[center_vert] = row
+    set_point(points, center_vert, center)
     e0 = topology.make_edge()
     topology.splice(a, e0)
     last = e0
@@ -1498,7 +1426,7 @@ def fill_hole(
         topology.splice(a0, a1)
         topology.splice(a2, a1 ^ 1)
         return new_faces
-    arr = points.array()
+    arr = points.data[: points.size]
     plan = plan_fill(
         topology,
         a0,
@@ -1525,74 +1453,25 @@ def _in_region(topology: _Walk, e: int, region: set[int]) -> bool:
     return f >= 0 and f in region
 
 
-class _NativeMesh:
-    """A topology's lists copied into capacity-sized arrays a native kernel edits in place."""
+class _NativeMesh(NamedTuple):
+    """
+    A topology's lists copied into capacity-sized arrays a native kernel edits in place.
 
-    def __init__(
-        self,
-        topology: Topology,
-        points: Points | None,
-        *,
-        extra_half: int = 0,
-        extra_verts: int = 0,
-        extra_faces: int = 0,
-        region_flags: np.ndarray | None = None,
-        heap_cap: int = 1,
-        log_rows: int = 1,
-    ) -> None:
-        from ordito.kernels import holes as kernel_holes
+    ``mesh`` is the ``kernels/holes.SerialMesh`` over the same buffers, so the arrays read back
+    what the kernel wrote.
+    """
 
-        n_half = topology.edge_count()
-        n_verts = topology.vertex_count()
-        n_faces = topology.face_count()
-
-        def padded(name: str, size: int) -> np.ndarray:
-            values = topology.array(name)
-            out = np.full(size, -1, dtype=np.int32)
-            out[: values.shape[0]] = values
-            return out
-
-        half_cap = n_half + extra_half
-        vert_cap = n_verts + extra_verts
-        face_cap = n_faces + extra_faces
-        self.nxt = padded("nxt", half_cap)
-        self.prv = padded("prv", half_cap)
-        self.org = padded("org", half_cap)
-        self.lft = padded("lft", half_cap)
-        self.epv = padded("edge_per_vertex", vert_cap)
-        self.epf = padded("edge_per_face", face_cap)
-        self.region = (
-            np.zeros(face_cap, dtype=np.int32) if region_flags is None else region_flags.copy()
-        )
-        self.positions = np.zeros((vert_cap if points is not None else 1, 3), dtype=np.float32)
-        if points is not None:
-            self.positions[: points.size] = points.array()
-        self.counts = np.array([n_half, n_verts, n_faces, 0, 0, 0], dtype=np.int32)
-        self.log = np.full((log_rows, 7), -1, dtype=np.int32)
-        mesh = kernel_holes.SerialMesh()
-        mesh.nxt = wp.array(self.nxt, dtype=wp.int32, device="cpu", copy=False)
-        mesh.prv = wp.array(self.prv, dtype=wp.int32, device="cpu", copy=False)
-        mesh.org = wp.array(self.org, dtype=wp.int32, device="cpu", copy=False)
-        mesh.lft = wp.array(self.lft, dtype=wp.int32, device="cpu", copy=False)
-        mesh.edge_per_vertex = wp.array(self.epv, dtype=wp.int32, device="cpu", copy=False)
-        mesh.edge_per_face = wp.array(self.epf, dtype=wp.int32, device="cpu", copy=False)
-        mesh.region = wp.array(self.region, dtype=wp.int32, device="cpu", copy=False)
-        mesh.points = wp.array(self.positions, dtype=wp.vec3, device="cpu", copy=False)
-        mesh.counts = wp.array(self.counts, dtype=wp.int32, device="cpu", copy=False)
-        mesh.heap_len = wp.array(np.empty(heap_cap, dtype=np.float32), device="cpu", copy=False)
-        mesh.heap_edge = wp.array(np.empty(heap_cap, dtype=np.int32), device="cpu", copy=False)
-        mesh.log = wp.array(self.log, dtype=wp.int32, device="cpu", copy=False)
-        self.mesh = mesh
-
-    def store(self, topology: Topology) -> None:
-        """Hand the edited arrays back to ``topology``, cut to their counts."""
-        n_half, n_verts, n_faces = (int(x) for x in self.counts[:3])
-        topology.set_array("nxt", self.nxt[:n_half].copy())
-        topology.set_array("prv", self.prv[:n_half].copy())
-        topology.set_array("org", self.org[:n_half].copy())
-        topology.set_array("lft", self.lft[:n_half].copy())
-        topology.set_array("edge_per_vertex", self.epv[:n_verts].copy())
-        topology.set_array("edge_per_face", self.epf[:n_faces].copy())
+    nxt: np.ndarray
+    prv: np.ndarray
+    org: np.ndarray
+    lft: np.ndarray
+    epv: np.ndarray
+    epf: np.ndarray
+    region: np.ndarray
+    positions: np.ndarray
+    counts: np.ndarray
+    log: np.ndarray
+    mesh: object
 
 
 def subdivide(
@@ -1616,12 +1495,12 @@ def subdivide(
 
     if max_splits <= 0:
         return 0
-    n_faces = topology.face_count()
+    n_faces = topology.size("edge_per_face")
     flags = np.zeros(n_faces + 2 * max_splits, dtype=np.int32)
     flags[[f for f in region if topology.edge_per_face[f] >= 0]] = 1
-    heap_cap = topology.edge_count() // 2 + 32 * max_splits
+    heap_cap = topology.size("nxt") // 2 + 32 * max_splits
     while True:
-        native = _NativeMesh(
+        native = _native_mesh(
             topology,
             points,
             extra_half=6 * max_splits,
@@ -1641,7 +1520,7 @@ def subdivide(
             break
         heap_cap *= 4  # the queue outgrew its capacity: rerun from the untouched lists
 
-    native.store(topology)
+    _store_native(native, topology)
     n_verts, n_faces, splits = int(native.counts[1]), int(native.counts[2]), int(native.counts[4])
     points.data = native.positions
     points.size = n_verts
@@ -1659,14 +1538,75 @@ def subdivide(
                 source[face_r] = source[parent_r]
     if topology.vertex_rows is not None:
         rows = topology.vertex_rows
-        rows.extend_to(n_verts)
         for o, d, vert, *_ in log.tolist():
-            row: dict[int, float] = {}
-            for end in (o, d):
-                for v, w in rows[end].items():
-                    row[v] = row.get(v, 0.0) + 0.5 * w
-            rows[vert] = row
+            rows.replaced[vert] = _midpoint_row(rows, o, d)
     return splits
+
+
+def _native_mesh(
+    topology: Topology,
+    points: Points | None,
+    *,
+    extra_half: int = 0,
+    extra_verts: int = 0,
+    extra_faces: int = 0,
+    region_flags: np.ndarray | None = None,
+    heap_cap: int = 1,
+    log_rows: int = 1,
+) -> _NativeMesh:
+    """Copy ``topology`` (and ``points``) into arrays with room for the given extra elements."""
+    from ordito.kernels import holes as kernel_holes
+
+    n_half = topology.size("nxt")
+    n_verts = topology.size("edge_per_vertex")
+    n_faces = topology.size("edge_per_face")
+
+    def padded(name: str, size: int) -> np.ndarray:
+        values = topology.array(name)
+        out = np.full(size, -1, dtype=np.int32)
+        out[: values.shape[0]] = values
+        return out
+
+    half_cap = n_half + extra_half
+    vert_cap = n_verts + extra_verts
+    face_cap = n_faces + extra_faces
+    nxt = padded("nxt", half_cap)
+    prv = padded("prv", half_cap)
+    org = padded("org", half_cap)
+    lft = padded("lft", half_cap)
+    epv = padded("edge_per_vertex", vert_cap)
+    epf = padded("edge_per_face", face_cap)
+    region = np.zeros(face_cap, dtype=np.int32) if region_flags is None else region_flags.copy()
+    positions = np.zeros((vert_cap if points is not None else 1, 3), dtype=np.float32)
+    if points is not None:
+        positions[: points.size] = points.data[: points.size]
+    counts = np.array([n_half, n_verts, n_faces, 0, 0, 0], dtype=np.int32)
+    log = np.full((log_rows, 7), -1, dtype=np.int32)
+    mesh = kernel_holes.SerialMesh()
+    mesh.nxt = wp.array(nxt, dtype=wp.int32, device="cpu", copy=False)
+    mesh.prv = wp.array(prv, dtype=wp.int32, device="cpu", copy=False)
+    mesh.org = wp.array(org, dtype=wp.int32, device="cpu", copy=False)
+    mesh.lft = wp.array(lft, dtype=wp.int32, device="cpu", copy=False)
+    mesh.edge_per_vertex = wp.array(epv, dtype=wp.int32, device="cpu", copy=False)
+    mesh.edge_per_face = wp.array(epf, dtype=wp.int32, device="cpu", copy=False)
+    mesh.region = wp.array(region, dtype=wp.int32, device="cpu", copy=False)
+    mesh.points = wp.array(positions, dtype=wp.vec3, device="cpu", copy=False)
+    mesh.counts = wp.array(counts, dtype=wp.int32, device="cpu", copy=False)
+    mesh.heap_len = wp.array(np.empty(heap_cap, dtype=np.float32), device="cpu", copy=False)
+    mesh.heap_edge = wp.array(np.empty(heap_cap, dtype=np.int32), device="cpu", copy=False)
+    mesh.log = wp.array(log, dtype=wp.int32, device="cpu", copy=False)
+    return _NativeMesh(nxt, prv, org, lft, epv, epf, region, positions, counts, log, mesh)
+
+
+def _store_native(native: _NativeMesh, topology: Topology) -> None:
+    """Hand the edited arrays back to ``topology``, cut to their counts."""
+    n_half, n_verts, n_faces = (int(x) for x in native.counts[:3])
+    topology.set_array("nxt", native.nxt[:n_half].copy())
+    topology.set_array("prv", native.prv[:n_half].copy())
+    topology.set_array("org", native.org[:n_half].copy())
+    topology.set_array("lft", native.lft[:n_half].copy())
+    topology.set_array("edge_per_vertex", native.epv[:n_verts].copy())
+    topology.set_array("edge_per_face", native.epf[:n_faces].copy())
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1676,13 +1616,13 @@ def subdivide(
 
 def _vertex_on_hole(topology: _Walk, v: int) -> bool:
     e0 = topology.edge_per_vertex[v]
-    return e0 >= 0 and any(topology.lft[e] < 0 for e in topology.org_ring(e0))
+    return e0 >= 0 and any(topology.lft[e] < 0 for e in org_ring(topology, e0))
 
 
 def _neighbours(topology: _Walk, v: int) -> Iterator[int]:
     e0 = topology.edge_per_vertex[v]
     if e0 >= 0:
-        for e in topology.org_ring(e0):
+        for e in org_ring(topology, e0):
             yield topology.org[e ^ 1]
 
 
@@ -1730,12 +1670,15 @@ _DENSE_SOLVE_MAX = 400
 _DENSE_DEVICE_SOLVE_MAX = 1536
 
 
-class _HeldFactor:
-    """A sparse factorization a loop of solves over one pattern refactors instead of rebuilding."""
+class _HeldFactor(NamedTuple):
+    """
+    A sparse factorization a loop of solves over one pattern refactors instead of rebuilding.
 
-    def __init__(self) -> None:
-        self.factor: Any = None
-        self.keys = np.empty(0, dtype=np.int64)
+    ``factor`` is ``None`` until the first sparse solve; ``keys`` are its pattern's entry keys.
+    """
+
+    factor: Any
+    keys: np.ndarray
 
 
 def _solve_spd(
@@ -1746,19 +1689,20 @@ def _solve_spd(
     rhs: np.ndarray,
     device: wp.DeviceLike,
     reuse: _HeldFactor | None = None,
-) -> np.ndarray:
+) -> tuple[np.ndarray, _HeldFactor | None]:
     """
     Solve the symmetric positive definite system given by COO entries, for ``(n, k)`` columns.
 
     A direct solve in ``float64``: dense on the host for a small system or without a device, dense
     on a CUDA ``device`` up to ``_DENSE_DEVICE_SOLVE_MAX`` unknowns (unless ``reuse`` asks for a
     factorization kept across a loop), otherwise a sparse Cholesky factorization on ``device``,
-    refined, and refactored in place when ``reuse`` holds one of the same pattern.
+    refined, and refactored in place when ``reuse`` holds one of the same pattern. Returns the
+    solution and what to pass as ``reuse`` to the next solve of the loop (``None`` without one).
     """
     if device is None or n <= _DENSE_SOLVE_MAX:
         a = np.zeros((n, n))
         np.add.at(a, (rows, cols), vals)
-        return np.linalg.solve(a, rhs)
+        return np.linalg.solve(a, rhs), reuse
     import ordito as od
     import ordito.typing as odt
     from ordito._common import read_array
@@ -1768,7 +1712,7 @@ def _solve_spd(
     values = np.bincount(inverse, weights=vals, minlength=unique.size)
     resolved = wp.get_device(device)
     if resolved.is_cuda and reuse is None and n <= _DENSE_DEVICE_SOLVE_MAX and rhs.shape[1] <= 3:
-        return _dense_solve_on_device(unique, values, n, rhs, resolved)
+        return _dense_solve_on_device(unique, values, n, rhs, resolved), reuse
     offsets = np.searchsorted(unique // n, np.arange(n + 1)).astype(np.int32)
     matrix = od.array.bsr_from_csr(
         n,
@@ -1784,43 +1728,13 @@ def _solve_spd(
     else:
         factor = od.cholesky.sparse_cholesky(matrix)
         if reuse is not None:
-            reuse.factor, reuse.keys = factor, unique
+            reuse = _HeldFactor(factor, unique)
     columns = np.ascontiguousarray(rhs.T)
     rhs_wp = odt.as_array2d(wp.array(columns, dtype=wp.float64, device=device), wp.float64)
     solution = odt.as_array2d(wp.zeros(columns.shape, dtype=wp.float64, device=device), wp.float64)
     factor.solve(rhs_wp, solution, tol=1e-15)
     # The answer feeds the host pipeline's next serial step.
-    return read_array(solution).T
-
-
-class _Lists:
-    """
-    Reads of a topology's half-edge lists for one solve, by whichever way costs less.
-
-    A solve touching a large share of the half-edges converts each list it reads once; a solve
-    confined to a small region reads only the entries it touches.
-    """
-
-    # Converting a list costs about a quarter of what reading its entries one by one does.
-    _WHOLE_FROM_SHARE = 0.25
-
-    def __init__(self, topology: Topology, n_touched: int) -> None:
-        self.topology = topology
-        self.whole = n_touched >= self._WHOLE_FROM_SHARE * topology.edge_count()
-        self.arrays: dict[str, np.ndarray] = {}
-
-    def take(self, name: str, index: np.ndarray) -> np.ndarray:
-        """``getattr(topology, name)[index]``."""
-        held = self.topology._arrays.get(name)  # pyright: ignore[reportPrivateUsage]
-        if held is not None:
-            return held[index].astype(np.int64)
-        values: list[int] = getattr(self.topology, name)
-        if not self.whole:
-            return np.array(list(map(values.__getitem__, index.tolist())), dtype=np.int64)
-        array = self.arrays.get(name)
-        if array is None:
-            array = self.arrays[name] = np.asarray(values, dtype=np.int64)
-        return array[index]
+    return read_array(solution).T, reuse
 
 
 def _dense_solve_on_device(
@@ -1892,44 +1806,35 @@ def _dense_solve_on_device(
     return read_array(x)[:n, : rhs.shape[1]]
 
 
-class _Rings:
+class _Lists(NamedTuple):
+    """
+    Reads of a topology's half-edge lists for one solve, by whichever way costs less.
+
+    A solve touching a large share of the half-edges (``whole``) converts each list it reads once,
+    into ``arrays``; a solve confined to a small region reads only the entries it touches.
+    """
+
+    topology: Topology
+    whole: bool
+    arrays: dict[str, np.ndarray]
+
+
+class _Rings(NamedTuple):
     """
     Every listed vertex's ring of half-edges, walked in step.
 
     ``rows`` / ``edges`` list each ring's half-edges from the vertex's stored edge onward, rows in
     the order given and each row in ring order; ``step`` is an entry's position in its ring, so a
-    sum taken step by step adds each row's terms in ring order.
+    sum taken step by step adds each row's terms in ring order. ``dest`` is each entry's
+    destination vertex and ``counts`` each row's length.
     """
 
-    def __init__(self, topology: Topology, verts: np.ndarray) -> None:
-        # About seven half-edges leave a vertex, and a cotangent reads four lists of each.
-        self.lists = lists = _Lists(topology, 7 * 4 * verts.size)
-        start = lists.take("edge_per_vertex", verts)
-        rows_by_step: list[np.ndarray] = []
-        edges_by_step: list[np.ndarray] = []
-        row = np.arange(verts.size)
-        cur = start
-        while row.size:
-            rows_by_step.append(row)
-            edges_by_step.append(cur)
-            cur = lists.take("nxt", cur)
-            more = cur != start[row]
-            row, cur = row[more], cur[more]
-        step = np.concatenate([np.full(r.size, k) for k, r in enumerate(rows_by_step)])
-        rows = np.concatenate(rows_by_step)
-        edges = np.concatenate(edges_by_step)
-        order = np.lexsort((step, rows))
-        self.rows, self.edges, self.step = rows[order], edges[order], step[order]
-        self.dest = lists.take("org", self.edges ^ 1)
-        self.counts = np.bincount(self.rows, minlength=verts.size)
-
-    def sum_in_ring_order(self, terms: np.ndarray, n_rows: int) -> np.ndarray:
-        """Sum each row's ``terms`` (entries in row order) one ring step at a time."""
-        out = np.zeros((n_rows, *terms.shape[1:]))
-        for k in range(int(self.step.max()) + 1 if self.step.size else 0):
-            at = self.step == k
-            np.add.at(out, self.rows[at], terms[at])
-        return out
+    lists: _Lists
+    rows: np.ndarray
+    edges: np.ndarray
+    step: np.ndarray
+    dest: np.ndarray
+    counts: np.ndarray
 
 
 def umbrella_fixed_rim(
@@ -1939,27 +1844,81 @@ def umbrella_fixed_rim(
     if not verts:
         return
     verts_np = np.asarray(verts, dtype=np.int64)
-    rings = _Rings(topology, verts_np)
+    rings = _rings(topology, verts_np)
     data = points.data
-    index = np.full(topology.vertex_count(), -1, dtype=np.int64)
+    index = np.full(topology.size("edge_per_vertex"), -1, dtype=np.int64)
     index[verts_np] = np.arange(verts_np.size)
     col = index[rings.dest]
     free_nbr = col >= 0
     fixed_terms = np.where(free_nbr[:, None], 0.0, data[rings.dest].astype(np.float64))
-    rhs = rings.sum_in_ring_order(fixed_terms, verts_np.size)
+    rhs = _sum_in_ring_order(rings, fixed_terms, verts_np.size)
     rows = np.concatenate((rings.rows[free_nbr], np.arange(verts_np.size)))
     cols = np.concatenate((col[free_nbr], np.arange(verts_np.size)))
     vals = np.concatenate((np.full(int(free_nbr.sum()), -1.0), rings.counts.astype(np.float64)))
-    x = _solve_spd(rows, cols, vals, verts_np.size, rhs, device)
+    x, _ = _solve_spd(rows, cols, vals, verts_np.size, rhs, device)
     data[verts_np] = x.astype(np.float32)
+
+
+def _rings(topology: Topology, verts: np.ndarray) -> _Rings:
+    # About seven half-edges leave a vertex, and a cotangent reads four lists of each.
+    lists = _lists(topology, 7 * 4 * verts.size)
+    start = _take(lists, "edge_per_vertex", verts)
+    rows_by_step: list[np.ndarray] = []
+    edges_by_step: list[np.ndarray] = []
+    row = np.arange(verts.size)
+    cur = start
+    while row.size:
+        rows_by_step.append(row)
+        edges_by_step.append(cur)
+        cur = _take(lists, "nxt", cur)
+        more = cur != start[row]
+        row, cur = row[more], cur[more]
+    step = np.concatenate([np.full(r.size, k) for k, r in enumerate(rows_by_step)])
+    rows = np.concatenate(rows_by_step)
+    edges = np.concatenate(edges_by_step)
+    order = np.lexsort((step, rows))
+    rows, edges, step = rows[order], edges[order], step[order]
+    dest = _take(lists, "org", edges ^ 1)
+    return _Rings(lists, rows, edges, step, dest, np.bincount(rows, minlength=verts.size))
+
+
+def _sum_in_ring_order(rings: _Rings, terms: np.ndarray, n_rows: int) -> np.ndarray:
+    """Sum each row's ``terms`` (entries in row order) one ring step at a time."""
+    out = np.zeros((n_rows, *terms.shape[1:]))
+    for k in range(int(rings.step.max()) + 1 if rings.step.size else 0):
+        at = rings.step == k
+        np.add.at(out, rings.rows[at], terms[at])
+    return out
+
+
+# Converting a list costs about a quarter of what reading its entries one by one does.
+_WHOLE_FROM_SHARE = 0.25
+
+
+def _lists(topology: Topology, n_touched: int) -> _Lists:
+    return _Lists(topology, n_touched >= _WHOLE_FROM_SHARE * topology.size("nxt"), {})
+
+
+def _take(lists: _Lists, name: str, index: np.ndarray) -> np.ndarray:
+    """``getattr(topology, name)[index]``."""
+    held = lists.topology.held.get(name)
+    if held is not None:
+        return held[index].astype(np.int64)
+    values: list[int] = getattr(lists.topology, name)
+    if not lists.whole:
+        return np.array(list(map(values.__getitem__, index.tolist())), dtype=np.int64)
+    array = lists.arrays.get(name)
+    if array is None:
+        array = lists.arrays[name] = np.asarray(values, dtype=np.int64)
+    return array[index]
 
 
 def _left_cotans(lists: _Lists, data: np.ndarray, edges: np.ndarray) -> np.ndarray:
     """Each half-edge's cotangent of the angle opposite it in its left triangle, 0 with none."""
-    has = lists.take("lft", edges) >= 0
-    a = lists.take("org", edges)
-    b = lists.take("org", edges ^ 1)
-    c = lists.take("org", lists.take("prv", edges ^ 1) ^ 1)
+    has = _take(lists, "lft", edges) >= 0
+    a = _take(lists, "org", edges)
+    b = _take(lists, "org", edges ^ 1)
+    c = _take(lists, "org", _take(lists, "prv", edges ^ 1) ^ 1)
     u = data[a] - data[c]
     w = data[b] - data[c]
     nom = _dot(u, w)
@@ -1978,23 +1937,23 @@ def _laplacian_least_squares(
     cotan: bool,
     device: wp.DeviceLike,
     reuse: _HeldFactor | None = None,
-) -> np.ndarray:
+) -> tuple[np.ndarray, _HeldFactor | None]:
     """
     Solve for the free values in the least-squares sense, the first ring's ``values`` held fixed.
 
     Every free vertex and every vertex of their first ring is asked to sit at the weighted mean of
     its neighbours. ``values`` is ``(n_vertices, k)``; weights are clamped cotangents (or ones),
     each row scaled by the reciprocal of its weight sum, and a row whose weights sum to zero is
-    dropped.
+    dropped. Returns the solution and the factorization to reuse (``_solve_spd``).
     """
     n_free = len(free_list)
     free_np = np.asarray(free_list, dtype=np.int64)
-    free_rings = _Rings(topology, free_np)
-    is_free = np.zeros(topology.vertex_count(), dtype=bool)
+    free_rings = _rings(topology, free_np)
+    is_free = np.zeros(topology.size("edge_per_vertex"), dtype=bool)
     is_free[free_np] = True
     first_layer = np.unique(free_rings.dest[~is_free[free_rings.dest]])
     order = np.concatenate((free_np, first_layer))
-    rings = _Rings(topology, order)
+    rings = _rings(topology, order)
     edges = rings.edges
     if cotan:
         both = _left_cotans(rings.lists, data, edges) + _left_cotans(rings.lists, data, edges ^ 1)
@@ -2002,7 +1961,7 @@ def _laplacian_least_squares(
     else:
         weights = np.ones(edges.size)
     dest = rings.dest
-    totals_np = rings.sum_in_ring_order(weights, order.size)
+    totals_np = _sum_in_ring_order(rings, weights, order.size)
     keep_row = totals_np != 0
     scale = np.where(keep_row, 1.0 / np.where(keep_row, totals_np, 1.0), 0.0)
     row_of_entry = rings.rows
@@ -2010,7 +1969,7 @@ def _laplacian_least_squares(
     kept_rows = np.flatnonzero(keep_row)
     row_id = np.full(order.size, -1, dtype=np.int64)
     row_id[kept_rows] = np.arange(kept_rows.size)
-    index = np.full(topology.vertex_count(), -1, dtype=np.int64)
+    index = np.full(topology.size("edge_per_vertex"), -1, dtype=np.int64)
     index[free_np] = np.arange(n_free)
     free_col = index[dest]
     entry_ok = keep_row[row_of_entry]
@@ -2060,7 +2019,7 @@ def cotan_fairing(
         return
     data = points.data
     free_list = sorted(verts)
-    x = _laplacian_least_squares(
+    x, _ = _laplacian_least_squares(
         topology, data, free_list, data[: points.size].astype(np.float64), cotan, device
     )
     data[np.array(free_list)] = x.astype(np.float32)
@@ -2077,7 +2036,7 @@ def smooth_patch(
     device: wp.DeviceLike = None,
 ) -> None:
     """Smooth the refined patch's new interior vertices, and its collar when ``natural``."""
-    walk = topology.reader()
+    walk = reader(topology)
     verts = sorted(v for v in set(new_verts) if not _vertex_on_hole(walk, v))
     umbrella_fixed_rim(topology, points, verts, device)
     if not smooth_rim:
@@ -2090,7 +2049,7 @@ def smooth_patch(
         e0 = topology.edge_per_face[f]
         if e0 < 0:
             continue
-        for e in topology.left_ring(e0):
+        for e in left_ring(topology, e0):
             g = topology.lft[e ^ 1]
             if g >= 0 and g not in new_faces:
                 incident.add(topology.org[e])
@@ -2107,61 +2066,6 @@ def smooth_patch(
 # ---------------------------------------------------------------------------------------------
 # Stitching two holes with a band: a best-first search over rim position pairs
 # ---------------------------------------------------------------------------------------------
-
-
-class _StdHeap:
-    """
-    A max-heap on the first tuple field whose sift order is the standard library's.
-
-    Equal keys pop in the order ``std::priority_queue`` pops them, which the band search's result
-    can depend on; the items are ``(weight, a, b, prev_a, prev_b)`` and the largest-priority item
-    is the lightest.
-    """
-
-    def __init__(self) -> None:
-        self.c: list[tuple[float, int, int, int, int]] = []
-
-    def push(self, value: tuple[float, int, int, int, int]) -> None:
-        """Insert ``value``."""
-        c = self.c
-        c.append(value)
-        self._sift_up(len(c) - 1, value)
-
-    def _sift_up(self, hole: int, value: tuple[float, int, int, int, int]) -> None:
-        c = self.c
-        parent = (hole - 1) // 2
-        while hole > 0 and c[parent][0] > value[0]:
-            c[hole] = c[parent]
-            hole = parent
-            parent = (hole - 1) // 2
-        c[hole] = value
-
-    def pop(self) -> tuple[float, int, int, int, int]:
-        """Remove and return the lightest item."""
-        c = self.c
-        top = c[0]
-        last = len(c) - 1
-        value = c[last]
-        c[last] = c[0]
-        length = last
-        hole = 0
-        second = 0
-        while second < (length - 1) // 2:
-            second = 2 * (second + 1)
-            if c[second][0] > c[second - 1][0]:
-                second -= 1
-            c[hole] = c[second]
-            hole = second
-        if (length & 1) == 0 and second == (length - 2) // 2:
-            second = 2 * (second + 1)
-            c[hole] = c[second - 1]
-            hole = second - 1
-        self._sift_up(hole, value)
-        c.pop()
-        return top
-
-    def __bool__(self) -> bool:
-        return bool(self.c)
 
 
 def stitch_holes(topology: Topology, points: Points, a0: int, b0: int, metric: Metric) -> list[int]:
@@ -2203,7 +2107,7 @@ def stitch_holes(topology: Topology, points: Points, a0: int, b0: int, metric: M
     if metric.band_id >= 0:
         closing = (
             _band_closing_terms(topology, a_map, b_map, metric)
-            if metric.has_edge
+            if metric.edge is not None
             else np.zeros((2, 2))
         )
         native = _band_search_native(
@@ -2213,9 +2117,7 @@ def stitch_holes(topology: Topology, points: Points, a0: int, b0: int, metric: M
         prev_a, prev_b = (t.tolist() for t in native)
     else:
         terms = _band_terms(topology, a_map, b_map, metric)
-        prev_a, prev_b = _band_search(
-            na, nb, start, terms, metric, _StdHeap(), topology, a_map, b_map
-        )
+        prev_a, prev_b = _band_search(na, nb, start, terms, metric, topology, a_map, b_map)
 
     def has_prev(x: int, y: int) -> bool:
         return prev_a[x][y] != -1 and prev_b[x][y] != -1
@@ -2273,19 +2175,20 @@ def _band_terms(
     ga, gb = np.meshgrid(np.arange(na + 1), np.arange(nb + 1), indexing="ij")
     a0, b0 = av[ga % na], bv[gb % nb]
     a1, b1 = av[(ga + 1) % na], bv[(gb + 1) % nb]
+    triangle, edge = metric.triangle, metric.edge
     tri = closing = opening = has_opening = None
     with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
-        if metric.has_triangle:
-            tri = np.stack((metric.triangle(a0, b0, a1), metric.triangle(a0, b0, b1)))
-        if metric.has_edge:
+        if triangle is not None:
+            tri = np.stack((triangle(a0, b0, a1), triangle(a0, b0, b1)))
+        if edge is not None:
             from_a = av[(ga - 1) % na]
             from_b = bv[(gb - 1) % nb]
             closing = np.stack(
                 (
-                    metric.edge(a0, b0, from_a, a1),
-                    metric.edge(a0, b0, from_b, a1),
-                    metric.edge(a0, b0, from_a, b1),
-                    metric.edge(a0, b0, from_b, b1),
+                    edge(a0, b0, from_a, a1),
+                    edge(a0, b0, from_b, a1),
+                    edge(a0, b0, from_a, b1),
+                    edge(a0, b0, from_b, b1),
                 )
             )
 
@@ -2299,10 +2202,7 @@ def _band_terms(
             op_a = across(a_map, ga % na)
             op_b = across(b_map, (gb + 1) % nb)
             opening = np.stack(
-                (
-                    metric.edge(a1, a0, np.maximum(op_a, 0), b0),
-                    metric.edge(b0, b1, np.maximum(op_b, 0), a0),
-                )
+                (edge(a1, a0, np.maximum(op_a, 0), b0), edge(b0, b1, np.maximum(op_b, 0), a0))
             )
             has_opening = np.stack((op_a >= 0, op_b >= 0))
     return _BandTerms(tri, closing, opening, has_opening)
@@ -2390,7 +2290,6 @@ def _band_search(
     start: float,
     terms: _BandTerms,
     metric: Metric,
-    heap: _StdHeap,
     topology: Topology,
     a_map: list[int],
     b_map: list[int],
@@ -2419,9 +2318,10 @@ def _band_search(
             for k in (0, 1)
         ]
     use_max = metric.use_max
-    heap.push((start, 0, 0, -1, -1))
+    heap: list[_HeapItem] = []
+    _heap_push(heap, (start, 0, 0, -1, -1))
     while heap:
-        w, a, b, pa, pb = heap.pop()
+        w, a, b, pa, pb = _heap_pop(heap)
         if a == na and b == nb:
             break
         came = -1
@@ -2450,13 +2350,59 @@ def _band_search(
             weight[xa][xb] = total
             prev_a[xa][xb] = a
             prev_b[xa][xb] = b
-            if xa == na and xb == nb and metric.has_edge:
+            if xa == na and xb == nb and metric.edge is not None:
                 total = _band_closing(
                     weight, prev_a, prev_b, topology, a_map, b_map, metric, k, a, b
                 )
                 weight[xa][xb] = total
-            heap.push((total, xa, xb, a, b))
+            _heap_push(heap, (total, xa, xb, a, b))
     return prev_a, prev_b
+
+
+# The band search's queue is a list kept as a binary heap by the two functions below, a min-heap on
+# the weight whose sifts are ``std::priority_queue``'s, so equal weights pop in the order the
+# reference pops them, which the band search's result can depend on. ``heapq`` sifts the same way
+# but orders by the whole tuple, breaking a weight tie on the state, which no key added to the
+# items can undo: the reference's tie order is a property of the heap's shape, not of the items.
+_HeapItem = tuple[float, int, int, int, int]  # (weight, a, b, prev_a, prev_b)
+
+
+def _heap_push(c: list[_HeapItem], value: _HeapItem) -> None:
+    c.append(value)
+    _sift_up(c, len(c) - 1, value)
+
+
+def _heap_pop(c: list[_HeapItem]) -> _HeapItem:
+    """Remove and return the lightest item."""
+    top = c[0]
+    last = len(c) - 1
+    value = c[last]
+    c[last] = c[0]
+    length = last
+    hole = 0
+    second = 0
+    while second < (length - 1) // 2:
+        second = 2 * (second + 1)
+        if c[second][0] > c[second - 1][0]:
+            second -= 1
+        c[hole] = c[second]
+        hole = second
+    if (length & 1) == 0 and second == (length - 2) // 2:
+        second = 2 * (second + 1)
+        c[hole] = c[second - 1]
+        hole = second - 1
+    _sift_up(c, hole, value)
+    c.pop()
+    return top
+
+
+def _sift_up(c: list[_HeapItem], hole: int, value: _HeapItem) -> None:
+    parent = (hole - 1) // 2
+    while hole > 0 and c[parent][0] > value[0]:
+        c[hole] = c[parent]
+        hole = parent
+        parent = (hole - 1) // 2
+    c[hole] = value
 
 
 def _band_closing(
@@ -2487,7 +2433,8 @@ def _band_closing(
     return float(max(w, term) if metric.use_max else w + term)
 
 
-def _scalar(fn: Callable[..., np.ndarray], *verts: int) -> float:
+def _scalar(fn: Term | None, *verts: int) -> float:
+    assert fn is not None
     return float(fn(*(np.array([v]) for v in verts))[0])
 
 
@@ -2519,7 +2466,7 @@ def _quad_bridge(topology: Topology, a: int, b: int, new_faces: list[int]) -> tu
         swapped = True
         a, b = b, a
     if topology.prv[a ^ 1] == b:
-        if not topology.is_left_tri(a):
+        if not is_left_tri(topology, a):
             b_dest = topology.org[b ^ 1]
             i = topology.nxt[a]
             while i != a:
@@ -2539,7 +2486,7 @@ def _quad_bridge(topology: Topology, a: int, b: int, new_faces: list[int]) -> tu
         return na, nb
     b_org, b_dest = topology.org[b], topology.org[b ^ 1]
     for start in (a, a ^ 1):
-        for e in topology.org_ring(start):
+        for e in org_ring(topology, start):
             if topology.org[e ^ 1] in (b_org, b_dest):
                 return na, nb
     c = topology.make_edge()
@@ -2650,7 +2597,7 @@ def smooth_bridge(topology: Topology, points: Points, a: int, b: int, step: floa
         return data[topology.org[e ^ 1]] - data[topology.org[e]]
 
     def left_tangent(e: int) -> np.ndarray:
-        x, y, z = topology.tri_verts(e)
+        x, y, z = tri_verts(topology, e)
         normal = _normalized(_cross(data[y] - data[x], data[z] - data[x]))
         return _cross(normal, _normalized(edge_vector(e)))
 
@@ -2690,17 +2637,17 @@ def smooth_bridge(topology: Topology, points: Points, a: int, b: int, step: floa
             if ca >= 0:
                 p = contour[i + 2] - (F32(0.5) * length) * normals[i + 2]
                 e = topology.split_edge(ca, region)
-                points.set(topology.org[ca], p)
+                set_point(points, topology.org[ca], p)
                 if topology.vertex_rows is not None:
-                    topology.vertex_rows[topology.org[ca]] = {}
+                    topology.vertex_rows.replaced[topology.org[ca]] = {}
                 if i == 0:
                     na = e
             if nb >= 0:
                 p = contour[i + 2] + (F32(0.5) * length) * normals[i + 2]
                 topology.split_edge(nb ^ 1, region)
-                points.set(topology.org[nb ^ 1], p)
+                set_point(points, topology.org[nb ^ 1], p)
                 if topology.vertex_rows is not None:
-                    topology.vertex_rows[topology.org[nb ^ 1]] = {}
+                    topology.vertex_rows.replaced[topology.org[nb ^ 1]] = {}
     new_faces = sorted(region)
     if ca >= 0 and _is_left_quad(topology, ca ^ 1):
         _split_quad(topology, topology.prv[ca], new_faces)
@@ -2720,12 +2667,12 @@ def smooth_region_rim(
     device: wp.DeviceLike = None,
 ) -> None:
     """Flip the rim band of the face ``region``, then slide its vertices onto a level set."""
-    n_verts = topology.vertex_count()
+    n_verts = topology.size("edge_per_vertex")
     if not any(region) or iterations <= 0:
         return
     from ordito.kernels import holes as kernel_holes
 
-    tris = topology.triangles()
+    tris = triangles(topology)
     region_np = np.asarray(region, dtype=bool)
     valid = (tris >= 0).all(axis=1)
     inside = np.zeros(n_verts, dtype=bool)
@@ -2737,7 +2684,7 @@ def smooth_region_rim(
     # A component whose every vertex is free would leave the system singular: fix it. A component
     # holding a fixed vertex is one where some free vertex has a fixed neighbour, so the search
     # stays inside the free set.
-    walk = topology.reader()
+    walk = reader(topology)
     seen: set[int] = set()
     for v in np.flatnonzero(free_mask).tolist():
         if v in seen:
@@ -2757,7 +2704,7 @@ def smooth_region_rim(
         if not touches_fixed:
             free_mask[group] = False
     free_list = np.flatnonzero(free_mask).astype(np.int32)
-    native = _NativeMesh(topology, points, region_flags=region_np.astype(np.int32))
+    native = _native_mesh(topology, points, region_flags=region_np.astype(np.int32))
     free_wp = wp.array(free_mask.astype(np.int32), dtype=wp.int32, device="cpu")
     free_list_wp = wp.array(free_list, dtype=wp.int32, device="cpu")
     wp.launch(
@@ -2766,7 +2713,7 @@ def smooth_region_rim(
         inputs=[native.mesh, free_wp, free_list_wp],
         device="cpu",
     )
-    native.store(topology)
+    _store_native(native, topology)
     points.data = native.positions
     data = points.data
     field_wp = wp.array(field, dtype=wp.float32, device="cpu", copy=False)
@@ -2774,9 +2721,9 @@ def smooth_region_rim(
     moved_wp = wp.array(moved, dtype=wp.vec3, device="cpu", copy=False)
     free_python = free_list.tolist()
     # Every iteration solves over the same pattern: only the cotangents move.
-    reuse = _HeldFactor()
+    reuse: _HeldFactor | None = _HeldFactor(None, np.empty(0, dtype=np.int64))
     for _ in range(iterations):
-        _harmonic_field(topology, data, free_python, field, device, reuse)
+        reuse = _harmonic_field(topology, data, free_python, field, device, reuse)
         if free_list.size:
             wp.launch(
                 kernel_holes.rim_slide,
@@ -2795,14 +2742,19 @@ def _harmonic_field(
     field: np.ndarray,
     device: wp.DeviceLike = None,
     reuse: _HeldFactor | None = None,
-) -> None:
-    """Least-squares cotangent-harmonic values of ``field`` at ``free_list``, the rest fixed."""
+) -> _HeldFactor | None:
+    """
+    Least-squares cotangent-harmonic values of ``field`` at ``free_list``, the rest fixed.
+
+    Returns the factorization to reuse for the next field over the same pattern.
+    """
     if not free_list:
-        return
-    x = _laplacian_least_squares(
+        return reuse
+    x, reuse = _laplacian_least_squares(
         topology, data, free_list, field.astype(np.float64)[:, None], True, device, reuse
     )
     field[np.array(free_list)] = x[:, 0].astype(np.float32)
+    return reuse
 
 
 # ---------------------------------------------------------------------------------------------
@@ -2821,11 +2773,11 @@ def region_boundary_loops(topology: Topology, region: set[int]) -> list[list[int
     # The left boundary edges, found in one vectorized pass: a left face in the region, the right
     # face not. Only these start a loop, in increasing id order as the full scan met them.
     lft = topology.array("lft").astype(np.int64)
-    in_region = np.zeros(topology.face_count() + 1, dtype=bool)
+    in_region = np.zeros(topology.size("edge_per_face") + 1, dtype=bool)
     in_region[np.fromiter(region, dtype=np.int64, count=len(region))] = True
     left_in = in_region[lft]  # an empty face (-1) reads the trailing False slot
     starts = np.flatnonzero(left_in & ~left_in[np.arange(lft.size) ^ 1])
-    walk = topology.reader()
+    walk = reader(topology)
     for e in starts.tolist():
         if e in reported:
             continue
@@ -2864,7 +2816,7 @@ def delete_region_keep_rims(topology: Topology, region: set[int]) -> list[list[i
     loops = region_boundary_loops(topology, region)
     kept: list[list[int]] = []
     keep_edges: set[int] = set()
-    lft = topology.reader().lft
+    lft = reader(topology).lft
     for loop in loops:
         if all(lft[x ^ 1] < 0 for x in loop):
             continue
@@ -2874,9 +2826,9 @@ def delete_region_keep_rims(topology: Topology, region: set[int]) -> list[list[i
 
     faces = np.array(sorted(region), dtype=np.int32)
     if faces.size:
-        keep = np.zeros(topology.edge_count() // 2, dtype=np.int32)
+        keep = np.zeros(topology.size("nxt") // 2, dtype=np.int32)
         keep[np.fromiter(keep_edges, dtype=np.int64, count=len(keep_edges))] = 1
-        native = _NativeMesh(topology, None)
+        native = _native_mesh(topology, None)
         wp.launch(
             kernel_holes.serial_delete_faces,
             dim=1,
@@ -2887,7 +2839,7 @@ def delete_region_keep_rims(topology: Topology, region: set[int]) -> list[list[i
             ],
             device="cpu",
         )
-        native.store(topology)
+        _store_native(native, topology)
     return kept
 
 
@@ -2919,18 +2871,36 @@ def _result(
     n_total = keep.size
     keep[:n_input] |= ~was_valid
     remap = np.cumsum(keep) - 1
-    tris = topology.triangles()
+    tris = triangles(topology)
     valid_face = (tris >= 0).all(axis=1)
     faces = remap[tris[valid_face]].astype(np.int32)
-    vertices = points.array()[:n_total][keep].copy()
+    vertices = points.data[: points.size][:n_total][keep].copy()
     in_patch = np.zeros(valid_face.size, dtype=bool)
     in_patch[np.fromiter(patch, dtype=np.int64, count=len(patch))] = True
     patch_mask = in_patch[valid_face]
     sources = weights = face_source = None
     if topology.vertex_rows is not None and topology.face_source is not None:
-        sources, weights = topology.vertex_rows.table(np.flatnonzero(keep))
+        sources, weights = _row_table(topology.vertex_rows, np.flatnonzero(keep))
         face_source = np.array(topology.face_source, dtype=np.int32)[valid_face]
     return Result(vertices, faces, patch_mask, sources, weights, face_source)
+
+
+def _row_table(rows: _VertexRows, kept: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """``(len(kept), width)`` sources (``-1`` padded) and weights of rows ``kept``."""
+    replaced = {r: rows.replaced[v] for r, v in enumerate(kept.tolist()) if v in rows.replaced}
+    width = max(1, max((len(row) for row in replaced.values()), default=1))
+    sources = np.full((kept.size, width), -1, dtype=np.int32)
+    weights = np.zeros((kept.size, width), dtype=np.float32)
+    own = kept < rows.n_identity
+    sources[own, 0] = kept[own]
+    weights[own, 0] = 1.0
+    for r, row in replaced.items():
+        sources[r] = -1
+        weights[r] = 0.0
+        for k, (v, w) in enumerate(sorted(row.items())):
+            sources[r, k] = v
+            weights[r, k] = w
+    return sources, weights
 
 
 def _start(
@@ -2960,9 +2930,10 @@ def _start(
         epv = np.concatenate((epv, np.full(n - epv.shape[0], -1, dtype=epv.dtype)))
         topology.set_array("edge_per_vertex", epv)
     if track:
-        topology.track(n)
+        topology.vertex_rows = _VertexRows(topology.size("edge_per_vertex"), {})
+        topology.face_source = list(range(topology.size("edge_per_face")))
     was_valid = epv[:n] >= 0
-    return topology, Points(vertices), was_valid
+    return topology, point_table(vertices), was_valid
 
 
 def _refine_and_smooth(
@@ -2987,7 +2958,7 @@ def _refine_and_smooth(
 
 
 def _loop_length(topology: Topology, data: np.ndarray, loop: list[int]) -> float:
-    org = topology.reader().org
+    org = reader(topology).org
     return sum(float(np.sqrt(_lsq(data[org[x ^ 1]] - data[org[x]]))) for x in loop)
 
 
@@ -3066,7 +3037,7 @@ def refill(
         target = max_edge
         if target is None or target <= 0:
             target = float(F32(_loop_length(topology, points.data, loop) / len(loop)) * F32(1.5))
-        if topology.reader().lft[loop[0]] >= 0:
+        if reader(topology).lft[loop[0]] >= 0:
             continue
         new_faces = fill_hole(topology, points, loop[0], metric, True, True, device)
         if triangulate_only or not new_faces:
@@ -3114,7 +3085,9 @@ def stitch(
     if target is None:
         edges = hole_loop(topology, a0) + hole_loop(topology, b0)
         target = _loop_length(topology, points.data, edges) / len(edges)
-    new_faces = stitch_holes(topology, points, a0, b0, stitch_metric(metric, points.array(), up))
+    new_faces = stitch_holes(
+        topology, points, a0, b0, stitch_metric(metric, points.data[: points.size], up)
+    )
     patch = set(new_faces)
     if not triangulate_only and new_faces:
         patch = _refine_and_smooth(
@@ -3134,10 +3107,10 @@ def stitch(
 
 
 def _rim_half_edge(topology: Topology, u: int, v: int) -> int:
-    e = topology.find_edge(u, v)
+    e = find_edge(topology, u, v)
     if e >= 0 and topology.lft[e] < 0:
         return e
-    e = topology.find_edge(v, u)
+    e = find_edge(topology, v, u)
     return e if e >= 0 and topology.lft[e] < 0 else -1
 
 
@@ -3170,5 +3143,5 @@ def rim_smooth(
     faces = np.asarray(faces, dtype=np.int32).reshape(-1, 3)
     topology, points, _ = _start(vertices, faces, False)
     smooth_region_rim(topology, points, [bool(x) for x in region_mask], iterations, device)
-    tris = topology.triangles()
-    return points.array()[: vertices.shape[0]].copy(), tris
+    tris = triangles(topology)
+    return points.data[: points.size][: vertices.shape[0]].copy(), tris

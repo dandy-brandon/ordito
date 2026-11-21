@@ -54,7 +54,7 @@ import math
 import warnings
 import weakref
 from dataclasses import dataclass
-from typing import Any, Literal, TypeVar, cast, overload
+from typing import Any, Literal, NamedTuple, TypeVar, cast, overload
 
 import warp as wp
 import warp.optim.linear as wpl
@@ -747,7 +747,7 @@ def fast_marching_distance(
             device=device,
         )
         _require_indices_in_range(invalid, n_vertices, "fast_marching_distance", "sources")
-        starts = _FrontStarts(faces, sources, n_vertices, keys)
+        starts = _front_starts(faces, sources, n_vertices, keys)
         if n_faces > 0:
             _march_front(vertices, faces, starts, keys)
     if n_vertices > 0:
@@ -761,117 +761,109 @@ def fast_marching_distance(
     return distances
 
 
-class _FrontStarts:
+def _front_starts(
+    faces: wp.array[wp.int32],
+    sources: wp.array[wp.int32],
+    n_vertices: int,
+    keys: wp.array[wp.uint64],
+) -> _FrontStarts:
+    """Seed ``keys`` with the sources and build the tables that join them (``_FrontStarts``)."""
+    device = faces.device
+    empty = _launch.empty(0, dtype=wp.int32, device=device)
+    if sources.size == 1:
+        # Seeded by ``kernels/heat.seed_front_source``; nothing to join.
+        return _FrontStarts(empty, sources, empty, empty, empty, empty, empty)
+    source_vertex = od.grouping.unique_1d(sources, max_value=n_vertices)
+    n_sources = source_vertex.size
+    start_of = _launch.full(n_vertices, -1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_heat.seed_front_keys,
+        dim=n_sources,
+        inputs=[source_vertex],
+        outputs=[keys, start_of],
+        device=device,
+    )
+    if n_sources == 1 or faces.size == 0:
+        return _FrontStarts(empty, source_vertex, empty, empty, empty, empty, empty)
+    mates = od.halfedge.halfedge_mates(faces, n_vertices)
+    n_halfedges = faces.size
+    opposite = _launch.empty(n_halfedges, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_heat.opposite_vertices,
+        dim=n_halfedges,
+        inputs=[faces, mates],
+        outputs=[opposite],
+        device=device,
+    )
+    counts = _launch.zeros(n_sources + 2, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_heat.count_start_halfedges,
+        dim=n_halfedges,
+        inputs=[faces, mates, start_of],
+        outputs=[counts],
+        device=device,
+    )
+    # The start halfedges size the rows: one readback (twice the start edges).
+    n_start = scan_count_checked(counts, "fast_marching_distance's start edges")
+    start_offsets = _launch.view(counts, 0, n_sources + 1)
+    start_neighbors = _launch.empty(n_start, dtype=wp.int32, device=device)
+    halfedge_source = _launch.empty(n_start, dtype=wp.int32, device=device)
+    edges = odt.empty_2d((n_start // 2, 2), wp.int32, device=device)
+    fill = _launch.zeros(n_sources + 1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_heat.fill_start_halfedges,
+        dim=n_halfedges,
+        inputs=[faces, mates, start_of, start_offsets, fill],
+        outputs=[start_neighbors, edges],
+        device=device,
+    )
+    _launch.launch(
+        kernel_heat.sort_start_rows,
+        dim=n_sources,
+        inputs=[start_offsets, start_neighbors],
+        outputs=[halfedge_source],
+        device=device,
+    )
+    group = od.graph.connected_component_labels_from_edges(edges, n_sources, validate=False)
+    region_group = _launch.zeros(n_sources, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_heat.flag_region_groups,
+        dim=n_sources,
+        inputs=[start_offsets, group],
+        outputs=[region_group],
+        device=device,
+    )
+    region = _launch.empty(n_sources, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_heat.spread_region_flags,
+        dim=n_sources,
+        inputs=[group, region_group],
+        outputs=[region],
+        device=device,
+    )
+    return _FrontStarts(
+        opposite, source_vertex, start_offsets, start_neighbors, halfedge_source, group, region
+    )
+
+
+class _FrontStarts(NamedTuple):
     """
     The sources of ``fast_marching_distance(method="meshlib")`` and how they join, seeded.
 
     Each source vertex is a start, numbered in ascending vertex order. Two sources joined by a mesh
     edge are a start edge; start edges join their sources into groups (a line, or a region once a
     source has more than three start neighbours), and the front reads its labels through them.
-    With one source there is nothing to join and every table is empty.
+    With one source there is nothing to join and every table but ``source_vertex`` is empty. The
+    fields are the front's read-only start tables, in the round kernels' argument order.
     """
 
-    def __init__(
-        self,
-        faces: wp.array[wp.int32],
-        sources: wp.array[wp.int32],
-        n_vertices: int,
-        keys: wp.array[wp.uint64],
-    ) -> None:
-        device = faces.device
-        empty = _launch.empty(0, dtype=wp.int32, device=device)
-        self.opposite = empty
-        self.start_offsets = empty
-        self.start_neighbors = empty
-        self.halfedge_source = empty
-        self.group = empty
-        self.region = empty
-        self.source_vertex = sources
-        if sources.size == 1:
-            # Seeded by ``kernels/heat.seed_front_source``; nothing to join.
-            return
-        self.source_vertex = od.grouping.unique_1d(sources, max_value=n_vertices)
-        n_sources = self.source_vertex.size
-        start_of = _launch.full(n_vertices, -1, dtype=wp.int32, device=device)
-        _launch.launch(
-            kernel_heat.seed_front_keys,
-            dim=n_sources,
-            inputs=[self.source_vertex],
-            outputs=[keys, start_of],
-            device=device,
-        )
-        if n_sources == 1 or faces.size == 0:
-            return
-        mates = od.halfedge.halfedge_mates(faces, n_vertices)
-        n_halfedges = faces.size
-        self.opposite = _launch.empty(n_halfedges, dtype=wp.int32, device=device)
-        _launch.launch(
-            kernel_heat.opposite_vertices,
-            dim=n_halfedges,
-            inputs=[faces, mates],
-            outputs=[self.opposite],
-            device=device,
-        )
-        counts = _launch.zeros(n_sources + 2, dtype=wp.int32, device=device)
-        _launch.launch(
-            kernel_heat.count_start_halfedges,
-            dim=n_halfedges,
-            inputs=[faces, mates, start_of],
-            outputs=[counts],
-            device=device,
-        )
-        # The start halfedges size the rows: one readback (twice the start edges).
-        n_start = scan_count_checked(counts, "fast_marching_distance's start edges")
-        self.start_offsets = _launch.view(counts, 0, n_sources + 1)
-        self.start_neighbors = _launch.empty(n_start, dtype=wp.int32, device=device)
-        self.halfedge_source = _launch.empty(n_start, dtype=wp.int32, device=device)
-        edges = odt.empty_2d((n_start // 2, 2), wp.int32, device=device)
-        fill = _launch.zeros(n_sources + 1, dtype=wp.int32, device=device)
-        _launch.launch(
-            kernel_heat.fill_start_halfedges,
-            dim=n_halfedges,
-            inputs=[faces, mates, start_of, self.start_offsets, fill],
-            outputs=[self.start_neighbors, edges],
-            device=device,
-        )
-        _launch.launch(
-            kernel_heat.sort_start_rows,
-            dim=n_sources,
-            inputs=[self.start_offsets, self.start_neighbors],
-            outputs=[self.halfedge_source],
-            device=device,
-        )
-        self.group = od.graph.connected_component_labels_from_edges(
-            edges, n_sources, validate=False
-        )
-        region_group = _launch.zeros(n_sources, dtype=wp.int32, device=device)
-        _launch.launch(
-            kernel_heat.flag_region_groups,
-            dim=n_sources,
-            inputs=[self.start_offsets, self.group],
-            outputs=[region_group],
-            device=device,
-        )
-        self.region = _launch.empty(n_sources, dtype=wp.int32, device=device)
-        _launch.launch(
-            kernel_heat.spread_region_flags,
-            dim=n_sources,
-            inputs=[self.group, region_group],
-            outputs=[self.region],
-            device=device,
-        )
-
-    def tables(self) -> list[wp.array[wp.int32]]:
-        """Return the front's read-only start tables, in the round kernels' argument order."""
-        return [
-            self.opposite,
-            self.source_vertex,
-            self.start_offsets,
-            self.start_neighbors,
-            self.halfedge_source,
-            self.group,
-            self.region,
-        ]
+    opposite: wp.array[wp.int32]
+    source_vertex: wp.array[wp.int32]
+    start_offsets: wp.array[wp.int32]
+    start_neighbors: wp.array[wp.int32]
+    halfedge_source: wp.array[wp.int32]
+    group: wp.array[wp.int32]
+    region: wp.array[wp.int32]
 
 
 def _march_front(
@@ -885,7 +877,7 @@ def _march_front(
     n_vertices = vertices.size
     n_faces = faces.size // 3
     relaxed = _launch.clone(keys)
-    tables = starts.tables()
+    tables = list(starts)
     # The shared round-loop word (``kernels/array.py``), its condition seeded non-zero because
     # ``wp.capture_while`` reads it before the first round. Each pair of rounds lowers at least one
     # distance or ends the loop; the cap of ``n_vertices`` pairs is insurance for a captured loop,

@@ -58,7 +58,7 @@ See Also
 from __future__ import annotations
 
 import math
-from typing import Literal, TypeVar, cast, overload
+from typing import Literal, NamedTuple, TypeVar, cast, overload
 
 import numpy as np
 import warp as wp
@@ -581,7 +581,7 @@ def voxel_down_sample(
         )
     # Only the fixed-order mean and sum sort the points, in buffers the table borrows first.
     sorted_sums = pooling in ("mean", "sum") and is_deterministic()
-    table = _VoxelTable(
+    table = _voxel_table(
         points, voxel_size, origin, one_root_tile=0 < cell_bound <= 4096, sort_buffers=sorted_sums
     )
     n_voxels = table.n_voxels
@@ -589,7 +589,7 @@ def voxel_down_sample(
     if not sorted_sums and pooling in ("mean", "sum"):
         pooled = _arrival_pool(
             kernel_voxels.pool_sum_table,
-            [points, *table.probe_inputs()],
+            [points, *_probe_inputs(table)],
             n_points,
             n_voxels,
             slots,
@@ -605,7 +605,7 @@ def voxel_down_sample(
         _launch.launch(
             kernel_voxels.pool_extremum_table,
             dim=n_points,
-            inputs=[points, *table.probe_inputs(), largest],
+            inputs=[points, *_probe_inputs(table), largest],
             outputs=[slots, counts, pooled],
             device=device,
         )
@@ -623,7 +623,7 @@ def voxel_down_sample(
         _launch.launch(
             kernel_voxels.bucket_table_slots,
             dim=n_points,
-            inputs=[points, *table.probe_inputs(), wp.int32(n_voxels)],
+            inputs=[points, *_probe_inputs(table), wp.int32(n_voxels)],
             outputs=[slots, buckets, order],
             device=device,
         )
@@ -633,7 +633,7 @@ def voxel_down_sample(
     return pooled, slots
 
 
-class _VoxelTable:
+class _VoxelTable(NamedTuple):
     """
     [`voxel_down_sample`][ordito.voxels.voxel_down_sample]'s voxel set, without a ``wp.Volume``.
 
@@ -646,86 +646,93 @@ class _VoxelTable:
     probe it with the volume's own index transform, reproduced bit for bit, so every row, bucket
     and pooled value is the one the volume path produces.
 
-    The mean/sum pooling's sort buffers are allocated here, because the table borrows them as
-    scratch before the pooling launch writes them: the appended slots live in the upper half of
-    ``buckets`` and the grid-order payload in ``order``.
+    The mean/sum pooling's sort buffers (``buckets``, ``order``) are allocated with the table,
+    because the table borrows them as scratch before the pooling launch writes them: the appended
+    slots live in the upper half of ``buckets`` and the grid-order payload in ``order``.
     """
 
-    def __init__(
-        self,
-        points: wp.array[wp.vec3],
-        voxel_size: float,
-        origin: wp.vec3,
-        *,
-        one_root_tile: bool,
-        sort_buffers: bool,
-    ) -> None:
-        device = points.device
-        n_points = points.size
-        inverse_size = wp.float32(1.0 / voxel_size)
-        # A cloud with no repeated cell fills the table at most half full.
-        self.mask = kernel_grouping.hash_table_mask(n_points)
-        # One slot past the table is the append cursor, so the ``-1`` fill seeds it too and it
-        # counts from ``-1``; the hash never reaches it (``mask`` addresses the table alone).
-        self.table = _launch.full(self.mask + 2, -1, dtype=wp.int32, device=device)
-        self.buckets: wp.array[wp.int32] | None = None
-        self.order: wp.array[wp.int32] | None = None
-        if sort_buffers:
-            self.buckets = _launch.empty(2 * n_points, dtype=wp.int32, device=device)
-            self.order = _launch.empty(2 * n_points, dtype=wp.int32, device=device)
-            unique = self.buckets[n_points:]
-        else:
-            unique = _launch.empty(n_points, dtype=wp.int32, device=device)
-        _launch.launch(
-            kernel_voxels.insert_point_cells,
-            dim=n_points,
-            inputs=[points, origin, inverse_size, self.mask, self.table],
-            outputs=[unique],
-            device=device,
-        )
-        # One readback, unavoidable: the voxel count sizes the output and every per-voxel buffer.
-        n_voxels = int(read_scalar(self.table)) + 1
-        self.n_voxels = n_voxels
-        keys = _launch.empty(2 * n_voxels, dtype=wp.uint64, device=device)
-        rank = (
-            _launch.empty(2 * n_voxels, dtype=wp.int32, device=device)
-            if self.order is None
-            else self.order
-        )
-        _launch.launch(
-            kernel_voxels.unique_cell_keys,
-            dim=n_voxels,
-            inputs=[points, origin, inverse_size, self.table, unique],
-            outputs=[keys, rank],
-            device=device,
-        )
-        _launch.radix_sort_pairs(keys, rank, count=n_voxels, end_bit=36)
-        if not one_root_tile:
-            # Stable, so the in-tile order survives within each root tile.
-            _launch.launch(
-                kernel_voxels.unique_cell_root_keys,
-                dim=n_voxels,
-                inputs=[points, origin, inverse_size, self.table, unique, rank],
-                outputs=[keys],
-                device=device,
-            )
-            _launch.radix_sort_pairs(keys, rank, count=n_voxels, end_bit=60)
-        self.row_cells = _launch.empty(n_voxels, dtype=wp.vec3i, device=device)
-        _launch.launch(
-            kernel_voxels.assign_voxel_rows,
-            dim=n_voxels,
-            inputs=[points, origin, inverse_size, unique, rank, self.table],
-            outputs=[self.row_cells],
-            device=device,
-        )
-        # The volume's own transform, as ``allocate_by_voxels`` stores it: a float32 translation
-        # half a cell above ``origin`` and the float32 inverse of the float32 cell width.
-        self.translation = wp.vec3(*_translation(origin, voxel_size))
-        self.probe_inverse = float(np.float32(1.0 / float(np.float32(voxel_size))))
+    translation: wp.vec3
+    probe_inverse: float
+    mask: int
+    table: wp.array[wp.int32]
+    row_cells: wp.array[wp.vec3i]
+    n_voxels: int
+    buckets: wp.array[wp.int32] | None
+    order: wp.array[wp.int32] | None
 
-    def probe_inputs(self) -> list[object]:
-        """Return the pooling kernels' probe arguments, in ``table_point_slot``'s order."""
-        return [self.translation, self.probe_inverse, 0.0, self.mask, self.table, self.row_cells]
+
+def _voxel_table(
+    points: wp.array[wp.vec3],
+    voxel_size: float,
+    origin: wp.vec3,
+    *,
+    one_root_tile: bool,
+    sort_buffers: bool,
+) -> _VoxelTable:
+    """Build the voxel set of ``points`` (``_VoxelTable``)."""
+    device = points.device
+    n_points = points.size
+    inverse_size = wp.float32(1.0 / voxel_size)
+    # A cloud with no repeated cell fills the table at most half full.
+    mask = kernel_grouping.hash_table_mask(n_points)
+    # One slot past the table is the append cursor, so the ``-1`` fill seeds it too and it
+    # counts from ``-1``; the hash never reaches it (``mask`` addresses the table alone).
+    table = _launch.full(mask + 2, -1, dtype=wp.int32, device=device)
+    buckets: wp.array[wp.int32] | None = None
+    order: wp.array[wp.int32] | None = None
+    if sort_buffers:
+        buckets = _launch.empty(2 * n_points, dtype=wp.int32, device=device)
+        order = _launch.empty(2 * n_points, dtype=wp.int32, device=device)
+        unique = buckets[n_points:]
+    else:
+        unique = _launch.empty(n_points, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_voxels.insert_point_cells,
+        dim=n_points,
+        inputs=[points, origin, inverse_size, mask, table],
+        outputs=[unique],
+        device=device,
+    )
+    # One readback, unavoidable: the voxel count sizes the output and every per-voxel buffer.
+    n_voxels = int(read_scalar(table)) + 1
+    keys = _launch.empty(2 * n_voxels, dtype=wp.uint64, device=device)
+    rank = _launch.empty(2 * n_voxels, dtype=wp.int32, device=device) if order is None else order
+    _launch.launch(
+        kernel_voxels.unique_cell_keys,
+        dim=n_voxels,
+        inputs=[points, origin, inverse_size, table, unique],
+        outputs=[keys, rank],
+        device=device,
+    )
+    _launch.radix_sort_pairs(keys, rank, count=n_voxels, end_bit=36)
+    if not one_root_tile:
+        # Stable, so the in-tile order survives within each root tile.
+        _launch.launch(
+            kernel_voxels.unique_cell_root_keys,
+            dim=n_voxels,
+            inputs=[points, origin, inverse_size, table, unique, rank],
+            outputs=[keys],
+            device=device,
+        )
+        _launch.radix_sort_pairs(keys, rank, count=n_voxels, end_bit=60)
+    row_cells = _launch.empty(n_voxels, dtype=wp.vec3i, device=device)
+    _launch.launch(
+        kernel_voxels.assign_voxel_rows,
+        dim=n_voxels,
+        inputs=[points, origin, inverse_size, unique, rank, table],
+        outputs=[row_cells],
+        device=device,
+    )
+    # The volume's own transform, as ``allocate_by_voxels`` stores it: a float32 translation
+    # half a cell above ``origin`` and the float32 inverse of the float32 cell width.
+    translation = wp.vec3(*_translation(origin, voxel_size))
+    probe_inverse = float(np.float32(1.0 / float(np.float32(voxel_size))))
+    return _VoxelTable(translation, probe_inverse, mask, table, row_cells, n_voxels, buckets, order)
+
+
+def _probe_inputs(table: _VoxelTable) -> list[object]:
+    """Return the pooling kernels' probe arguments, in ``table_point_slot``'s order."""
+    return [table.translation, table.probe_inverse, 0.0, table.mask, table.table, table.row_cells]
 
 
 def pool_by_voxel(

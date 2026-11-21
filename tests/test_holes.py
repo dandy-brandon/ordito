@@ -2312,9 +2312,7 @@ def _without_kernel(
     """Wrap ``_serial_mesh.fill_metric`` so every metric it returns takes the host DP."""
 
     def host(*args: Any) -> _serial_mesh.Metric:
-        metric = fill_metric(*args)
-        metric.kernel_id = -1
-        return metric
+        return fill_metric(*args)._replace(kernel_id=-1)
 
     return host
 
@@ -4278,6 +4276,13 @@ def test_bridge_edges_smooth_meshlib_method_matches_meshlib(
 # ---------------------------------------------------------------------------
 
 
+def _join_rim_rows(rim: Any) -> tuple[np.ndarray, np.ndarray]:
+    """``holes._JoinRim``'s current ``(n_boundary, 2)`` rows and each row's component name."""
+    parity, count = rim.state.numpy()[kernel_holes.JOIN_PARITY : kernel_holes.JOIN_PARITY + 2]
+    rows_np = rim.rows.numpy()[int(parity), : int(count)]
+    return rows_np[:, :2], rows_np[:, 2]
+
+
 def _open_shells_tm(
     saddle_graded: tuple[tm.Trimesh, wp.Mesh], count: int, gap: float = 3.0
 ) -> tm.Trimesh:
@@ -4382,18 +4387,20 @@ def test_join_closest_components_rim_tracks_the_regrouped_boundary(
     """
     mesh_tm = _open_shells_tm(saddle_graded, count, gap=2.2)
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
-    rim = od.holes._JoinRim.of(vertices_wp, faces_wp)  # pyright: ignore[reportPrivateUsage]
+    holes = od.holes
+    rim = holes._join_rim(vertices_wp, faces_wp)  # pyright: ignore[reportPrivateUsage]
     assert rim is not None
     max_distance_sq = wp.float32(float("inf"))
     for _ in range(count - 1):
-        rim.join(max_distance_sq)
-        assert not rim.done()
-        faces_np = np.concatenate([faces_wp.numpy(), rim.patch.numpy()[: rim.patch_size()]])
+        holes._join_rounds(rim, max_distance_sq)  # pyright: ignore[reportPrivateUsage]
+        assert not holes._join_done(rim)  # pyright: ignore[reportPrivateUsage]
+        n_patch = holes._join_patch_size(rim)  # pyright: ignore[reportPrivateUsage]
+        faces_np = np.concatenate([faces_wp.numpy(), rim.patch.numpy()[:n_patch]])
         current_wp = wp.array(faces_np, dtype=wp.int32, device=device)
         rows_np = od.boundary.oriented_boundary_edges(vertices_wp, current_wp).numpy()
         keys_np = rows_np.max(axis=1).astype(np.int64) * len(mesh_tm.vertices) + rows_np.min(axis=1)
         rows_np = rows_np[np.argsort(keys_np, kind="stable")]
-        assert np.array_equal(rim.rows(), rows_np)
+        assert np.array_equal(_join_rim_rows(rim)[0], rows_np)
         face_labels_np = od.adjacency.face_connected_component_labels(current_wp).numpy()
         tail_faces_np = np.array(
             [
@@ -4402,10 +4409,10 @@ def test_join_closest_components_rim_tracks_the_regrouped_boundary(
             ]
         )
         expected_np = face_labels_np[tail_faces_np]
-        labels_np = rim.row_components()
+        labels_np = _join_rim_rows(rim)[1]
         assert same_partition(labels_np, expected_np)
-    rim.join(max_distance_sq)
-    assert rim.done()
+    holes._join_rounds(rim, max_distance_sq)  # pyright: ignore[reportPrivateUsage]
+    assert holes._join_done(rim)  # pyright: ignore[reportPrivateUsage]
 
 
 @pytest.mark.parametrize("max_distance", [None, 0.2])
@@ -4428,10 +4435,17 @@ def test_join_closest_components_one_launch_matches_a_launch_a_round(
     max_distance_sq = wp.float32(float("inf") if max_distance is None else max_distance**2)
     edits = []
     for serial in (True, False):
-        rim = od.holes._JoinRim.of(vertices_wp, faces_wp)  # pyright: ignore[reportPrivateUsage]
+        holes = od.holes
+        rim = holes._join_rim(vertices_wp, faces_wp)  # pyright: ignore[reportPrivateUsage]
         assert rim is not None
-        rim.join(max_distance_sq, rim.rounds, serial=serial)
-        edits.append((rim.patch.numpy()[: rim.patch_size()], rim.rows(), rim.done()))
+        holes._join_rounds(rim, max_distance_sq, rim.rounds, serial=serial)  # pyright: ignore[reportPrivateUsage]
+        edits.append(
+            (
+                rim.patch.numpy()[: holes._join_patch_size(rim)],  # pyright: ignore[reportPrivateUsage]
+                _join_rim_rows(rim)[0],
+                holes._join_done(rim),  # pyright: ignore[reportPrivateUsage]
+            )
+        )
     assert edits[0][0].size > 0, "fixture joined nothing"
     assert edits[0][2] == (max_distance is not None), "the bound did not stop the rounds early"
     assert np.array_equal(edits[0][0], edits[1][0])

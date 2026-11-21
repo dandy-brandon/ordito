@@ -1447,14 +1447,13 @@ def test_shorten_loop_regrows_its_buffers_and_matches(
         mesh_wp.points, mesh_wp.indices, flat_wp, offsets_wp
     )
     built: list[int] = []
-    sweep_class = od.geodesic_walk._LoopSweep  # pyright: ignore[reportPrivateUsage]
+    loop_sweep = od.geodesic_walk._loop_sweep  # pyright: ignore[reportPrivateUsage]
 
-    class CountingSweep(sweep_class):
-        def __init__(self, *args: object) -> None:
-            built.append(cast("int", args[7]))
-            super().__init__(*args)  # pyright: ignore[reportArgumentType]
+    def counting_sweep(*args: object) -> object:
+        built.append(cast("int", args[7]))
+        return loop_sweep(*args)  # pyright: ignore[reportArgumentType]
 
-    monkeypatch.setattr(od.geodesic_walk, "_LoopSweep", CountingSweep)
+    monkeypatch.setattr(od.geodesic_walk, "_loop_sweep", counting_sweep)
     monkeypatch.setattr(od.geodesic_walk, "_SHORTEN_LOOP_GROWTH", 0.0)
     monkeypatch.setattr(od.geodesic_walk, "_SHORTEN_LOOP_SLACK", 0)
     monkeypatch.setattr(od.geodesic_walk, "_SHORTEN_LOOP_GRAPH_SWEEPS", group)

@@ -406,7 +406,7 @@ def filter_laplacian(
     # see ``kernel_smoothing.volume_rescale_parameters`` for why the rescale has to stay anchored to
     # this one fixed point rather than the mesh's current (already-moved) centre of mass.
     constraint = (
-        _VolumeConstraint.anchored(positions, vertices, faces) if volume_constraint else None
+        _anchored_volume_constraint(positions, vertices, faces) if volume_constraint else None
     )
 
     if steps is not None:
@@ -435,7 +435,7 @@ def filter_laplacian(
                     operator, coeff, steps, long_rows, positions, scratch, source
                 )
             if constraint is not None:
-                constraint.apply(positions)
+                _apply_volume_constraint(constraint, positions)
     elif implicit_time_integration:
         # The fixed-point step count past its cap, or an operator that is not a contraction: solve
         # the assembled system instead, with a Krylov method that does not need it symmetric --
@@ -468,7 +468,7 @@ def filter_laplacian(
                 out=positions,
             )
             if constraint is not None:
-                constraint.apply(positions)
+                _apply_volume_constraint(constraint, positions)
     else:
         # Explicit passes, each rescaled to the anchored volume; the last rescale writes the
         # ``float32`` answer.
@@ -479,9 +479,9 @@ def filter_laplacian(
             positions, nxt = nxt, positions
             if index == iterations - 1:
                 out = _launch.empty(n, dtype=wp.vec3, device=device)
-                constraint.apply(positions, out=out)
+                _apply_volume_constraint(constraint, positions, out=out)
                 return out
-            constraint.apply(positions)
+            _apply_volume_constraint(constraint, positions)
 
     return _as_vec3(positions)
 
@@ -634,14 +634,16 @@ def _gauss_seidel_passes(
     if not volume_constraint:
         _gauss_seidel_sweeps(positions, stencil, factor, iterations)
         return _as_vec3(positions)
-    constraint = _VolumeConstraint.anchored(positions, vertices, faces)
+    constraint = _anchored_volume_constraint(positions, vertices, faces)
     out = _launch.empty(vertices.size, dtype=wp.vec3, device=vertices.device)
     # Every sweep runs the first one's schedule, so the later ones issue its waves and read nothing.
     # Recording it costs the first sweep's waves 5-14 %, so a single sweep does not.
     waves = None
     for index in range(iterations):
         waves = _gauss_seidel_sweeps(positions, stencil, factor, 1, waves, record=iterations > 1)
-        constraint.apply(positions, out=out if index == iterations - 1 else None)
+        _apply_volume_constraint(
+            constraint, positions, out=out if index == iterations - 1 else None
+        )
     return out
 
 
@@ -847,21 +849,22 @@ def inflate(
     positions = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
     displaced = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
     wide, diffused = _launch.carve(wp.vec3d, (n_vertices, n_vertices), device)
-    constraint = _VolumeConstraint(faces, device, anchors=iterations + int(pre_smooth))
+    constraint = _volume_constraint(faces, device, anchors=iterations + int(pre_smooth))
     coeff = wp.float64(lamb)
 
-    def relax(anchor: wp.array[wp.vec3]) -> None:
+    def relax(constraint: _VolumeConstraint, anchor: wp.array[wp.vec3]) -> _VolumeConstraint:
         # One ``filter_laplacian`` pass of ``wide`` (``anchor`` widened) into ``positions``: the
         # constraint anchored to it, one diffusion pass, rescaled and narrowed as it is written.
-        constraint.anchor(wide, anchor)
+        constraint = _anchor_volume(constraint, wide, anchor)
         _diffuse_pass(operator, coeff, wide, diffused)
-        constraint.apply(diffused, out=positions)
+        _apply_volume_constraint(constraint, diffused, out=positions)
+        return constraint
 
     # Without the pre-smoothing pass the first displacement reads the input itself.
     current = vertices
     if pre_smooth:
         od.array.copyto(wide, vertices)
-        relax(vertices)
+        constraint = relax(constraint, vertices)
         current = positions
     for step in range(iterations):
         amount = pressure * (step + 1) / iterations if gradual else pressure
@@ -872,7 +875,7 @@ def inflate(
             outputs=[displaced, wide],
             device=device,
         )
-        relax(displaced)
+        constraint = relax(constraint, displaced)
         current = positions
     return positions
 
@@ -2693,121 +2696,155 @@ def _signed_volume_into(
     )
 
 
-class _VolumeConstraint:
+class _VolumeConstraint(NamedTuple):
     """
     ``filter_laplacian``'s volume constraint, held on the device: nothing is read back.
 
-    ``anchor`` captures the input's signed volume (``measures.volume``'s kernel on the ``float64``
-    positions) and the first four of ``measures.moments``' integrals (of the ``float32`` copy, the
-    centre's source), each into the first slots of its own block-commit buffer, where they stay;
-    ``apply`` sums the current volume with ``_signed_volume_into``, forms the scale
-    and the fixed initial centre once into ``state``
+    ``_anchor_volume`` captures the input's signed volume
+    (``measures.volume``'s kernel on the ``float64`` positions) and the first four of
+    ``measures.moments``' integrals (of the ``float32`` copy, the centre's source), each into the
+    first slots of its own block-commit buffer, where they stay;
+    ``_apply_volume_constraint`` sums the current volume
+    with ``_signed_volume_into``, forms the scale and the fixed initial centre once into ``state``
     (``kernel_smoothing.volume_rescale_parameters``) and rescales. The arithmetic is the host
     version's -- the same reductions and the same centre rounding -- so the answer is too.
 
     Both commit buffers are allocated once and re-anchored in place: a reproducible commit
     overwrites its result slots and resets its own ticket. The atomic one (determinism off when
-    the constraint was built) adds into its slots, so it holds ``anchors`` sets of them, zeroed
-    once, and each anchor takes the next; only an anchor past those clears its slots first.
+    the constraint was built) adds into its slots, so ``pools`` holds ``anchors`` sets of them,
+    zeroed once, and each anchor takes the next; only an anchor past those clears its slots first.
+    ``volume`` and ``moments`` are the current anchor's slots, ``anchors`` the anchors taken.
     """
 
-    def __init__(self, faces: wp.array[wp.int32], device: wp.DeviceLike, anchors: int = 1) -> None:
-        self._faces = faces
-        self._device = device
-        self._n_faces = faces.size // 3
-        self._chunk_faces = kernel_measures.moment_chunk_faces(self._n_faces)
-        self._volume_blocks = kernel_reduce.blocks_1d(self._n_faces)
-        self._moment_blocks = -(-self._n_faces // self._chunk_faces)
-        # One zeroed allocation: the anchor's two commit buffers (zeroed, so a constraint over no
-        # faces reads a zero anchor: no rescale), the rescale state and the current volume's
-        # fixed-order buffer (``_signed_volume_into``, whose ticket starts at zero).
-        self._pools = None
-        current_size = _signed_volume_size(self._n_faces)
-        if is_deterministic():
-            volume_size = _launch.block_partials_size(self._volume_blocks, 1)
-            moment_size = _launch.block_partials_size(self._moment_blocks, 4)
-            volume, moments, state, current = _launch.carve(
-                wp.float64, (volume_size, moment_size, 4, current_size), device, zeroed=True
-            )
-            self._volume, self._moments = volume, moments
-            self._volume_stride, self._moment_stride = 1, 4
-        else:
-            volumes, moments, state, current = _launch.carve(
-                wp.float64, (anchors, 4 * anchors, 4, current_size), device, zeroed=True
-            )
-            self._pools = (volumes, moments)
-            self._volume = _launch.view(self._pools[0], 0, 1)
-            self._moments = _launch.view(self._pools[1], 0, 4)
-            self._volume_stride, self._moment_stride = 1, 4
-        self.state = state
-        self._current = current
-        self._anchors = 0
+    faces: wp.array[wp.int32]
+    device: wp.DeviceLike
+    n_faces: int
+    chunk_faces: int
+    volume_blocks: int
+    moment_blocks: int
+    volume: wp.array[wp.float64]
+    moments: wp.array[wp.float64]
+    state: wp.array[wp.float64]
+    current: wp.array[wp.float64]
+    pools: tuple[wp.array[wp.float64], wp.array[wp.float64]] | None
+    anchors: int
 
-    @classmethod
-    def anchored(
-        cls, positions: wp.array[wp.vec3d], vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
-    ) -> _VolumeConstraint:
-        """Build a constraint anchored to ``positions`` (its ``float32`` copy ``vertices``)."""
-        constraint = cls(faces, positions.device)
-        constraint.anchor(positions, vertices)
+
+def _volume_constraint(
+    faces: wp.array[wp.int32], device: wp.DeviceLike, anchors: int = 1
+) -> _VolumeConstraint:
+    """Allocate an unanchored constraint over ``faces``, room for ``anchors`` atomic anchors."""
+    n_faces = faces.size // 3
+    chunk_faces = kernel_measures.moment_chunk_faces(n_faces)
+    volume_blocks = kernel_reduce.blocks_1d(n_faces)
+    moment_blocks = -(-n_faces // chunk_faces)
+    # One zeroed allocation: the anchor's two commit buffers (zeroed, so a constraint over no
+    # faces reads a zero anchor: no rescale), the rescale state and the current volume's
+    # fixed-order buffer (``_signed_volume_into``, whose ticket starts at zero).
+    pools = None
+    current_size = _signed_volume_size(n_faces)
+    if is_deterministic():
+        volume_size = _launch.block_partials_size(volume_blocks, 1)
+        moment_size = _launch.block_partials_size(moment_blocks, 4)
+        volume, moments, state, current = _launch.carve(
+            wp.float64, (volume_size, moment_size, 4, current_size), device, zeroed=True
+        )
+    else:
+        volumes, moment_pool, state, current = _launch.carve(
+            wp.float64, (anchors, 4 * anchors, 4, current_size), device, zeroed=True
+        )
+        pools = (volumes, moment_pool)
+        volume = _launch.view(volumes, 0, 1)
+        moments = _launch.view(moment_pool, 0, 4)
+    return _VolumeConstraint(
+        faces,
+        device,
+        n_faces,
+        chunk_faces,
+        volume_blocks,
+        moment_blocks,
+        volume,
+        moments,
+        state,
+        current,
+        pools,
+        0,
+    )
+
+
+def _anchored_volume_constraint(
+    positions: wp.array[wp.vec3d], vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
+) -> _VolumeConstraint:
+    """Build a constraint anchored to ``positions`` (its ``float32`` copy ``vertices``)."""
+    return _anchor_volume(_volume_constraint(faces, positions.device), positions, vertices)
+
+
+def _anchor_volume(
+    constraint: _VolumeConstraint, positions: wp.array[wp.vec3d], vertices: wp.array[wp.vec3]
+) -> _VolumeConstraint:
+    """Return ``constraint`` anchored to the volume of ``positions`` and centre of ``vertices``."""
+    if constraint.n_faces == 0:
         return constraint
-
-    def anchor(self, positions: wp.array[wp.vec3d], vertices: wp.array[wp.vec3]) -> None:
-        """Capture the volume of ``positions`` and the centre of mass of ``vertices``."""
-        if self._n_faces == 0:
-            return
-        if self._pools is not None and self._anchors > 0:
-            # The atomic commit adds into its result slots (the reproducible one overwrites them):
-            # the next unused set, or the last set cleared once every set has been used.
-            volumes, moments = self._pools
-            k = self._anchors
-            if k < volumes.size:
-                self._volume = _launch.view(volumes, k, k + 1)
-                self._moments = _launch.view(moments, 4 * k, 4 * k + 4)
-            else:
-                _launch.zero_(self._volume)
-                _launch.zero_(self._moments)
-        self._anchors += 1
-        # Both sums are fixed-order block partials, so the anchor (and the rescale it sets) repeats
-        # bit for bit on CUDA while determinism is on.
-        _launch.launch_tiled(
-            kernel_measures.MESH_SIGNED_VOLUME[wp.vec3d],
-            dim=[self._volume_blocks],
-            inputs=[positions, self._faces, self._volume_stride, self._volume],
-            block_dim=TILE_1D,
-            device=self._device,
-        )
-        _launch.launch_tiled(
-            kernel_measures.centroid_integrals,
-            dim=[self._moment_blocks],
-            inputs=[vertices, self._faces, self._chunk_faces, self._moment_stride, self._moments],
-            block_dim=TILE_1D,
-            device=self._device,
-        )
-
-    def apply(self, positions: wp.array[wp.vec3d], *, out: wp.array[wp.vec3] | None = None) -> None:
-        """Rescale ``positions`` back to the anchored volume, in place or narrowed into ``out``."""
-        _signed_volume_into(positions, self._faces, self._current)
-        _launch.launch(
-            kernel_smoothing.volume_rescale_parameters,
-            dim=1,
-            inputs=[self._current, self._volume, self._moments, self.state],
-            device=self._device,
-        )
-        if out is None:
-            _launch.launch(
-                kernel_smoothing.rescale_to_volume,
-                dim=positions.size,
-                inputs=[self.state, positions],
-                device=self._device,
-            )
+    volume, moments = constraint.volume, constraint.moments
+    if constraint.pools is not None and constraint.anchors > 0:
+        # The atomic commit adds into its result slots (the reproducible one overwrites them):
+        # the next unused set, or the last set cleared once every set has been used.
+        volumes, moment_pool = constraint.pools
+        k = constraint.anchors
+        if k < volumes.size:
+            volume = _launch.view(volumes, k, k + 1)
+            moments = _launch.view(moment_pool, 4 * k, 4 * k + 4)
         else:
-            _launch.launch(
-                kernel_smoothing.rescale_to_volume_narrowed,
-                dim=positions.size,
-                inputs=[self.state, positions, out],
-                device=self._device,
-            )
+            _launch.zero_(volume)
+            _launch.zero_(moments)
+    # Both sums are fixed-order block partials, so the anchor (and the rescale it sets) repeats
+    # bit for bit on CUDA while determinism is on.
+    _launch.launch_tiled(
+        kernel_measures.MESH_SIGNED_VOLUME[wp.vec3d],
+        dim=[constraint.volume_blocks],
+        inputs=[positions, constraint.faces, 1, volume],
+        block_dim=TILE_1D,
+        device=constraint.device,
+    )
+    _launch.launch_tiled(
+        kernel_measures.centroid_integrals,
+        dim=[constraint.moment_blocks],
+        inputs=[vertices, constraint.faces, constraint.chunk_faces, 4, moments],
+        block_dim=TILE_1D,
+        device=constraint.device,
+    )
+    return constraint._replace(volume=volume, moments=moments, anchors=constraint.anchors + 1)
+
+
+def _apply_volume_constraint(
+    constraint: _VolumeConstraint,
+    positions: wp.array[wp.vec3d],
+    *,
+    out: wp.array[wp.vec3] | None = None,
+) -> None:
+    """Rescale ``positions`` back to the anchored volume, in place or narrowed into ``out``."""
+    device = constraint.device
+    _signed_volume_into(positions, constraint.faces, constraint.current)
+    _launch.launch(
+        kernel_smoothing.volume_rescale_parameters,
+        dim=1,
+        inputs=[constraint.current, constraint.volume, constraint.moments, constraint.state],
+        device=device,
+    )
+    if out is None:
+        _launch.launch(
+            kernel_smoothing.rescale_to_volume,
+            dim=positions.size,
+            inputs=[constraint.state, positions],
+            device=device,
+        )
+    else:
+        _launch.launch(
+            kernel_smoothing.rescale_to_volume_narrowed,
+            dim=positions.size,
+            inputs=[constraint.state, positions, out],
+            device=device,
+        )
 
 
 def filter_implicit_fairing(
@@ -3016,7 +3053,7 @@ def filter_implicit_fairing(
         system = od.array.bsr_with_values(template, values)
         # One batched solve advances all three columns together; ``M - lamb L`` over the whole mesh
         # (or its interior block) is a solve long enough for the polynomial preconditioner.
-        fairing.solve(system, rhs, solution_2d, maxiter=10 * n_rows)
+        fairing = _solve_fairing_pass(fairing, system, rhs, solution_2d, maxiter=10 * n_rows)
         if index < 2:
             narrowed.append(_launch.empty(n, dtype=wp.vec3, device=device))
         current = narrowed[index % 2]
@@ -3047,9 +3084,9 @@ def filter_implicit_fairing(
     return current
 
 
-class _FairingSolver:
+class _FairingSolver(NamedTuple):
     """
-    Solve ``filter_implicit_fairing``'s passes by iteration, or by a refactored sparse Cholesky.
+    How ``filter_implicit_fairing``'s passes are solved: by iteration, or a refactored Cholesky.
 
     Every pass's system has the first one's pattern (the connectivity and the pinned set are fixed),
     so a factorization's analysis is done once and each later pass refactors the new values. An
@@ -3070,90 +3107,82 @@ class _FairingSolver:
     iterated pass is long enough. Held for one call only; nothing outlives it.
     """
 
-    def __init__(
-        self, vertices: wp.array[wp.vec3], dirichlet: _Dirichlet | None, *, redecide: bool
-    ) -> None:
-        self._vertices = vertices
-        self._dirichlet = dirichlet
-        self._redecide = redecide
-        self._factor: SparseCholesky | None = None
-        # Whether the next pass refactors ``_factor``: cleared for the passes after a refactor
-        # failed, until an iterated pass is again long enough to make another attempt pay.
-        self._refactor = False
-        # Set once no later pass decides: the first pass did without ``redecide``, or the analysis
-        # itself failed.
-        self._decided = False
+    vertices: wp.array[wp.vec3]
+    dirichlet: _Dirichlet | None
+    redecide: bool
+    factor: SparseCholesky | None = None
+    # Whether the next pass refactors ``factor``: cleared for the passes after a refactor failed,
+    # until an iterated pass is again long enough to make another attempt pay.
+    refactor: bool = False
+    # Set once no later pass decides: the first pass did without ``redecide``, or the analysis
+    # itself failed.
+    decided: bool = False
 
-    def solve(
-        self,
-        system: odt.BsrMatrix[wp.float64],
-        rhs: odt.Array2dFloat,
-        solution: odt.Array2dFloat,
-        *,
-        maxiter: int,
-    ) -> None:
-        """Solve one pass's system for the three coordinate columns."""
-        if self._factor is not None and self._refactor:
-            try:
-                self._factor.refactor(system)
-            except ValueError:
-                # Not definite in ``float64``: a pinching surface's needles reach that while the
-                # iteration still converges. The analysis is kept for a later pass.
-                self._refactor = False
-            else:
-                self._factor.solve(rhs, solution, tol=twl.CG_TOLERANCE)
-                return
-        # A pass that may still be factored iterates only up to the round count that decides it:
-        # past that the factorization solves this pass too, from the iterate reached. A long first
-        # pass (a time step large against the mesh, whose system is then the Laplacian's) would
-        # otherwise iterate to convergence before the decision it has already settled.
-        probe = not self._decided and self._factor is None
-        result = twl.solve_spd_columns(
-            system,
-            rhs,
-            solution,
-            tol=twl.CG_TOLERANCE,
-            maxiter=min(maxiter, _FAIRING_FACTOR_ITERATIONS) if probe else maxiter,
-            preconditioner="chebyshev",
-        )
-        if self._decided:
-            return
-        self._decided = not self._redecide
-        iterations = result[0]
-        # One read per iterated pass while a decision is open: whether the iteration is long enough
-        # to factor.
-        count = int(read_scalar(iterations, 0)) if isinstance(iterations, wp.array) else iterations
-        if count < _FAIRING_FACTOR_ITERATIONS:
-            return
-        self._refactor = True
-        if self._factor is not None:
-            return
-        # Ordered by the input's positions: a geometric ordering is cheaper to factor than the
-        # pattern's own, and the flow moves the vertices too little to spoil it.
-        dirichlet = self._dirichlet
-        coordinates = (
-            self._vertices
-            if dirichlet is None
-            else twl.free_coordinates(
-                self._vertices, dirichlet.fixed_mask, dirichlet.free_map, dirichlet.n_free
-            )
-        )
+
+def _solve_fairing_pass(
+    solver: _FairingSolver,
+    system: odt.BsrMatrix[wp.float64],
+    rhs: odt.Array2dFloat,
+    solution: odt.Array2dFloat,
+    *,
+    maxiter: int,
+) -> _FairingSolver:
+    """Solve one pass's system for the three coordinate columns; return the next pass's solver."""
+    if solver.factor is not None and solver.refactor:
         try:
-            self._factor = sparse_cholesky(system, coordinates)
+            solver.factor.refactor(system)
         except ValueError:
-            self._refactor = False
-            self._decided = True
-            # The probe stopped at its cap; the iteration finishes the pass from where it stopped.
-            twl.solve_spd_columns(
-                system,
-                rhs,
-                solution,
-                tol=twl.CG_TOLERANCE,
-                maxiter=maxiter,
-                preconditioner="chebyshev",
-            )
+            # Not definite in ``float64``: a pinching surface's needles reach that while the
+            # iteration still converges. The analysis is kept for a later pass.
+            solver = solver._replace(refactor=False)
         else:
-            self._factor.solve(rhs, solution, tol=twl.CG_TOLERANCE)
+            solver.factor.solve(rhs, solution, tol=twl.CG_TOLERANCE)
+            return solver
+    # A pass that may still be factored iterates only up to the round count that decides it:
+    # past that the factorization solves this pass too, from the iterate reached. A long first
+    # pass (a time step large against the mesh, whose system is then the Laplacian's) would
+    # otherwise iterate to convergence before the decision it has already settled.
+    probe = not solver.decided and solver.factor is None
+    result = twl.solve_spd_columns(
+        system,
+        rhs,
+        solution,
+        tol=twl.CG_TOLERANCE,
+        maxiter=min(maxiter, _FAIRING_FACTOR_ITERATIONS) if probe else maxiter,
+        preconditioner="chebyshev",
+    )
+    if solver.decided:
+        return solver
+    solver = solver._replace(decided=not solver.redecide)
+    iterations = result[0]
+    # One read per iterated pass while a decision is open: whether the iteration is long enough
+    # to factor.
+    count = int(read_scalar(iterations, 0)) if isinstance(iterations, wp.array) else iterations
+    if count < _FAIRING_FACTOR_ITERATIONS:
+        return solver
+    solver = solver._replace(refactor=True)
+    if solver.factor is not None:
+        return solver
+    # Ordered by the input's positions: a geometric ordering is cheaper to factor than the
+    # pattern's own, and the flow moves the vertices too little to spoil it.
+    dirichlet = solver.dirichlet
+    coordinates = (
+        solver.vertices
+        if dirichlet is None
+        else twl.free_coordinates(
+            solver.vertices, dirichlet.fixed_mask, dirichlet.free_map, dirichlet.n_free
+        )
+    )
+    try:
+        factor = sparse_cholesky(system, coordinates)
+    except ValueError:
+        # The probe stopped at its cap; the iteration finishes the pass from where it stopped.
+        twl.solve_spd_columns(
+            system, rhs, solution, tol=twl.CG_TOLERANCE, maxiter=maxiter, preconditioner="chebyshev"
+        )
+        return solver._replace(refactor=False, decided=True)
+    factor.solve(rhs, solution, tol=twl.CG_TOLERANCE)
+    return solver._replace(factor=factor)
 
 
 # The fairing pass's Jacobi-Chebyshev iteration count at or above which the later passes refactor
@@ -4935,8 +4964,8 @@ def filter_normals(
 
     if mumford_shah:
         mates = od.halfedge.halfedge_mates(faces, vertices.size)
-        system = _MumfordShahNormals(faces, mates, gamma, beta)
-        return system(vertices, normals, iterations)
+        system = _mumford_shah_normals(faces, mates, gamma, beta)
+        return _filter_mumford_shah_normals(system, vertices, normals, iterations)[0]
     if face_adjacency is None:
         # The pairs ``face_adjacency`` would list are the halfedges' mates, read three to a face.
         mates = od.halfedge.halfedge_mates(faces, vertices.size)
@@ -5304,8 +5333,8 @@ def _mumford_shah_two_step(
     n_faces = faces.size // 3
     if mates is None:
         mates = od.halfedge.halfedge_mates(faces, vertices.size)
-    normal_system = _MumfordShahNormals(faces, mates, gamma, beta)
-    point_system = _NormalsToPoints(faces, vertices) if fit_iterations > 0 else None
+    normal_system = _mumford_shah_normals(faces, mates, gamma, beta)
+    point_system = _normals_to_points(faces, vertices) if fit_iterations > 0 else None
     face_field = _launch.empty(n_faces, dtype=wp.vec3, device=device)
     face_areas = _launch.empty(n_faces, dtype=wp.float32, device=device)
     positions = vertices
@@ -5319,9 +5348,11 @@ def _mumford_shah_two_step(
         )
         normals = face_field
         if normal_iterations > 0:
-            normals = normal_system(positions, face_field, normal_iterations)
+            normals, normal_system = _filter_mumford_shah_normals(
+                normal_system, positions, face_field, normal_iterations
+            )
         if point_system is not None:
-            positions = point_system(positions, normals, fit_iterations)
+            positions = _fit_points_to_normals(point_system, positions, normals, fit_iterations)
     return _launch.clone(vertices) if positions is vertices else positions
 
 
@@ -5333,107 +5364,145 @@ def _require_mumford_shah_weights(gamma: float, beta: float) -> None:
         raise ValueError(f"beta must be positive, got {beta}")
 
 
-class _MumfordShahNormals:
+class _MumfordShahNormals(NamedTuple):
     """
     The Mumford-Shah face normal filter over one face set: its pattern, buffers and solver state.
 
-    The face system's pattern is the face graph, built once; each call writes the geometry the
-    values read, then runs ``iterations`` value-and-solve rounds, every one warm-started from the
-    last. A round's values read the previous round's solution for the edge indicator, so the
-    indicator needs no buffer of its own. The solver's Jacobi diagonal is the first round's; later
-    rounds lower the couplings, which changes its rate and not its answer.
+    The face system's pattern is the face graph, built once
+    (``_mumford_shah_normals``); each
+    ``_filter_mumford_shah_normals`` writes the
+    geometry the values read, then runs ``iterations`` value-and-solve rounds, every one
+    warm-started from the last. A round's values read the previous round's solution for the edge
+    indicator, so the indicator needs no buffer of its own. The solver's Jacobi diagonal is the
+    first round's; later rounds lower the couplings, which changes its rate and not its answer.
     """
 
-    def __init__(
-        self, faces: wp.array[wp.int32], mates: wp.array[wp.int32], gamma: float, beta: float
-    ) -> None:
-        device = faces.device
-        n_faces = faces.size // 3
-        self._faces = faces
-        self._mates = mates
-        self._gamma = wp.float32(gamma)
-        self._beta = wp.float32(beta)
-        count = 4 * n_faces
-        keys, order = od.array.csr_key_buffers(count, device)
-        _launch.launch(
-            kernel_smoothing.mumford_shah_face_keys,
-            dim=n_faces,
-            inputs=[mates, wp.int32(n_faces)],
-            outputs=[keys, order],
-            device=device,
-        )
-        offsets, columns, starts = od.array.csr_from_keys(keys, order, count, n_faces, n_faces)
-        self._offsets, self._starts, self._order = offsets, starts, order
-        # The system's values, the geometry the values read and the batched right-hand side and
-        # solution: every table this object holds, in one allocation.
-        values, self._lengths, self._perimeters, rhs, solution = _launch.carve_typed(
-            (
-                (wp.float64, count),
-                (wp.float32, 3 * n_faces),
-                (wp.float32, n_faces),
-                (wp.float64, 3 * n_faces),
-                (wp.float64, 3 * n_faces),
-            ),
-            device,
-        )
-        self._values = values
-        self._matrix = od.array.bsr_from_csr(n_faces, n_faces, offsets, columns, values)
-        self._rhs = odt.as_array2d(rhs.reshape((3, n_faces)), wp.float64)
-        self._solution = odt.as_array2d(solution.reshape((3, n_faces)), wp.float64)
-        self._solver: Callable[[], object] | None = None
+    faces: wp.array[wp.int32]
+    mates: wp.array[wp.int32]
+    gamma: wp.float32
+    beta: wp.float32
+    offsets: wp.array[wp.int32]
+    starts: wp.array[wp.int32]
+    order: wp.array[wp.int32]
+    values: wp.array[wp.float64]
+    lengths: wp.array[wp.float32]
+    perimeters: wp.array[wp.float32]
+    matrix: odt.BsrMatrix[wp.float64]
+    rhs: odt.Array2dFloat64
+    solution: odt.Array2dFloat64
+    # Built by the first round, after the first values exist: the state derives its Jacobi
+    # diagonal from them.
+    solver: Callable[[], object] | None
 
-    def __call__(
-        self, vertices: wp.array[wp.vec3], normals: wp.array[wp.vec3], iterations: int
-    ) -> wp.array[wp.vec3]:
-        """Filter ``normals``, the face normals of ``vertices``, in ``iterations >= 1`` solves."""
-        device = vertices.device
-        n_faces = normals.size
+
+def _mumford_shah_normals(
+    faces: wp.array[wp.int32], mates: wp.array[wp.int32], gamma: float, beta: float
+) -> _MumfordShahNormals:
+    """Build the face system's pattern and buffers over ``faces``, with no solver yet."""
+    device = faces.device
+    n_faces = faces.size // 3
+    count = 4 * n_faces
+    keys, order = od.array.csr_key_buffers(count, device)
+    _launch.launch(
+        kernel_smoothing.mumford_shah_face_keys,
+        dim=n_faces,
+        inputs=[mates, wp.int32(n_faces)],
+        outputs=[keys, order],
+        device=device,
+    )
+    offsets, columns, starts = od.array.csr_from_keys(keys, order, count, n_faces, n_faces)
+    # The system's values, the geometry the values read and the batched right-hand side and
+    # solution: every table the system holds, in one allocation.
+    values, lengths, perimeters, rhs, solution = _launch.carve_typed(
+        (
+            (wp.float64, count),
+            (wp.float32, 3 * n_faces),
+            (wp.float32, n_faces),
+            (wp.float64, 3 * n_faces),
+            (wp.float64, 3 * n_faces),
+        ),
+        device,
+    )
+    return _MumfordShahNormals(
+        faces,
+        mates,
+        wp.float32(gamma),
+        wp.float32(beta),
+        offsets,
+        starts,
+        order,
+        values,
+        lengths,
+        perimeters,
+        od.array.bsr_from_csr(n_faces, n_faces, offsets, columns, values),
+        odt.as_array2d(rhs.reshape((3, n_faces)), wp.float64),
+        odt.as_array2d(solution.reshape((3, n_faces)), wp.float64),
+        None,
+    )
+
+
+def _filter_mumford_shah_normals(
+    system: _MumfordShahNormals,
+    vertices: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    iterations: int,
+) -> tuple[wp.array[wp.vec3], _MumfordShahNormals]:
+    """
+    Filter ``normals``, the face normals of ``vertices``, in ``iterations >= 1`` solves.
+
+    Returns the filtered normals and ``system`` holding its solver, for the next call to reuse.
+    """
+    device = vertices.device
+    n_faces = normals.size
+    _launch.launch(
+        kernel_smoothing.mumford_shah_face_geometry,
+        dim=n_faces,
+        inputs=[vertices, system.faces, normals],
+        outputs=[system.lengths, system.perimeters, system.rhs, system.solution],
+        device=device,
+    )
+    for index in range(iterations):
         _launch.launch(
-            kernel_smoothing.mumford_shah_face_geometry,
+            kernel_smoothing.mumford_shah_face_values,
             dim=n_faces,
-            inputs=[vertices, self._faces, normals],
-            outputs=[self._lengths, self._perimeters, self._rhs, self._solution],
+            inputs=[
+                system.offsets,
+                system.starts,
+                system.order,
+                system.mates,
+                system.lengths,
+                system.perimeters,
+                system.solution,
+                wp.int32(1 if index == 0 else 0),
+                system.gamma,
+                system.beta,
+            ],
+            outputs=[system.values],
             device=device,
         )
-        for index in range(iterations):
-            _launch.launch(
-                kernel_smoothing.mumford_shah_face_values,
-                dim=n_faces,
-                inputs=[
-                    self._offsets,
-                    self._starts,
-                    self._order,
-                    self._mates,
-                    self._lengths,
-                    self._perimeters,
-                    self._solution,
-                    wp.int32(1 if index == 0 else 0),
-                    self._gamma,
-                    self._beta,
-                ],
-                outputs=[self._values],
-                device=device,
-            )
-            if self._solver is None:
-                # Built after the first values exist: the state derives its Jacobi diagonal from
-                # them. Iterated, never factored: the values change every round.
-                self._solver = twl.spd_column_solver(
-                    self._matrix,
-                    self._rhs,
-                    self._solution,
+        if system.solver is None:
+            # Built after the first values exist: the state derives its Jacobi diagonal from
+            # them. Iterated, never factored: the values change every round.
+            system = system._replace(
+                solver=twl.spd_column_solver(
+                    system.matrix,
+                    system.rhs,
+                    system.solution,
                     tol=_MUMFORD_SHAH_NORMAL_TOLERANCE,
                     factorize=False,
                 )
-            self._solver()
-        filtered = _launch.empty(n_faces, dtype=wp.vec3, device=device)
-        _launch.launch(
-            kernel_smoothing.normalize_solved_normals,
-            dim=n_faces,
-            inputs=[self._solution],
-            outputs=[filtered],
-            device=device,
-        )
-        return filtered
+            )
+        assert system.solver is not None
+        system.solver()
+    filtered = _launch.empty(n_faces, dtype=wp.vec3, device=device)
+    _launch.launch(
+        kernel_smoothing.normalize_solved_normals,
+        dim=n_faces,
+        inputs=[system.solution],
+        outputs=[filtered],
+        device=device,
+    )
+    return filtered, system
 
 
 # The vertex update's guide weight ``1 / sqrt(3)``, rounded to ``float32`` (``0x1.279a74p-1``) as
@@ -5442,92 +5511,106 @@ class _MumfordShahNormals:
 _MUMFORD_SHAH_GUIDE_WEIGHT = 0.5773502588272095
 
 
-class _NormalsToPoints:
+class _NormalsToPoints(NamedTuple):
     """
     The Mumford-Shah vertex update over one face set: ``(w^2 I + M^T M) x = w^2 g + M^T d``.
 
     ``M`` stacks two shape rows per face (``kernels/smoothing.corner_pair_gram``), so the operator
     depends on the topology alone. A solve's right-hand side is the guide plus each face's
-    projected shape, gathered over the vertex -> corner rows. Assembled once. Iterated, never
-    factored: the operator's spectrum lies in ``[w^2, w^2 + |M|^2]``, and each solve warm-starts
-    from the last
+    projected shape, gathered over the vertex -> corner rows. Assembled once
+    (``_normals_to_points``). Iterated, never factored: the
+    operator's spectrum lies in ``[w^2, w^2 + |M|^2]``, and each solve warm-starts from the last
     (``_MUMFORD_SHAH_POINT_TOLERANCE``).
     """
 
-    def __init__(self, faces: wp.array[wp.int32], vertices: wp.array[wp.vec3]) -> None:
-        device = vertices.device
-        n = vertices.size
-        n_faces = faces.size // 3
-        self._faces = faces
-        # The guide's weight ``w``: every point is drawn to its pass's input.
-        self._guide_weight_sq = wp.float64(_MUMFORD_SHAH_GUIDE_WEIGHT * _MUMFORD_SHAH_GUIDE_WEIGHT)
-        count = 9 * n_faces + n
-        keys, order = od.array.csr_key_buffers(count, device)
-        values = _launch.empty(count, dtype=wp.float64, device=device)
-        _launch.launch(
-            kernel_smoothing.normals_to_points_keys,
-            dim=max(n_faces, n),
-            inputs=[faces, wp.int32(n_faces), wp.int32(n), self._guide_weight_sq],
-            outputs=[keys, order, values],
-            device=device,
-        )
-        matrix = od.array.csr_from_coo_keys(n, n, keys, order, values)
-        self._corner_offsets, self._corners = _incidence_rows(faces, 1, n)
-        # The per-corner terms and the batched right-hand side and solution, in one allocation.
-        self._corner_terms, rhs, solution = _launch.carve_typed(
-            ((wp.vec3d, 3 * n_faces), (wp.float64, 3 * n), (wp.float64, 3 * n)), device
-        )
-        self._rhs = odt.as_array2d(rhs.reshape((3, n)), wp.float64)
-        self._solution = odt.as_array2d(solution.reshape((3, n)), wp.float64)
-        self._solver = twl.spd_column_solver(
-            matrix, self._rhs, self._solution, tol=_MUMFORD_SHAH_POINT_TOLERANCE, factorize=False
-        )
+    faces: wp.array[wp.int32]
+    guide_weight_sq: wp.float64
+    corner_offsets: wp.array[wp.int32]
+    corners: wp.array[wp.int32]
+    corner_terms: wp.array[wp.vec3d]
+    rhs: odt.Array2dFloat64
+    solution: odt.Array2dFloat64
+    solver: Callable[[], object]
 
-    def __call__(
-        self, guide: wp.array[wp.vec3], normals: wp.array[wp.vec3], iterations: int
-    ) -> wp.array[wp.vec3]:
-        """Fit the vertices to the face ``normals`` from ``guide`` in ``iterations >= 1`` solves."""
-        device = guide.device
-        n = guide.size
-        n_faces = normals.size
+
+def _normals_to_points(faces: wp.array[wp.int32], vertices: wp.array[wp.vec3]) -> _NormalsToPoints:
+    """Assemble the vertex update's operator, buffers and solver over ``faces``."""
+    device = vertices.device
+    n = vertices.size
+    n_faces = faces.size // 3
+    # The guide's weight ``w``: every point is drawn to its pass's input.
+    guide_weight_sq = wp.float64(_MUMFORD_SHAH_GUIDE_WEIGHT * _MUMFORD_SHAH_GUIDE_WEIGHT)
+    count = 9 * n_faces + n
+    keys, order = od.array.csr_key_buffers(count, device)
+    values = _launch.empty(count, dtype=wp.float64, device=device)
+    _launch.launch(
+        kernel_smoothing.normals_to_points_keys,
+        dim=max(n_faces, n),
+        inputs=[faces, wp.int32(n_faces), wp.int32(n), guide_weight_sq],
+        outputs=[keys, order, values],
+        device=device,
+    )
+    matrix = od.array.csr_from_coo_keys(n, n, keys, order, values)
+    corner_offsets, corners = _incidence_rows(faces, 1, n)
+    # The per-corner terms and the batched right-hand side and solution, in one allocation.
+    corner_terms, rhs_flat, solution_flat = _launch.carve_typed(
+        ((wp.vec3d, 3 * n_faces), (wp.float64, 3 * n), (wp.float64, 3 * n)), device
+    )
+    rhs = odt.as_array2d(rhs_flat.reshape((3, n)), wp.float64)
+    solution = odt.as_array2d(solution_flat.reshape((3, n)), wp.float64)
+    solver = twl.spd_column_solver(
+        matrix, rhs, solution, tol=_MUMFORD_SHAH_POINT_TOLERANCE, factorize=False
+    )
+    return _NormalsToPoints(
+        faces, guide_weight_sq, corner_offsets, corners, corner_terms, rhs, solution, solver
+    )
+
+
+def _fit_points_to_normals(
+    system: _NormalsToPoints, guide: wp.array[wp.vec3], normals: wp.array[wp.vec3], iterations: int
+) -> wp.array[wp.vec3]:
+    """Fit the vertices to the face ``normals`` from ``guide`` in ``iterations >= 1`` solves."""
+    device = guide.device
+    n = guide.size
+    n_faces = normals.size
+    _launch.launch(
+        kernel_smoothing.vec3_to_columns,
+        dim=n,
+        inputs=[guide],
+        outputs=[system.solution],
+        device=device,
+    )
+    for _ in range(iterations):
         _launch.launch(
-            kernel_smoothing.vec3_to_columns,
-            dim=n,
-            inputs=[guide],
-            outputs=[self._solution],
+            kernel_smoothing.project_to_target_normals,
+            dim=n_faces,
+            inputs=[system.solution, system.faces, normals],
+            outputs=[system.corner_terms],
             device=device,
         )
-        for _ in range(iterations):
-            _launch.launch(
-                kernel_smoothing.project_to_target_normals,
-                dim=n_faces,
-                inputs=[self._solution, self._faces, normals],
-                outputs=[self._corner_terms],
-                device=device,
-            )
-            _launch.launch(
-                kernel_smoothing.normals_to_points_rhs,
-                dim=n,
-                inputs=[
-                    guide,
-                    self._corner_offsets,
-                    self._corners,
-                    self._corner_terms,
-                    self._guide_weight_sq,
-                ],
-                outputs=[self._rhs],
-                device=device,
-            )
-            self._solver()
-        positions = _launch.empty(n, dtype=wp.vec3, device=device)
         _launch.launch(
-            kernel_smoothing.columns_to_vec3,
+            kernel_smoothing.normals_to_points_rhs,
             dim=n,
-            inputs=[self._solution],
-            outputs=[positions],
+            inputs=[
+                guide,
+                system.corner_offsets,
+                system.corners,
+                system.corner_terms,
+                system.guide_weight_sq,
+            ],
+            outputs=[system.rhs],
             device=device,
         )
-        return positions
+        system.solver()
+    positions = _launch.empty(n, dtype=wp.vec3, device=device)
+    _launch.launch(
+        kernel_smoothing.columns_to_vec3,
+        dim=n,
+        inputs=[system.solution],
+        outputs=[positions],
+        device=device,
+    )
+    return positions
 
 
 def _smoothed_face_normals(

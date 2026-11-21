@@ -35,7 +35,7 @@ import math
 import os
 import warnings
 from collections.abc import Sequence
-from typing import Any, Literal, cast, overload
+from typing import Any, Literal, NamedTuple, cast, overload
 
 import numpy as np
 import warp as wp
@@ -1639,7 +1639,7 @@ def shorten_loop_with_offsets(
     )
     current, current_offsets, length = loops, loop_offsets, loops.size
     while True:
-        sweep = _LoopSweep(
+        sweep = _loop_sweep(
             vertices,
             faces,
             ring_offsets,
@@ -1650,8 +1650,10 @@ def shorten_loop_with_offsets(
             capacity,
             n_loops,
         )
-        sweep.load(current, current_offsets, length)
-        values = sweep.run()
+        # The loops the run starts from.
+        _launch.copy(sweep.loops, current, count=length)
+        _launch.copy(sweep.loop_offsets, current_offsets)
+        values = _run_sweeps(sweep)
         if values[kernel_geodesic_walk.SHORTEN_OVERFLOW] == 0:
             break
         # The undone sweep's rewritten length is the counts' total; grow past it, keep the loops
@@ -1688,182 +1690,210 @@ _SHORTEN_LOOP_SLACK = 1024
 _SHORTEN_LOOP_GRAPH_SWEEPS = 4
 
 
-class _LoopSweep:
-    """The fixed buffers of one ``shorten_loop_with_offsets`` run, and the sweep over them."""
+class _LoopSweep(NamedTuple):
+    """The fixed buffers of one ``shorten_loop_with_offsets`` run, which every sweep rewrites."""
 
-    def __init__(
-        self,
-        vertices: wp.array[wp.vec3],
-        faces: wp.array[wp.int32],
-        ring_offsets: wp.array[wp.int32],
-        ring_halfedges: wp.array[wp.int32],
-        is_boundary: wp.array[wp.bool],
-        tolerance: float,
-        state: wp.array[wp.int32],
-        capacity: int,
-        n_loops: int,
-    ) -> None:
-        device = faces.device
-        self._device = wp.get_device(device)
-        self._mesh = (vertices, faces, ring_offsets, ring_halfedges, is_boundary)
-        self._tolerance = tolerance
-        self._state = state
-        self._capacity = capacity
-        # The current loops, which the call returns, and the rewrite the compaction reads back
-        # into them, carved with the per-slot arc tables.
-        self.loops = _launch.empty(capacity, dtype=wp.int32, device=device)
-        self.loop_offsets = _launch.empty(n_loops + 1, dtype=wp.int32, device=device)
-        self._rewritten, self._rewritten_offsets, self._arc_slot, self._arc_step = _launch.carve(
-            wp.int32, (capacity, n_loops + 1, capacity, capacity), device
-        )
-        # Each is the per-slot counts behind a leading zero, scanned in place into exclusive
-        # offsets with the total at entry ``capacity``.
-        self.positions, self._kept = _launch.carve(
-            wp.int32, (capacity + 1, capacity + 1), device, zeroed=True
-        )
-        self._counts = _launch.view(self.positions, 1, capacity + 1)
-        self._kept_counts = _launch.view(self._kept, 1, capacity + 1)
+    device: wp.Device
+    mesh: tuple[
+        wp.array[wp.vec3],
+        wp.array[wp.int32],
+        wp.array[wp.int32],
+        wp.array[wp.int32],
+        wp.array[wp.bool],
+    ]
+    """``(vertices, faces, ring_offsets, ring_halfedges, is_boundary)``."""
+    tolerance: float
+    state: wp.array[wp.int32]
+    capacity: int
+    loops: wp.array[wp.int32]
+    """The current loops, which the call returns."""
+    loop_offsets: wp.array[wp.int32]
+    rewritten: wp.array[wp.int32]
+    """The rewrite the compaction reads back into ``loops``."""
+    rewritten_offsets: wp.array[wp.int32]
+    arc_slot: wp.array[wp.int32]
+    arc_step: wp.array[wp.int32]
+    positions: wp.array[wp.int32]
+    """The per-slot counts behind a leading zero, scanned in place into exclusive offsets."""
+    kept: wp.array[wp.int32]
+    """As ``positions``, for the positions the compaction keeps."""
+    counts: wp.array[wp.int32]
+    kept_counts: wp.array[wp.int32]
 
-    def load(
-        self, loops: wp.array[wp.int32], loop_offsets: wp.array[wp.int32], length: int
-    ) -> None:
-        """Copy the loops a run starts from into the buffers."""
-        _launch.copy(self.loops, loops, count=length)
-        _launch.copy(self.loop_offsets, loop_offsets)
 
-    def run(self) -> list[int]:
-        """Sweep until the device-side state stops the loop; return the state's words."""
-        n_state = kernel_geodesic_walk.SHORTEN_STATE_SLOTS
-        if self._device.is_cpu:
-            # The CPU runs a launch's threads one after another, so the whole loop runs as one
-            # thread's sweeps in that same order (``kernels/geodesic_walk.serial_shorten_sweeps``).
-            self._issue_serial()
-            return [int(v) for v in read_values(self._state, 0, n_state)]
-        self._issue()
-        values = [int(v) for v in read_values(self._state, 0, n_state)]
-        if values[kernel_geodesic_walk.SHORTEN_DONE] != 0:
-            return values
-        if not (self._device.is_cuda and wp.is_conditional_graph_supported()):
-            while values[kernel_geodesic_walk.SHORTEN_DONE] == 0:
-                self._issue()
-                values = [int(v) for v in read_values(self._state, 0, n_state)]
-            return values
-        with wp.ScopedCapture(self._device) as capture:
-            for _ in range(_SHORTEN_LOOP_GRAPH_SWEEPS):
-                self._issue()
-        graph = capture.graph
-        assert graph is not None
-        while values[kernel_geodesic_walk.SHORTEN_DONE] == 0:
-            wp.capture_launch(graph)
-            values = [int(v) for v in read_values(self._state, 0, n_state)]
+def _loop_sweep(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    ring_offsets: wp.array[wp.int32],
+    ring_halfedges: wp.array[wp.int32],
+    is_boundary: wp.array[wp.bool],
+    tolerance: float,
+    state: wp.array[wp.int32],
+    capacity: int,
+    n_loops: int,
+) -> _LoopSweep:
+    """Allocate one run's fixed buffers, sized for ``capacity`` positions."""
+    device = faces.device
+    # The current loops, which the call returns, and the rewrite the compaction reads back into
+    # them, carved with the per-slot arc tables.
+    loops = _launch.empty(capacity, dtype=wp.int32, device=device)
+    loop_offsets = _launch.empty(n_loops + 1, dtype=wp.int32, device=device)
+    rewritten, rewritten_offsets, arc_slot, arc_step = _launch.carve(
+        wp.int32, (capacity, n_loops + 1, capacity, capacity), device
+    )
+    # Each is the per-slot counts behind a leading zero, scanned in place into exclusive offsets
+    # with the total at entry ``capacity``.
+    positions, kept = _launch.carve(wp.int32, (capacity + 1, capacity + 1), device, zeroed=True)
+    return _LoopSweep(
+        wp.get_device(device),
+        (vertices, faces, ring_offsets, ring_halfedges, is_boundary),
+        tolerance,
+        state,
+        capacity,
+        loops,
+        loop_offsets,
+        rewritten,
+        rewritten_offsets,
+        arc_slot,
+        arc_step,
+        positions,
+        kept,
+        _launch.view(positions, 1, capacity + 1),
+        _launch.view(kept, 1, capacity + 1),
+    )
+
+
+def _run_sweeps(sweep: _LoopSweep) -> list[int]:
+    """Sweep until the device-side state stops the loop; return the state's words."""
+    n_state = kernel_geodesic_walk.SHORTEN_STATE_SLOTS
+    device = sweep.device
+    if device.is_cpu:
+        # The CPU runs a launch's threads one after another, so the whole loop runs as one
+        # thread's sweeps in that same order (``kernels/geodesic_walk.serial_shorten_sweeps``).
+        _issue_serial_sweeps(sweep)
+        return [int(v) for v in read_values(sweep.state, 0, n_state)]
+    _issue_sweep(sweep)
+    values = [int(v) for v in read_values(sweep.state, 0, n_state)]
+    if values[kernel_geodesic_walk.SHORTEN_DONE] != 0:
         return values
+    if not (device.is_cuda and wp.is_conditional_graph_supported()):
+        while values[kernel_geodesic_walk.SHORTEN_DONE] == 0:
+            _issue_sweep(sweep)
+            values = [int(v) for v in read_values(sweep.state, 0, n_state)]
+        return values
+    with wp.ScopedCapture(device) as capture:
+        for _ in range(_SHORTEN_LOOP_GRAPH_SWEEPS):
+            _issue_sweep(sweep)
+    graph = capture.graph
+    assert graph is not None
+    while values[kernel_geodesic_walk.SHORTEN_DONE] == 0:
+        wp.capture_launch(graph)
+        values = [int(v) for v in read_values(sweep.state, 0, n_state)]
+    return values
 
-    def _issue_serial(self) -> None:
-        """Every sweep until the state stops the loop, in one single-thread launch."""
-        vertices, faces, ring_offsets, ring_halfedges, is_boundary = self._mesh
-        _launch.launch(
-            kernel_geodesic_walk.serial_shorten_sweeps,
-            dim=1,
-            inputs=[
-                vertices,
-                faces,
-                ring_offsets,
-                ring_halfedges,
-                is_boundary,
-                self._tolerance,
-                self.loops,
-                self.loop_offsets,
-                self._rewritten,
-                self._rewritten_offsets,
-                self.positions,
-                self._counts,
-                self._kept,
-                self._kept_counts,
-                self._arc_slot,
-                self._arc_step,
-                self._state,
-            ],
-            device=self._device,
-        )
 
-    def _issue(self) -> None:
-        """One sweep: counts, rewrite, compaction and the closing state update."""
-        vertices, faces, ring_offsets, ring_halfedges, is_boundary = self._mesh
-        device = self._device
-        state = self._state
-        capacity = self._capacity
-        _launch.launch(
-            kernel_geodesic_walk.shorten_loop_counts,
-            dim=capacity,
-            inputs=[
-                vertices,
-                faces,
-                ring_offsets,
-                ring_halfedges,
-                is_boundary,
-                self.loops,
-                self.loop_offsets,
-                self._tolerance,
-                state,
-                self._counts,
-                self._arc_slot,
-                self._arc_step,
-            ],
-            device=device,
-        )
-        _launch.array_scan(self._counts, out_array=self._counts, inclusive=True)
-        _launch.launch(
-            kernel_geodesic_walk.shorten_loop_write,
-            dim=capacity,
-            inputs=[
-                faces,
-                ring_offsets,
-                ring_halfedges,
-                self.loops,
-                self.loop_offsets,
-                self._arc_slot,
-                self._arc_step,
-                self.positions,
-                state,
-                self._rewritten,
-                self._rewritten_offsets,
-            ],
-            device=device,
-        )
-        # Drop positions repeating their predecessor, which a contracted spur leaves behind.
-        _launch.launch(
-            kernel_geodesic_walk.distinct_from_predecessor,
-            dim=capacity,
-            inputs=[
-                self._rewritten,
-                self._rewritten_offsets,
-                self.positions,
-                state,
-                self._kept_counts,
-            ],
-            device=device,
-        )
-        _launch.array_scan(self._kept_counts, out_array=self._kept_counts, inclusive=True)
-        _launch.launch(
-            kernel_geodesic_walk.compact_kept,
-            dim=capacity,
-            inputs=[
-                self._rewritten,
-                self._rewritten_offsets,
-                self._kept,
-                self.positions,
-                state,
-                self.loops,
-                self.loop_offsets,
-            ],
-            device=device,
-        )
-        _launch.launch(
-            kernel_geodesic_walk.shorten_loop_advance,
-            dim=1,
-            inputs=[self.positions, self._kept, state],
-            device=device,
-        )
+def _issue_serial_sweeps(sweep: _LoopSweep) -> None:
+    """Every sweep until the state stops the loop, in one single-thread launch."""
+    _launch.launch(
+        kernel_geodesic_walk.serial_shorten_sweeps,
+        dim=1,
+        inputs=[
+            *sweep.mesh,
+            sweep.tolerance,
+            sweep.loops,
+            sweep.loop_offsets,
+            sweep.rewritten,
+            sweep.rewritten_offsets,
+            sweep.positions,
+            sweep.counts,
+            sweep.kept,
+            sweep.kept_counts,
+            sweep.arc_slot,
+            sweep.arc_step,
+            sweep.state,
+        ],
+        device=sweep.device,
+    )
+
+
+def _issue_sweep(sweep: _LoopSweep) -> None:
+    """One sweep: counts, rewrite, compaction and the closing state update."""
+    vertices, faces, ring_offsets, ring_halfedges, is_boundary = sweep.mesh
+    device = sweep.device
+    state = sweep.state
+    capacity = sweep.capacity
+    _launch.launch(
+        kernel_geodesic_walk.shorten_loop_counts,
+        dim=capacity,
+        inputs=[
+            vertices,
+            faces,
+            ring_offsets,
+            ring_halfedges,
+            is_boundary,
+            sweep.loops,
+            sweep.loop_offsets,
+            sweep.tolerance,
+            state,
+            sweep.counts,
+            sweep.arc_slot,
+            sweep.arc_step,
+        ],
+        device=device,
+    )
+    _launch.array_scan(sweep.counts, out_array=sweep.counts, inclusive=True)
+    _launch.launch(
+        kernel_geodesic_walk.shorten_loop_write,
+        dim=capacity,
+        inputs=[
+            faces,
+            ring_offsets,
+            ring_halfedges,
+            sweep.loops,
+            sweep.loop_offsets,
+            sweep.arc_slot,
+            sweep.arc_step,
+            sweep.positions,
+            state,
+            sweep.rewritten,
+            sweep.rewritten_offsets,
+        ],
+        device=device,
+    )
+    # Drop positions repeating their predecessor, which a contracted spur leaves behind.
+    _launch.launch(
+        kernel_geodesic_walk.distinct_from_predecessor,
+        dim=capacity,
+        inputs=[
+            sweep.rewritten,
+            sweep.rewritten_offsets,
+            sweep.positions,
+            state,
+            sweep.kept_counts,
+        ],
+        device=device,
+    )
+    _launch.array_scan(sweep.kept_counts, out_array=sweep.kept_counts, inclusive=True)
+    _launch.launch(
+        kernel_geodesic_walk.compact_kept,
+        dim=capacity,
+        inputs=[
+            sweep.rewritten,
+            sweep.rewritten_offsets,
+            sweep.kept,
+            sweep.positions,
+            state,
+            sweep.loops,
+            sweep.loop_offsets,
+        ],
+        device=device,
+    )
+    _launch.launch(
+        kernel_geodesic_walk.shorten_loop_advance,
+        dim=1,
+        inputs=[sweep.positions, sweep.kept, state],
+        device=device,
+    )
 
 
 def _length_epsilon(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> list[object]:

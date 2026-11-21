@@ -180,8 +180,8 @@ class BpaEdgeTable:
     marshalling -- though only a small fraction of the whole call, which is dominated by the pivot
     search.
 
-    Bound once by ``_BpaState`` and rebound only when ``grow`` reallocates (``_bind_edge_table``
-    is called from ``_allocate_budget``, which is the only place the arrays are replaced).
+    Bound once by ``reconstruction._bpa_budget`` and rebound only when ``_bpa_grow`` reallocates
+    (``_bpa_budget`` is the only place the arrays are replaced).
     ``rehash_edges`` still takes the old and new arrays loose, because it is the one kernel that
     sees two tables at once.
     """
@@ -517,17 +517,18 @@ def push_front_edge(
 ) -> None:
     # Append an edge to the outgoing front list, bounded by the list's allocated capacity.
     #
-    # ``front_out`` is sized ``n + max_faces / 2`` (``_BpaState._allocate_budget``), below the
+    # ``front_out`` is sized ``n + max_faces / 2`` (``reconstruction._bpa_budget``), below the
     # ``3 * max_faces + n`` worst case the commit budget admits; a write past it would land in
     # *another live allocation* of the memory pool and corrupt it silently rather than fault, so
     # the bound is tested here.
     #
     # Overflow is *recoverable*, which is why this drops rather than clamps: the front list is a
-    # cache of the edge hash table, not the source of truth, and ``_BpaState.grow`` rebuilds it from
-    # that table with ``collect_front_from_table``. So a dropped entry is restored by the same host
-    # round-trip that doubles the budget, and raising ``CNT_GROW`` is what asks for it. The front
-    # peaks near 0.3 n on ``bunny`` and 0.03 n on the scans against a 3 n capacity, so this does
-    # not fire in practice. The worst-case size held 13 n entries in each of five lists.
+    # cache of the edge hash table, not the source of truth, and ``reconstruction._bpa_grow``
+    # rebuilds it from that table with ``collect_front_from_table``. So a dropped entry is restored
+    # by the same host round-trip that doubles the budget, and raising ``CNT_GROW`` is what asks for
+    # it. The front peaks near 0.3 n on ``bunny`` and 0.03 n on the scans against a 3 n capacity,
+    # so this does not fire in practice. The worst-case size held 13 n entries in each of five
+    # lists.
     position = wp.atomic_add(counters, CNT_NEXT_FRONT, 1)
     if position < capacity:
         out_front[position] = slot

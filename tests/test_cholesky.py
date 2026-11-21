@@ -335,8 +335,7 @@ def test_either_sign_frees_the_refused_attempt_first(
     """
     _, mesh_wp = sphere_irregular
     laplacian = od.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices, dtype=wp.float64)
-    plan_type = od.cholesky._Plan  # pyright: ignore[reportPrivateUsage]
-    numeric = plan_type.numeric
+    numeric = od.cholesky._numeric  # pyright: ignore[reportPrivateUsage]
     attempts: list[weakref.ref[wp.array[wp.float64]]] = []
     alive_at_retry: list[bool] = []
 
@@ -346,14 +345,12 @@ def test_either_sign_frees_the_refused_attempt_first(
         attempts.append(weakref.ref(state.blocks))
         return state
 
-    monkeypatch.setattr(plan_type, "numeric", recording)
+    monkeypatch.setattr(od.cholesky, "_numeric", recording)
     plan_cholesky = od.cholesky._plan_cholesky  # pyright: ignore[reportPrivateUsage]
 
     def wrong_sign(*args: Any, **kwargs: Any) -> object:
         # The analysis reads the operator's sign; the first attempt takes the other one.
-        plan = plan_cholesky(*args, **kwargs)
-        plan.leading_negative = False
-        return plan
+        return plan_cholesky(*args, **kwargs)._replace(leading_negative=False)
 
     monkeypatch.setattr(od.cholesky, "_plan_cholesky", wrong_sign)
     factor = od.cholesky.sparse_cholesky(laplacian, mesh_wp.points, negated=None)

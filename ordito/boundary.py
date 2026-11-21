@@ -23,7 +23,7 @@ pack and delegate, so there is one segmented launch behind each measure rather t
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Literal
+from typing import Literal, NamedTuple
 
 import numpy as np
 import warp as wp
@@ -37,7 +37,6 @@ from ordito.constants import INT32_MAX
 from ordito.graph import successor_cycles_from_table
 from ordito.halfedge import _sorted_pairing  # pyright: ignore[reportPrivateUsage]
 from ordito.kernels import boundary as kernel_boundary
-from ordito.kernels import halfedge as kernel_halfedge
 
 
 def boundary_edges(
@@ -162,8 +161,8 @@ def _boundary_edges_impl(
     n_faces = faces.size // 3
     if n_faces == 0:
         return odt.empty_2d((0, 2), wp.int32, device=faces.device)
-    boundary = _BoundaryHalfedges(faces, n_vertices or None, mates)
-    return boundary.edges(sort_pair=not oriented)
+    boundary = _boundary_halfedges(faces, n_vertices or None, mates)
+    return _boundary_edge_rows(boundary, _flag_boundary_halfedges(boundary), sort_pair=not oriented)
 
 
 def boundary_loops(
@@ -389,20 +388,24 @@ def boundary_loops_with_offsets(
     n_vertices = vertices.size
     # One boundary detection for every edge view below; ``boundary_edges`` /
     # ``oriented_boundary_edges`` / ``boundary_vertex_indices`` would each redo the pairing.
-    boundary = _BoundaryHalfedges(faces, n_vertices, mates)
-    has_seam, has_pinch = _boundary_defects(boundary, n_vertices)
-    if boundary.count() == 0:
+    boundary = _boundary_halfedges(faces, n_vertices, mates)
+    flags = _boundary_defects(boundary, n_vertices)
+    if flags.n_edges == 0:
         return _launch.empty_packed(wp.int32, device)
-    if has_pinch:
+    if flags.has_pinch:
         if pinches == "split":
-            return _split_at_pinches(*_pinched_boundary_cycles(boundary, n_vertices), n_vertices)
-        return _pinched_boundary_cycles(boundary, n_vertices, cross_gaps=pinches == "gap")
-    if has_seam:
-        return _unoriented_boundary_cycles(boundary.edges(sort_pair=True), n_vertices)
+            return _split_at_pinches(
+                *_pinched_boundary_cycles(boundary, flags, n_vertices), n_vertices
+            )
+        return _pinched_boundary_cycles(boundary, flags, n_vertices, cross_gaps=pinches == "gap")
+    if flags.has_seam:
+        return _unoriented_boundary_cycles(
+            _boundary_edge_rows(boundary, flags, sort_pair=True), n_vertices
+        )
     # With neither defect no boundary vertex has two boundary edges out or three incident, so the
     # directed rows are cycles over the boundary vertices -- plus, on a mesh that is not
     # edge-manifold, chains running into a vertex with no edge out, which the ranking drops.
-    tails, next_node = boundary.successors(n_vertices)
+    tails, next_node = _boundary_successors(boundary, flags, n_vertices)
     return successor_cycles_from_table(tails, next_node)
 
 
@@ -499,13 +502,13 @@ def _split_at_pinches(
     return new_flat, new_offsets
 
 
-def _boundary_defects(boundary: _BoundaryHalfedges, n_vertices: int) -> tuple[bool, bool]:
+def _boundary_defects(boundary: _BoundaryHalfedges, n_vertices: int) -> _BoundaryFlags:
     """
     Count the boundary edges and detect whether their directed rows have a seam or a pinch.
 
-    Returns whether the rows have an orientation seam and whether they have a pinch; the count is
-    left in ``boundary`` for
-    [`boundary_loops_with_offsets`][ordito.boundary.boundary_loops_with_offsets] to read.
+    Returns the flagged boundary, whose ``has_seam`` and ``has_pinch`` say whether the rows have an
+    orientation seam and a pinch, and whose ``n_edges``
+    [`boundary_loops_with_offsets`][ordito.boundary.boundary_loops_with_offsets] reads.
 
     They have neither on an orientable surface with a manifold boundary, which is what lets
     [`boundary_loops_with_offsets`][ordito.boundary.boundary_loops_with_offsets] rank them as the
@@ -533,12 +536,15 @@ def _boundary_defects(boundary: _BoundaryHalfedges, n_vertices: int) -> tuple[bo
     only a boundary vertex ever has a non-zero degree, and the thread that pushes one past its
     threshold learns so from the value its own ``wp.atomic_add`` returns.
     """
-    boundary.count(census=n_vertices)
-    return boundary.defects
+    return _flag_boundary_halfedges(boundary, census=n_vertices)
 
 
 def _pinched_boundary_cycles(
-    boundary: _BoundaryHalfedges, n_vertices: int, *, cross_gaps: bool = False
+    boundary: _BoundaryHalfedges,
+    flags: _BoundaryFlags,
+    n_vertices: int,
+    *,
+    cross_gaps: bool = False,
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Boundary cycles of a rim that meets itself at a vertex: walk the boundary *halfedges* instead.
@@ -568,7 +574,7 @@ def _pinched_boundary_cycles(
     faces = boundary.faces
     n = boundary.n
     device = faces.device
-    tails, next_node = boundary.successors(n, halfedge_nodes=True)
+    tails, next_node = _boundary_successors(boundary, flags, n, halfedge_nodes=True)
     if cross_gaps:
         counts = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
         slots = _launch.empty(2 * n_vertices, dtype=wp.int32, device=device)
@@ -1167,7 +1173,8 @@ def boundary_vertex_indices(
     # The endpoints are vertex indices below ``len(vertices)``, so a per-vertex flag array and its
     # scan give the sorted unique set directly -- no edge list and no ``unique_1d``.
     n_vertices = vertices.size
-    return _BoundaryHalfedges(faces, n_vertices, mates).vertex_indices(n_vertices)
+    flags = _boundary_vertex_flags(_boundary_halfedges(faces, n_vertices, mates), n_vertices)
+    return od.array.flatnonzero_in_place(flags)
 
 
 def boundary_vertices(
@@ -1218,7 +1225,10 @@ def boundary_vertices(
     require_same_device(vertices=vertices, faces=faces, mates=mates)
     if faces.size // 3 == 0:
         return _launch.empty(0, dtype=wp.vec3, device=faces.device)
-    return _BoundaryHalfedges(faces, vertices.size, mates).vertex_positions(vertices)
+    n_vertices = vertices.size
+    flags = _boundary_vertex_flags(_boundary_halfedges(faces, n_vertices, mates), n_vertices)
+    # The boundary vertex positions in ascending index order, with no index buffer.
+    return od.array.compress_in_place(flags, vertices)
 
 
 def ears(
@@ -1312,7 +1322,7 @@ def ears(
     return ear, ear_opp
 
 
-class _BoundaryHalfedges:
+class _BoundaryHalfedges(NamedTuple):
     """
     The boundary halfedges of a mesh: the halfedges with no mate (``halfedge.halfedge_mates``).
 
@@ -1325,221 +1335,227 @@ class _BoundaryHalfedges:
     CUDA mesh).
     """
 
-    def __init__(
-        self,
-        faces: wp.array[wp.int32],
-        n_vertices: int | None = None,
-        mates: wp.array[wp.int32] | None = None,
-    ) -> None:
-        self.faces = faces
-        self.n = faces.size // 3 * 3
-        self.n_vertices = n_vertices
-        # The edge-key sort's permutation, where the pairing sorts here: the sorted marking pass
-        # forms each mate from its run.
-        self._order: wp.array[wp.int32] | None = None
-        # Where the pairing sorts, the mates are formed from the sorted keys by the first kernel
-        # that reads them (the flags, or the vertex flags without any table), not by a launch of
-        # their own; ``mates`` stores them on a later read.
-        self._mates: wp.array[wp.int32] | None = None
-        self._sorted_keys: wp.array[wp.uint64] | None = None
-        # Where the pairing sorts here, the sort's free upper halves: ``(n,)`` from the payload's,
-        # which takes the mates, and ``(2 * n,)`` ``int32`` from the keys', which takes the
-        # uncensused bits and their ranks, then the successor tails. Each would be an allocation of
-        # its own.
-        self._spare_order: wp.array[wp.int32] | None = None
-        self._spare_keys: wp.array[wp.int32] | None = None
-        if mates is not None:
-            self._mates = mates
-        else:
-            sorted_pairing = _sorted_pairing(faces, n_vertices)
-            if sorted_pairing is None:
-                self._mates = od.halfedge.halfedge_mates(faces, n_vertices)
-            else:
-                keys, order = sorted_pairing
-                n = self.n
-                self._sorted_keys = _launch.view(keys, 0, n)
-                self._order = _launch.view(order, 0, n)
-                self._spare_order = _launch.view(order, n, 2 * n)
-                self._spare_keys = _launch.view_as(_launch.view(keys, n, 2 * n), wp.int32)
-        # One bit a flag position, and the words' ranks (``array.bit_ranks``' table).
-        self._words: wp.array[wp.uint32] | None = None
-        self._ranks: wp.array[wp.int32] | None = None
-        self._degree_scratch: wp.array[wp.int32] | None = None
-        self._count = 0
-        self.defects = (False, False)
+    faces: wp.array[wp.int32]
+    n: int
+    """The halfedge count, ``3 * n_faces``."""
+    mates: wp.array[wp.int32] | None
+    """
+    The mate codes, or ``None`` where the pairing sorts here: the mates are then formed from the
+    sorted keys by the first kernel that reads them (the flags, or the vertex flags without any
+    table), not by a launch of their own.
+    """
+    sorted_keys: wp.array[wp.uint64] | None
+    order: wp.array[wp.int32] | None
+    """The edge-key sort's permutation: the sorted marking pass forms each mate from its run."""
+    spare_order: wp.array[wp.int32] | None
+    """
+    The sort's free upper halves: ``(n,)`` from the payload's, which takes the mates, and
+    ``(2 * n,)`` ``int32`` from the keys' (``spare_keys``), which takes the uncensused bits and
+    their ranks, then the successor tails. Each would be an allocation of its own.
+    """
+    spare_keys: wp.array[wp.int32] | None
 
-    def count(self, census: int | None = None) -> int:
-        """
-        Return the boundary edge count; the first call scans and reads the total back.
 
-        ``census`` is ``boundary_loops_with_offsets``'s vertex count. Given on the first call, the
-        degree census runs in the flagging launch and its seam and pinch bits come back with the
-        total, into ``defects``.
-        """
-        if self._ranks is None:
-            device = self.faces.device
-            n = self.n
-            n_words = (n + 31) // 32
-            # One zeroed buffer: the bits, their ranks, and with the census its two defect bits and
-            # the ``(n_vertices, 2)`` degree table after those -- one allocation, and the total and
-            # both bits adjacent for the single readback.
-            census_size = 0 if census is None else 2 + 2 * census
-            if census is None and self._spare_keys is not None:
-                # The sort's free half holds them (``2 * n_words <= n``), below the tails.
-                buffer = _launch.view(self._spare_keys, 0, 2 * n_words)
-                _launch.zero_(buffer)
-            else:
-                buffer = _launch.zeros(2 * n_words + census_size, dtype=wp.int32, device=device)
-            words = _launch.view_as(_launch.view(buffer, 0, n_words), wp.uint32)
-            # The words' populations, added by the marking launch and scanned here into their ranks.
-            ranks = _launch.view(buffer, n_words, 2 * n_words)
-            degrees: odt.Array2dInt32 | None = None
-            defects: wp.array[wp.int32] | None = None
-            if census is not None:
-                defects = _launch.view(buffer, 2 * n_words, 2 * n_words + 2)
-                degree_table = _launch.view(buffer, 2 * n_words + 2, 2 * n_words + census_size)
-                degrees = odt.as_array2d(degree_table.reshape((census, 2)), wp.int32)
-                # Dead once the census bits are read: ``successors`` refills it as its table.
-                self._degree_scratch = degree_table
-            if self._mates is None:
-                assert self._sorted_keys is not None
-                assert self._spare_order is not None
-                self._mates = self._spare_order
-                _launch.launch(
-                    kernel_boundary.mark_sorted_boundary_halfedges,
-                    dim=n,
-                    inputs=[
-                        self._sorted_keys,
-                        self._order,
-                        self.faces,
-                        degrees,
-                        defects,
-                        self._mates,
-                        words,
-                        ranks,
-                    ],
-                    device=device,
-                )
-            else:
-                _launch.launch(
-                    kernel_boundary.mark_boundary_halfedges,
-                    dim=n,
-                    inputs=[self._mates, self.faces, degrees, defects, words, ranks],
-                    device=device,
-                )
-            _launch.array_scan(ranks, out_array=ranks, inclusive=True)
-            self._words = words
-            self._ranks = ranks
-            # Sizes every output below: the one host readback of the boundary detection, which
-            # carries the census' two bits alongside the total when there is one.
-            if census is None:
-                self._count = int(read_scalar(ranks))
-            else:
-                total, seam, pinch = read_values(buffer, 2 * n_words - 1, 3)
-                self._count = total
-                self.defects = (bool(seam), bool(pinch))
-        return self._count
+def _boundary_halfedges(
+    faces: wp.array[wp.int32],
+    n_vertices: int | None = None,
+    mates: wp.array[wp.int32] | None = None,
+) -> _BoundaryHalfedges:
+    """Pair the halfedges of ``faces``, unless ``mates`` already does, for the boundary views."""
+    n = faces.size // 3 * 3
+    if mates is not None:
+        return _BoundaryHalfedges(faces, n, mates, None, None, None, None)
+    sorted_pairing = _sorted_pairing(faces, n_vertices)
+    if sorted_pairing is None:
+        return _BoundaryHalfedges(
+            faces, n, od.halfedge.halfedge_mates(faces, n_vertices), None, None, None, None
+        )
+    keys, order = sorted_pairing
+    return _BoundaryHalfedges(
+        faces,
+        n,
+        None,
+        _launch.view(keys, 0, n),
+        _launch.view(order, 0, n),
+        _launch.view(order, n, 2 * n),
+        _launch.view_as(_launch.view(keys, n, 2 * n), wp.int32),
+    )
 
-    def edges(self, *, sort_pair: bool) -> odt.Array2dInt32:
-        """Emit the boundary edge rows in halfedge order (ascending pairs if ``sort_pair``)."""
-        device = self.faces.device
-        k = self.count()
-        out_edges = odt.empty_2d((k, 2), wp.int32, device=device)
-        if k > 0:
-            dim, by_rank = _launch.set_bit_launch(self.n, k, device)
-            _launch.launch(
-                kernel_boundary.emit_boundary_edges,
-                dim=dim,
-                inputs=[self._words, self._ranks, by_rank, self.faces, sort_pair, out_edges],
-                device=device,
-            )
-        return out_edges
 
-    def successors(
-        self, node_count: int, *, halfedge_nodes: bool = False
-    ) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
-        """
-        Return the boundary as a successor graph: its nodes, and the ``node_count``-sized table.
+class _BoundaryFlags(NamedTuple):
+    """The flagged boundary halfedges: a bit a halfedge, and the words' ranks."""
 
-        The nodes are the directed rows' tail vertices, or with ``halfedge_nodes`` the boundary
-        halfedges; see ``kernels/boundary.emit_boundary_successors``. A chain on a mesh that is
-        not edge-manifold ends where the table reads ``-1``: everywhere off the vertex nodes, and
-        over halfedges at each dead end the walk reaches, the only entries off the nodes it
-        reads.
-        """
-        device = self.faces.device
-        k = self.count()
-        if self._spare_keys is not None:
-            tails = _launch.view(self._spare_keys, self.n, self.n + k)
-        else:
-            tails = _launch.empty(k, dtype=wp.int32, device=device)
-        # ``-1`` off the nodes: the ranking reads it to tell where a chain ends. The census' degree
-        # table, read only by the flagging launch, holds it where it is long enough. Over
-        # halfedges the emit writes every entry the ranking reads, so the table is not filled.
-        scratch = self._degree_scratch
-        if halfedge_nodes:
-            next_node = _launch.empty(node_count, dtype=wp.int32, device=device)
-        elif scratch is not None and 0 < node_count <= scratch.size:
-            next_node = _launch.view(scratch, 0, node_count)
-            _launch.fill_(next_node, -1)
-        else:
-            next_node = _launch.full(node_count, -1, dtype=wp.int32, device=device)
-        dim, by_rank = _launch.set_bit_launch(self.n, k, device)
+    words: wp.array[wp.uint32]
+    ranks: wp.array[wp.int32]
+    """``array.bit_ranks``' table of ``words``."""
+    n_edges: int
+    """The boundary edge count."""
+    has_seam: bool
+    """With the census only: whether the directed rows have an orientation seam."""
+    has_pinch: bool
+    """With the census only: whether the directed rows have a pinch."""
+    mates: wp.array[wp.int32]
+    """``(3 * n_faces,)`` mate codes, formed by the flagging launch where the pairing sorted."""
+    degree_scratch: wp.array[wp.int32] | None
+    """The census' degree table, dead once its bits are read: the successor table may reuse it."""
+
+
+def _flag_boundary_halfedges(
+    boundary: _BoundaryHalfedges, census: int | None = None
+) -> _BoundaryFlags:
+    """
+    Flag the boundary halfedges, scan the flags and read the boundary edge count back.
+
+    ``census`` is ``boundary_loops_with_offsets``'s vertex count. Given, the degree census runs in
+    the flagging launch and its seam and pinch bits come back with the total.
+    """
+    faces = boundary.faces
+    device = faces.device
+    n = boundary.n
+    n_words = (n + 31) // 32
+    # One zeroed buffer: the bits, their ranks, and with the census its two defect bits and the
+    # ``(n_vertices, 2)`` degree table after those -- one allocation, and the total and both bits
+    # adjacent for the single readback.
+    census_size = 0 if census is None else 2 + 2 * census
+    if census is None and boundary.spare_keys is not None:
+        # The sort's free half holds them (``2 * n_words <= n``), below the tails.
+        buffer = _launch.view(boundary.spare_keys, 0, 2 * n_words)
+        _launch.zero_(buffer)
+    else:
+        buffer = _launch.zeros(2 * n_words + census_size, dtype=wp.int32, device=device)
+    words = _launch.view_as(_launch.view(buffer, 0, n_words), wp.uint32)
+    # The words' populations, added by the marking launch and scanned here into their ranks.
+    ranks = _launch.view(buffer, n_words, 2 * n_words)
+    degrees: odt.Array2dInt32 | None = None
+    defects: wp.array[wp.int32] | None = None
+    degree_scratch: wp.array[wp.int32] | None = None
+    if census is not None:
+        defects = _launch.view(buffer, 2 * n_words, 2 * n_words + 2)
+        degree_scratch = _launch.view(buffer, 2 * n_words + 2, 2 * n_words + census_size)
+        degrees = odt.as_array2d(degree_scratch.reshape((census, 2)), wp.int32)
+    mates = boundary.mates
+    if mates is None:
+        assert boundary.sorted_keys is not None
+        assert boundary.spare_order is not None
+        mates = boundary.spare_order
         _launch.launch(
-            kernel_boundary.emit_boundary_successors,
-            dim=dim,
+            kernel_boundary.mark_sorted_boundary_halfedges,
+            dim=n,
             inputs=[
-                self._words,
-                self._ranks,
-                by_rank,
-                self.faces,
-                self.mates if halfedge_nodes else None,
-                tails,
-                next_node,
+                boundary.sorted_keys,
+                boundary.order,
+                faces,
+                degrees,
+                defects,
+                mates,
+                words,
+                ranks,
             ],
             device=device,
         )
-        return tails, next_node
+    else:
+        _launch.launch(
+            kernel_boundary.mark_boundary_halfedges,
+            dim=n,
+            inputs=[mates, faces, degrees, defects, words, ranks],
+            device=device,
+        )
+    _launch.array_scan(ranks, out_array=ranks, inclusive=True)
+    # Sizes every output below: the one host readback of the boundary detection, which carries the
+    # census' two bits alongside the total when there is one.
+    if census is None:
+        return _BoundaryFlags(
+            words, ranks, int(read_scalar(ranks)), False, False, mates, degree_scratch
+        )
+    total, seam, pinch = read_values(buffer, 2 * n_words - 1, 3)
+    return _BoundaryFlags(words, ranks, total, bool(seam), bool(pinch), mates, degree_scratch)
 
-    def vertex_indices(self, n_vertices: int) -> wp.array[wp.int32]:
-        """Sorted unique boundary vertex indices, from a scan of per-vertex flags."""
-        return od.array.flatnonzero_in_place(self._vertex_flags(n_vertices))
 
-    def vertex_positions(self, vertices: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
-        """Gather the boundary vertex positions in ascending index order, with no index buffer."""
-        return od.array.compress_in_place(self._vertex_flags(vertices.size), vertices)
+def _boundary_edge_rows(
+    boundary: _BoundaryHalfedges, flags: _BoundaryFlags, *, sort_pair: bool
+) -> odt.Array2dInt32:
+    """Emit the boundary edge rows in halfedge order (ascending pairs if ``sort_pair``)."""
+    device = boundary.faces.device
+    k = flags.n_edges
+    out_edges = odt.empty_2d((k, 2), wp.int32, device=device)
+    if k > 0:
+        dim, by_rank = _launch.set_bit_launch(boundary.n, k, device)
+        _launch.launch(
+            kernel_boundary.emit_boundary_edges,
+            dim=dim,
+            inputs=[flags.words, flags.ranks, by_rank, boundary.faces, sort_pair, out_edges],
+            device=device,
+        )
+    return out_edges
 
-    def _vertex_flags(self, n_vertices: int) -> wp.array[wp.int32]:
-        """``(n_vertices,)`` ``int32`` flags: ``1`` on every vertex of a boundary halfedge."""
-        flags = _launch.zeros(n_vertices, dtype=wp.int32, device=self.faces.device)
-        if n_vertices > 0 and self._mates is None and self._sorted_keys is not None:
-            _launch.launch(
-                kernel_boundary.mark_sorted_boundary_vertices,
-                dim=self.n,
-                inputs=[self._sorted_keys, self._order, self.faces, flags],
-                device=self.faces.device,
-            )
-        elif n_vertices > 0:
-            _launch.launch(
-                kernel_boundary.mark_boundary_vertices,
-                dim=self.n,
-                inputs=[self.mates, self.faces, flags],
-                device=self.faces.device,
-            )
-        return flags
 
-    @property
-    def mates(self) -> wp.array[wp.int32]:
-        """``(3 * n_faces,)`` mate codes, stored from the sorted keys on the first read."""
-        if self._mates is None:
-            assert self._sorted_keys is not None
-            assert self._order is not None
-            assert self._spare_order is not None
-            self._mates = self._spare_order
-            _launch.launch(
-                kernel_halfedge.sorted_halfedge_mates,
-                dim=self.n,
-                inputs=[self._sorted_keys, self._order, self._mates],
-                device=self.faces.device,
-            )
-        return self._mates
+def _boundary_successors(
+    boundary: _BoundaryHalfedges,
+    flags: _BoundaryFlags,
+    node_count: int,
+    *,
+    halfedge_nodes: bool = False,
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    Return the boundary as a successor graph: its nodes, and the ``node_count``-sized table.
+
+    The nodes are the directed rows' tail vertices, or with ``halfedge_nodes`` the boundary
+    halfedges; see ``kernels/boundary.emit_boundary_successors``. A chain on a mesh that is not
+    edge-manifold ends where the table reads ``-1``: everywhere off the vertex nodes, and over
+    halfedges at each dead end the walk reaches, the only entries off the nodes it reads.
+    """
+    device = boundary.faces.device
+    k = flags.n_edges
+    n = boundary.n
+    if boundary.spare_keys is not None:
+        tails = _launch.view(boundary.spare_keys, n, n + k)
+    else:
+        tails = _launch.empty(k, dtype=wp.int32, device=device)
+    # ``-1`` off the nodes: the ranking reads it to tell where a chain ends. The census' degree
+    # table, read only by the flagging launch, holds it where it is long enough. Over halfedges the
+    # emit writes every entry the ranking reads, so the table is not filled.
+    scratch = flags.degree_scratch
+    if halfedge_nodes:
+        next_node = _launch.empty(node_count, dtype=wp.int32, device=device)
+    elif scratch is not None and 0 < node_count <= scratch.size:
+        next_node = _launch.view(scratch, 0, node_count)
+        _launch.fill_(next_node, -1)
+    else:
+        next_node = _launch.full(node_count, -1, dtype=wp.int32, device=device)
+    dim, by_rank = _launch.set_bit_launch(n, k, device)
+    _launch.launch(
+        kernel_boundary.emit_boundary_successors,
+        dim=dim,
+        inputs=[
+            flags.words,
+            flags.ranks,
+            by_rank,
+            boundary.faces,
+            flags.mates if halfedge_nodes else None,
+            tails,
+            next_node,
+        ],
+        device=device,
+    )
+    return tails, next_node
+
+
+def _boundary_vertex_flags(boundary: _BoundaryHalfedges, n_vertices: int) -> wp.array[wp.int32]:
+    """``(n_vertices,)`` ``int32`` flags: ``1`` on every vertex of a boundary halfedge."""
+    device = boundary.faces.device
+    flags = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
+    if n_vertices > 0 and boundary.mates is None:
+        _launch.launch(
+            kernel_boundary.mark_sorted_boundary_vertices,
+            dim=boundary.n,
+            inputs=[boundary.sorted_keys, boundary.order, boundary.faces, flags],
+            device=device,
+        )
+    elif n_vertices > 0:
+        _launch.launch(
+            kernel_boundary.mark_boundary_vertices,
+            dim=boundary.n,
+            inputs=[boundary.mates, boundary.faces, flags],
+            device=device,
+        )
+    return flags

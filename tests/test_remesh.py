@@ -2573,8 +2573,13 @@ def test_winner_faces_before_counts_the_cheaper_winners_faces(device: str) -> No
     bits_np[32 * half + rank_np[single_np]] = True
     words_np = np.packbits(bits_np.reshape(-1, 32)[:, ::-1], axis=1).view(">u4").ravel()
     words_wp = wp.array(words_np.astype(np.uint32), dtype=wp.uint32, device=device)
-    scan = od.remesh._ExclusiveScan(2 * half, wp.get_device(device))
-    scan.launch(words_wp, words=True)
+    scan = od.remesh._exclusive_scan(
+        2 * half,
+        wp.get_device(device),
+        wp.zeros(1, dtype=wp.int32, device=device),
+        warp_empty(od.remesh._exclusive_scan_size(2 * half), wp.int32, device),
+    )
+    od.remesh._launch_exclusive_scan(scan, words_wp, words=True)
 
     winners_np = np.flatnonzero(winner_np).astype(np.int32)
     faces_wp = warp_empty(len(winners_np), wp.int32, device)
