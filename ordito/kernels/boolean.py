@@ -675,6 +675,50 @@ def manifold_acos(x: wp.float64) -> wp.float64:
     return wp.float64(2.0) * (df + w)
 
 
+@wp.func
+def pseudo_normal(
+    starts: wp.array[wp.int32],
+    pairs: wp.array[wp.int32],
+    positions: wp.array[wp.vec3d],
+    face_normals: wp.array[wp.vec3d],
+    first: wp.int32,
+    n_halfedges: wp.int32,
+) -> wp.vec3d:
+    # ``CalculateVertNormals``: the angle-weighted pseudo-normal around the vertex from its least
+    # outgoing halfedge in ``ForVert``'s order; zero for an unreferenced vertex. A halfedge with no
+    # pair (removed by the topology passes) ends the walk.
+    normal = wp.vec3d()
+    if first >= n_halfedges:
+        return normal
+    current = first
+    steps = wp.int32(0)
+    while steps < n_halfedges:
+        steps += 1
+        p = pairs[current]
+        if p < 0:
+            break
+        current = next_halfedge(p)
+        a = starts[current]
+        b = starts[next_halfedge(current)]
+        c = starts[next_halfedge(next_halfedge(current))]
+        curr_edge = wp.normalize(positions[b] - positions[a])
+        prev_edge = wp.normalize(positions[a] - positions[c])
+        if wp.isfinite(curr_edge[0]) and wp.isfinite(prev_edge[0]):
+            d = wp.float64(0.0) - wp.dot(prev_edge, curr_edge)
+            phi = wp.float64(0.0)
+            if d <= wp.float64(-1.0):
+                phi = wp.float64(3.141592653589793)
+            elif d < wp.float64(1.0):
+                phi = manifold_acos(d)
+            normal = normal + phi * face_normals[current // 3]
+        if current == first:
+            break
+    length = wp.length(normal)
+    if length > wp.float64(0.0) and wp.isfinite(length):
+        return normal / length
+    return wp.vec3d()
+
+
 @wp.kernel
 def vertex_pseudo_normals(
     faces: wp.array[wp.int32],
@@ -684,41 +728,11 @@ def vertex_pseudo_normals(
     first_halfedge: wp.array[wp.int32],
     out_vertex_normals: wp.array[wp.vec3d],
 ) -> None:
-    # ``CalculateVertNormals``: the angle-weighted pseudo-normal, summed around the vertex from
-    # its least outgoing halfedge in ``ForVert``'s order. An unreferenced vertex gets zero.
+    # Each vertex's pseudo-normal, on a solid's faces and twins.
     v = wp.int32(wp.tid())
-    first = first_halfedge[v]
-    normal = wp.vec3d()
-    if first >= faces.shape[0]:
-        out_vertex_normals[v] = normal
-        return
-    current = first
-    steps = wp.int32(0)
-    while steps < faces.shape[0]:
-        current = next_halfedge(twins[current])
-        tri = current // 3
-        start = faces[current]
-        end = faces[next_halfedge(current)]
-        third = faces[next_halfedge(next_halfedge(current))]
-        curr_edge = wp.normalize(positions[end] - positions[start])
-        prev_edge = wp.normalize(positions[start] - positions[third])
-        if wp.isfinite(curr_edge[0]) and wp.isfinite(prev_edge[0]):
-            d = wp.float64(0.0) - wp.dot(prev_edge, curr_edge)
-            phi = wp.float64(0.0)
-            if d <= wp.float64(-1.0):
-                phi = wp.float64(3.141592653589793)
-            elif d < wp.float64(1.0):
-                phi = manifold_acos(d)
-            normal = normal + phi * face_normals[tri]
-        steps += 1
-        if current == first:
-            break
-    length = wp.length(normal)
-    if length > wp.float64(0.0) and wp.isfinite(length):
-        normal = normal / length
-    else:
-        normal = wp.vec3d()
-    out_vertex_normals[v] = normal
+    out_vertex_normals[v] = pseudo_normal(
+        faces, twins, positions, face_normals, first_halfedge[v], faces.shape[0]
+    )
 
 
 # -- edge-face crossings (``Intersect12``) ---------------------------------------------------------
@@ -3007,55 +3021,12 @@ def write_kept_vertices(
 
 
 @wp.kernel
-def hm_first_halfedges(m: HalfedgeMesh, out_first: wp.array[wp.int32]) -> None:
-    # ``CalculateVertNormals``' least live halfedge leaving each vertex.
-    h = wp.int32(wp.tid())
-    v = m.start[h]
-    if v >= 0:
-        wp.atomic_min(out_first, v, h)
-
-
-@wp.kernel
 def hm_vertex_normals(
     m: HalfedgeMesh, first: wp.array[wp.int32], out_normals: wp.array[wp.vec3d]
 ) -> None:
-    # ``CalculateVertNormals`` on the simplified result, in ``ForVert``'s order from the least
-    # halfedge, with the faces' inherited normals.
+    # Each vertex's pseudo-normal on the simplified result, with the faces' inherited normals.
     v = wp.int32(wp.tid())
-    start = first[v]
-    normal = wp.vec3d()
-    if start >= m.sizes[0]:
-        out_normals[v] = normal
-        return
-    current = start
-    steps = wp.int32(0)
-    while steps < m.sizes[0]:
-        steps += 1
-        p = m.pair[current]
-        if p < 0:
-            break
-        current = next_halfedge(p)
-        a = m.start[current]
-        b = m.start[next_halfedge(current)]
-        c = m.start[next_halfedge(next_halfedge(current))]
-        curr_edge = wp.normalize(m.pos[b] - m.pos[a])
-        prev_edge = wp.normalize(m.pos[a] - m.pos[c])
-        if wp.isfinite(curr_edge[0]) and wp.isfinite(prev_edge[0]):
-            d = wp.float64(0.0) - wp.dot(prev_edge, curr_edge)
-            phi = wp.float64(0.0)
-            if d <= wp.float64(-1.0):
-                phi = wp.float64(3.141592653589793)
-            elif d < wp.float64(1.0):
-                phi = manifold_acos(d)
-            normal = normal + phi * m.tri_normal[current // 3]
-        if current == start:
-            break
-    length = wp.length(normal)
-    if length > wp.float64(0.0) and wp.isfinite(length):
-        normal = normal / length
-    else:
-        normal = wp.vec3d()
-    out_normals[v] = normal
+    out_normals[v] = pseudo_normal(m.start, m.pair, m.pos, m.tri_normal, first[v], m.sizes[0])
 
 
 # -- segment casts (``Impl::RayCast``) -------------------------------------------------------------
@@ -3259,33 +3230,21 @@ def write_segment_hits(
 
 @wp.func
 def dot3(a: wp.vec3d, b: wp.vec3d) -> wp.float64:
+    # linalg's ``dot``: ``wp.dot`` starts from ``0 + a[0] * b[0]``, which turns a first term of
+    # ``-0.0`` into ``+0.0`` where Manifold keeps it (``cross``, ``lerp``, ``*`` and ``/`` round
+    # as linalg's and are Warp's own).
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 
 
 @wp.func
-def cross3(a: wp.vec3d, b: wp.vec3d) -> wp.vec3d:
-    return wp.vec3d(a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
-
-
-@wp.func
-def scaled3(a: wp.vec3d, s: wp.float64) -> wp.vec3d:
-    return wp.vec3d(a[0] * s, a[1] * s, a[2] * s)
-
-
-@wp.func
-def divided3(a: wp.vec3d, s: wp.float64) -> wp.vec3d:
-    return wp.vec3d(a[0] / s, a[1] / s, a[2] / s)
-
-
-@wp.func
 def negated3(a: wp.vec3d) -> wp.vec3d:
-    return scaled3(a, wp.float64(-1.0))
+    return (a) * (wp.float64(-1.0))
 
 
 @wp.func
 def la_normalize(a: wp.vec3d) -> wp.vec3d:
     # ``la::normalize``: divided by its length, NaN for zero.
-    return divided3(a, wp.sqrt(dot3(a, a)))
+    return a / wp.sqrt(dot3(a, a))
 
 
 @wp.func
@@ -3410,8 +3369,8 @@ def refine_edge_added(
         edge_norm = la_normalize(d)
         t_start = xyz(tangents[h])
         t_end = xyz(tangents[twins[h]])
-        a = t_start - scaled3(edge_norm, dot3(edge_norm, t_start))
-        b = t_end - scaled3(edge_norm, dot3(edge_norm, t_end))
+        a = t_start - (edge_norm) * (dot3(edge_norm, t_start))
+        b = t_end - (edge_norm) * (dot3(edge_norm, t_end))
         ab = a - b
         bulge = wp.float64(0.5) * (wp.sqrt(dot3(a, a)) + wp.sqrt(dot3(b, b))) + wp.sqrt(
             dot3(ab, ab)
@@ -3934,28 +3893,6 @@ def manifold_cos(x: wp.float64) -> wp.float64:
 
 
 @wp.func
-def lerp_scalar(a: wp.float64, b: wp.float64, t: wp.float64) -> wp.float64:
-    return a * (wp.float64(1.0) - t) + b * t
-
-
-@wp.func
-def lerp3(a: wp.vec3d, b: wp.vec3d, t: wp.float64) -> wp.vec3d:
-    return wp.vec3d(
-        lerp_scalar(a[0], b[0], t), lerp_scalar(a[1], b[1], t), lerp_scalar(a[2], b[2], t)
-    )
-
-
-@wp.func
-def lerp4(a: wp.vec4d, b: wp.vec4d, t: wp.float64) -> wp.vec4d:
-    return wp.vec4d(
-        lerp_scalar(a[0], b[0], t),
-        lerp_scalar(a[1], b[1], t),
-        lerp_scalar(a[2], b[2], t),
-        lerp_scalar(a[3], b[3], t),
-    )
-
-
-@wp.func
 def angle_between(a: wp.vec3d, b: wp.vec3d) -> wp.float64:
     # ``AngleBetween`` of unit vectors.
     d = dot3(a, b)
@@ -3971,9 +3908,9 @@ def circular_tangent(tangent: wp.vec3d, edge: wp.vec3d) -> wp.vec4d:
     # ``CircularTangent``: the weighted cubic Bezier tangent of a circular arc along ``edge``.
     direction = safe_normalize(tangent)
     weight = wp.max(wp.float64(0.5), dot3(direction, safe_normalize(edge)))
-    bz2 = scaled3(scaled3(direction, wp.float64(0.5)), wp.sqrt(dot3(edge, edge)))
+    bz2 = ((direction) * (wp.float64(0.5))) * (wp.sqrt(dot3(edge, edge)))
     t = wp.float64(2.0) / wp.float64(3.0)
-    bz3 = lerp4(
+    bz3 = wp.lerp(
         wp.vec4d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0), wp.float64(1.0)),
         wp.vec4d(bz2[0], bz2[1], bz2[2], weight),
         t,
@@ -4100,10 +4037,10 @@ def initial_tangents(
     normal = normals[start]
     edge = positions[faces[next_halfedge(h)]] - positions[start]
     edge_normal = face_normals[h // 3] + face_normals[twins[h] // 3]
-    bi_tangent = cross3(normal, edge)
+    bi_tangent = wp.cross(normal, edge)
     if dot3(normal, edge_normal) < wp.float64(0.0):
-        bi_tangent = cross3(edge_normal, edge)
-    out_tangents[h] = circular_tangent(cross3(bi_tangent, normal), edge)
+        bi_tangent = wp.cross(edge_normal, edge)
+    out_tangents[h] = circular_tangent(wp.cross(bi_tangent, normal), edge)
 
 
 @wp.kernel
@@ -4304,15 +4241,15 @@ def linearize_flat_tangents(
     edge = positions[faces[next_halfedge(h)]] - positions[faces[h]]
     one = wp.float64(1.0)
     if flat0 and flat1:
-        e = divided3(edge, wp.float64(3.0))
+        e = (edge) / (wp.float64(3.0))
         tangents[h] = wp.vec4d(e[0], e[1], e[2], one)
-        n = divided3(negated3(edge), wp.float64(3.0))
+        n = (negated3(edge)) / (wp.float64(3.0))
         tangents[p] = wp.vec4d(n[0], n[1], n[2], one)
     elif flat0:
-        e = divided3(edge + xyz(o), wp.float64(2.0))
+        e = (edge + xyz(o)) / (wp.float64(2.0))
         tangents[h] = wp.vec4d(e[0], e[1], e[2], one)
     else:
-        e = divided3(negated3(edge) + xyz(t), wp.float64(2.0))
+        e = (negated3(edge) + xyz(t)) / (wp.float64(2.0))
         tangents[p] = wp.vec4d(e[0], e[1], e[2], one)
 
 
@@ -4344,7 +4281,7 @@ def qrot(q: wp.vec4d, v: wp.vec3d) -> wp.vec3d:
         (q[1] * q[2] - q[0] * q[3]) * two,
         q[3] * q[3] - q[0] * q[0] - q[1] * q[1] + q[2] * q[2],
     )
-    return scaled3(x, v[0]) + scaled3(y, v[1]) + scaled3(z, v[2])
+    return (x) * (v[0]) + (y) * (v[1]) + (z) * (v[2])
 
 
 @wp.func
@@ -4397,13 +4334,13 @@ def distribute_tangents(
         if tangents[current][3] >= wp.float64(0.0):
             this_edge = distribute_step(positions, faces, tangents, current, center)
             this_tangent = safe_normalize(xyz(tangents[current]))
-            normal = normal + cross3(this_tangent, last_tangent)
+            normal = normal + wp.cross(this_tangent, last_tangent)
             desired = angle_between(this_edge, last_edge) + desired
             if current == h:
                 current_angle = SMOOTH_TWO_PI
             else:
                 current_angle = angle_between(this_tangent, first_tangent)
-                if dot3(approx_normal, cross3(this_tangent, first_tangent)) < wp.float64(0.0):
+                if dot3(approx_normal, wp.cross(this_tangent, first_tangent)) < wp.float64(0.0):
                     current_angle = SMOOTH_TWO_PI - current_angle
             count += 1
             last_edge = this_edge
@@ -4431,7 +4368,7 @@ def distribute_tangents(
                 angle = SMOOTH_TWO_PI
                 if current != h:
                     angle = angle_between(this_tangent, first_tangent)
-                    if dot3(approx_normal, cross3(this_tangent, first_tangent)) < wp.float64(0.0):
+                    if dot3(approx_normal, wp.cross(this_tangent, first_tangent)) < wp.float64(0.0):
                         angle = SMOOTH_TWO_PI - angle
                 offset = offset + wrap_angle(angle - scale * desired)
                 last_edge = this_edge
@@ -4461,7 +4398,7 @@ def distribute_tangents(
             angle_now = SMOOTH_TWO_PI
             if current != h:
                 angle_now = angle_between(this_tangent, first_tangent)
-                if dot3(approx_normal, cross3(this_tangent, first_tangent)) < wp.float64(0.0):
+                if dot3(approx_normal, wp.cross(this_tangent, first_tangent)) < wp.float64(0.0):
                     angle_now = SMOOTH_TWO_PI - angle_now
             d = raw * scale
             if d - previous > SMOOTH_PI:
@@ -4529,20 +4466,20 @@ def bezier_control(point: wp.vec3d, tangent: wp.vec4d) -> wp.vec4d:
 @wp.func
 def cubic_first(p0: wp.vec4d, p1: wp.vec4d, p2: wp.vec4d, x: wp.float64) -> wp.vec4d:
     # ``CubicBezier2Linear``'s first point: ``lerp(lerp(p0, p1, x), lerp(p1, p2, x), x)``.
-    return lerp4(lerp4(p0, p1, x), lerp4(p1, p2, x), x)
+    return wp.lerp(wp.lerp(p0, p1, x), wp.lerp(p1, p2, x), x)
 
 
 @wp.func
 def cubic_second(p1: wp.vec4d, p2: wp.vec4d, p3: wp.vec4d, x: wp.float64) -> wp.vec4d:
-    return lerp4(lerp4(p1, p2, x), lerp4(p2, p3, x), x)
+    return wp.lerp(wp.lerp(p1, p2, x), wp.lerp(p2, p3, x), x)
 
 
 @wp.func
 def orthogonal_to(v: wp.vec3d, alt: wp.vec3d, ref: wp.vec3d) -> wp.vec3d:
     # ``OrthogonalTo``.
-    out = v - scaled3(ref, dot3(v, ref))
+    out = v - (ref) * (dot3(v, ref))
     if dot3(out, out) < SMOOTH_PRECISION * dot3(v, v):
-        out = alt - scaled3(ref, dot3(alt, ref))
+        out = alt - (ref) * (dot3(alt, ref))
     return safe_normalize(out)
 
 
@@ -4612,11 +4549,11 @@ def vector_quat(orig: wp.vec3d, dest: wp.vec3d) -> wp.vec4d:
     if cos_theta >= wp.float64(1.0) - SMOOTH_DBL_EPSILON:
         return wp.vec4d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0), wp.float64(1.0))
     if cos_theta < wp.float64(-1.0) + SMOOTH_DBL_EPSILON:
-        axis = cross3(wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(1.0)), orig)
+        axis = wp.cross(wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(1.0)), orig)
         if dot3(axis, axis) < SMOOTH_DBL_EPSILON:
-            axis = cross3(wp.vec3d(wp.float64(1.0), wp.float64(0.0), wp.float64(0.0)), orig)
+            axis = wp.cross(wp.vec3d(wp.float64(1.0), wp.float64(0.0), wp.float64(0.0)), orig)
         return axis_angle_quat(la_normalize(axis), SMOOTH_PI)
-    axis = cross3(orig, dest)
+    axis = wp.cross(orig, dest)
     s = wp.sqrt((wp.float64(1.0) + cos_theta) * wp.float64(2.0))
     return wp.vec4d(
         axis[0] * (wp.float64(1.0) / s),
@@ -4635,7 +4572,7 @@ def slerp(x: wp.vec4d, y: wp.vec4d, a: wp.float64, long_way: wp.bool) -> wp.vec4
         z = wp.vec4d(m * y[0], m * y[1], m * y[2], m * y[3])
         cos_theta = m * cos_theta
     if wp.abs(cos_theta) > wp.float64(1.0) - SMOOTH_DBL_EPSILON:
-        return lerp4(x, z, a)
+        return wp.lerp(x, z, a)
     angle = manifold_acos(cos_theta)
     sa = manifold_sin((wp.float64(1.0) - a) * angle)
     sb = manifold_sin(a * angle)
@@ -4672,20 +4609,20 @@ def bezier_to_bezier(
     p3 = homogeneous3(c1)
     b0 = cubic_first(p0, p1, p2, x)
     b1 = cubic_second(p1, p2, p3, x)
-    end = h_normalize(lerp4(b0, b1, x))
+    end = h_normalize(wp.lerp(b0, b1, x))
     tangent = safe_normalize(h_normalize(b1) - h_normalize(b0))
     n0 = safe_normalize(xyz(tx0))
     n1 = negated3(safe_normalize(xyz(tx1)))
     bi0 = orthogonal_to(xyz(ty0), anchor - c0, n0)
     bi1 = orthogonal_to(xyz(ty1), anchor - c1, n1)
-    q0 = matrix_quat(n0, bi0, cross3(n0, bi0))
-    q1 = matrix_quat(n1, bi1, cross3(n1, bi1))
+    q0 = matrix_quat(n0, bi0, wp.cross(n0, bi0))
+    q1 = matrix_quat(n1, bi1, wp.cross(n1, bi1))
     edge = c1 - c0
     long_way = dot3(n0, edge) + dot3(n1, edge) < wp.float64(0.0)
     q_tmp = slerp(q0, q1, x, long_way)
     q = qmul(vector_quat(qxdir(q_tmp), tangent), q_tmp)
-    delta = lerp3(rotate_from_to(xyz(ty0), q0, q), rotate_from_to(xyz(ty1), q1, q), x)
-    delta_w = lerp_scalar(ty0[3], ty1[3], x)
+    delta = wp.lerp(rotate_from_to(xyz(ty0), q0, q), rotate_from_to(xyz(ty1), q1, q), x)
+    delta_w = wp.lerp(ty0[3], ty1[3], x)
     e = homogeneous3(end)
     return mat24d(e[0], e[1], e[2], e[3], delta[0], delta[1], delta[2], delta_w)
 
@@ -4720,7 +4657,7 @@ def bezier_2d(
     a3 = row4(bez1, 0)
     a1 = bezier_control(xyz(a0), row4(bez0, 1))
     a2 = bezier_control(xyz(a3), row4(bez1, 1))
-    return h_normalize(lerp4(cubic_first(a0, a1, a2, y), cubic_second(a1, a2, a3, y), y))
+    return h_normalize(wp.lerp(cubic_first(a0, a1, a2, y), cubic_second(a1, a2, a3, y), y))
 
 
 @wp.kernel
@@ -4756,7 +4693,7 @@ def interp_tri_positions(
     pos_h = wp.vec4d()
     if halfedges[3] < 0:
         third = wp.float64(1.0) / wp.float64(3.0)
-        centroid = scaled3(c0, third) + scaled3(c1, third) + scaled3(c2, third)
+        centroid = (c0) * (third) + (c1) * (third) + (c2) * (third)
         for i in range(3):
             j = next3(i)
             k = (i + 2) % 3
@@ -4774,16 +4711,16 @@ def interp_tri_positions(
             bez = bezier_to_bezier(cj, ck, r_j, l_k, l_j, r_k, x, centroid)
             b0 = row4(bez, 0)
             b1 = bezier_control(xyz(b0), row4(bez, 1))
-            b2 = bezier_control(ci, lerp4(r_i, l_i, x))
+            b2 = bezier_control(ci, wp.lerp(r_i, l_i, x))
             b3 = homogeneous3(ci)
             p = h_normalize(
-                lerp4(cubic_first(b0, b1, b2, uvw[i]), cubic_second(b1, b2, b3, uvw[i]), uvw[i])
+                wp.lerp(cubic_first(b0, b1, b2, uvw[i]), cubic_second(b1, b2, b3, uvw[i]), uvw[i])
             )
             pos_h = pos_h + homogeneous4(wp.vec4d(p[0], p[1], p[2], uvw[j] * uvw[k]))
     else:
         quarter = wp.float64(0.25)
-        centroid = scaled3(c0, quarter) + scaled3(c1, quarter) + scaled3(c2, quarter)
-        centroid = centroid + scaled3(c3, quarter)
+        centroid = (c0) * (quarter) + (c1) * (quarter) + (c2) * (quarter)
+        centroid = centroid + (c3) * (quarter)
         tx0 = tangents[halfedges[0]]
         tx1 = tangents[twins[halfedges[0]]]
         tx2 = tangents[halfedges[2]]
@@ -4807,10 +4744,12 @@ def interp_tri_positions(
 
 
 @wp.kernel
-def least_outgoing_halfedges(faces: wp.array[wp.int32], out_first: wp.array[wp.int32]) -> None:
-    # ``VertHalfedge``: each vertex's least outgoing halfedge.
+def least_outgoing_halfedges(starts: wp.array[wp.int32], out_first: wp.array[wp.int32]) -> None:
+    # ``VertHalfedge`` / ``CalculateVertNormals``: each vertex's least live outgoing halfedge.
     h = wp.int32(wp.tid())
-    wp.atomic_min(out_first, faces[h], h)
+    v = starts[h]
+    if v >= 0:
+        wp.atomic_min(out_first, v, h)
 
 
 @wp.kernel
@@ -4971,7 +4910,7 @@ def level_set_find_surface(
         x = t
         if not (wp.abs(t - half) < r):
             x = half - r * wp.where(t < half, wp.float64(1.0), wp.float64(-1.0))
-        mid = lerp3(p0, p1, x)
+        mid = wp.lerp(p0, p1, x)
         d = sdf(mid) - level
         if (d > wp.float64(0.0)) == (d0 > wp.float64(0.0)):
             d0 = d
@@ -4982,7 +4921,7 @@ def level_set_find_surface(
             p1 = mid
             frac = frac * x
         bi_frac = bi_frac / wp.float64(2.0)
-    return lerp3(p0, p1, d0 / (d0 - d1))
+    return wp.lerp(p0, p1, d0 / (d0 - d1))
 
 
 @wp.func

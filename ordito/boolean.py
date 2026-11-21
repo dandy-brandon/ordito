@@ -3613,7 +3613,11 @@ def _finish_solid(
     n_t = n_h // 3
     first = _launch.full(n_v, 2147483647, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_boolean.hm_first_halfedges, dim=n_h, inputs=[mesh], outputs=[first], device=device
+        kernel_boolean.least_outgoing_halfedges,
+        dim=n_h,
+        inputs=[mesh.start],
+        outputs=[first],
+        device=device,
     )
     vertex_normals = _launch.empty(n_v, dtype=wp.vec3d, device=device)
     _launch.launch(
