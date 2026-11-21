@@ -66,111 +66,138 @@ def edge_query_box(
     return wp.min(a, b) - padding, wp.max(a, b) + padding
 
 
+# Each edge's crossings are found in four passes: its box walks B's face tree twice, counting its
+# candidate faces and then writing them sorted by face; ``shadow_edge_face`` decides each
+# (edge, face) candidate in a thread of its own; the crossings are compacted in candidate order,
+# which is edge-major and face-minor, as ``Intersect12`` sorts them. A thread an edge deciding
+# its candidates in turn, once to count and again to write, held a launch at its slowest edge's
+# chain of ``float64`` predicates (2026-11-21: 241 us a launch over 3 168 candidates on a 5 k-face
+# icosphere, 24 us of it the walk).
+
+
 @wp.kernel
-def count_edge_crossings(
-    a: CrossingOperand,
-    b: CrossingOperand,
+def count_edge_candidates(
+    faces: wp.array[wp.int32],
+    positions: wp.array[wp.vec3d],
     bvh_b: wp.uint64,
     pad: wp.float32,
-    expand: wp.int32,
-    forward: wp.int32,
     out_counts: wp.array[wp.int32],
 ) -> None:
-    # How many faces of B each edge of A crosses: a thread a forward halfedge, its box through
-    # B's face tree, ``shadow_edge_face`` on each candidate. The box is a superset;
-    # ``shadow_edge_face`` decides.
+    # How many faces of B each edge of A meets in the face tree: a thread a forward halfedge.
     h = wp.int32(wp.tid())
-    start = a.faces[h]
-    end = a.faces[halfedge_next(h)]
+    start = faces[h]
+    end = faces[halfedge_next(h)]
     count = wp.int32(0)
     if start < end:
-        lower, upper = edge_query_box(a.positions, start, end, pad)
+        lower, upper = edge_query_box(positions, start, end, pad)
         query = wp.bvh_query_aabb(bvh_b, lower, upper)
         face = wp.int32(0)
         while wp.bvh_query_next(query, face):
-            x12, _v12 = shadow_edge_face(
-                h,
-                face,
-                a.faces,
-                a.positions,
-                a.vertex_normals,
-                a.face_normals,
-                a.mates,
-                b.faces,
-                b.positions,
-                b.vertex_normals,
-                b.face_normals,
-                b.mates,
-                expand,
-                forward,
-            )
-            if x12 != 0:
-                count += 1
+            count += 1
     out_counts[h] = count
 
 
 @wp.kernel
-def write_edge_crossings(
-    a: CrossingOperand,
-    b: CrossingOperand,
+def write_edge_candidates(
+    faces: wp.array[wp.int32],
+    positions: wp.array[wp.vec3d],
     bvh_b: wp.uint64,
     pad: wp.float32,
-    expand: wp.int32,
-    forward: wp.int32,
     offsets: wp.array[wp.int32],
-    record_base: wp.int32,
     out_edge: wp.array[wp.int32],
     out_face: wp.array[wp.int32],
-    out_crossing: wp.array[wp.int32],
-    out_point: wp.array[wp.vec3d],
 ) -> None:
-    # The crossings ``count_edge_crossings`` counted, each edge's run sorted by face as
-    # ``Intersect12`` sorts them, from ``record_base + offsets[h]``.
+    # The candidates ``count_edge_candidates`` counted, each edge's run sorted by face.
     h = wp.int32(wp.tid())
     first = offsets[h]
     last = offsets[h + 1]
     if first == last:
         return
-    start = a.faces[h]
-    end = a.faces[halfedge_next(h)]
-    lower, upper = edge_query_box(a.positions, start, end, pad)
+    lower, upper = edge_query_box(positions, faces[h], faces[halfedge_next(h)], pad)
     query = wp.bvh_query_aabb(bvh_b, lower, upper)
     face = wp.int32(0)
-    slot = record_base + first
-    stop = record_base + last
+    slot = first
     while wp.bvh_query_next(query, face):
-        if slot < stop:
-            x12, v12 = shadow_edge_face(
-                h,
-                face,
-                a.faces,
-                a.positions,
-                a.vertex_normals,
-                a.face_normals,
-                a.mates,
-                b.faces,
-                b.positions,
-                b.vertex_normals,
-                b.face_normals,
-                b.mates,
-                expand,
-                forward,
-            )
-            if x12 != 0:
-                # Insert by face: a run is a handful of faces.
-                at = slot
-                while at > record_base + first and out_face[at - 1] > face:
-                    out_face[at] = out_face[at - 1]
-                    out_crossing[at] = out_crossing[at - 1]
-                    out_point[at] = out_point[at - 1]
-                    at -= 1
-                out_edge[at] = h
-                out_face[at] = face
-                out_crossing[at] = x12
-                out_point[at] = v12
-                slot += 1
-    for r in range(record_base + first, slot):
+        if slot < last:
+            # Insert by face: a run is a handful of faces.
+            at = slot
+            while at > first and out_face[at - 1] > face:
+                out_face[at] = out_face[at - 1]
+                at -= 1
+            out_face[at] = face
+            slot += 1
+    for r in range(first, slot):
         out_edge[r] = h
+
+
+@wp.kernel
+def decide_edge_candidates(
+    a: CrossingOperand,
+    b: CrossingOperand,
+    expand: wp.int32,
+    forward: wp.int32,
+    edges: wp.array[wp.int32],
+    candidate_faces: wp.array[wp.int32],
+    out_offsets: wp.array[wp.int32],
+    out_crossing: wp.array[wp.int32],
+    out_point: wp.array[wp.vec3d],
+) -> None:
+    # ``Kernel12`` on one (edge, face) candidate: its signed crossing and where, and a flag into
+    # the unzeroed ``(n_candidates + 1,)`` offsets after their leading zero.
+    c = wp.int32(wp.tid())
+    if c == 0:
+        out_offsets[0] = 0
+    x12, v12 = shadow_edge_face(
+        edges[c],
+        candidate_faces[c],
+        a.faces,
+        a.positions,
+        a.vertex_normals,
+        a.face_normals,
+        a.mates,
+        b.faces,
+        b.positions,
+        b.vertex_normals,
+        b.face_normals,
+        b.mates,
+        expand,
+        forward,
+    )
+    out_offsets[c + 1] = wp.where(x12 != 0, 1, 0)
+    out_crossing[c] = x12
+    out_point[c] = v12
+
+
+@wp.kernel
+def write_candidate_crossings(
+    candidate_offsets: wp.array[wp.int32],
+    crossing_offsets: wp.array[wp.int32],
+    edges: wp.array[wp.int32],
+    candidate_faces: wp.array[wp.int32],
+    crossing: wp.array[wp.int32],
+    point: wp.array[wp.vec3d],
+    n_candidates: wp.int32,
+    record_base: wp.int32,
+    out_run_offsets: wp.array[wp.int32],
+    out_edge: wp.array[wp.int32],
+    out_face: wp.array[wp.int32],
+    out_crossing: wp.array[wp.int32],
+    out_point: wp.array[wp.vec3d],
+) -> None:
+    # A thread a candidate moves a crossing to its record from ``record_base`` on; a thread an
+    # edge past them writes the edge's first record, the scanned crossings at its first candidate.
+    t = wp.int32(wp.tid())
+    if t < n_candidates:
+        r = crossing_offsets[t]
+        if crossing_offsets[t + 1] != r:
+            slot = record_base + r
+            out_edge[slot] = edges[t]
+            out_face[slot] = candidate_faces[t]
+            out_crossing[slot] = crossing[t]
+            out_point[slot] = point[t]
+    else:
+        h = t - n_candidates
+        out_run_offsets[h] = crossing_offsets[candidate_offsets[h]]
 
 
 # -- winding numbers (``Winding03``) ---------------------------------------------------------------
@@ -282,7 +309,7 @@ def vertex_inclusions(
 # An operand of few edges crosses the other's faces pair by pair: one thread an (edge, face) pair
 # instead of a thread an edge walking the face tree, which leaves a large operand's faces to a
 # handful of threads when the few edges are long (a half-space cutter's). Flags scanned in edge-
-# major, face-minor order place each edge's run sorted by face, as ``write_edge_crossings``'
+# major, face-minor order place each edge's run sorted by face, as ``write_edge_candidates``'
 # insertion leaves it; ``shadow_edge_face`` alone decides, so the box test only skips work.
 
 

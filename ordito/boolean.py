@@ -1313,23 +1313,25 @@ def _result(
 
 def _count_crossings(
     a: _Operand, b: _Operand, pad: float, expand: int, *, forward: bool
-) -> tuple[wp.array[wp.int32], int, wp.array[wp.int32] | None]:
+) -> tuple[wp.array[wp.int32], int, wp.array[wp.int32] | _Candidates | None]:
     """
-    Count each edge of ``a``'s crossings with ``b``'s faces; their offsets and total.
+    Find each edge of ``a``'s crossings with ``b``'s faces; their run offsets and total.
 
     An ``a`` of few edges against many faces goes pair by pair, and the pairs' scanned offsets
-    come third (``None`` for the walk of ``b``'s face tree).
+    come third. Otherwise each edge's candidate faces from ``b``'s face tree are decided one a
+    thread, and the decided candidates come third, to be written with the offsets
+    (``_write_crossings``); ``None`` when no edge has a candidate.
     """
     device = a.solid.positions.device
     n_h = a.solid.faces.size
     n_faces_b = b.solid.n_faces
-    offsets, counts = offsets_buffer(n_h, device)
     if _crossings_by_pairs(n_h, n_faces_b):
+        offsets, _ = offsets_buffer(n_h, device)
         pair_offsets, flags = offsets_buffer(n_h * n_faces_b, device)
         _launch.launch(
             kernel_boolean.count_pair_crossings,
             dim=n_h * n_faces_b,
-            inputs=[n_faces_b, *_crossing_operands(a, b, pad, expand, forward, pairs=True)],
+            inputs=[n_faces_b, *_crossing_operands(a, b, pad, expand, forward)],
             outputs=[flags],
             device=device,
         )
@@ -1342,14 +1344,63 @@ def _count_crossings(
             device=device,
         )
         return offsets, total, pair_offsets
+    walk = [a.solid.faces, a.solid.positions, b.bvh.id, pad]
+    candidate_offsets, counts = offsets_buffer(n_h, device)
     _launch.launch(
-        kernel_boolean.count_edge_crossings,
+        kernel_boolean.count_edge_candidates, dim=n_h, inputs=walk, outputs=[counts], device=device
+    )
+    n_candidates = scan_count(counts)
+    if n_candidates == 0:
+        return candidate_offsets, 0, None
+    # The candidates, their decisions and the run offsets live until the records are written.
+    edges, candidate_faces, crossing_offsets, crossing, point, run_offsets = _launch.carve_typed(
+        [
+            (wp.int32, n_candidates),
+            (wp.int32, n_candidates),
+            (wp.int32, n_candidates + 1),
+            (wp.int32, n_candidates),
+            (wp.vec3d, n_candidates),
+            (wp.int32, n_h + 1),
+        ],
+        device,
+    )
+    _launch.launch(
+        kernel_boolean.write_edge_candidates,
         dim=n_h,
-        inputs=_crossing_operands(a, b, pad, expand, forward, pairs=False),
-        outputs=[counts],
+        inputs=[*walk, candidate_offsets],
+        outputs=[edges, candidate_faces],
         device=device,
     )
-    return offsets, scan_count(counts), None
+    _launch.launch(
+        kernel_boolean.decide_edge_candidates,
+        dim=n_candidates,
+        inputs=[
+            _crossing_operand(a),
+            _crossing_operand(b),
+            expand,
+            1 if forward else 0,
+            edges,
+            candidate_faces,
+        ],
+        outputs=[crossing_offsets, crossing, point],
+        device=device,
+    )
+    total = scan_count(_launch.view(crossing_offsets, 1, n_candidates + 1))
+    candidates = _Candidates(
+        candidate_offsets, crossing_offsets, edges, candidate_faces, crossing, point
+    )
+    return run_offsets, total, candidates
+
+
+class _Candidates(NamedTuple):
+    """One operand's decided edge-face candidates, waiting for the records to be allocated."""
+
+    candidate_offsets: wp.array[wp.int32]
+    crossing_offsets: wp.array[wp.int32]
+    edges: wp.array[wp.int32]
+    faces: wp.array[wp.int32]
+    crossing: wp.array[wp.int32]
+    point: wp.array[wp.vec3d]
 
 
 def _crossings_by_pairs(n_halfedges: int, n_faces_b: int) -> bool:
@@ -1364,11 +1415,18 @@ def _crossings_by_pairs(n_halfedges: int, n_faces_b: int) -> bool:
 
 
 def _crossing_operands(
-    a: _Operand, b: _Operand, pad: float, expand: int, forward: bool, *, pairs: bool
+    a: _Operand, b: _Operand, pad: float, expand: int, forward: bool
 ) -> list[object]:
-    """Return the crossing kernels' shared arguments: both operands, the search, the side."""
-    search: list[object] = [b.bvh.lowers, b.bvh.uppers] if pairs else [b.bvh.id]
-    return [_crossing_operand(a), _crossing_operand(b), *search, pad, expand, 1 if forward else 0]
+    """Return the pair kernels' shared arguments: both operands, ``b``'s face boxes, the side."""
+    return [
+        _crossing_operand(a),
+        _crossing_operand(b),
+        b.bvh.lowers,
+        b.bvh.uppers,
+        pad,
+        expand,
+        1 if forward else 0,
+    ]
 
 
 def _crossing_operand(operand: _Operand) -> StructInstance:
@@ -1389,31 +1447,38 @@ def _write_crossings(
     expand: int,
     forward: bool,
     offsets: wp.array[wp.int32],
-    pair_offsets: wp.array[wp.int32] | None,
+    found: wp.array[wp.int32] | _Candidates | None,
     record_base: int,
     records: list[odt.ArrayNd],
 ) -> None:
-    """Write the crossings ``_count_crossings`` counted from ``record_base`` on."""
+    """Write the crossings ``_count_crossings`` found from ``record_base`` on."""
     device = a.solid.positions.device
-    if pair_offsets is not None:
-        n_faces_b = b.solid.n_faces
+    if found is None:
+        return
+    if isinstance(found, _Candidates):
+        n_candidates = found.edges.size
         _launch.launch(
-            kernel_boolean.write_pair_crossings,
-            dim=a.solid.faces.size * n_faces_b,
+            kernel_boolean.write_candidate_crossings,
+            dim=n_candidates + a.solid.faces.size + 1,
             inputs=[
-                n_faces_b,
-                *_crossing_operands(a, b, pad, expand, forward, pairs=True),
-                pair_offsets,
+                found.candidate_offsets,
+                found.crossing_offsets,
+                found.edges,
+                found.faces,
+                found.crossing,
+                found.point,
+                n_candidates,
                 record_base,
             ],
-            outputs=records,
+            outputs=[offsets, *records],
             device=device,
         )
         return
+    n_faces_b = b.solid.n_faces
     _launch.launch(
-        kernel_boolean.write_edge_crossings,
-        dim=a.solid.faces.size,
-        inputs=[*_crossing_operands(a, b, pad, expand, forward, pairs=False), offsets, record_base],
+        kernel_boolean.write_pair_crossings,
+        dim=a.solid.faces.size * n_faces_b,
+        inputs=[n_faces_b, *_crossing_operands(a, b, pad, expand, forward), found, record_base],
         outputs=records,
         device=device,
     )

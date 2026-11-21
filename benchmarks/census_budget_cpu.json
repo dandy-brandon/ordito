@@ -409,91 +409,91 @@
  },
  "benchmarks/test_boolean.py::test_difference[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 90,
-   "alloc": 152,
+   "launch": 94,
+   "alloc": 154,
    "h2h": 8,
-   "readback": 28,
-   "scan": 15,
+   "readback": 30,
+   "scan": 17,
    "sort": 14
   }
  },
  "benchmarks/test_boolean.py::test_difference_all[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 242,
-   "alloc": 400,
+   "launch": 254,
+   "alloc": 406,
    "h2h": 20,
-   "readback": 84,
-   "scan": 45,
+   "readback": 90,
+   "scan": 51,
    "sort": 32
   }
  },
  "benchmarks/test_boolean.py::test_intersection[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 90,
-   "alloc": 152,
+   "launch": 94,
+   "alloc": 154,
    "h2h": 8,
-   "readback": 28,
-   "scan": 15,
+   "readback": 30,
+   "scan": 17,
    "sort": 14
   }
  },
  "benchmarks/test_boolean.py::test_intersection_all[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 239,
-   "alloc": 400,
+   "launch": 251,
+   "alloc": 406,
    "h2h": 20,
-   "readback": 81,
-   "scan": 44,
+   "readback": 87,
+   "scan": 50,
    "sort": 32
   }
  },
  "benchmarks/test_boolean.py::test_split_by_mesh[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 128,
-   "alloc": 224,
+   "launch": 132,
+   "alloc": 226,
    "h2h": 12,
-   "readback": 48,
-   "scan": 26,
+   "readback": 50,
+   "scan": 28,
    "sort": 18
   }
  },
  "benchmarks/test_boolean.py::test_split_by_plane[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 139,
-   "alloc": 226,
+   "launch": 141,
+   "alloc": 227,
    "h2h": 16,
-   "readback": 56,
-   "scan": 28,
+   "readback": 57,
+   "scan": 29,
    "sort": 18
   }
  },
  "benchmarks/test_boolean.py::test_trim_by_plane[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 96,
-   "alloc": 154,
+   "launch": 98,
+   "alloc": 155,
    "h2h": 12,
-   "readback": 33,
-   "scan": 16,
+   "readback": 34,
+   "scan": 17,
    "sort": 14
   }
  },
  "benchmarks/test_boolean.py::test_union[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 90,
-   "alloc": 152,
+   "launch": 94,
+   "alloc": 154,
    "h2h": 8,
-   "readback": 28,
-   "scan": 15,
+   "readback": 30,
+   "scan": 17,
    "sort": 14
   }
  },
  "benchmarks/test_boolean.py::test_union_all[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 239,
-   "alloc": 400,
+   "launch": 251,
+   "alloc": 406,
    "h2h": 20,
-   "readback": 81,
-   "scan": 44,
+   "readback": 87,
+   "scan": 50,
    "sort": 32
   }
  },
