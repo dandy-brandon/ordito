@@ -1920,10 +1920,17 @@ def _level_set_solid(
     high = np.maximum(starts, ends)
     halfedges = np.arange(3 * n_tris)
     forward = starts < ends
-    backward_h = halfedges[~forward][
-        np.lexsort((halfedges[~forward], high[~forward], low[~forward]))
-    ]
-    forward_h = halfedges[forward][np.lexsort((halfedges[forward], high[forward], low[forward]))]
+    # Each side's halfedges by edge, then by index: one key a halfedge, its edge above its
+    # index, sorted as values (no key repeats, so no sort needs to be stable).
+    span = int(high.max(initial=0)) + 1
+    if span * span * 3 * n_tris < 2**62:
+        keys = (low * span + high) * (3 * n_tris) + halfedges
+        backward_h = np.sort(keys[~forward]) % (3 * n_tris)
+        forward_h = np.sort(keys[forward]) % (3 * n_tris)
+    else:
+        edge_keys = low * span + high
+        backward_h = halfedges[~forward][np.argsort(edge_keys[~forward], kind="stable")]
+        forward_h = halfedges[forward][np.argsort(edge_keys[forward], kind="stable")]
     if len(backward_h) != len(forward_h) or not (
         np.array_equal(low[backward_h], low[forward_h])
         and np.array_equal(high[backward_h], high[forward_h])
@@ -1956,17 +1963,22 @@ def _level_set_solid(
 def _without_opposed_triangles(triangles: np.ndarray) -> np.ndarray:
     """Return the triangles less each pair over the same vertices wound opposite ways."""
     ordered = np.sort(triangles, axis=1)
+    n = int(triangles.max()) + 1 if triangles.size else 1
+    if n < 2**21:
+        keys = (ordered[:, 0] * n + ordered[:, 1]) * n + ordered[:, 2]
+    else:
+        keys = np.unique(ordered, axis=0, return_inverse=True)[1].reshape(-1)
+    # Most level sets have no opposed pair: a sort of the bare keys finds the repeats, and only
+    # then do the windings and the stable order of the triangles behind them matter.
+    by_value = np.sort(keys)
+    if not (by_value[1:] == by_value[:-1]).any():
+        return triangles
     # A triangle's winding against its sorted corners: an even rotation of them or not.
     even = (
         (triangles == ordered).all(axis=1)
         | (triangles == np.roll(ordered, 1, axis=1)).all(axis=1)
         | (triangles == np.roll(ordered, 2, axis=1)).all(axis=1)
     )
-    n = int(triangles.max()) + 1 if triangles.size else 1
-    if n < 2**21:
-        keys = (ordered[:, 0] * n + ordered[:, 1]) * n + ordered[:, 2]
-    else:
-        keys = np.unique(ordered, axis=0, return_inverse=True)[1].reshape(-1)
     order = np.argsort(keys, kind="stable")
     sorted_keys = keys[order]
     repeated = np.flatnonzero(sorted_keys[1:] == sorted_keys[:-1])
