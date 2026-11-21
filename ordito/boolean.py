@@ -74,6 +74,7 @@ _HEAVY_FACE_LIST = 16
 
 # An operand with at most this many halfedges crosses the other's faces pair by pair.
 _PAIR_CROSSING_HALFEDGES = 384
+_PAIR_CROSSING_MAX_PAIRS = 1 << 26
 
 
 def union(
@@ -1439,9 +1440,14 @@ def _crossings_by_pairs(n_halfedges: int, n_faces_b: int) -> bool:
 
     Pairs pay where few edges each walk much of a large tree (2026-11-21: a half-space cutter's
     18 edges against a sphere of 82 k faces, 263 -> 4 ms); a tree walk a thread fills the device
-    otherwise.
+    otherwise. The pairs' flags take 4 bytes a pair, so at most ``_PAIR_CROSSING_MAX_PAIRS`` go
+    that way (268 MB): at ``2**24`` a cutter against a 1.3 M-face sphere walked the tree, each of
+    its edges a thread through every face, for minutes.
     """
-    return n_halfedges <= _PAIR_CROSSING_HALFEDGES and n_halfedges * n_faces_b <= 1 << 24
+    return (
+        n_halfedges <= _PAIR_CROSSING_HALFEDGES
+        and n_halfedges * n_faces_b <= _PAIR_CROSSING_MAX_PAIRS
+    )
 
 
 def _crossing_operands(
