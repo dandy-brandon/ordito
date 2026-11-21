@@ -35,7 +35,7 @@ import trimesh as tm
 import warp as wp
 
 import ordito as od
-from conftest import BenchCase
+from conftest import BenchCase, BenchLibrary
 
 # The second operand: the sphere rotated about its centre and shifted by a fraction of its size.
 _ROTATION_SEED = 3
@@ -484,3 +484,54 @@ def test_decompose(bench_case: BenchCase) -> None:
     faces_wp = wp.array(both_faces.reshape(-1), dtype=wp.int32, device=device)
     pieces = bench_case.run(lambda: od.boolean.decompose(vertices_wp, faces_wp))
     assert len(pieces) == 2
+
+
+# Points around the swept star ring, and the slices or steps a sweep takes.
+_SWEEP_RINGS = [64, 1024]
+
+
+def _ring_loop_np(n: int, shift: float) -> np.ndarray:
+    """Return a star ring of ``n`` points shifted ``shift`` along x, as one loop."""
+    angle_np = 2.0 * np.pi * np.arange(n) / n
+    radius_np = np.where(np.arange(n) % 2 == 0, 1.0, 0.6)
+    return np.column_stack((radius_np * np.cos(angle_np) + shift, radius_np * np.sin(angle_np)))
+
+
+@pytest.mark.benchmark(group="extrude_region")
+@pytest.mark.benchlibs("ordito", "manifold3d")
+@pytest.mark.parametrize("ring_size", _SWEEP_RINGS)
+def test_extrude_region(bench_lib: BenchLibrary, ring_size: int) -> None:
+    """``od.boolean.extrude_region`` of a star ring in 16 twisted, tapering slices."""
+    loop_np = _ring_loop_np(ring_size, 0.0)
+    if bench_lib.kind == "manifold3d":
+        section_m3 = m3.CrossSection([loop_np])
+        result_m3 = bench_lib.run(
+            lambda: _forced(m3.Manifold.extrude(section_m3, 2.0, 15, 45.0, (0.5, 0.5)))
+        )
+        assert result_m3.num_tri() > 0
+        return
+    device = str(bench_lib.device)
+    points = wp.array(loop_np, dtype=wp.vec2d, device=device)
+    offsets = wp.array([0, ring_size], dtype=wp.int32, device=device)
+    _, faces = bench_lib.run(
+        lambda: od.boolean.extrude_region(points, offsets, 2.0, 15, 45.0, (0.5, 0.5))
+    )
+    assert faces.size > 0
+
+
+@pytest.mark.benchmark(group="revolve_region")
+@pytest.mark.benchlibs("ordito", "manifold3d")
+@pytest.mark.parametrize("ring_size", _SWEEP_RINGS)
+def test_revolve_region(bench_lib: BenchLibrary, ring_size: int) -> None:
+    """``od.boolean.revolve_region`` of a star ring off the axis, in 64 steps round."""
+    loop_np = _ring_loop_np(ring_size, 2.0)
+    if bench_lib.kind == "manifold3d":
+        section_m3 = m3.CrossSection([loop_np])
+        result_m3 = bench_lib.run(lambda: _forced(m3.Manifold.revolve(section_m3, 64)))
+        assert result_m3.num_tri() > 0
+        return
+    device = str(bench_lib.device)
+    points = wp.array(loop_np, dtype=wp.vec2d, device=device)
+    offsets = wp.array([0, ring_size], dtype=wp.int32, device=device)
+    _, faces = bench_lib.run(lambda: od.boolean.revolve_region(points, offsets, 64))
+    assert faces.size > 0

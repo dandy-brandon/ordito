@@ -21,6 +21,7 @@ the slivers such contacts leave are collapsed afterwards.
 from __future__ import annotations
 
 import heapq
+import itertools
 import math
 import struct
 from collections.abc import Sequence
@@ -39,6 +40,7 @@ from ordito.halfedge import halfedge_twins
 from ordito.kernels import boolean as kernel_boolean
 from ordito.kernels import polyline as kernel_polyline
 from ordito.points import convex_hull
+from ordito.polyline import triangulate_polygons_from_offsets
 from ordito.repair import remove_unreferenced_vertices
 
 _Operation = Literal["union", "intersection", "difference"]
@@ -47,6 +49,11 @@ _FLOAT32_EPSILON = 1.1920929e-07
 
 # ``BatchUnion``'s chunk: it groups at most this many of its last children at a time.
 _MAX_UNION_SIZE = 1000
+# Up to this many claiming seeds the coplanar flood runs in one thread, as Manifold's loop does;
+# above it in parallel rounds on CUDA (2026-11-21, quad-strip revolves: 64 seeds at par, 256
+# 0.39x, 2 048 0.07x, 16 384 0.008x). The CPU always takes the one thread: it runs a launch's
+# threads in turn, so the rounds only add work.
+_SERIAL_FLOOD_SEEDS = 64
 # ``Partition``'s cache: each sorted set of side divisions' barycentrics and sub-triangles.
 _PARTITIONS: dict[
     tuple[int, int, int, int],
@@ -1226,6 +1233,388 @@ def hull(points: wp.array[wp.vec3]) -> tuple[wp.array[wp.vec3], wp.array[wp.int3
         positions, faces, 0, epsilon, epsilon, lower, upper, "hull", sort_first=True
     )
     return _mesh_from_solid(solid, device)
+
+
+def extrude_region(
+    points: wp.array[wp.vec2] | wp.array[wp.vec2d],
+    offsets: wp.array[wp.int32],
+    height: float,
+    n_divisions: int = 0,
+    twist_degrees: float = 0.0,
+    scale_top: Sequence[float] = (1.0, 1.0),
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    Return the solid a planar region sweeps when lifted along +z, optionally twisted and scaled.
+
+    The region (outer loops counter-clockwise, holes clockwise, as
+    [`polyline.triangulate_polygons_from_offsets`][ordito.polyline.triangulate_polygons_from_offsets]
+    takes them) is the bottom face at ``z = 0``; the top face, at ``height``, is the region
+    rotated by ``twist_degrees`` about the z axis and scaled by ``scale_top``. The sides are split
+    into ``n_divisions + 1`` slices that twist and scale linearly. A ``scale_top`` of zero closes
+    each loop to a cone at the axis.
+
+    Parameters
+    ----------
+    points
+        ``(n_points,)`` every loop's points, loop after loop, ``float32`` or ``float64``. Loops
+        of fewer than three points are dropped.
+    offsets
+        ``(n_loops + 1,)`` loop bounds into ``points``.
+    height
+        The top face's height; positive.
+    n_divisions
+        Extra slices between bottom and top.
+    twist_degrees
+        The top face's rotation about the z axis, counter-clockwise.
+    scale_top
+        The top face's scale in x and y; negative values count as zero.
+
+    Returns
+    -------
+    vertices : wp.array[wp.vec3]
+        ``(n_vertices,)`` the solid's vertices.
+    faces : wp.array[wp.int32]
+        ``(3 * n_faces,)`` outward-wound triangles.
+
+    Raises
+    ------
+    RuntimeError
+        If ``points`` and ``offsets`` are not on one device.
+    ValueError
+        If ``height`` is not positive and finite, ``n_divisions`` is negative, ``twist_degrees``,
+        ``scale_top`` or a point is not finite, or no loop has three points.
+
+    See Also
+    --------
+    [`revolve_region`][ordito.boolean.revolve_region]
+    [`creation.extrude_polygon`][ordito.creation.extrude_polygon]
+    [`polyline.triangulate_polygons_from_offsets`][ordito.polyline.triangulate_polygons_from_offsets]
+
+    Notes
+    -----
+    Manifold's ``Manifold.extrude`` of the region's loops, with the same layout.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    square = wp.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=wp.vec2)
+    vertices, faces = od.boolean.extrude_region(square, wp.array([0, 4], dtype=wp.int32), 2.0)
+    print(vertices.shape[0], faces.size // 3)  # 8 12
+    ```
+    """
+    require_same_device(points=points, offsets=offsets)
+    device = points.device
+    sx, sy = (float(x) for x in scale_top)
+    height = float(height)
+    twist = float(twist_degrees)
+    if not (height > 0.0 and math.isfinite(height)) or n_divisions < 0:
+        raise ValueError(f"height must be positive and n_divisions not negative, got {height}")
+    if not all(math.isfinite(x) for x in (twist, sx, sy)):
+        raise ValueError("twist_degrees and scale_top must be finite")
+    # Host readback: the sweep is built on the host in Manifold's operation order.
+    loops = _host_loops(points, offsets)
+    sx, sy = max(sx, 0.0), max(sy, 0.0)
+    n_div = int(n_divisions) + 1
+    n_cross = sum(len(loop) for loop in loops)
+    is_cone = sx == 0.0 and sy == 0.0
+    base = np.concatenate(loops)
+    positions = [np.column_stack([base, np.zeros(n_cross)])]
+    triangles: list[np.ndarray] = []
+    for i in range(1, n_div + 1):
+        alpha = i / float(n_div)
+        phi = alpha * twist
+        scale_x = 1.0 * (1.0 - alpha) + sx * alpha
+        scale_y = 1.0 * (1.0 - alpha) + sy * alpha
+        c, s = _cosd(phi), _sind(phi)
+        # ``mat2(scale) * rotation``, column by column, then applied to each point.
+        t00, t01 = scale_x * c + 0.0 * s, 0.0 * c + scale_y * s
+        t10, t11 = scale_x * -s + 0.0 * c, 0.0 * -s + scale_y * c
+        start = 0
+        for j, loop in enumerate(loops):
+            n = len(loop)
+            offset = start + n_cross * i
+            this = np.arange(n) + offset
+            last = np.roll(this, 1)
+            if i == n_div and is_cone:
+                tip = np.full(n, n_cross * i + j)
+                triangles.append(np.column_stack([tip, last - n_cross, this - n_cross]))
+            else:
+                x, y = loop[:, 0], loop[:, 1]
+                positions.append(
+                    np.column_stack(
+                        [t00 * x + t10 * y, t01 * x + t11 * y, np.full(n, height * alpha)]
+                    )
+                )
+                pairs = np.stack(
+                    [
+                        np.column_stack([this, last, this - n_cross]),
+                        np.column_stack([last, last - n_cross, this - n_cross]),
+                    ],
+                    axis=1,
+                )
+                triangles.append(pairs.reshape(-1, 3))
+            start += n
+    if is_cone:
+        positions.append(np.tile([0.0, 0.0, height], (len(loops), 1)))
+    top = _loop_triangles(loops, device).reshape(-1, 3)
+    caps = [top[:, [0, 2, 1]]] if is_cone else [top[:, [0, 2, 1]], top + n_cross * n_div]
+    caps_np = np.stack(caps, axis=1).reshape(-1, 3) if not is_cone else caps[0]
+    return _shape_mesh(np.concatenate(positions), np.concatenate([*triangles, caps_np]), device)
+
+
+def revolve_region(
+    points: wp.array[wp.vec2] | wp.array[wp.vec2d],
+    offsets: wp.array[wp.int32],
+    segments: int,
+    revolve_degrees: float = 360.0,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    Return the solid a planar region sweeps when turned about the y axis, which becomes z.
+
+    The region (outer loops counter-clockwise, holes clockwise) lies in the ``xy`` plane; its part
+    at negative x is clipped off at the axis. Each point ``(x, y)`` sweeps the circle of radius
+    ``x`` at height ``y``, in ``segments`` steps over ``revolve_degrees``; a partial revolution is
+    closed by the region at both ends.
+
+    Parameters
+    ----------
+    points
+        ``(n_points,)`` every loop's points, loop after loop, ``float32`` or ``float64``. Loops
+        of fewer than three points are dropped.
+    offsets
+        ``(n_loops + 1,)`` loop bounds into ``points``.
+    segments
+        Steps around the revolution; at least three.
+    revolve_degrees
+        The sweep's angle; 360 or more is a full revolution.
+
+    Returns
+    -------
+    vertices : wp.array[wp.vec3]
+        ``(n_vertices,)`` the solid's vertices.
+    faces : wp.array[wp.int32]
+        ``(3 * n_faces,)`` outward-wound triangles.
+
+    Raises
+    ------
+    RuntimeError
+        If ``points`` and ``offsets`` are not on one device.
+    ValueError
+        If ``segments`` is below three, or no loop with three points reaches ``x >= 0``.
+
+    See Also
+    --------
+    [`extrude_region`][ordito.boolean.extrude_region]
+    [`creation.revolve`][ordito.creation.revolve]
+
+    Notes
+    -----
+    Manifold's ``Manifold.revolve`` with ``circular_segments`` set, with the same layout.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    square = wp.array([[1, 0], [2, 0], [2, 1], [1, 1]], dtype=wp.vec2)
+    vertices, faces = od.boolean.revolve_region(square, wp.array([0, 4], dtype=wp.int32), 16)
+    print(vertices.shape[0], faces.size // 3)  # 64 128
+    ```
+    """
+    require_same_device(points=points, offsets=offsets)
+    device = points.device
+    if segments < 3:
+        raise ValueError(f"segments must be at least 3, got {segments}")
+    # Host readback: the sweep is built on the host in Manifold's operation order.
+    loops = [_clipped_to_axis(loop) for loop in _host_loops(points, offsets, require=False)]
+    loops = [loop for loop in loops if loop is not None]
+    if not loops:
+        raise ValueError("no loop of three or more points reaches x >= 0")
+    degrees = min(float(revolve_degrees), 360.0)
+    full = degrees == 360.0
+    n_div = int(segments)
+    d_phi = degrees / n_div
+    n_slices = n_div if full else n_div + 1
+    slices = np.arange(n_slices)
+    phis = [s * d_phi for s in range(n_slices)]
+    cos_np = np.array([_cosd(phi) for phi in phis])
+    sin_np = np.array([_sind(phi) for phi in phis])
+    # Each slice's triangles reach back to the previous slice; slice 0 to the last only when full.
+    last_np = np.where(slices == 0, n_div, slices) - 1
+    active_np = np.full(n_slices, True) if full else slices > 0
+    positions: list[np.ndarray] = []
+    triangles: list[np.ndarray] = []
+    start_poses: list[np.ndarray] = []
+    end_poses: list[np.ndarray] = []
+    offset = 0
+    for loop in loops:
+        x_np = np.array([p[0] for p in loop])
+        y_np = np.array([p[1] for p in loop])
+        prev_x = np.roll(x_np, 1)
+        counts = np.where(x_np > 0, n_slices, 1)
+        starts = offset + np.concatenate([[0], np.cumsum(counts)[:-1]])
+        # ``prevStartPosIndex``: the previous point's first vertex, wrapping to the loop's last.
+        prev_starts = starts + np.where(np.arange(len(loop)) == 0, counts.sum(), 0)
+        prev_starts = prev_starts + np.where(prev_x == 0.0, -1, -n_slices)
+        kept = (slices[None, :] == 0) | (x_np[:, None] > 0)
+        grid = np.stack(
+            [
+                x_np[:, None] * cos_np[None, :],
+                x_np[:, None] * sin_np[None, :],
+                np.broadcast_to(y_np[:, None], kept.shape),
+            ],
+            axis=-1,
+        )
+        positions.append(grid[kept])
+        start = starts[:, None]
+        prev = prev_starts[:, None]
+        s = slices[None, :]
+        last = last_np[None, :]
+        first = np.stack(
+            np.broadcast_arrays(
+                start + s, start + last, np.where(prev_x[:, None] == 0.0, prev, prev + last)
+            ),
+            axis=-1,
+        )
+        second = np.stack(
+            np.broadcast_arrays(
+                prev + last, prev + s, np.where(x_np[:, None] == 0.0, start, start + s)
+            ),
+            axis=-1,
+        )
+        valid = np.stack(
+            [
+                (x_np[:, None] > 0.0) & active_np[None, :],
+                (prev_x[:, None] > 0.0) & active_np[None, :],
+            ],
+            axis=-1,
+        )
+        triangles.append(np.stack([first, second], axis=2)[valid])
+        start_poses.append(starts)
+        end_poses.append(starts + counts - 1)
+        offset += int(counts.sum())
+    if not full:
+        front = _loop_triangles([np.asarray(loop) for loop in loops], device).reshape(-1, 3)
+        starts_np = np.concatenate(start_poses)
+        ends_np = np.concatenate(end_poses)
+        triangles.extend([starts_np[front], ends_np[front[:, ::-1]]])
+    return _shape_mesh(np.concatenate(positions), np.concatenate(triangles), device)
+
+
+def _host_loops(
+    points: wp.array[wp.vec2] | wp.array[wp.vec2d],
+    offsets: wp.array[wp.int32],
+    *,
+    require: bool = True,
+) -> list[np.ndarray]:
+    """
+    Return the region's loops of three or more points as ``float64`` host arrays.
+
+    Raises
+    ------
+    ValueError
+        If a point is not finite, or (with ``require``) no loop has three points.
+    """
+    points_np = read_array(points).astype(np.float64).reshape(-1, 2)
+    offsets_np = read_array(offsets)
+    loops = [points_np[a:b] for a, b in itertools.pairwise(offsets_np.tolist()) if b - a >= 3]
+    if any(not np.isfinite(loop).all() for loop in loops):
+        raise ValueError("every point must be finite")
+    if require and not loops:
+        raise ValueError("no loop has three or more points")
+    return loops
+
+
+def _clipped_to_axis(loop: np.ndarray) -> list[tuple[float, float]] | None:
+    """``Revolve``'s clip of a loop to ``x >= 0``, with a point where it crosses the axis."""
+    pts = [(float(x), float(y)) for x, y in loop]
+    n = len(pts)
+    i = 0
+    while i < n and pts[i][0] < 0:
+        i += 1
+    if i == n:
+        return None
+    out: list[tuple[float, float]] = []
+    start = i
+    while True:
+        x, y = pts[i]
+        if x >= 0:
+            out.append((x, y))
+        nxt = 0 if i + 1 == n else i + 1
+        nx, ny = pts[nxt]
+        if (nx < 0) != (x < 0):
+            out.append((0.0, ny - nx * (y - ny) / (x - nx)))
+        i = nxt
+        if i == start:
+            break
+    return out
+
+
+def _loop_triangles(loops: list[np.ndarray], device: wp.DeviceLike) -> np.ndarray:
+    """Return ``TriangulateIdx`` of the loops: triangles into their concatenated points."""
+    host = wp.get_device("cpu")
+    points = _launch.array(np.concatenate(loops).astype(np.float64), dtype=wp.vec2d, device=host)
+    sizes = np.cumsum([0] + [len(loop) for loop in loops]).astype(np.int32)
+    offsets = _launch.array(sizes, dtype=wp.int32, device=host)
+    del device
+    return read_array(triangulate_polygons_from_offsets(points, offsets)).astype(np.int64)
+
+
+def _shape_mesh(
+    positions_np: np.ndarray, triangles_np: np.ndarray, device: wp.DeviceLike
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    Return a constructed shape as Manifold lays it out.
+
+    ``CreateHalfedges`` drops opposed triangle pairs (the same three vertices wound both ways,
+    as duplicate points on a revolve's axis make), keeping their vertices; then
+    ``CalculateBBox``, ``SetEpsilon()``, ``SortGeometry`` and ``SetNormalsAndCoplanar``.
+    """
+    triangles_np = _without_opposed_triangles(triangles_np.reshape(-1, 3).astype(np.int64))
+    positions = _launch.array(positions_np.astype(np.float64), dtype=wp.vec3d, device=device)
+    faces = _launch.array(triangles_np.astype(np.int32).reshape(-1), dtype=wp.int32, device=device)
+    lower, upper = _positions_box(positions)
+    epsilon = kernel_boolean.PRECISION * max(abs(x) for x in (*lower, *upper))
+    solid = _solid_from_positions(
+        positions, faces, 0, epsilon, epsilon, lower, upper, "shape", sort_first=True
+    )
+    return _mesh_from_solid(solid, device)
+
+
+def _without_opposed_triangles(triangles: np.ndarray) -> np.ndarray:
+    """Return the triangles less each pair over the same vertices wound opposite ways."""
+    ordered = np.sort(triangles, axis=1)
+    # A triangle's winding against its sorted corners: an even rotation of them or not.
+    even = (
+        (triangles == ordered).all(axis=1)
+        | (triangles == np.roll(ordered, 1, axis=1)).all(axis=1)
+        | (triangles == np.roll(ordered, 2, axis=1)).all(axis=1)
+    )
+    n = int(triangles.max()) + 1 if triangles.size else 1
+    if n < 2**21:
+        keys = (ordered[:, 0] * n + ordered[:, 1]) * n + ordered[:, 2]
+    else:
+        keys = np.unique(ordered, axis=0, return_inverse=True)[1].reshape(-1)
+    order = np.argsort(keys, kind="stable")
+    sorted_keys = keys[order]
+    repeated = np.flatnonzero(sorted_keys[1:] == sorted_keys[:-1])
+    keep = np.ones(len(triangles), dtype=bool)
+    for key in np.unique(sorted_keys[repeated]):
+        members = np.sort(
+            order[np.searchsorted(sorted_keys, key) : np.searchsorted(sorted_keys, key, "right")]
+        )
+        positive = members[even[members]]
+        negative = members[~even[members]]
+        pairs = min(len(positive), len(negative))
+        keep[positive[:pairs]] = False
+        keep[negative[:pairs]] = False
+    return triangles[keep]
 
 
 def refine(
@@ -2711,29 +3100,106 @@ def _coplanar_groups(
             outputs=[seeds],
             device=device,
         )
-        _launch.launch(
-            kernel_boolean.flood_coplanar,
-            dim=1,
-            inputs=[
-                faces,
-                twins,
-                positions,
-                seeds,
-                n_seeds,
-                order,
-                rank,
-                is_seed,
-                tolerance,
-                face_normals,
-                _launch.empty(2 * n_faces + 4, dtype=wp.int32, device=device),
-            ],
-            outputs=[coplanar],
-            device=device,
-        )
+        flood = (faces, twins, positions, order, rank, is_seed, tolerance, face_normals, coplanar)
+        if n_seeds <= _SERIAL_FLOOD_SEEDS or wp.get_device(device).is_cpu:
+            _serial_flood(flood, seeds, n_seeds)
+        else:
+            _flood_in_rounds(flood, seeds, n_seeds)
     _launch.launch(
         kernel_boolean.own_coplanar_groups, dim=n_faces, inputs=[coplanar], device=device
     )
     return coplanar
+
+
+def _serial_flood(flood: tuple[object, ...], seeds: wp.array[wp.int32], n_seeds: int) -> None:
+    """Flood the seeds' coplanar groups one after another in one thread, in area order."""
+    faces, twins, positions, order, rank, is_seed, tolerance, face_normals, coplanar = flood
+    device = seeds.device
+    n_faces = rank.size  # pyright: ignore[reportAttributeAccessIssue]
+    _launch.launch(
+        kernel_boolean.flood_coplanar,
+        dim=1,
+        inputs=[
+            faces,
+            twins,
+            positions,
+            seeds,
+            n_seeds,
+            order,
+            rank,
+            is_seed,
+            tolerance,
+            face_normals,
+            _launch.empty(2 * n_faces + 4, dtype=wp.int32, device=device),
+        ],
+        outputs=[coplanar],
+        device=device,
+    )
+
+
+def _flood_in_rounds(flood: tuple[object, ...], seeds: wp.array[wp.int32], n_seeds: int) -> None:
+    """
+    Flood the seeds' coplanar groups in parallel rounds, the same groups as the serial flood.
+
+    Each round every pending seed floods tentatively and bids on its region; the seeds holding
+    their region's lowest bid commit together (``kernels/boolean.tentative_flood``). A round that
+    commits nothing has a seed whose region overflowed its scratch as its earliest; the serial
+    flood takes that one alone.
+    """
+    device = seeds.device
+    n_faces = flood[4].size  # pyright: ignore[reportAttributeAccessIssue]
+    bids = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    scratch = _launch.empty(
+        n_seeds * 4 * kernel_boolean.COPLANAR_REGION, dtype=wp.int32, device=device
+    )
+    first_overflow = _launch.empty(1, dtype=wp.int32, device=device)
+    commit = _launch.empty(n_seeds, dtype=wp.int32, device=device)
+    pending = seeds
+    m = n_seeds
+    while m > 0:
+        bids.fill_(2147483647)
+        first_overflow.fill_(2147483647)
+        left_offsets, left = offsets_buffer(m, device)
+        _launch.launch(
+            kernel_boolean.coplanar_round_bids,
+            dim=m,
+            inputs=[*flood, pending, bids, scratch],
+            outputs=[first_overflow],
+            device=device,
+        )
+        _launch.launch(
+            kernel_boolean.coplanar_round_checks,
+            dim=m,
+            inputs=[*flood, pending, bids, scratch, first_overflow],
+            outputs=[commit],
+            device=device,
+        )
+        _launch.launch(
+            kernel_boolean.coplanar_round_commits,
+            dim=m,
+            inputs=[*flood, pending, bids, scratch, commit],
+            outputs=[left],
+            device=device,
+        )
+        # Host readback: the next round's width.
+        n_left = scan_count(left)
+        if n_left == m:
+            # The earliest pending seed overflowed: the serial flood takes it alone.
+            _serial_flood(flood, _launch.view(pending, 0, 1), 1)
+            pending = _launch.view(pending, 1, m)
+            m -= 1
+            continue
+        if n_left > 0:
+            remaining = _launch.empty(n_left, dtype=wp.int32, device=device)
+            _launch.launch(
+                kernel_boolean.compact_pending,
+                dim=m,
+                inputs=[pending, left_offsets],
+                outputs=[remaining],
+                device=device,
+            )
+            pending = remaining
+        m = n_left
 
 
 def _morton_sorted(

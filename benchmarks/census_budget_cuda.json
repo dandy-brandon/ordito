@@ -484,6 +484,32 @@
    "sort": 22
   }
  },
+ "benchmarks/test_boolean.py::test_extrude_region[ordito-cuda-1024]": {
+  "counts": {
+   "launch": 35,
+   "alloc": 60,
+   "memset": 18,
+   "d2d": 1,
+   "h2d": 3,
+   "d2h": 9,
+   "h2h": 3,
+   "scan": 6,
+   "sort": 4
+  }
+ },
+ "benchmarks/test_boolean.py::test_extrude_region[ordito-cuda-64]": {
+  "counts": {
+   "launch": 27,
+   "alloc": 56,
+   "memset": 12,
+   "d2d": 1,
+   "h2d": 3,
+   "d2h": 7,
+   "h2h": 3,
+   "scan": 4,
+   "sort": 4
+  }
+ },
  "benchmarks/test_boolean.py::test_hull[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 119,
@@ -556,6 +582,30 @@
    "sort": 6
   }
  },
+ "benchmarks/test_boolean.py::test_revolve_region[ordito-cuda-1024]": {
+  "counts": {
+   "launch": 26,
+   "alloc": 36,
+   "memset": 12,
+   "d2d": 1,
+   "h2d": 3,
+   "d2h": 7,
+   "scan": 4,
+   "sort": 4
+  }
+ },
+ "benchmarks/test_boolean.py::test_revolve_region[ordito-cuda-64]": {
+  "counts": {
+   "launch": 26,
+   "alloc": 36,
+   "memset": 12,
+   "d2d": 1,
+   "h2d": 3,
+   "d2h": 7,
+   "scan": 4,
+   "sort": 4
+  }
+ },
  "benchmarks/test_boolean.py::test_segment_hits[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 25,
@@ -570,13 +620,13 @@
  },
  "benchmarks/test_boolean.py::test_simplify[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 50,
-   "alloc": 80,
-   "memset": 18,
+   "launch": 56,
+   "alloc": 86,
+   "memset": 24,
    "d2d": 8,
    "h2d": 2,
-   "d2h": 17,
-   "scan": 12,
+   "d2h": 19,
+   "scan": 14,
    "sort": 7
   }
  },
@@ -6422,35 +6472,39 @@
  "benchmarks/test_polyline.py::test_triangulate_polygons[ordito-cuda-1024]": {
   "counts": {
    "launch": 1,
-   "alloc": 22,
+   "alloc": 23,
    "d2d": 9,
    "h2d": 2,
-   "d2h": 2
+   "d2h": 2,
+   "h2h": 1
   }
  },
  "benchmarks/test_polyline.py::test_triangulate_polygons[ordito-cuda-64]": {
   "counts": {
    "launch": 1,
-   "alloc": 22,
+   "alloc": 23,
    "d2d": 9,
    "h2d": 2,
-   "d2h": 2
+   "d2h": 2,
+   "h2h": 1
   }
  },
  "benchmarks/test_polyline.py::test_triangulate_polygons_from_offsets[ordito-cuda-1024]": {
   "counts": {
    "launch": 1,
-   "alloc": 20,
+   "alloc": 21,
    "h2d": 1,
-   "d2h": 2
+   "d2h": 2,
+   "h2h": 1
   }
  },
  "benchmarks/test_polyline.py::test_triangulate_polygons_from_offsets[ordito-cuda-64]": {
   "counts": {
    "launch": 1,
-   "alloc": 20,
+   "alloc": 21,
    "h2d": 1,
-   "d2h": 2
+   "d2h": 2,
+   "h2h": 1
   }
  },
  "benchmarks/test_polyline.py::test_triangulate_polyline[sphere_small-ordito-cuda-1024]": {

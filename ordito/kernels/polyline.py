@@ -4667,7 +4667,7 @@ def polygons_convex(
 
 @wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
 def triangulate_polygon_set(
-    points: wp.array[wp.vec2],
+    points: wp.array[wp.vec2d],
     offsets: wp.array[wp.int32],
     epsilon: wp.float64,
     allow_convex: wp.int32,
@@ -4689,7 +4689,7 @@ def triangulate_polygon_set(
         loop_first = n_verts
         for i in range(head, tail):
             v = n_verts
-            ec.pos[v] = wp.vec2d(points[i])
+            ec.pos[v] = points[i]
             ec.idx[v] = i
             ec.seq[v] = -1
             ec.cost[v] = wp.float64(0.0)

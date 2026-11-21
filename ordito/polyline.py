@@ -46,6 +46,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._common import (
+    read_array,
     read_scalar,
     read_values,
     record_device_loop,
@@ -2506,7 +2507,7 @@ def triangulate_polygons(
 
 
 def triangulate_polygons_from_offsets(
-    points: wp.array[wp.vec2],
+    points: wp.array[wp.vec2] | wp.array[wp.vec2d],
     offsets: wp.array[wp.int32],
     epsilon: float = -1.0,
     *,
@@ -2521,7 +2522,7 @@ def triangulate_polygons_from_offsets(
     Parameters
     ----------
     points
-        ``(n_points,)`` every loop's points, loop after loop.
+        ``(n_points,)`` every loop's points, loop after loop, ``float32`` or ``float64``.
     offsets
         ``(n_loops + 1,)`` loop bounds into ``points``.
     epsilon
@@ -2573,6 +2574,9 @@ def triangulate_polygons_from_offsets(
     if wp.get_device(device) != host:
         points = _launch.clone(points, device=host)
         offsets = _launch.clone(offsets, device=host)
+    if points.dtype != wp.vec2d:
+        # Host data already: the ``float64`` loops the clipper works on.
+        points = _launch.array(read_array(points).astype(np.float64), dtype=wp.vec2d, device=host)
     capacity = 3 * n_points + 16
     state = kernel_polyline.EarClipState()
     state.pos = _launch.empty(capacity, dtype=wp.vec2d, device=host)

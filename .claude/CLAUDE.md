@@ -1418,7 +1418,8 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `offset_mesh(method="meshlib")` against MeshLib's `offsetMesh`, whose extraction is ported
   (`marching_cubes(method="openvdb")`, Class A) and whose OpenVDB `meshToLevelSet` band field is
   not. Scoped, with source availability and licensing, in `reference/component-status.md` (16.0b).
-- **`boolean`'s serial passes on planar-heavy inputs**: the inputs' coplanar flood and the
-  result's edge collapses run as one GPU thread, 5-17x Manifold's time where large planar faces
-  are cut along long lines; a block-parallel flood is the first candidate
+- **`boolean`'s serial passes on planar-heavy inputs**: the result's edge collapses run as one
+  GPU thread, 5-17x Manifold's time where large planar faces are cut along long lines. The
+  coplanar flood runs in exact parallel rounds above 64 seeds (2026-11-21), but a region past
+  `kernels/boolean.COPLANAR_REGION` faces still takes the one-thread flood alone
   (`reference/component-status.md`, 16.17).

@@ -457,6 +457,26 @@
    "sort": 32
   }
  },
+ "benchmarks/test_boolean.py::test_extrude_region[ordito-cpu-1024]": {
+  "counts": {
+   "launch": 19,
+   "alloc": 47,
+   "h2h": 7,
+   "readback": 7,
+   "scan": 1,
+   "sort": 5
+  }
+ },
+ "benchmarks/test_boolean.py::test_extrude_region[ordito-cpu-64]": {
+  "counts": {
+   "launch": 19,
+   "alloc": 47,
+   "h2h": 7,
+   "readback": 7,
+   "scan": 1,
+   "sort": 5
+  }
+ },
  "benchmarks/test_boolean.py::test_hull[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 45,
@@ -515,6 +535,26 @@
    "readback": 9,
    "scan": 5,
    "sort": 9
+  }
+ },
+ "benchmarks/test_boolean.py::test_revolve_region[ordito-cpu-1024]": {
+  "counts": {
+   "launch": 18,
+   "alloc": 27,
+   "h2h": 4,
+   "readback": 5,
+   "scan": 1,
+   "sort": 5
+  }
+ },
+ "benchmarks/test_boolean.py::test_revolve_region[ordito-cpu-64]": {
+  "counts": {
+   "launch": 18,
+   "alloc": 27,
+   "h2h": 4,
+   "readback": 5,
+   "scan": 1,
+   "sort": 5
   }
  },
  "benchmarks/test_boolean.py::test_segment_hits[sphere_small-ordito-cpu]": {
@@ -5818,33 +5858,33 @@
  "benchmarks/test_polyline.py::test_triangulate_polygons[ordito-cpu-1024]": {
   "counts": {
    "launch": 1,
-   "alloc": 20,
-   "h2h": 11,
-   "readback": 1
+   "alloc": 21,
+   "h2h": 12,
+   "readback": 2
   }
  },
  "benchmarks/test_polyline.py::test_triangulate_polygons[ordito-cpu-64]": {
   "counts": {
    "launch": 1,
-   "alloc": 20,
-   "h2h": 11,
-   "readback": 1
+   "alloc": 21,
+   "h2h": 12,
+   "readback": 2
   }
  },
  "benchmarks/test_polyline.py::test_triangulate_polygons_from_offsets[ordito-cpu-1024]": {
   "counts": {
    "launch": 1,
-   "alloc": 18,
-   "h2h": 1,
-   "readback": 1
+   "alloc": 19,
+   "h2h": 2,
+   "readback": 2
   }
  },
  "benchmarks/test_polyline.py::test_triangulate_polygons_from_offsets[ordito-cpu-64]": {
   "counts": {
    "launch": 1,
-   "alloc": 18,
-   "h2h": 1,
-   "readback": 1
+   "alloc": 19,
+   "h2h": 2,
+   "readback": 2
   }
  },
  "benchmarks/test_polyline.py::test_triangulate_polyline[sphere_small-ordito-cpu-1024]": {

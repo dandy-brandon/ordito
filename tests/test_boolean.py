@@ -662,6 +662,82 @@ def test_hull_matches_manifold3d(device: str, seed: int) -> None:
     assert od.equality.faces_equal(faces, faces_m3)
 
 
+def _star_loop(n: int, shift: float) -> list[list[float]]:
+    """Return a star of ``n`` points, ``float32``-exact, shifted ``shift`` along x."""
+    angles = np.linspace(0.0, 2.0 * np.pi, n + 1)[:-1]
+    radii = np.where(np.arange(n) % 2 == 0, 2.0, 1.0)
+    loop = np.column_stack([radii * np.cos(angles), radii * np.sin(angles)]).astype(np.float32)
+    return (loop.astype(np.float64) + np.array([shift, 0.0])).tolist()
+
+
+_SECTIONS = {
+    "square": [[[0, 0], [1, 0], [1, 1], [0, 1]]],
+    "holed": [[[0, 0], [4, 0], [4, 4], [0, 4]], [[1, 1], [1, 3], [3, 3], [3, 1]]],
+    "star": [_star_loop(10, 0.0)],
+    "two": [[[0, 0], [1, 0], [1, 1], [0, 1]], [[3, 0], [5, 0], [4, 2]]],
+}
+
+
+def _section_loops(
+    section_m3: m3.CrossSection, device: str
+) -> tuple[wp.array[wp.vec2d], wp.array[wp.int32]]:
+    """Return a cross-section's loops, as Manifold holds them, as packed ``float64`` points."""
+    loops = [np.asarray(loop, dtype=np.float64) for loop in section_m3.to_polygons()]
+    offsets = np.cumsum([0] + [len(loop) for loop in loops]).astype(np.int32)
+    return (
+        wp.array(np.concatenate(loops), dtype=wp.vec2d, device=device),
+        wp.array(offsets, dtype=wp.int32, device=device),
+    )
+
+
+@pytest.mark.parity("extrude_region", "manifold3d")
+@pytest.mark.parametrize("section", list(_SECTIONS))
+@pytest.mark.parametrize(
+    "args",
+    [(1.5,), (2.0, 3), (2.0, 4, 45.0), (1.0, 2, 30.0, (0.5, 0.25)), (1.0, 3, 90.0, (0.0, 0.0))],
+    ids=["plain", "slices", "twist", "taper", "cone"],
+)
+def test_extrude_region_matches_manifold3d(
+    device: str, section: str, args: tuple[object, ...]
+) -> None:
+    """
+    ``extrude_region`` is Manifold's ``Manifold.extrude`` of the same loops, array for array.
+
+    Class A. The loops are the cross-section's own (``to_polygons``), so both sweep the same
+    points; holes, several outer loops, twist, taper and a cone's tip are covered.
+    """
+    section_m3 = m3.CrossSection(
+        [np.asarray(loop, dtype=np.float64) for loop in _SECTIONS[section]]
+    )
+    result_m3 = m3.Manifold.extrude(section_m3, *args)  # pyright: ignore[reportArgumentType]
+    assert result_m3.num_tri() > 0
+    points, offsets = _section_loops(section_m3, device)
+    _assert_same_as_m3(od.boolean.extrude_region(points, offsets, *args), result_m3)  # pyright: ignore[reportArgumentType]
+
+
+@pytest.mark.parity("revolve_region", "manifold3d")
+@pytest.mark.parametrize("section", list(_SECTIONS))
+@pytest.mark.parametrize("shift", [1.0, 0.0], ids=["off_axis", "across_axis"])
+@pytest.mark.parametrize(("segments", "degrees"), [(16, 360.0), (12, 90.0), (7, 200.0)])
+def test_revolve_region_matches_manifold3d(
+    device: str, section: str, shift: float, segments: int, degrees: float
+) -> None:
+    """
+    ``revolve_region`` is Manifold's ``Manifold.revolve`` of the same loops, array for array.
+
+    Class A. Off the axis, and moved onto and across it, where loops are clipped at ``x = 0``
+    and the star's clip leaves opposed triangle pairs that both drop; full and partial turns.
+    """
+    loops = [
+        np.asarray(loop, dtype=np.float64) + np.array([shift, 0.0]) for loop in _SECTIONS[section]
+    ]
+    section_m3 = m3.CrossSection(loops)
+    result_m3 = m3.Manifold.revolve(section_m3, segments, degrees)
+    assert result_m3.num_tri() > 0
+    points, offsets = _section_loops(section_m3, device)
+    _assert_same_as_m3(od.boolean.revolve_region(points, offsets, segments, degrees), result_m3)
+
+
 def _manifold_mesh_tm(result_m3: m3.Manifold) -> tm.Trimesh:
     """Return a Manifold as a ``float32`` trimesh mesh."""
     mesh_m3 = result_m3.to_mesh()

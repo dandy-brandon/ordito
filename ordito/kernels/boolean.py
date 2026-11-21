@@ -1756,6 +1756,229 @@ def flood_coplanar(
                 top += 1
 
 
+# The flood in parallel rounds. Every seed not yet resolved floods tentatively from the claims
+# made so far: claims only ever block a flood, so the region it will take is a subset of this one.
+# It bids its rank on every face of the region; a seed whose region holds no lower bid takes
+# exactly that region in the serial order, and the regions such seeds take are disjoint, so they
+# commit together. A neighbour the flood rejects needs no bid: the plane test rejects it whether or
+# not it is claimed. A region past ``COPLANAR_REGION`` faces stops the round's later seeds, and
+# when it is the earliest left, the serial flood takes it alone.
+
+COPLANAR_REGION = 64
+COPLANAR_BID = 0
+COPLANAR_CHECK = 1
+COPLANAR_COMMIT = 2
+
+
+@wp.func
+def tentative_flood(
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    positions: wp.array[wp.vec3d],
+    order: wp.array[wp.int32],
+    rank: wp.array[wp.int32],
+    is_seed: wp.array[wp.int32],
+    tolerance: wp.float64,
+    face_normals: wp.array[wp.vec3d],
+    coplanar: wp.array[wp.int32],
+    bids: wp.array[wp.int32],
+    scratch: wp.array[wp.int32],
+    slot: wp.int32,
+    k: wp.int32,
+    mode: wp.int32,
+) -> wp.int32:
+    # One seed's flood as ``flood_coplanar`` walks it, its region and stack in the thread's
+    # scratch. ``COPLANAR_BID`` bids ``k`` on the region, ``COPLANAR_CHECK`` returns 1 when no
+    # face of it holds a lower bid, ``COPLANAR_COMMIT`` claims it. Returns -1 on overflow.
+    seed = order[k]
+    region = slot * 4 * COPLANAR_REGION
+    stack = region + COPLANAR_REGION
+    base = positions[faces[3 * seed]]
+    normal = face_normals[seed]
+    n_region = wp.int32(1)
+    scratch[region] = seed
+    scratch[stack] = 3 * seed
+    scratch[stack + 1] = 3 * seed + 1
+    scratch[stack + 2] = 3 * seed + 2
+    top = wp.int32(3)
+    while top > 0:
+        h = next_halfedge(twins[scratch[stack + top - 1]])
+        top -= 1
+        tri = h // 3
+        if coplanar[tri] >= 0:
+            continue
+        taken = wp.int32(0)
+        for j in range(n_region):
+            if scratch[region + j] == tri:
+                taken = 1
+        if taken != 0:
+            continue
+        if is_seed[rank[tri]] == 0 and rank[tri] < k:
+            continue
+        v = positions[faces[next_halfedge(h)]]
+        if wp.abs(wp.dot(v - base, normal)) < tolerance:
+            if n_region == COPLANAR_REGION or top + 2 > 3 * COPLANAR_REGION:
+                return -1
+            scratch[region + n_region] = tri
+            n_region += 1
+            if top == 0 or h != twins[scratch[stack + top - 1]]:
+                scratch[stack + top] = h
+                top += 1
+            else:
+                top -= 1
+            scratch[stack + top] = next_halfedge(h)
+            top += 1
+    ok = wp.int32(1)
+    for j in range(n_region):
+        tri = scratch[region + j]
+        if mode == COPLANAR_BID:
+            wp.atomic_min(bids, tri, k)
+        elif mode == COPLANAR_CHECK:
+            if bids[tri] < k:
+                ok = 0
+        else:
+            coplanar[tri] = seed
+            if tri != seed:
+                face_normals[tri] = normal
+    return ok
+
+
+@wp.kernel
+def coplanar_round_bids(
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    positions: wp.array[wp.vec3d],
+    order: wp.array[wp.int32],
+    rank: wp.array[wp.int32],
+    is_seed: wp.array[wp.int32],
+    tolerance: wp.float64,
+    face_normals: wp.array[wp.vec3d],
+    coplanar: wp.array[wp.int32],
+    pending: wp.array[wp.int32],
+    bids: wp.array[wp.int32],
+    scratch: wp.array[wp.int32],
+    out_first_overflow: wp.array[wp.int32],
+) -> None:
+    # Each pending seed's tentative region, bid on; a seed an earlier commit claimed is skipped.
+    i = wp.int32(wp.tid())
+    k = pending[i]
+    if coplanar[order[k]] >= 0:
+        return
+    result = tentative_flood(
+        faces,
+        twins,
+        positions,
+        order,
+        rank,
+        is_seed,
+        tolerance,
+        face_normals,
+        coplanar,
+        bids,
+        scratch,
+        i,
+        k,
+        COPLANAR_BID,
+    )
+    if result < 0:
+        wp.atomic_min(out_first_overflow, 0, k)
+
+
+@wp.kernel
+def coplanar_round_checks(
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    positions: wp.array[wp.vec3d],
+    order: wp.array[wp.int32],
+    rank: wp.array[wp.int32],
+    is_seed: wp.array[wp.int32],
+    tolerance: wp.float64,
+    face_normals: wp.array[wp.vec3d],
+    coplanar: wp.array[wp.int32],
+    pending: wp.array[wp.int32],
+    bids: wp.array[wp.int32],
+    scratch: wp.array[wp.int32],
+    first_overflow: wp.array[wp.int32],
+    out_commit: wp.array[wp.int32],
+) -> None:
+    # Whether each seed before the first overflow holds the lowest bid on all of its region.
+    i = wp.int32(wp.tid())
+    k = pending[i]
+    commit = wp.int32(0)
+    if coplanar[order[k]] < 0 and k < first_overflow[0]:
+        commit = tentative_flood(
+            faces,
+            twins,
+            positions,
+            order,
+            rank,
+            is_seed,
+            tolerance,
+            face_normals,
+            coplanar,
+            bids,
+            scratch,
+            i,
+            k,
+            COPLANAR_CHECK,
+        )
+    out_commit[i] = wp.max(commit, 0)
+
+
+@wp.kernel
+def coplanar_round_commits(
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    positions: wp.array[wp.vec3d],
+    order: wp.array[wp.int32],
+    rank: wp.array[wp.int32],
+    is_seed: wp.array[wp.int32],
+    tolerance: wp.float64,
+    face_normals: wp.array[wp.vec3d],
+    coplanar: wp.array[wp.int32],
+    pending: wp.array[wp.int32],
+    bids: wp.array[wp.int32],
+    scratch: wp.array[wp.int32],
+    commit: wp.array[wp.int32],
+    out_left: wp.array[wp.int32],
+) -> None:
+    # The checked seeds claim their disjoint regions; the rest stay pending unless already
+    # claimed.
+    i = wp.int32(wp.tid())
+    k = pending[i]
+    left = wp.int32(0)
+    if commit[i] != 0:
+        tentative_flood(
+            faces,
+            twins,
+            positions,
+            order,
+            rank,
+            is_seed,
+            tolerance,
+            face_normals,
+            coplanar,
+            bids,
+            scratch,
+            i,
+            k,
+            COPLANAR_COMMIT,
+        )
+    elif coplanar[order[k]] < 0:
+        left = 1
+    out_left[i] = left
+
+
+@wp.kernel
+def compact_pending(
+    pending: wp.array[wp.int32], offsets: wp.array[wp.int32], out_pending: wp.array[wp.int32]
+) -> None:
+    # The seeds still pending, in order: those whose scanned flag steps the offsets.
+    i = wp.int32(wp.tid())
+    if offsets[i + 1] != offsets[i]:
+        out_pending[offsets[i]] = pending[i]
+
+
 @wp.kernel
 def own_coplanar_groups(coplanar: wp.array[wp.int32]) -> None:
     # A face no flood reached is its own group.
