@@ -6444,22 +6444,6 @@ print is checked, so the output shown is the output you will get.</p>
 <td><a class="autorefs autorefs-internal" title="split_by_mesh" href="../api/ordito/boolean/#ordito.boolean.split_by_mesh"><code>split_by_mesh</code></a>, <a class="autorefs autorefs-internal" title="split_by_plane" href="../api/ordito/boolean/#ordito.boolean.split_by_plane"><code>split_by_plane</code></a>, <a class="autorefs autorefs-internal" title="trim_by_plane" href="../api/ordito/boolean/#ordito.boolean.trim_by_plane"><code>trim_by_plane</code></a></td>
 </tr>
 <tr>
-<td>every crossing of segments with a closed surface, exact at edges and vertices</td>
-<td><a class="autorefs autorefs-internal" title="segment_hits" href="../api/ordito/boolean/#ordito.boolean.segment_hits"><code>boolean.segment_hits</code></a></td>
-</tr>
-<tr>
-<td>drop a closed mesh's redundant vertices within a tolerance</td>
-<td><a class="autorefs autorefs-internal" title="simplify" href="../api/ordito/boolean/#ordito.boolean.simplify"><code>boolean.simplify</code></a></td>
-</tr>
-<tr>
-<td>refine a solid onto a smooth surface through its vertices, keeping creases</td>
-<td><a class="autorefs autorefs-internal" title="smooth_out" href="../api/ordito/boolean/#ordito.boolean.smooth_out"><code>boolean.smooth_out</code></a></td>
-</tr>
-<tr>
-<td>a solid from a signed distance function</td>
-<td><a class="autorefs autorefs-internal" title="level_set" href="../api/ordito/boolean/#ordito.boolean.level_set"><code>boolean.level_set</code></a></td>
-</tr>
-<tr>
 <td>triangulate a planar region with holes</td>
 <td><a class="autorefs autorefs-internal" title="triangulate_polygons" href="../api/ordito/polyline/#ordito.polyline.triangulate_polygons"><code>polyline.triangulate_polygons</code></a>, <a class="autorefs autorefs-internal" title="triangulate_polygons_from_offsets" href="../api/ordito/polyline/#ordito.polyline.triangulate_polygons_from_offsets"><code>triangulate_polygons_from_offsets</code></a></td>
 </tr>
@@ -6492,8 +6476,16 @@ print is checked, so the output shown is the output you will get.</p>
 <td><a class="autorefs autorefs-internal" title="quadric_decimate" href="../api/ordito/remesh/#ordito.remesh.quadric_decimate"><code>remesh.quadric_decimate</code></a>, <a class="autorefs autorefs-internal" title="cluster_decimate" href="../api/ordito/remesh/#ordito.remesh.cluster_decimate"><code>cluster_decimate</code></a></td>
 </tr>
 <tr>
+<td>drop a closed mesh's redundant vertices within a tolerance</td>
+<td><a class="autorefs autorefs-internal" title="simplify" href="../api/ordito/remesh/#ordito.remesh.simplify"><code>remesh.simplify</code></a></td>
+</tr>
+<tr>
 <td>subdivide</td>
 <td><a class="autorefs autorefs-internal" title="subdivide" href="../api/ordito/remesh/#ordito.remesh.subdivide"><code>remesh.subdivide</code></a>, <a class="autorefs autorefs-internal" title="subdivide_loop" href="../api/ordito/remesh/#ordito.remesh.subdivide_loop"><code>subdivide_loop</code></a>, <a class="autorefs autorefs-internal" title="subdivide_to_size" href="../api/ordito/remesh/#ordito.remesh.subdivide_to_size"><code>subdivide_to_size</code></a></td>
+</tr>
+<tr>
+<td>refine a solid onto a smooth surface through its vertices, keeping creases</td>
+<td><a class="autorefs autorefs-internal" title="subdivide_smooth" href="../api/ordito/remesh/#ordito.remesh.subdivide_smooth"><code>remesh.subdivide_smooth</code></a></td>
 </tr>
 <tr>
 <td>smooth</td>
@@ -6512,6 +6504,10 @@ print is checked, so the output shown is the output you will get.</p>
 <td><a class="autorefs autorefs-internal" title="marching_cubes" href="../api/ordito/levelset/#ordito.levelset.marching_cubes"><code>levelset.marching_cubes</code></a>, <a class="autorefs autorefs-internal" title="marching_triangles" href="../api/ordito/intersection/#ordito.intersection.marching_triangles"><code>intersection.marching_triangles</code></a></td>
 </tr>
 <tr>
+<td>a solid from a signed distance function</td>
+<td><a class="autorefs autorefs-internal" title="function_level_set" href="../api/ordito/levelset/#ordito.levelset.function_level_set"><code>levelset.function_level_set</code></a></td>
+</tr>
+<tr>
 <td><strong>Query</strong></td>
 <td></td>
 </tr>
@@ -6522,6 +6518,10 @@ print is checked, so the output shown is the output you will get.</p>
 <tr>
 <td>cast rays</td>
 <td><a class="autorefs autorefs-internal" title="intersects_first" href="../api/ordito/ray/#ordito.ray.intersects_first"><code>ray.intersects_first</code></a>, <a class="autorefs autorefs-internal" title="intersects_location" href="../api/ordito/ray/#ordito.ray.intersects_location"><code>intersects_location</code></a>, <a class="autorefs autorefs-internal" title="first_hits" href="../api/ordito/ray/#ordito.ray.first_hits"><code>first_hits</code></a></td>
+</tr>
+<tr>
+<td>every crossing of segments with a closed surface, exact at edges and vertices</td>
+<td><a class="autorefs autorefs-internal" title="segment_hits" href="../api/ordito/ray/#ordito.ray.segment_hits"><code>ray.segment_hits</code></a></td>
 </tr>
 <tr>
 <td>test which points are inside</td>

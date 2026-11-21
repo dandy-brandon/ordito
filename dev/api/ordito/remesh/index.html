@@ -4664,6 +4664,28 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#ordito.remesh.simplify" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        simplify
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ordito.remesh.subdivide_smooth" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        subdivide_smooth
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -6239,6 +6261,28 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#ordito.remesh.simplify" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        simplify
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ordito.remesh.subdivide_smooth" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        subdivide_smooth
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -6409,6 +6453,22 @@
               <td>
                 <div class="doc-md-description">
                   <p>Split a chosen set of edges in one crack-free pass, inserting one vertex per edge.</p>
+                </div>
+              </td>
+            </tr>
+            <tr class="doc-section-item">
+              <td><code><a class="autorefs autorefs-internal" title="simplify (ordito.remesh.simplify)" href="./#ordito.remesh.simplify">simplify</a></code></td>
+              <td>
+                <div class="doc-md-description">
+                  <p>Return a closed mesh with its redundant vertices removed, its surface moved under <code>tolerance</code>.</p>
+                </div>
+              </td>
+            </tr>
+            <tr class="doc-section-item">
+              <td><code><a class="autorefs autorefs-internal" title="subdivide_smooth (ordito.remesh.subdivide_smooth)" href="./#ordito.remesh.subdivide_smooth">subdivide_smooth</a></code></td>
+              <td>
+                <div class="doc-md-description">
+                  <p>Return a closed mesh refined onto a smooth surface through its vertices, keeping sharp edges.</p>
                 </div>
               </td>
             </tr>
@@ -6929,22 +6989,7 @@ near the target:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">192</span>
-<span class="normal">193</span>
-<span class="normal">194</span>
-<span class="normal">195</span>
-<span class="normal">196</span>
-<span class="normal">197</span>
-<span class="normal">198</span>
-<span class="normal">199</span>
-<span class="normal">200</span>
-<span class="normal">201</span>
-<span class="normal">202</span>
-<span class="normal">203</span>
-<span class="normal">204</span>
-<span class="normal">205</span>
-<span class="normal">206</span>
-<span class="normal">207</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">207</span>
 <span class="normal">208</span>
 <span class="normal">209</span>
 <span class="normal">210</span>
@@ -7353,7 +7398,22 @@ near the target:</p>
 <span class="normal">613</span>
 <span class="normal">614</span>
 <span class="normal">615</span>
-<span class="normal">616</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">isotropic_remesh</span><span class="p">(</span>
+<span class="normal">616</span>
+<span class="normal">617</span>
+<span class="normal">618</span>
+<span class="normal">619</span>
+<span class="normal">620</span>
+<span class="normal">621</span>
+<span class="normal">622</span>
+<span class="normal">623</span>
+<span class="normal">624</span>
+<span class="normal">625</span>
+<span class="normal">626</span>
+<span class="normal">627</span>
+<span class="normal">628</span>
+<span class="normal">629</span>
+<span class="normal">630</span>
+<span class="normal">631</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">isotropic_remesh</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -8143,22 +8203,7 @@ move their last bits from one call to the next. <code>"closest"</code> repeats e
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2374</span>
-<span class="normal">2375</span>
-<span class="normal">2376</span>
-<span class="normal">2377</span>
-<span class="normal">2378</span>
-<span class="normal">2379</span>
-<span class="normal">2380</span>
-<span class="normal">2381</span>
-<span class="normal">2382</span>
-<span class="normal">2383</span>
-<span class="normal">2384</span>
-<span class="normal">2385</span>
-<span class="normal">2386</span>
-<span class="normal">2387</span>
-<span class="normal">2388</span>
-<span class="normal">2389</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2389</span>
 <span class="normal">2390</span>
 <span class="normal">2391</span>
 <span class="normal">2392</span>
@@ -8509,7 +8554,22 @@ move their last bits from one call to the next. <code>"closest"</code> repeats e
 <span class="normal">2737</span>
 <span class="normal">2738</span>
 <span class="normal">2739</span>
-<span class="normal">2740</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">cluster_decimate</span><span class="p">(</span>
+<span class="normal">2740</span>
+<span class="normal">2741</span>
+<span class="normal">2742</span>
+<span class="normal">2743</span>
+<span class="normal">2744</span>
+<span class="normal">2745</span>
+<span class="normal">2746</span>
+<span class="normal">2747</span>
+<span class="normal">2748</span>
+<span class="normal">2749</span>
+<span class="normal">2750</span>
+<span class="normal">2751</span>
+<span class="normal">2752</span>
+<span class="normal">2753</span>
+<span class="normal">2754</span>
+<span class="normal">2755</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">cluster_decimate</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -9277,7 +9337,7 @@ evaluated when the pass is <em>issued</em>, so the captured graph does not conta
     <details class="doc doc-backlinks ordito-backlinks">
       <summary>Referenced by 12 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../config/#ordito.config">config</a></span> · <span class="ordito-backlink"><a href="../boolean/#ordito.boolean">boolean</a> › <a href="../boolean/#ordito.boolean.simplify">simplify</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.cluster_decimate">cluster_decimate</a></span></p>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../config/#ordito.config">config</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.cluster_decimate">cluster_decimate</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.simplify">simplify</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
 <span class="ordito-backlink"><a href="../../../examples/remesh/#remeshing-and-simplification">Remeshing and simplification</a> › <a href="../../../examples/remesh/#r1">Quadric decimation</a></span> · <span class="ordito-backlink"><a href="../../../examples/remesh/#remeshing-and-simplification">Remeshing and simplification</a> › <a href="../../../examples/remesh/#r3">Subdivision: midpoint and Loop</a></span> · <span class="ordito-backlink"><a href="../../../examples/queries/#spatial-queries">Spatial queries</a> › <a href="../../../examples/queries/#q7">Chamfer and Hausdorff distances</a></span></p>
         <p><span class="ordito-backlinks-section">Migrating from another library</span>
@@ -9287,22 +9347,7 @@ evaluated when the pass is <em>issued</em>, so the captured graph does not conta
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2949</span>
-<span class="normal">2950</span>
-<span class="normal">2951</span>
-<span class="normal">2952</span>
-<span class="normal">2953</span>
-<span class="normal">2954</span>
-<span class="normal">2955</span>
-<span class="normal">2956</span>
-<span class="normal">2957</span>
-<span class="normal">2958</span>
-<span class="normal">2959</span>
-<span class="normal">2960</span>
-<span class="normal">2961</span>
-<span class="normal">2962</span>
-<span class="normal">2963</span>
-<span class="normal">2964</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2964</span>
 <span class="normal">2965</span>
 <span class="normal">2966</span>
 <span class="normal">2967</span>
@@ -9503,7 +9548,22 @@ evaluated when the pass is <em>issued</em>, so the captured graph does not conta
 <span class="normal">3162</span>
 <span class="normal">3163</span>
 <span class="normal">3164</span>
-<span class="normal">3165</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">quadric_decimate</span><span class="p">(</span>
+<span class="normal">3165</span>
+<span class="normal">3166</span>
+<span class="normal">3167</span>
+<span class="normal">3168</span>
+<span class="normal">3169</span>
+<span class="normal">3170</span>
+<span class="normal">3171</span>
+<span class="normal">3172</span>
+<span class="normal">3173</span>
+<span class="normal">3174</span>
+<span class="normal">3175</span>
+<span class="normal">3176</span>
+<span class="normal">3177</span>
+<span class="normal">3178</span>
+<span class="normal">3179</span>
+<span class="normal">3180</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">quadric_decimate</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -9980,22 +10040,7 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4097</span>
-<span class="normal">4098</span>
-<span class="normal">4099</span>
-<span class="normal">4100</span>
-<span class="normal">4101</span>
-<span class="normal">4102</span>
-<span class="normal">4103</span>
-<span class="normal">4104</span>
-<span class="normal">4105</span>
-<span class="normal">4106</span>
-<span class="normal">4107</span>
-<span class="normal">4108</span>
-<span class="normal">4109</span>
-<span class="normal">4110</span>
-<span class="normal">4111</span>
-<span class="normal">4112</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4112</span>
 <span class="normal">4113</span>
 <span class="normal">4114</span>
 <span class="normal">4115</span>
@@ -10107,7 +10152,22 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 <span class="normal">4221</span>
 <span class="normal">4222</span>
 <span class="normal">4223</span>
-<span class="normal">4224</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">flip_to_delaunay</span><span class="p">(</span>
+<span class="normal">4224</span>
+<span class="normal">4225</span>
+<span class="normal">4226</span>
+<span class="normal">4227</span>
+<span class="normal">4228</span>
+<span class="normal">4229</span>
+<span class="normal">4230</span>
+<span class="normal">4231</span>
+<span class="normal">4232</span>
+<span class="normal">4233</span>
+<span class="normal">4234</span>
+<span class="normal">4235</span>
+<span class="normal">4236</span>
+<span class="normal">4237</span>
+<span class="normal">4238</span>
+<span class="normal">4239</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">flip_to_delaunay</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">region</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -10541,22 +10601,7 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4230</span>
-<span class="normal">4231</span>
-<span class="normal">4232</span>
-<span class="normal">4233</span>
-<span class="normal">4234</span>
-<span class="normal">4235</span>
-<span class="normal">4236</span>
-<span class="normal">4237</span>
-<span class="normal">4238</span>
-<span class="normal">4239</span>
-<span class="normal">4240</span>
-<span class="normal">4241</span>
-<span class="normal">4242</span>
-<span class="normal">4243</span>
-<span class="normal">4244</span>
-<span class="normal">4245</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4245</span>
 <span class="normal">4246</span>
 <span class="normal">4247</span>
 <span class="normal">4248</span>
@@ -10714,7 +10759,22 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 <span class="normal">4400</span>
 <span class="normal">4401</span>
 <span class="normal">4402</span>
-<span class="normal">4403</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">flip_by_objective</span><span class="p">(</span>
+<span class="normal">4403</span>
+<span class="normal">4404</span>
+<span class="normal">4405</span>
+<span class="normal">4406</span>
+<span class="normal">4407</span>
+<span class="normal">4408</span>
+<span class="normal">4409</span>
+<span class="normal">4410</span>
+<span class="normal">4411</span>
+<span class="normal">4412</span>
+<span class="normal">4413</span>
+<span class="normal">4414</span>
+<span class="normal">4415</span>
+<span class="normal">4416</span>
+<span class="normal">4417</span>
+<span class="normal">4418</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">flip_by_objective</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -11151,22 +11211,7 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4447</span>
-<span class="normal">4448</span>
-<span class="normal">4449</span>
-<span class="normal">4450</span>
-<span class="normal">4451</span>
-<span class="normal">4452</span>
-<span class="normal">4453</span>
-<span class="normal">4454</span>
-<span class="normal">4455</span>
-<span class="normal">4456</span>
-<span class="normal">4457</span>
-<span class="normal">4458</span>
-<span class="normal">4459</span>
-<span class="normal">4460</span>
-<span class="normal">4461</span>
-<span class="normal">4462</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4462</span>
 <span class="normal">4463</span>
 <span class="normal">4464</span>
 <span class="normal">4465</span>
@@ -11331,7 +11376,22 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 <span class="normal">4624</span>
 <span class="normal">4625</span>
 <span class="normal">4626</span>
-<span class="normal">4627</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">intrinsic_delaunay</span><span class="p">(</span>
+<span class="normal">4627</span>
+<span class="normal">4628</span>
+<span class="normal">4629</span>
+<span class="normal">4630</span>
+<span class="normal">4631</span>
+<span class="normal">4632</span>
+<span class="normal">4633</span>
+<span class="normal">4634</span>
+<span class="normal">4635</span>
+<span class="normal">4636</span>
+<span class="normal">4637</span>
+<span class="normal">4638</span>
+<span class="normal">4639</span>
+<span class="normal">4640</span>
+<span class="normal">4641</span>
+<span class="normal">4642</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">intrinsic_delaunay</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">epsilon</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">TOLERANCE_MOLLIFY</span><span class="p">,</span>
@@ -11775,7 +11835,7 @@ endpoints, and a child face comes from its parent.</p>
     <details class="doc doc-backlinks ordito-backlinks">
       <summary>Referenced by 11 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../boolean/#ordito.boolean">boolean</a> › <a href="../boolean/#ordito.boolean.smooth_out">smooth_out</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.split_edges">split_edges</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.subdivide_loop">subdivide_loop</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.subdivide_to_size">subdivide_to_size</a></span> · <span class="ordito-backlink"><a href="../creation/#ordito.creation">creation</a> › <a href="../creation/#ordito.creation.icosphere">icosphere</a></span></p>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.split_edges">split_edges</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.subdivide_loop">subdivide_loop</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.subdivide_smooth">subdivide_smooth</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.subdivide_to_size">subdivide_to_size</a></span> · <span class="ordito-backlink"><a href="../creation/#ordito.creation">creation</a> › <a href="../creation/#ordito.creation.icosphere">icosphere</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
 <span class="ordito-backlink"><a href="../../../examples/remesh/#remeshing-and-simplification">Remeshing and simplification</a> › <a href="../../../examples/remesh/#r3">Subdivision: midpoint and Loop</a></span></p>
         <p><span class="ordito-backlinks-section">Migrating from another library</span>
@@ -11785,22 +11845,7 @@ endpoints, and a child face comes from its parent.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4648</span>
-<span class="normal">4649</span>
-<span class="normal">4650</span>
-<span class="normal">4651</span>
-<span class="normal">4652</span>
-<span class="normal">4653</span>
-<span class="normal">4654</span>
-<span class="normal">4655</span>
-<span class="normal">4656</span>
-<span class="normal">4657</span>
-<span class="normal">4658</span>
-<span class="normal">4659</span>
-<span class="normal">4660</span>
-<span class="normal">4661</span>
-<span class="normal">4662</span>
-<span class="normal">4663</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4663</span>
 <span class="normal">4664</span>
 <span class="normal">4665</span>
 <span class="normal">4666</span>
@@ -11895,7 +11940,22 @@ endpoints, and a child face comes from its parent.</p>
 <span class="normal">4755</span>
 <span class="normal">4756</span>
 <span class="normal">4757</span>
-<span class="normal">4758</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide</span><span class="p">(</span>
+<span class="normal">4758</span>
+<span class="normal">4759</span>
+<span class="normal">4760</span>
+<span class="normal">4761</span>
+<span class="normal">4762</span>
+<span class="normal">4763</span>
+<span class="normal">4764</span>
+<span class="normal">4765</span>
+<span class="normal">4766</span>
+<span class="normal">4767</span>
+<span class="normal">4768</span>
+<span class="normal">4769</span>
+<span class="normal">4770</span>
+<span class="normal">4771</span>
+<span class="normal">4772</span>
+<span class="normal">4773</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -12334,22 +12394,7 @@ ones:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4779</span>
-<span class="normal">4780</span>
-<span class="normal">4781</span>
-<span class="normal">4782</span>
-<span class="normal">4783</span>
-<span class="normal">4784</span>
-<span class="normal">4785</span>
-<span class="normal">4786</span>
-<span class="normal">4787</span>
-<span class="normal">4788</span>
-<span class="normal">4789</span>
-<span class="normal">4790</span>
-<span class="normal">4791</span>
-<span class="normal">4792</span>
-<span class="normal">4793</span>
-<span class="normal">4794</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4794</span>
 <span class="normal">4795</span>
 <span class="normal">4796</span>
 <span class="normal">4797</span>
@@ -12566,7 +12611,22 @@ ones:</p>
 <span class="normal">5008</span>
 <span class="normal">5009</span>
 <span class="normal">5010</span>
-<span class="normal">5011</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_loop</span><span class="p">(</span>
+<span class="normal">5011</span>
+<span class="normal">5012</span>
+<span class="normal">5013</span>
+<span class="normal">5014</span>
+<span class="normal">5015</span>
+<span class="normal">5016</span>
+<span class="normal">5017</span>
+<span class="normal">5018</span>
+<span class="normal">5019</span>
+<span class="normal">5020</span>
+<span class="normal">5021</span>
+<span class="normal">5022</span>
+<span class="normal">5023</span>
+<span class="normal">5024</span>
+<span class="normal">5025</span>
+<span class="normal">5026</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_loop</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -13066,7 +13126,7 @@ face comes from the input face it was refined from.</p>
     <details class="doc doc-backlinks ordito-backlinks">
       <summary>Referenced by 10 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../boolean/#ordito.boolean">boolean</a> › <a href="../boolean/#ordito.boolean.smooth_out">smooth_out</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.isotropic_remesh">isotropic_remesh</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.split_edges">split_edges</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.subdivide_loop">subdivide_loop</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.subdivide_region_to_size">subdivide_region_to_size</a></span> · <span class="ordito-backlink"><a href="../intersection/#ordito.intersection">intersection</a> › <a href="../intersection/#ordito.intersection.split_mesh_with_plane">split_mesh_with_plane</a></span></p>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.isotropic_remesh">isotropic_remesh</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.split_edges">split_edges</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.subdivide_loop">subdivide_loop</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.subdivide_region_to_size">subdivide_region_to_size</a></span> · <span class="ordito-backlink"><a href="./#ordito.remesh">remesh</a> › <a href="./#ordito.remesh.subdivide_smooth">subdivide_smooth</a></span> · <span class="ordito-backlink"><a href="../intersection/#ordito.intersection">intersection</a> › <a href="../intersection/#ordito.intersection.split_mesh_with_plane">split_mesh_with_plane</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
 <span class="ordito-backlink"><a href="../../../examples/remesh/#remeshing-and-simplification">Remeshing and simplification</a> › <a href="../../../examples/remesh/#r5">Refining to a size or to the surrounding density</a></span></p>
         <p><span class="ordito-backlinks-section">Migrating from another library</span>
@@ -13076,22 +13136,7 @@ face comes from the input face it was refined from.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5096</span>
-<span class="normal">5097</span>
-<span class="normal">5098</span>
-<span class="normal">5099</span>
-<span class="normal">5100</span>
-<span class="normal">5101</span>
-<span class="normal">5102</span>
-<span class="normal">5103</span>
-<span class="normal">5104</span>
-<span class="normal">5105</span>
-<span class="normal">5106</span>
-<span class="normal">5107</span>
-<span class="normal">5108</span>
-<span class="normal">5109</span>
-<span class="normal">5110</span>
-<span class="normal">5111</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5111</span>
 <span class="normal">5112</span>
 <span class="normal">5113</span>
 <span class="normal">5114</span>
@@ -13167,7 +13212,22 @@ face comes from the input face it was refined from.</p>
 <span class="normal">5184</span>
 <span class="normal">5185</span>
 <span class="normal">5186</span>
-<span class="normal">5187</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_to_size</span><span class="p">(</span>
+<span class="normal">5187</span>
+<span class="normal">5188</span>
+<span class="normal">5189</span>
+<span class="normal">5190</span>
+<span class="normal">5191</span>
+<span class="normal">5192</span>
+<span class="normal">5193</span>
+<span class="normal">5194</span>
+<span class="normal">5195</span>
+<span class="normal">5196</span>
+<span class="normal">5197</span>
+<span class="normal">5198</span>
+<span class="normal">5199</span>
+<span class="normal">5200</span>
+<span class="normal">5201</span>
+<span class="normal">5202</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_to_size</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">max_edge</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span>
@@ -13761,22 +13821,7 @@ it borders a refined edge, which keeps the mesh free of cracks:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5596</span>
-<span class="normal">5597</span>
-<span class="normal">5598</span>
-<span class="normal">5599</span>
-<span class="normal">5600</span>
-<span class="normal">5601</span>
-<span class="normal">5602</span>
-<span class="normal">5603</span>
-<span class="normal">5604</span>
-<span class="normal">5605</span>
-<span class="normal">5606</span>
-<span class="normal">5607</span>
-<span class="normal">5608</span>
-<span class="normal">5609</span>
-<span class="normal">5610</span>
-<span class="normal">5611</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5611</span>
 <span class="normal">5612</span>
 <span class="normal">5613</span>
 <span class="normal">5614</span>
@@ -14097,7 +14142,22 @@ it borders a refined edge, which keeps the mesh free of cracks:</p>
 <span class="normal">5929</span>
 <span class="normal">5930</span>
 <span class="normal">5931</span>
-<span class="normal">5932</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_region_to_size</span><span class="p">(</span>
+<span class="normal">5932</span>
+<span class="normal">5933</span>
+<span class="normal">5934</span>
+<span class="normal">5935</span>
+<span class="normal">5936</span>
+<span class="normal">5937</span>
+<span class="normal">5938</span>
+<span class="normal">5939</span>
+<span class="normal">5940</span>
+<span class="normal">5941</span>
+<span class="normal">5942</span>
+<span class="normal">5943</span>
+<span class="normal">5944</span>
+<span class="normal">5945</span>
+<span class="normal">5946</span>
+<span class="normal">5947</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_region_to_size</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">region</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
@@ -14838,22 +14898,7 @@ already split) is refined until it matches its surroundings:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">6019</span>
-<span class="normal">6020</span>
-<span class="normal">6021</span>
-<span class="normal">6022</span>
-<span class="normal">6023</span>
-<span class="normal">6024</span>
-<span class="normal">6025</span>
-<span class="normal">6026</span>
-<span class="normal">6027</span>
-<span class="normal">6028</span>
-<span class="normal">6029</span>
-<span class="normal">6030</span>
-<span class="normal">6031</span>
-<span class="normal">6032</span>
-<span class="normal">6033</span>
-<span class="normal">6034</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">6034</span>
 <span class="normal">6035</span>
 <span class="normal">6036</span>
 <span class="normal">6037</span>
@@ -15064,7 +15109,22 @@ already split) is refined until it matches its surroundings:</p>
 <span class="normal">6242</span>
 <span class="normal">6243</span>
 <span class="normal">6244</span>
-<span class="normal">6245</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">refine_region_to_density</span><span class="p">(</span>
+<span class="normal">6245</span>
+<span class="normal">6246</span>
+<span class="normal">6247</span>
+<span class="normal">6248</span>
+<span class="normal">6249</span>
+<span class="normal">6250</span>
+<span class="normal">6251</span>
+<span class="normal">6252</span>
+<span class="normal">6253</span>
+<span class="normal">6254</span>
+<span class="normal">6255</span>
+<span class="normal">6256</span>
+<span class="normal">6257</span>
+<span class="normal">6258</span>
+<span class="normal">6259</span>
+<span class="normal">6260</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">refine_region_to_density</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">region</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
@@ -15646,22 +15706,7 @@ splits just the two faces sharing that edge:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">6405</span>
-<span class="normal">6406</span>
-<span class="normal">6407</span>
-<span class="normal">6408</span>
-<span class="normal">6409</span>
-<span class="normal">6410</span>
-<span class="normal">6411</span>
-<span class="normal">6412</span>
-<span class="normal">6413</span>
-<span class="normal">6414</span>
-<span class="normal">6415</span>
-<span class="normal">6416</span>
-<span class="normal">6417</span>
-<span class="normal">6418</span>
-<span class="normal">6419</span>
-<span class="normal">6420</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">6420</span>
 <span class="normal">6421</span>
 <span class="normal">6422</span>
 <span class="normal">6423</span>
@@ -15850,7 +15895,22 @@ splits just the two faces sharing that edge:</p>
 <span class="normal">6606</span>
 <span class="normal">6607</span>
 <span class="normal">6608</span>
-<span class="normal">6609</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_edges</span><span class="p">(</span>
+<span class="normal">6609</span>
+<span class="normal">6610</span>
+<span class="normal">6611</span>
+<span class="normal">6612</span>
+<span class="normal">6613</span>
+<span class="normal">6614</span>
+<span class="normal">6615</span>
+<span class="normal">6616</span>
+<span class="normal">6617</span>
+<span class="normal">6618</span>
+<span class="normal">6619</span>
+<span class="normal">6620</span>
+<span class="normal">6621</span>
+<span class="normal">6622</span>
+<span class="normal">6623</span>
+<span class="normal">6624</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_edges</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">split_mask</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
@@ -16055,6 +16115,763 @@ splits just the two faces sharing that edge:</p>
             <span class="n">n_vertices</span><span class="p">,</span> <span class="n">split_rows</span><span class="p">,</span> <span class="n">new_index</span><span class="p">,</span> <span class="n">n_faces</span><span class="p">,</span> <span class="n">t</span><span class="o">=</span><span class="n">t</span>
         <span class="p">),</span>
     <span class="p">)</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h2 id="ordito.remesh.simplify" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">simplify</span>
+
+
+</h2>
+<div class="doc-signature highlight"><pre><span></span><code><span class="nf">simplify</span><span class="p">(</span>
+    <span class="n">vertices</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">],</span>
+    <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
+    <span class="n">tolerance</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Return a closed mesh with its redundant vertices removed, its surface moved under <code>tolerance</code>.</p>
+<p>Faces within <code>tolerance</code> of one plane are treated as one face, and the vertices inside
+such a face or along a straight edge between two are collapsed; slivers go too. The result
+keeps a subset of the vertices.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>vertices</code>
+            </td>
+            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.vec3">vec3</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(n_vertices,)</code> and <code>(3 * n_faces,)</code> closed, consistently wound mesh.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>faces</code>
+            </td>
+            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.vec3">vec3</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(n_vertices,)</code> and <code>(3 * n_faces,)</code> closed, consistently wound mesh.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>tolerance</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#float">float</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>How far the surface may move. Zero, or less than the mesh's own precision
+(<code>float32</code> epsilon times its largest coordinate), uses that precision.</p>
+              </div>
+            </td>
+            <td>
+                  <code>0.0</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+<th>Name</th>          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+<td><code>vertices</code></td>            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.vec3">vec3</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(n_vertices,)</code> the vertices kept.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+<td><code>faces</code></td>            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.int32">int32</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(3 * n_faces,)</code> result triangles.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#RuntimeError">RuntimeError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>vertices</code> and <code>faces</code> are not on one device.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#ValueError">ValueError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If the mesh is not closed, has an edge shared by more than two faces, or is not
+consistently wound.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="see-also" open>
+  <summary>See Also</summary>
+  <p><a class="autorefs autorefs-internal" title="quadric_decimate" href="./#ordito.remesh.quadric_decimate"><code>remesh.quadric_decimate</code></a></p>
+</details>
+
+<details class="note" open>
+  <summary>Notes</summary>
+  <p>Manifold's <code>Manifold.simplify</code>.</p>
+</details>
+
+<p><span class="doc-section-title">Examples:</span></p>
+    <p>A subdivided box simplifies back to its twelve triangles:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
+
+<span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">creation</span><span class="o">.</span><span class="n">box</span><span class="p">()</span>
+<span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">remesh</span><span class="o">.</span><span class="n">subdivide</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">//</span> <span class="mi">3</span><span class="p">)</span>  <span class="c1"># 48</span>
+<span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">remesh</span><span class="o">.</span><span class="n">simplify</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">//</span> <span class="mi">3</span><span class="p">)</span>  <span class="c1"># 12</span>
+</code></pre></div>
+
+          
+    <details class="doc doc-backlinks ordito-backlinks">
+      <summary>Referenced by 1 place</summary>
+        <p><span class="ordito-backlinks-section">API Reference</span>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span></p>
+    </details>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>ordito/remesh.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">6942</span>
+<span class="normal">6943</span>
+<span class="normal">6944</span>
+<span class="normal">6945</span>
+<span class="normal">6946</span>
+<span class="normal">6947</span>
+<span class="normal">6948</span>
+<span class="normal">6949</span>
+<span class="normal">6950</span>
+<span class="normal">6951</span>
+<span class="normal">6952</span>
+<span class="normal">6953</span>
+<span class="normal">6954</span>
+<span class="normal">6955</span>
+<span class="normal">6956</span>
+<span class="normal">6957</span>
+<span class="normal">6958</span>
+<span class="normal">6959</span>
+<span class="normal">6960</span>
+<span class="normal">6961</span>
+<span class="normal">6962</span>
+<span class="normal">6963</span>
+<span class="normal">6964</span>
+<span class="normal">6965</span>
+<span class="normal">6966</span>
+<span class="normal">6967</span>
+<span class="normal">6968</span>
+<span class="normal">6969</span>
+<span class="normal">6970</span>
+<span class="normal">6971</span>
+<span class="normal">6972</span>
+<span class="normal">6973</span>
+<span class="normal">6974</span>
+<span class="normal">6975</span>
+<span class="normal">6976</span>
+<span class="normal">6977</span>
+<span class="normal">6978</span>
+<span class="normal">6979</span>
+<span class="normal">6980</span>
+<span class="normal">6981</span>
+<span class="normal">6982</span>
+<span class="normal">6983</span>
+<span class="normal">6984</span>
+<span class="normal">6985</span>
+<span class="normal">6986</span>
+<span class="normal">6987</span>
+<span class="normal">6988</span>
+<span class="normal">6989</span>
+<span class="normal">6990</span>
+<span class="normal">6991</span>
+<span class="normal">6992</span>
+<span class="normal">6993</span>
+<span class="normal">6994</span>
+<span class="normal">6995</span>
+<span class="normal">6996</span>
+<span class="normal">6997</span>
+<span class="normal">6998</span>
+<span class="normal">6999</span>
+<span class="normal">7000</span>
+<span class="normal">7001</span>
+<span class="normal">7002</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">simplify</span><span class="p">(</span>
+    <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">tolerance</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
+<span class="w">    </span><span class="sd">"""</span>
+<span class="sd">    Return a closed mesh with its redundant vertices removed, its surface moved under ``tolerance``.</span>
+
+<span class="sd">    Faces within ``tolerance`` of one plane are treated as one face, and the vertices inside</span>
+<span class="sd">    such a face or along a straight edge between two are collapsed; slivers go too. The result</span>
+<span class="sd">    keeps a subset of the vertices.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    vertices, faces</span>
+<span class="sd">        ``(n_vertices,)`` and ``(3 * n_faces,)`` closed, consistently wound mesh.</span>
+<span class="sd">    tolerance</span>
+<span class="sd">        How far the surface may move. Zero, or less than the mesh's own precision</span>
+<span class="sd">        (``float32`` epsilon times its largest coordinate), uses that precision.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    vertices : wp.array[wp.vec3]</span>
+<span class="sd">        ``(n_vertices,)`` the vertices kept.</span>
+<span class="sd">    faces : wp.array[wp.int32]</span>
+<span class="sd">        ``(3 * n_faces,)`` result triangles.</span>
+
+<span class="sd">    Raises</span>
+<span class="sd">    ------</span>
+<span class="sd">    RuntimeError</span>
+<span class="sd">        If ``vertices`` and ``faces`` are not on one device.</span>
+<span class="sd">    ValueError</span>
+<span class="sd">        If the mesh is not closed, has an edge shared by more than two faces, or is not</span>
+<span class="sd">        consistently wound.</span>
+
+<span class="sd">    See Also</span>
+<span class="sd">    --------</span>
+<span class="sd">    [`remesh.quadric_decimate`][ordito.remesh.quadric_decimate]</span>
+
+<span class="sd">    Notes</span>
+<span class="sd">    -----</span>
+<span class="sd">    Manifold's ``Manifold.simplify``.</span>
+
+<span class="sd">    Examples</span>
+<span class="sd">    --------</span>
+<span class="sd">    A subdivided box simplifies back to its twelve triangles:</span>
+
+<span class="sd">    ```python</span>
+<span class="sd">    import ordito as od</span>
+
+<span class="sd">    vertices, faces = od.creation.box()</span>
+<span class="sd">    vertices, faces = od.remesh.subdivide(vertices, faces)</span>
+<span class="sd">    print(faces.size // 3)  # 48</span>
+<span class="sd">    vertices, faces = od.remesh.simplify(vertices, faces)</span>
+<span class="sd">    print(faces.size // 3)  # 12</span>
+<span class="sd">    ```</span>
+<span class="sd">    """</span>
+    <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">)</span>
+    <span class="n">device</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">device</span>
+    <span class="n">solid</span> <span class="o">=</span> <span class="n">solid_from_mesh</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="s2">""</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">solid</span><span class="o">.</span><span class="n">is_empty</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">mesh_from_solid</span><span class="p">(</span><span class="n">solid</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">mesh_from_solid</span><span class="p">(</span><span class="n">_solid_simplify</span><span class="p">(</span><span class="n">solid</span><span class="p">,</span> <span class="nb">float</span><span class="p">(</span><span class="n">tolerance</span><span class="p">)),</span> <span class="n">device</span><span class="p">)</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h2 id="ordito.remesh.subdivide_smooth" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">subdivide_smooth</span>
+
+
+</h2>
+<div class="doc-signature highlight"><pre><span></span><code><span class="nf">subdivide_smooth</span><span class="p">(</span>
+    <span class="n">vertices</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">],</span>
+    <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
+    <span class="n">n</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">length</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">tolerance</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">min_sharp_angle</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">52.5</span><span class="p">,</span>
+    <span class="n">min_smoothness</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Return a closed mesh refined onto a smooth surface through its vertices, keeping sharp edges.</p>
+<p>Each edge becomes a curve leaving its ends along the surface's tangent planes, circular where
+it can be, and each face a patch between its edges' curves. Edges bent past
+<code>min_sharp_angle</code> stay creases; faces of three or more coplanar triangles stay flat, and
+two coplanar triangles are smoothed as one quad. The refinement is chosen by exactly one of
+<code>n</code>, <code>length</code> and <code>tolerance</code>.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>vertices</code>
+            </td>
+            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.vec3">vec3</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(n_vertices,)</code> and <code>(3 * n_faces,)</code> closed, consistently wound mesh.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>faces</code>
+            </td>
+            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.vec3">vec3</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(n_vertices,)</code> and <code>(3 * n_faces,)</code> closed, consistently wound mesh.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>n</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#int">int</a> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The pieces each edge is split into, each face tiled to match; <code>1</code> returns the mesh as
+<a class="autorefs autorefs-internal" title="union" href="../boolean/#ordito.boolean.union"><code>union</code></a> lays out a result.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>length</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#float">float</a> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Split each edge into <code>floor(|edge| / length)</code> added vertices instead, evenly spaced.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>tolerance</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#float">float</a> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Split each edge until the faceted result is within about this distance of the smooth
+surface instead; curved regions take more vertices than flat ones.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>min_sharp_angle</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#float">float</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Degrees: edges whose faces meet at more than this stay sharp.</p>
+              </div>
+            </td>
+            <td>
+                  <code>52.5</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>min_smoothness</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#float">float</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>How smooth a sharp edge still is, from <code>0</code> (a crease) to <code>1</code> (as smooth as any).</p>
+              </div>
+            </td>
+            <td>
+                  <code>0.0</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+<th>Name</th>          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+<td><code>vertices</code></td>            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.vec3">vec3</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(n_vertices_out,)</code> the input vertices and the added ones, on the smooth surface.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+<td><code>faces</code></td>            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.int32">int32</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(3 * n_faces_out,)</code> result triangles.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#RuntimeError">RuntimeError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>vertices</code> and <code>faces</code> are not on one device.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#ValueError">ValueError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If not exactly one of <code>n</code>, <code>length</code> and <code>tolerance</code> is given, <code>n</code> is below one,
+<code>length</code> or <code>tolerance</code> is zero or not finite, or the mesh is not closed, has an edge
+shared by more than two faces, or is not consistently wound.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="see-also" open>
+  <summary>See Also</summary>
+  <p><a class="autorefs autorefs-internal" title="subdivide" href="./#ordito.remesh.subdivide"><code>remesh.subdivide</code></a>
+<a class="autorefs autorefs-internal" title="subdivide_to_size" href="./#ordito.remesh.subdivide_to_size"><code>remesh.subdivide_to_size</code></a></p>
+</details>
+
+<details class="note" open>
+  <summary>Notes</summary>
+  <p>Manifold's <code>Manifold.smooth_out</code> followed by <code>refine</code>, <code>refine_to_length</code> or
+<code>refine_to_tolerance</code>.</p>
+</details>
+
+<p><span class="doc-section-title">Examples:</span></p>
+    <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
+
+<span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">remesh</span><span class="o">.</span><span class="n">subdivide_smooth</span><span class="p">(</span><span class="o">*</span><span class="n">od</span><span class="o">.</span><span class="n">creation</span><span class="o">.</span><span class="n">icosphere</span><span class="p">(</span><span class="n">subdivisions</span><span class="o">=</span><span class="mi">1</span><span class="p">),</span> <span class="mi">3</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">//</span> <span class="mi">3</span><span class="p">)</span>  <span class="c1"># 720</span>
+</code></pre></div>
+
+          
+    <details class="doc doc-backlinks ordito-backlinks">
+      <summary>Referenced by 1 place</summary>
+        <p><span class="ordito-backlinks-section">API Reference</span>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span></p>
+    </details>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>ordito/remesh.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">7005</span>
+<span class="normal">7006</span>
+<span class="normal">7007</span>
+<span class="normal">7008</span>
+<span class="normal">7009</span>
+<span class="normal">7010</span>
+<span class="normal">7011</span>
+<span class="normal">7012</span>
+<span class="normal">7013</span>
+<span class="normal">7014</span>
+<span class="normal">7015</span>
+<span class="normal">7016</span>
+<span class="normal">7017</span>
+<span class="normal">7018</span>
+<span class="normal">7019</span>
+<span class="normal">7020</span>
+<span class="normal">7021</span>
+<span class="normal">7022</span>
+<span class="normal">7023</span>
+<span class="normal">7024</span>
+<span class="normal">7025</span>
+<span class="normal">7026</span>
+<span class="normal">7027</span>
+<span class="normal">7028</span>
+<span class="normal">7029</span>
+<span class="normal">7030</span>
+<span class="normal">7031</span>
+<span class="normal">7032</span>
+<span class="normal">7033</span>
+<span class="normal">7034</span>
+<span class="normal">7035</span>
+<span class="normal">7036</span>
+<span class="normal">7037</span>
+<span class="normal">7038</span>
+<span class="normal">7039</span>
+<span class="normal">7040</span>
+<span class="normal">7041</span>
+<span class="normal">7042</span>
+<span class="normal">7043</span>
+<span class="normal">7044</span>
+<span class="normal">7045</span>
+<span class="normal">7046</span>
+<span class="normal">7047</span>
+<span class="normal">7048</span>
+<span class="normal">7049</span>
+<span class="normal">7050</span>
+<span class="normal">7051</span>
+<span class="normal">7052</span>
+<span class="normal">7053</span>
+<span class="normal">7054</span>
+<span class="normal">7055</span>
+<span class="normal">7056</span>
+<span class="normal">7057</span>
+<span class="normal">7058</span>
+<span class="normal">7059</span>
+<span class="normal">7060</span>
+<span class="normal">7061</span>
+<span class="normal">7062</span>
+<span class="normal">7063</span>
+<span class="normal">7064</span>
+<span class="normal">7065</span>
+<span class="normal">7066</span>
+<span class="normal">7067</span>
+<span class="normal">7068</span>
+<span class="normal">7069</span>
+<span class="normal">7070</span>
+<span class="normal">7071</span>
+<span class="normal">7072</span>
+<span class="normal">7073</span>
+<span class="normal">7074</span>
+<span class="normal">7075</span>
+<span class="normal">7076</span>
+<span class="normal">7077</span>
+<span class="normal">7078</span>
+<span class="normal">7079</span>
+<span class="normal">7080</span>
+<span class="normal">7081</span>
+<span class="normal">7082</span>
+<span class="normal">7083</span>
+<span class="normal">7084</span>
+<span class="normal">7085</span>
+<span class="normal">7086</span>
+<span class="normal">7087</span>
+<span class="normal">7088</span>
+<span class="normal">7089</span>
+<span class="normal">7090</span>
+<span class="normal">7091</span>
+<span class="normal">7092</span>
+<span class="normal">7093</span>
+<span class="normal">7094</span>
+<span class="normal">7095</span>
+<span class="normal">7096</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_smooth</span><span class="p">(</span>
+    <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
+    <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
+    <span class="n">n</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">length</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">tolerance</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">min_sharp_angle</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">52.5</span><span class="p">,</span>
+    <span class="n">min_smoothness</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
+<span class="w">    </span><span class="sd">"""</span>
+<span class="sd">    Return a closed mesh refined onto a smooth surface through its vertices, keeping sharp edges.</span>
+
+<span class="sd">    Each edge becomes a curve leaving its ends along the surface's tangent planes, circular where</span>
+<span class="sd">    it can be, and each face a patch between its edges' curves. Edges bent past</span>
+<span class="sd">    ``min_sharp_angle`` stay creases; faces of three or more coplanar triangles stay flat, and</span>
+<span class="sd">    two coplanar triangles are smoothed as one quad. The refinement is chosen by exactly one of</span>
+<span class="sd">    ``n``, ``length`` and ``tolerance``.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    vertices, faces</span>
+<span class="sd">        ``(n_vertices,)`` and ``(3 * n_faces,)`` closed, consistently wound mesh.</span>
+<span class="sd">    n</span>
+<span class="sd">        The pieces each edge is split into, each face tiled to match; ``1`` returns the mesh as</span>
+<span class="sd">        [`union`][ordito.boolean.union] lays out a result.</span>
+<span class="sd">    length</span>
+<span class="sd">        Split each edge into ``floor(|edge| / length)`` added vertices instead, evenly spaced.</span>
+<span class="sd">    tolerance</span>
+<span class="sd">        Split each edge until the faceted result is within about this distance of the smooth</span>
+<span class="sd">        surface instead; curved regions take more vertices than flat ones.</span>
+<span class="sd">    min_sharp_angle</span>
+<span class="sd">        Degrees: edges whose faces meet at more than this stay sharp.</span>
+<span class="sd">    min_smoothness</span>
+<span class="sd">        How smooth a sharp edge still is, from ``0`` (a crease) to ``1`` (as smooth as any).</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    vertices : wp.array[wp.vec3]</span>
+<span class="sd">        ``(n_vertices_out,)`` the input vertices and the added ones, on the smooth surface.</span>
+<span class="sd">    faces : wp.array[wp.int32]</span>
+<span class="sd">        ``(3 * n_faces_out,)`` result triangles.</span>
+
+<span class="sd">    Raises</span>
+<span class="sd">    ------</span>
+<span class="sd">    RuntimeError</span>
+<span class="sd">        If ``vertices`` and ``faces`` are not on one device.</span>
+<span class="sd">    ValueError</span>
+<span class="sd">        If not exactly one of ``n``, ``length`` and ``tolerance`` is given, ``n`` is below one,</span>
+<span class="sd">        ``length`` or ``tolerance`` is zero or not finite, or the mesh is not closed, has an edge</span>
+<span class="sd">        shared by more than two faces, or is not consistently wound.</span>
+
+<span class="sd">    See Also</span>
+<span class="sd">    --------</span>
+<span class="sd">    [`remesh.subdivide`][ordito.remesh.subdivide]</span>
+<span class="sd">    [`remesh.subdivide_to_size`][ordito.remesh.subdivide_to_size]</span>
+
+<span class="sd">    Notes</span>
+<span class="sd">    -----</span>
+<span class="sd">    Manifold's ``Manifold.smooth_out`` followed by ``refine``, ``refine_to_length`` or</span>
+<span class="sd">    ``refine_to_tolerance``.</span>
+
+<span class="sd">    Examples</span>
+<span class="sd">    --------</span>
+<span class="sd">    ```python</span>
+<span class="sd">    import ordito as od</span>
+
+<span class="sd">    vertices, faces = od.remesh.subdivide_smooth(*od.creation.icosphere(subdivisions=1), 3)</span>
+<span class="sd">    print(faces.size // 3)  # 720</span>
+<span class="sd">    ```</span>
+<span class="sd">    """</span>
+    <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">)</span>
+    <span class="k">if</span> <span class="nb">sum</span><span class="p">(</span><span class="n">x</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">for</span> <span class="n">x</span> <span class="ow">in</span> <span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">length</span><span class="p">,</span> <span class="n">tolerance</span><span class="p">))</span> <span class="o">!=</span> <span class="mi">1</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">"pass exactly one of n, length and tolerance"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">n</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">n</span> <span class="o">&lt;</span> <span class="mi">1</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"n must be at least 1, got </span><span class="si">{</span><span class="n">n</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+    <span class="n">target</span> <span class="o">=</span> <span class="nb">abs</span><span class="p">(</span><span class="nb">float</span><span class="p">(</span><span class="n">length</span> <span class="k">if</span> <span class="n">length</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">tolerance</span> <span class="ow">or</span> <span class="mf">0.0</span><span class="p">))</span>
+    <span class="k">if</span> <span class="n">n</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">and</span> <span class="p">(</span><span class="n">target</span> <span class="o">==</span> <span class="mf">0.0</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">math</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">target</span><span class="p">)):</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"length or tolerance must be finite and nonzero, got </span><span class="si">{</span><span class="n">target</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+    <span class="n">device</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">device</span>
+    <span class="n">solid</span> <span class="o">=</span> <span class="n">solid_from_mesh</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="s2">""</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">solid</span><span class="o">.</span><span class="n">is_empty</span> <span class="ow">or</span> <span class="n">n</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">mesh_from_solid</span><span class="p">(</span><span class="n">solid</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+    <span class="n">smoothed</span> <span class="o">=</span> <span class="n">_solid_smooth_out</span><span class="p">(</span>
+        <span class="n">solid</span><span class="p">,</span>
+        <span class="nb">int</span><span class="p">(</span><span class="n">n</span><span class="p">)</span> <span class="k">if</span> <span class="n">n</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="mi">1</span><span class="p">,</span>
+        <span class="n">target</span> <span class="k">if</span> <span class="n">length</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="mf">0.0</span><span class="p">,</span>
+        <span class="n">target</span> <span class="k">if</span> <span class="n">tolerance</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="mf">0.0</span><span class="p">,</span>
+        <span class="nb">float</span><span class="p">(</span><span class="n">min_sharp_angle</span><span class="p">),</span>
+        <span class="nb">float</span><span class="p">(</span><span class="n">min_smoothness</span><span class="p">),</span>
+    <span class="p">)</span>
+    <span class="k">return</span> <span class="n">mesh_from_solid</span><span class="p">(</span><span class="n">smoothed</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
