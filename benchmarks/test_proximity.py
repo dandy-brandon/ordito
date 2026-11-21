@@ -13,8 +13,9 @@ Read ``winding_number`` and ``signed_distance_on_mesh[winding]`` together: both 
 inside/outside question from solid angle, but the first returns the exact sum while the second lets
 Warp's BVH traversal approximate it, keeps only the sign, and also pays for the closest point.
 
-Open3D has no equivalent for anything in this module: no generalized winding number -- its
-inside/outside test is raycasting-based, a different algorithm answering a coarser question -- and
+Open3D's ``RaycastingScene`` (Embree) answers the closest-point and signed-distance queries and
+takes rows in those two groups. It has no generalized winding number -- its inside/outside test,
+``compute_occupancy``, is a ray-parity vote timed in ``test_ray.py``'s ``contains_points`` -- and
 no tangent-sphere, local-thickness or geodesic-ball query at all.
 
 ``signed_distance_on_mesh`` has **two** references, and they are the only two that exist: libigl's
@@ -253,7 +254,7 @@ def _distance_meshset_pml(bench_case: BenchCase) -> ml.MeshSet:
 
 
 @pytest.mark.benchmark(group="closest_point_on_mesh")
-@pytest.mark.benchlibs("ordito", "meshlib", "pyvista")
+@pytest.mark.benchlibs("ordito", "meshlib", "pyvista", "igl", "trimesh", "open3d")
 def test_closest_point_on_mesh(bench_case: BenchCase) -> None:
     """
     The unsigned closest-point query, without the sign work the group below pays for.
@@ -291,7 +292,52 @@ def test_closest_point_on_mesh(bench_case: BenchCase) -> None:
     fraction of a percent of it, and a subsample bounds the answer just as soundly
     (``proximity._BOUND_SAMPLE_TARGET`` carries the sweep). This group still prices the unsampled
     query, which is what keeps that cliff visible.
+
+    Three more references build their structure *inside* the timed callable, as ordito builds its
+    ``wp.Mesh``: ``igl.point_mesh_squared_distance`` builds a single-threaded AABB tree per call;
+    trimesh's ``proximity.closest_point`` reads the mesh's lazily cached r-tree, so the
+    ``tm.Trimesh`` is rebuilt per round (``README.md``'s trimesh rule) and the row is capped at
+    ``bunny``, its candidate filtering being NumPy over each query's r-tree hits; and open3d's
+    ``RaycastingScene.compute_closest_points`` builds its Embree scene per call, as the
+    ``signed_distance_on_mesh`` group's open3d row does.
     """
+    if bench_case.kind == "igl":
+        skip_larger_than(bench_case, "bunny", "igl rebuilds a single-threaded AABB tree per call")
+        vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
+        queries_np = _query_points_np(bench_case)
+        squared_igl, _faces_igl, _closest_igl = bench_case.run(
+            lambda: igl.point_mesh_squared_distance(queries_np, vertices_np, faces_np), rounds=3
+        )
+        assert squared_igl.shape == (_N_QUERIES,)
+        return
+    if bench_case.kind == "trimesh":
+        skip_larger_than(bench_case, "bunny", "NumPy candidate filtering over r-tree hits")
+        vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
+        queries_np = _query_points_np(bench_case)
+
+        def closest_tm() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+            mesh_tm = tm.Trimesh(vertices_np, faces_np, process=False)  # its r-tree is cached
+            return tm.proximity.closest_point(mesh_tm, queries_np)
+
+        _closest_tm, distance_tm, _faces_tm = bench_case.run(closest_tm, rounds=3)
+        assert distance_tm.shape == (_N_QUERIES,)
+        return
+    if bench_case.kind == "open3d":
+        import open3d as o3d
+
+        vertices_f32 = np.ascontiguousarray(bench_case.vertices_np, dtype=np.float32)
+        faces_u32 = np.ascontiguousarray(bench_case.faces_np, dtype=np.uint32)
+        # The stub omits Tensor's dtype/device defaults.
+        queries_t = o3d.core.Tensor(np.ascontiguousarray(_query_points_np(bench_case), np.float32))  # pyright: ignore[reportCallIssue]
+
+        def closest_o3d() -> dict[str, o3d.core.Tensor]:
+            # The Embree BVH build goes inside, mirroring ordito's own in-call wp.Mesh build.
+            scene = o3d.t.geometry.RaycastingScene()
+            scene.add_triangles(o3d.core.Tensor(vertices_f32), o3d.core.Tensor(faces_u32))  # pyright: ignore[reportCallIssue]
+            return scene.compute_closest_points(queries_t)
+
+        assert bench_case.run(closest_o3d)["points"].shape[0] == _N_QUERIES
+        return
     if bench_case.kind == "pyvista":
         # Superlinear across the scan sweep: VTK's locator is single-threaded, so this is capped
         # where the suite's other host rows are.
@@ -458,7 +504,7 @@ def test_closest_point_on_edges(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="signed_distance_on_mesh")
-@pytest.mark.benchlibs("ordito", "igl", "open3d", "pymeshlab", "pyvista", "meshlib")
+@pytest.mark.benchlibs("ordito", "igl", "open3d", "pymeshlab", "pyvista", "meshlib", "trimesh")
 @pytest.mark.parametrize("sign_mode", ["parity", "winding", "pseudonormal"])
 def test_signed_distance_on_mesh(
     bench_case: BenchCase, sign_mode: Literal["parity", "winding", "pseudonormal"]
@@ -492,6 +538,12 @@ def test_signed_distance_on_mesh(
     and agrees to 1.5e-07 with identical signs on 2 000 queries, which is why it is the parity
     oracle for this group. One row only: it has a single sign rule.
 
+    **trimesh's row is the closest-point query plus a ray-parity containment test** on its embree
+    intersector, positive inside where ordito is negative (``tests/test_proximity.py`` compares it
+    under that negation). It pairs with ``"parity"``, rebuilds its ``tm.Trimesh`` per round so the
+    r-tree and the embree scene are built inside, as ordito's ``wp.Mesh`` is, and is capped at
+    ``bunny`` with three rounds, like its ``closest_point_on_mesh`` row.
+
     Two things to read off the rows. The references are one to two orders of magnitude behind, and
     **the mode ratio disagrees between the two sides** -- igl's winding sign costs over twice its
     pseudonormal one where ordito's two modes are within a third of each other, because the
@@ -508,6 +560,20 @@ def test_signed_distance_on_mesh(
         cloud_pv = pv.PolyData(np.ascontiguousarray(_query_points_np(bench_case), dtype=np.float64))
         distance_pv = bench_case.run(lambda: cloud_pv.compute_implicit_distance(mesh_pv), rounds=3)
         assert np.asarray(distance_pv.point_data["implicit_distance"]).shape == (_N_QUERIES,)
+        return
+
+    if bench_case.kind == "trimesh":
+        if sign_mode != "parity":
+            pytest.skip("trimesh signs by ray parity, so it pairs with ordito's parity mode only")
+        skip_larger_than(bench_case, "bunny", "NumPy candidate filtering over r-tree hits")
+        vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
+        queries_np = _query_points_np(bench_case)
+
+        def signed_distance_tm() -> np.ndarray:
+            mesh_tm = tm.Trimesh(vertices_np, faces_np, process=False)  # r-tree and scene cached
+            return tm.proximity.signed_distance(mesh_tm, queries_np)
+
+        assert bench_case.run(signed_distance_tm, rounds=3).shape == (_N_QUERIES,)
         return
 
     if bench_case.kind == "igl":

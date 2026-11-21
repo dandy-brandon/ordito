@@ -3,8 +3,8 @@ Regression tests for ``ordito.metrics`` Chamfer and Hausdorff metrics.
 
 Point-cloud metrics compare against SciPy (``KDTree`` for Chamfer,
 ``scipy.spatial.distance.directed_hausdorff`` for Hausdorff). Mesh-surface metrics
-compare against libigl's ``igl.point_mesh_squared_distance`` (the primitive behind
-``igl::hausdorff``); ``igl.hausdorff`` itself is not exposed in the Python bindings.
+compare against libigl's ``igl.point_mesh_squared_distance`` and ``igl.hausdorff``, MeshLib's
+``findMaxDistanceSq`` and Open3D's ``RaycastingScene``.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from typing import Literal, cast
 
 import igl
 import numpy as np
+import open3d as o3d
 import pymeshlab as ml
 import pytest
 import pytorch3d.loss as p3d_loss
@@ -34,12 +35,14 @@ from tests.comparisons import assert_nonconstant
 from tests.conversions import (
     numpy_to_meshlib_coords,
     numpy_to_warp,
+    points_to_meshlib,
     points_to_open3d,
     points_to_pymeshlab,
     points_to_pytorch3d,
     points_to_torch,
     points_to_warp,
     trimesh_to_meshlib,
+    trimesh_to_open3d_t,
     trimesh_to_pytorch3d,
     trimesh_to_warp,
     warp_empty,
@@ -480,10 +483,11 @@ def test_chamfer_and_hausdorff_mesh_to_mesh(request: pytest.FixtureRequest, mesh
     """
     Class B: both metrics are reductions of ``igl.point_mesh_squared_distance`` in each direction.
 
-    ``igl.hausdorff`` is not bound, so its primitive supplies every vertex's squared distance to
-    the other surface; the named transform is the mean of each direction summed (Chamfer) and the
-    square root of the larger maximum (Hausdorff). The tolerance is ``_MESH_RTOL``: igl consumes
-    float64 vertices where Warp carries float32. The same answer comes back from prebuilt
+    The primitive supplies every vertex's squared distance to the other surface; the named
+    transform is the mean of each direction summed (Chamfer) and the square root of the larger
+    maximum (Hausdorff). ``igl.hausdorff`` itself is compared directly in
+    [`test_hausdorff_mesh_to_mesh_matches_igl_and_meshlib`]. The tolerance is ``_MESH_RTOL``: igl
+    consumes float64 vertices where Warp carries float32. The same answer comes back from prebuilt
     ``mesh_a`` / ``mesh_b``.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
@@ -526,6 +530,50 @@ def test_chamfer_and_hausdorff_mesh_to_mesh(request: pytest.FixtureRequest, mesh
     )
     assert np.allclose(chamfer_prebuilt_wp, chamfer_np, rtol=_MESH_RTOL, atol=_MESH_ATOL)
     assert np.allclose(hausdorff_prebuilt_wp, hausdorff_np, rtol=_MESH_RTOL, atol=_MESH_ATOL)
+
+
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+@pytest.mark.parity("hausdorff_mesh_to_mesh", "igl", "meshlib")
+def test_hausdorff_mesh_to_mesh_matches_igl_and_meshlib(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Class A: ``igl.hausdorff`` and MeshLib's ``findMaxDistanceSq`` return the same scalar.
+
+    Both references measure what ordito does, the larger of the two directions' maximum
+    vertex-to-surface distance (igl's ``hausdorff`` is two ``point_mesh_squared_distance`` calls;
+    ``findMaxDistanceSq`` takes each mesh's vertices onto the other mesh), so neither needs a
+    transform beyond MeshLib's square root. The second mesh is scaled anisotropically and shifted,
+    so the two directions differ and the symmetric maximum is not either one by construction.
+    MeshLib stores ``float32`` and igl reads ``float64``, hence ``_MESH_RTOL``.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_a_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
+    faces_np = np.asarray(mesh_tm.faces, dtype=np.int64)
+    vertices_b_np = vertices_a_np * np.array([1.2, 0.9, 1.0]) + np.array([0.3, -0.15, 0.2])
+
+    hausdorff_igl = igl.hausdorff(vertices_a_np, faces_np, vertices_b_np, faces_np)
+    mesh_a_ml = trimesh_to_meshlib(tm.Trimesh(vertices_a_np, faces_np, process=False))
+    mesh_b_ml = trimesh_to_meshlib(tm.Trimesh(vertices_b_np, faces_np, process=False))
+    part_a_ml, part_b_ml = mm.MeshPart(mesh_a_ml), mm.MeshPart(mesh_b_ml)
+    hausdorff_ml = np.sqrt(mm.findMaxDistanceSq(part_a_ml, part_b_ml))
+    # ``findMaxDistanceSqOneWay(a, b)`` takes b's vertices onto a: the two directions differ, so
+    # the symmetric answer is a real maximum, not either direction by default.
+    one_way_ml = [
+        np.sqrt(mm.findMaxDistanceSqOneWay(part_a_ml, part_b_ml)),
+        np.sqrt(mm.findMaxDistanceSqOneWay(part_b_ml, part_a_ml)),
+    ]
+    assert abs(one_way_ml[0] - one_way_ml[1]) > 1e-3 * max(one_way_ml)
+
+    hausdorff_wp = od.metrics.hausdorff_mesh_to_mesh(
+        mesh_wp.points,
+        mesh_wp.indices,
+        points_to_warp(vertices_b_np, mesh_wp.device),
+        mesh_wp.indices,
+    )
+    assert hausdorff_igl > 0.0
+    assert np.allclose(hausdorff_wp, hausdorff_igl, rtol=_MESH_RTOL, atol=_MESH_ATOL)
+    assert np.allclose(hausdorff_wp, hausdorff_ml, rtol=_MESH_RTOL, atol=_MESH_ATOL)
 
 
 # ---------------------------------------------------------------------------
@@ -759,6 +807,50 @@ def test_chamfer_and_hausdorff_points_to_mesh(sphere_irregular: tuple[tm.Trimesh
     assert np.allclose(hausdorff_prebuilt_wp, hausdorff_np, rtol=_MESH_RTOL, atol=_MESH_ATOL)
 
 
+@pytest.mark.parity("chamfer_points_to_mesh", "open3d")
+@pytest.mark.parity("hausdorff_points_to_mesh", "open3d")
+def test_chamfer_and_hausdorff_points_to_mesh_match_open3d(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Class B (a named composition), both halves from Open3D.
+
+    The forward half is ``RaycastingScene.compute_distance``, the cloud-to-surface distance,
+    compared element-wise against ordito's ``point_reduction=None`` forward array (Class A on that
+    half). The backward half is ``PointCloud.compute_point_cloud_distance`` from the mesh vertices
+    to the cloud. The named transform is the mean of each half's squares summed (Chamfer) and the
+    larger maximum (Hausdorff). Embree carries ``float32`` vertices, as Warp does.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
+    rng = np.random.default_rng(11)
+    points_np = (vertices_np.mean(axis=0) + rng.normal(scale=0.6, size=(300, 3))).astype(np.float32)
+
+    scene_o3d = o3d.t.geometry.RaycastingScene()
+    mesh_o3d = trimesh_to_open3d_t(mesh_tm)  # held in a name: the scene reads its buffers
+    scene_o3d.add_triangles(mesh_o3d)
+    forward_o3d = scene_o3d.compute_distance(o3d.core.Tensor(points_np)).numpy().astype(np.float64)  # pyright: ignore[reportCallIssue]
+    backward_o3d = np.asarray(
+        points_to_open3d(vertices_np).compute_point_cloud_distance(points_to_open3d(points_np))
+    )
+    chamfer_o3d = np.mean(forward_o3d**2) + np.mean(backward_o3d**2)
+    hausdorff_o3d = max(forward_o3d.max(), backward_o3d.max())
+    assert forward_o3d.min() > 0.0
+    assert_nonconstant(forward_o3d, tol=1e-3)
+
+    points_wp = points_to_warp(points_np, mesh_wp.device)
+    forward_wp = od.metrics.chamfer_points_to_mesh(
+        points_wp, mesh_wp.points, mesh_wp.indices, single_directional=True, point_reduction=None
+    ).numpy()
+    chamfer_wp = od.metrics.chamfer_points_to_mesh(
+        points_wp, mesh_wp.points, mesh_wp.indices, squared=True
+    )
+    hausdorff_wp = od.metrics.hausdorff_points_to_mesh(points_wp, mesh_wp.points, mesh_wp.indices)
+    assert np.allclose(forward_wp, forward_o3d, rtol=_MESH_RTOL, atol=_MESH_ATOL)
+    assert np.allclose(chamfer_wp, chamfer_o3d, rtol=_MESH_RTOL, atol=_MESH_ATOL)
+    assert np.allclose(hausdorff_wp, hausdorff_o3d, rtol=_MESH_RTOL, atol=_MESH_ATOL)
+
+
 # ---------------------------------------------------------------------------
 # Hausdorff: point cloud to point cloud
 # ---------------------------------------------------------------------------
@@ -828,6 +920,36 @@ def test_hausdorff_points_to_points_matches_open3d_and_pymeshlab(device: str) ->
     )
     assert np.allclose(hausdorff_wp, hausdorff_o3d, rtol=1e-5, atol=1e-5)
     assert np.allclose(hausdorff_wp, hausdorff_pml, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("single_directional", [False, True], ids=["symmetric", "oneway"])
+@pytest.mark.parity("hausdorff_points_to_points", "meshlib")
+def test_hausdorff_points_to_points_matches_meshlib(device: str, single_directional: bool) -> None:
+    """
+    Class A: MeshLib's ``findMaxDistanceSq`` over two ``PointCloud`` objects, square-rooted.
+
+    The one-way form is ``findMaxDistanceSqOneWay(b, a)``: MeshLib takes the *second* cloud's
+    points onto the first, so ordito's ``x`` to ``y`` direction is the call with ``y`` first. The
+    two directions differ on these clouds (asserted), so the symmetric case is not one direction
+    by accident and the one-way case would catch a swapped argument order.
+    """
+    rng = np.random.default_rng(31)
+    x_np, y_np = _cloud(rng, 90), _cloud(rng, 50)
+
+    cloud_x_ml, cloud_y_ml = points_to_meshlib(x_np), points_to_meshlib(y_np)
+    forward_ml = np.sqrt(mm.findMaxDistanceSqOneWay(cloud_y_ml, cloud_x_ml))
+    backward_ml = np.sqrt(mm.findMaxDistanceSqOneWay(cloud_x_ml, cloud_y_ml))
+    assert abs(forward_ml - backward_ml) > 1e-3
+    hausdorff_ml = (
+        forward_ml if single_directional else np.sqrt(mm.findMaxDistanceSq(cloud_x_ml, cloud_y_ml))
+    )
+
+    hausdorff_wp = od.metrics.hausdorff_points_to_points(
+        points_to_warp(x_np, device),
+        points_to_warp(y_np, device),
+        single_directional=single_directional,
+    )
+    assert np.allclose(hausdorff_wp, hausdorff_ml, rtol=1e-5, atol=1e-5)
 
 
 # ---------------------------------------------------------------------------

@@ -18,6 +18,7 @@ from tests.conversions import (
     points_to_warp,
     trimesh_to_manifold3d,
     trimesh_to_meshlib,
+    trimesh_to_open3d_t,
     trimesh_to_pyvista,
     warp_empty,
 )
@@ -289,6 +290,112 @@ def test_intersects_match_open3d(request: pytest.FixtureRequest, mesh_name: str)
     assert np.allclose(locations_wp.numpy(), points_o3d, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parity("intersects_first", "trimesh")
+@pytest.mark.parity("intersects_any", "trimesh")
+@pytest.mark.parity("intersects_location", "trimesh")
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+def test_intersects_match_trimesh(request: pytest.FixtureRequest, mesh_name: str) -> None:
+    """
+    Class A on all three, on rays that hit: trimesh's embree intersector, method for method.
+
+    ``Trimesh.ray`` is ``ray_pyembree.RayMeshIntersector`` here (``embreex`` is a test
+    dependency), so the reference is Embree in ``float32``, not trimesh's pure-Python engine; the
+    first assert pins that. ``intersects_first`` and ``intersects_any`` are compared as returned
+    (``-1`` for a miss on both sides); ``intersects_location(multiple_hits=False)`` returns one row
+    per hitting ray in ascending ray order, which is ordito's order under the deterministic setting
+    the suite runs with, so its three outputs are compared as returned. Measured on CUDA: every
+    face and ray equal and the hit points within 9.9e-07 on both fixtures.
+    ``test_ray_queries_miss_together`` holds the all-miss case.
+
+    Non-vacuous: some but not all of the 256 rays hit on each fixture.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    assert isinstance(mesh_tm.ray, tm.ray.ray_pyembree.RayMeshIntersector)
+    origins_np, directions_np = _upward_rays(mesh_tm, 256, seed=0)
+    origins_wp = points_to_warp(origins_np, mesh_wp.device)
+    directions_wp = points_to_warp(directions_np, mesh_wp.device)
+
+    faces_tm = mesh_tm.ray.intersects_first(origins_np, directions_np)
+    hit_tm = mesh_tm.ray.intersects_any(origins_np, directions_np)
+    locations_tm, rays_tm, triangles_tm = mesh_tm.ray.intersects_location(
+        origins_np, directions_np, multiple_hits=False
+    )
+    assert 0 < hit_tm.sum() < origins_np.shape[0]  # both branches present
+
+    assert np.array_equal(
+        od.ray.intersects_first(mesh_wp, origins_wp, directions_wp).numpy(), faces_tm
+    )
+    assert np.array_equal(od.ray.intersects_any(mesh_wp, origins_wp, directions_wp).numpy(), hit_tm)
+    locations_wp, rays_wp, triangles_wp = od.ray.intersects_location(
+        mesh_wp, origins_wp, directions_wp
+    )
+    assert np.array_equal(rays_wp.numpy(), rays_tm)
+    assert np.array_equal(triangles_wp.numpy(), triangles_tm)
+    assert np.allclose(locations_wp.numpy(), locations_tm, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parity(
+    "intersects_first",
+    "pyvista",
+    benchmarked=False,
+    reason="VTK's ray_trace casts one ray a call through its OBB tree, so a row would time a "
+    "Python loop over 10 000 rays rather than the traversal; trimesh, meshlib and open3d carry "
+    "the batched rows.",
+)
+@pytest.mark.parity(
+    "intersects_location",
+    "pyvista",
+    benchmarked=False,
+    reason="VTK's ray_trace casts one ray a call through its OBB tree, so a row would time a "
+    "Python loop over 10 000 rays rather than the traversal; trimesh, meshlib and open3d carry "
+    "the batched rows.",
+)
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+def test_intersects_match_pyvista_ray_trace(request: pytest.FixtureRequest, mesh_name: str) -> None:
+    """
+    Class B: VTK's ``ray_trace``, ray by ray, gives the nearest hit's face and point.
+
+    Two named transforms. ``ray_trace`` takes a *segment*, so each ray runs from its origin to a
+    point past the mesh's far side; and it returns every crossing (``first_point=True`` trims the
+    points but not the cell ids), so the nearest point and the id beside it are the first hit.
+    A miss returns nothing, written ``-1``. Measured on CUDA: every face equal and the points
+    within 7.3e-07 (VTK computes in ``float64``) on both fixtures, 64 rays each.
+
+    Non-vacuous: some but not all rays hit.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    origins_np, directions_np = _upward_rays(mesh_tm, 64, seed=0)
+    origins_wp = points_to_warp(origins_np, mesh_wp.device)
+    directions_wp = points_to_warp(directions_np, mesh_wp.device)
+
+    mesh_pv = trimesh_to_pyvista(mesh_tm)
+    reach = 2.0 * float(np.linalg.norm(mesh_tm.extents)) + 10.0  # past the far side from any origin
+    faces_pv = np.full(origins_np.shape[0], -1, dtype=np.int32)
+    points_pv = np.zeros((origins_np.shape[0], 3))
+    for ray, (origin_np, direction_np) in enumerate(
+        zip(origins_np.astype(np.float64), directions_np.astype(np.float64), strict=True)
+    ):
+        crossings_pv, cells_pv = mesh_pv.ray_trace(origin_np, origin_np + reach * direction_np)
+        crossings_pv = np.asarray(crossings_pv).reshape(-1, 3)
+        if crossings_pv.shape[0] == 0:
+            continue
+        nearest = int(np.argmin(np.linalg.norm(crossings_pv - origin_np, axis=1)))
+        faces_pv[ray] = int(np.asarray(cells_pv)[nearest])
+        points_pv[ray] = crossings_pv[nearest]
+    hit_pv = faces_pv >= 0
+    assert 0 < hit_pv.sum() < origins_np.shape[0]  # both branches present
+
+    assert np.array_equal(
+        od.ray.intersects_first(mesh_wp, origins_wp, directions_wp).numpy(), faces_pv
+    )
+    locations_wp, rays_wp, triangles_wp = od.ray.intersects_location(
+        mesh_wp, origins_wp, directions_wp
+    )
+    assert np.array_equal(rays_wp.numpy(), np.flatnonzero(hit_pv))
+    assert np.array_equal(triangles_wp.numpy(), faces_pv[hit_pv])
+    assert np.allclose(locations_wp.numpy(), points_pv[hit_pv], rtol=1e-5, atol=1e-5)
+
+
 def _cast_open3d(
     mesh_tm: tm.Trimesh, origins_np: np.ndarray, directions_np: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -533,6 +640,44 @@ def test_contains_points_matches_pyvista(request: pytest.FixtureRequest, mesh_na
     assert np.array_equal(od.ray.contains_points(mesh_wp, points_wp).numpy(), contains_pv)
 
 
+@pytest.mark.parametrize(
+    "mesh_name", ["sphere_irregular", "sphere_irregular_hollow", "torus_irregular"]
+)
+@pytest.mark.parity("contains_points", "open3d")
+def test_contains_points_matches_open3d(request: pytest.FixtureRequest, mesh_name: str):
+    """
+    Class A: ``RaycastingScene.compute_occupancy`` is Embree's ray-parity vote, point for point.
+
+    ``nsamples`` is open3d's count of rays a point casts (odd, the majority deciding), the role
+    ordito's ``n_sample`` plays; three is passed so both sides vote. Measured on CUDA: the answers
+    equal on all 600 queries of each fixture, with ``nsamples`` 1, 3 and 5 alike. The only
+    transform is open3d's ``0`` / ``1`` occupancy read as ``bool``.
+
+    Same queries and fixtures as the pyvista comparison above (a convex solid, a hollow shell
+    whose cavity is *outside*, a genus-1 hole), with both answers asserted present.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    rng = np.random.default_rng(11)
+    centre_np = mesh_tm.bounds.mean(axis=0)
+    extent_np = 1.4 * (mesh_tm.bounds[1] - mesh_tm.bounds[0])
+    points_np = centre_np - 0.5 * extent_np + rng.random((600, 3)) * extent_np
+
+    scene_o3d = o3d.t.geometry.RaycastingScene()
+    scene_o3d.add_triangles(trimesh_to_open3d_t(mesh_tm))
+    occupied_o3d = (
+        scene_o3d.compute_occupancy(
+            o3d.core.Tensor(np.ascontiguousarray(points_np, dtype=np.float32)),  # pyright: ignore[reportCallIssue]  # the stub drops dtype/device defaults
+            nsamples=3,
+        )
+        .numpy()
+        .astype(bool)
+    )
+    assert 0 < int(occupied_o3d.sum()) < len(points_np)  # both answers present
+
+    points_wp = points_to_warp(points_np, mesh_wp.device)
+    assert np.array_equal(od.ray.contains_points(mesh_wp, points_wp).numpy(), occupied_o3d)
+
+
 def test_contains_cavity(sphere_irregular_hollow: tuple[tm.Trimesh, wp.Mesh]):
     """
     Class A: a point in the hollow reads *outside*, one in the shell between reads *inside*.
@@ -610,3 +755,51 @@ def test_segment_hits_match_manifold3d(
             assert parameters.numpy()[k] == hit_m3.distance
             assert np.array_equal(points.numpy()[k], np.asarray(hit_m3.position, dtype=np.float32))
     assert 0 < n_crossing < len(origins_np)
+
+
+@pytest.mark.parity(
+    "segment_hits",
+    "pyvista",
+    benchmarked=False,
+    reason="intersect_with_line answers one segment a call, so a row would time a Python loop "
+    "over the 4 096 segments rather than VTK's OBB tree; manifold3d carries the timed row.",
+)
+@pytest.mark.parametrize(
+    "mesh_name", ["sphere_irregular", "sphere_irregular_hollow", "torus_irregular"]
+)
+def test_segment_hits_match_pyvista(request: pytest.FixtureRequest, device: str, mesh_name: str):
+    """
+    Class A after one named transform: VTK's ``intersect_with_line``, segment by segment.
+
+    VTK returns each segment's crossings (points and cell ids, on ordito's face numbering) in its
+    tree's order, so they are sorted by distance from the origin, the order ``segment_hits``
+    reports; then the faces are equal and the points within 1.6e-07 (measured on CUDA, 128
+    random segments a fixture, on the ``float32`` mesh both sides read). Non-vacuous: some
+    segments cross and some miss.
+    """
+    mesh_tm = float32_trimesh(request.getfixturevalue(mesh_name)[0])
+    rng = np.random.default_rng(13)
+    centre = mesh_tm.vertices.mean(axis=0)
+    span = float(np.max(mesh_tm.extents))
+    origins_np = (centre + rng.uniform(-span, span, (128, 3))).astype(np.float32)
+    endpoints_np = (centre + rng.uniform(-span, span, (128, 3))).astype(np.float32)
+    hit_faces, _parameters, points, _normals, offsets = od.ray.segment_hits(
+        *numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device),
+        wp.array(origins_np, dtype=wp.vec3, device=device),
+        wp.array(endpoints_np, dtype=wp.vec3, device=device),
+    )
+    hit_faces_np, points_np, offsets_np = hit_faces.numpy(), points.numpy(), offsets.numpy()
+
+    mesh_pv = trimesh_to_pyvista(mesh_tm)
+    counts_pv = []
+    for s, (origin_np, endpoint_np) in enumerate(
+        zip(origins_np.astype(np.float64), endpoints_np.astype(np.float64), strict=True)
+    ):
+        crossings_pv, cells_pv = mesh_pv.intersect_with_line(origin_np, endpoint_np)
+        crossings_pv = np.asarray(crossings_pv).reshape(-1, 3)
+        order = np.argsort(np.linalg.norm(crossings_pv - origin_np, axis=1), kind="stable")
+        ours = slice(int(offsets_np[s]), int(offsets_np[s + 1]))
+        assert np.array_equal(hit_faces_np[ours], np.asarray(cells_pv)[order])
+        assert np.allclose(points_np[ours], crossings_pv[order], rtol=1e-5, atol=1e-5)
+        counts_pv.append(order.size)
+    assert 0 < np.count_nonzero(counts_pv) < len(counts_pv)

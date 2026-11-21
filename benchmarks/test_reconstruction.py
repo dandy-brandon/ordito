@@ -14,11 +14,16 @@ same points and computes its own area-weighted normals, the same quantity
 ``generate_surface_reconstruction_ball_pivoting`` is VCGlib's original BPA — so its row and open3d's
 price two wrappers over one lineage and only ordito's is a different program. It gets the
 identical absolute radius via ``PureValue`` (the ``0%`` default autoguesses one, which would
-compare two different parameters) with ``clustering=0`` to disable a merge step ordito does not do.
-The filter
+compare two different parameters) and MeshLab's default ``clustering=20``, below which the filter
+reconstructs nothing. The filter
 pushes its output as a new layer without touching the cloud, so the cloud MeshSet is cached;
 ``set_current_mesh(0)`` inside the callable restores the layer the previous round's push moved away
 from.
+
+**meshlib**'s ``findBallPivotingMesh`` is the fourth BPA, an independent one that builds the
+cloud's outer shape without reading normals; at the same radius it returns ordito's mesh face for
+face on icosphere clouds (``tests/test_reconstruction.py``, Class A). It is handed the cached
+oriented cloud, which it accepts and does not need.
 
 **Screened Poisson is timed for ordito alone.** Both CPU references wrap Kazhdan's own solver and
 between them cost the **majority of the whole suite's wall clock** to re-measure a reference ordito
@@ -238,7 +243,7 @@ def _delaunay_points_np(n_points: int) -> np.ndarray:
 
 
 @pytest.mark.benchmark(group="delaunay_triangulation")
-@pytest.mark.benchlibs("ordito", "scipy", "pyvista")
+@pytest.mark.benchlibs("ordito", "scipy", "pyvista", "igl", "meshlib")
 @pytest.mark.parametrize("n_points", _DELAUNAY_POINTS)
 def test_delaunay_triangulation(bench_lib: BenchLibrary, n_points: int) -> None:
     """
@@ -270,8 +275,29 @@ def test_delaunay_triangulation(bench_lib: BenchLibrary, n_points: int) -> None:
     ``vtkDelaunay2D``'s serial insertion. The answers agree on the interior and differ only in hull
     slivers -- pyvista's 374 triangles are a strict *subset* of ordito's 384 on a 200-point cloud
     (``tests/test_reconstruction.py``), so read the counts as well as the clock.
+
+    ``igl.predicates.delaunay_triangulation`` (a lexicographic triangulation flipped with exact
+    predicates, the same two stages as ordito's, serial) and meshlib's ``delaunayTriangulationXY``
+    (the cloud projected on ``XY``) return ordito's triangles exactly, winding included. Both take
+    their input converted outside the timed callable: a float64 ``(n, 2)`` array for igl and a
+    ``VertCoords`` at ``z = 0`` for meshlib, which the call takes by value.
     """
     points_np = _delaunay_points_np(n_points)
+    if bench_lib.kind == "igl":
+        import igl.predicates
+
+        triangulated_igl = bench_lib.run(lambda: igl.predicates.delaunay_triangulation(points_np))
+        assert np.asarray(triangulated_igl).shape[1] == 3
+        return
+    if bench_lib.kind == "meshlib":
+        from meshlib import mrmeshnumpy as mn
+
+        coords_ml = mn.fromNumpyArray(
+            cast("Buffer", np.column_stack([points_np, np.zeros(n_points)]).astype(np.float32))
+        )
+        triangulated_ml = bench_lib.run(lambda: mm.delaunayTriangulationXY(coords_ml))
+        assert triangulated_ml.topology.numValidFaces() > 0
+        return
     if bench_lib.kind == "pyvista":
         cloud_pv = pv.PolyData(np.column_stack([points_np, np.zeros(n_points)]).astype(np.float64))
         triangulated_pv = bench_lib.run(cloud_pv.delaunay_2d)
@@ -350,10 +376,19 @@ def test_triangulate_point_cloud_unoriented(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="ball_pivoting")
-@pytest.mark.benchlibs("ordito", "open3d", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "open3d", "pymeshlab", "meshlib")
 def test_ball_pivoting(bench_case: BenchCase) -> None:
     skip_larger_than(bench_case, "bunny", "ball pivoting above bunny dominates the suite")
     radius = _BPA_RADIUS_FRACTION * bench_case.mean_edge
+    if bench_case.kind == "meshlib":
+        # ``findBallPivotingMesh`` builds a new mesh and leaves the cloud alone, so the cached
+        # cloud serves every round.
+        cloud_ml = _cloud_ml(bench_case)
+        mesh_ml = bench_case.run(
+            lambda: mm.findBallPivotingMesh(cloud_ml, radius), rounds=_HEAVY_ROUNDS
+        )
+        assert mesh_ml.topology.numValidFaces() > 0
+        return
     if bench_case.kind == "pymeshlab":
         # VCGlib's original BPA, given the identical absolute radius via ``PureValue`` (its default
         # ``0%`` autoguesses one, which would compare two different algorithms' parameters).

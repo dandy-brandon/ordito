@@ -302,14 +302,19 @@ def test_lscm_hessian(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="vector_area_matrix")
 @pytest.mark.benchaxis("patch")
-@pytest.mark.benchlibs("ordito")
+@pytest.mark.benchlibs("ordito", "igl")
 def test_vector_area_matrix(bench_case: BenchCase) -> None:
     """
     The boundary vector-area matrix, on the disk patches: a closed mesh has none.
 
-    ordito alone: no library binds it (its test derives the reference from two igl functions), so
-    there is no call to time against.
+    **libigl**'s ``vector_area_matrix`` takes the faces alone and finds the boundary itself, as
+    ordito's call does; it is the Class A oracle in ``tests/test_energies.py``.
     """
+    if bench_case.kind == "igl":
+        faces_np = bench_case.faces_np
+        matrix_igl = bench_case.run(lambda: igl.vector_area_matrix(faces_np))
+        assert matrix_igl.nnz > 0
+        return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     matrix = bench_case.run(lambda: od.energies.vector_area_matrix(vertices, faces))
     assert matrix.nrow == 2 * bench_case.n_vertices

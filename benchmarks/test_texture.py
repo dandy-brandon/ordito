@@ -41,8 +41,18 @@ synthetic injective UVs instead.
 
 References
 ----------
-**No CPU baseline is registered, and the reason is scope rather than absence.** Neither trimesh,
-libigl nor open3d has a UV-space attribute rasterizer or sampler.
+**open3d is the one CPU baseline, for ``rasterize_attribute``.**
+``t.geometry.TriangleMesh.bake_vertex_attr_textures`` bakes a vertex attribute into a texture
+through per-corner UVs, in ordito's orientation and with the same barycentric interpolation at
+pixel centres (``tests/test_texture.py`` compares it on ordito's covered texels, Class B: open3d
+dilates each UV island by ``margin`` pixels, and drops some interior-edge pixel centres at
+``margin=0``). Its row bakes at ``margin=1``, the comparison's setting; the ``t.TriangleMesh``
+with its attribute and ``texture_uvs`` is built once outside the timed callable. On these
+projected UVs front and back overlap, which open3d resolves its own way: the row prices the bake,
+and the overlap is no parity claim. Its ``bake_triangle_attr_textures`` bakes a *per-face*
+attribute, which no ordito group takes (``rasterize_discrete_attribute`` resolves per-vertex
+labels by a weighted vote). Neither trimesh nor libigl has a UV-space attribute rasterizer or
+sampler.
 
 **pymeshlab has both directions** — ``transfer_attributes_to_texture_per_vertex`` forward,
 ``compute_color_from_texture_per_vertex`` inverse — so all five groups have a counterpart. What
@@ -76,6 +86,8 @@ interpolation and the wrong baseline for the operation. So these are before/afte
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import pytest
 import warp as wp
@@ -83,6 +95,9 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from conftest import BenchCase, skip_larger_than
+
+if TYPE_CHECKING:
+    import open3d as o3d
 
 # Texture sizes: 4x the pixels between the two points, so the rasterizers' quadratic term and the
 # remappers' independence from resolution both read directly off the pair.
@@ -155,11 +170,50 @@ def _class_image_wp(bench_case: BenchCase) -> odt.Array2dInt32:
     return _class_image_cache[key]
 
 
+_mesh_o3d_cache: dict[str, o3d.t.geometry.TriangleMesh] = {}
+
+
+def _mesh_o3d(bench_case: BenchCase) -> o3d.t.geometry.TriangleMesh:
+    """
+    Build the open3d bake's input once per mesh: the same UVs and attribute as ordito's row.
+
+    ``texture_uvs`` are per triangle corner, so the projected vertex UVs are gathered through the
+    faces; the attribute is the positions, as ``_attribute_wp`` uploads them.
+    """
+    import open3d as o3d
+
+    if bench_case.mesh_name not in _mesh_o3d_cache:
+        vertices_np = np.ascontiguousarray(bench_case.vertices_np, dtype=np.float32)
+        faces_np = np.ascontiguousarray(bench_case.faces_np, dtype=np.int64)
+        xy = bench_case.vertices_np[:, :2]
+        span = np.where(xy.max(axis=0) - xy.min(axis=0) > 0.0, xy.max(axis=0) - xy.min(axis=0), 1.0)
+        uv = ((xy - xy.min(axis=0)) / span).astype(np.float32)
+        mesh_o3d = o3d.t.geometry.TriangleMesh()
+        # The stub omits Tensor's dtype/device defaults.
+        mesh_o3d.vertex.positions = o3d.core.Tensor(vertices_np)  # pyright: ignore[reportCallIssue]
+        mesh_o3d.triangle.indices = o3d.core.Tensor(faces_np)  # pyright: ignore[reportCallIssue]
+        mesh_o3d.vertex["attribute"] = o3d.core.Tensor(vertices_np)  # pyright: ignore[reportCallIssue]
+        mesh_o3d.triangle.texture_uvs = o3d.core.Tensor(np.ascontiguousarray(uv[faces_np]))  # pyright: ignore[reportCallIssue]
+        _mesh_o3d_cache[bench_case.mesh_name] = mesh_o3d
+    return _mesh_o3d_cache[bench_case.mesh_name]
+
+
 @pytest.mark.benchmark(group="rasterize_attribute")
-@pytest.mark.benchlibs("ordito")
+@pytest.mark.benchlibs("ordito", "open3d")
 @pytest.mark.parametrize("resolution", _RESOLUTIONS)
 def test_rasterize_attribute(bench_case: BenchCase, resolution: int) -> None:
     """Barycentric scatter of a 3-channel attribute, at 512^2 and 2048^2."""
+    if bench_case.kind == "open3d":
+        skip_larger_than(bench_case, "bunny", "over 2 000x ordito's row on bunny at 2048")
+        mesh_o3d = _mesh_o3d(bench_case)
+        baked_o3d = bench_case.run(
+            lambda: mesh_o3d.bake_vertex_attr_textures(
+                resolution, {"attribute"}, margin=1.0, fill=0.0, update_material=False
+            ),
+            rounds=3,
+        )
+        assert baked_o3d["attribute"].shape[0] == resolution
+        return
     uv, faces = _uv_wp(bench_case), bench_case.faces_wp
     attribute = _attribute_wp(bench_case)
     image = bench_case.run(lambda: od.texture.rasterize_attribute(uv, faces, attribute, resolution))

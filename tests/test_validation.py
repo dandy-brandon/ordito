@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import igl
+import igl.predicates
 import numpy as np
 import pymeshlab as ml
 import pytest
@@ -12,7 +13,7 @@ from meshlib import mrmeshpy as mm
 import ordito as od
 import ordito.typing as odt
 from tests.comparisons import undirected_edges
-from tests.conftest import CLOSED_MESHES, MESHES, OPEN_MESHES
+from tests.conftest import CLOSED_MESHES, MESHES
 from tests.conversions import (
     faces_igl,
     meshlib_bitset_to_numpy,
@@ -314,8 +315,10 @@ def test_edge_manifold_mask(
     """
     Class A: the per-face mask against a numpy edge-multiplicity oracle, over both switches.
 
-    No library exposes a per-face edge-manifold mask, so the reference is written here from the
-    edge multiplicity table; the *predicate* it reduces to has real library oracles above.
+    The reference is written here from the edge multiplicity table, on fixtures that are
+    edge-manifold; the library oracles (open3d's offending edges, MeshLab's per-face selection, and
+    igl's per-corner flags below) are compared on meshes with a non-manifold edge in
+    [`test_edge_manifold_mask_matches_open3d`] and [`test_edge_manifold_mask_matches_pymeshlab`].
     Length is asserted too, since a short mask would compare equal on its prefix. At
     ``allow_boundary_edges=False`` the mask is ``face_watertight_mask``, asserted equal.
     """
@@ -336,6 +339,99 @@ def test_edge_manifold_mask(
         assert np.array_equal(mask_wp.numpy(), edge_manifold_bf.all(axis=1))
     else:
         assert np.array_equal(od.validation.face_watertight_mask(mesh_wp.indices).numpy(), mask_np)
+
+
+def _with_fin(mesh_tm: tm.Trimesh) -> tm.Trimesh:
+    """
+    Add one triangle on the first interior edge, off the surface: that edge gets three faces.
+
+    The new apex sits above the edge's midpoint along its first face's normal, a tenth of the
+    mesh's extent away, so the fin is a well-shaped triangle sharing nothing else with the mesh.
+    Its two other edges are boundary edges.
+    """
+    edges = undirected_edges(mesh_tm.faces)
+    _, inverse, counts = np.unique(edges, axis=0, return_inverse=True, return_counts=True)
+    corner = int(np.flatnonzero(counts[inverse.reshape(-1)] == 2)[0])
+    face, k = divmod(corner, 3)
+    a, b = int(mesh_tm.faces[face, k]), int(mesh_tm.faces[face, (k + 1) % 3])
+    apex = 0.5 * (mesh_tm.vertices[a] + mesh_tm.vertices[b])
+    apex = apex + 0.1 * float(mesh_tm.scale) * mesh_tm.face_normals[face]
+    vertices_np = np.vstack((mesh_tm.vertices, apex))
+    faces_np = np.vstack((mesh_tm.faces, [[a, b, mesh_tm.vertices.shape[0]]]))
+    return tm.Trimesh(vertices_np, faces_np, process=False)
+
+
+def _non_manifold_edge_case(request: pytest.FixtureRequest, case: str) -> tm.Trimesh:
+    """Build a conftest mesh with a fin, or the three-face fan, or the edge-manifold bow-tie."""
+    if case == "fan":
+        return tm.Trimesh(_FAN_VERTICES, _FAN_FACES, process=False)
+    if case == "bowtie":
+        return tm.Trimesh(_BOWTIE_VERTICES, _BOWTIE_FACES, process=False)
+    mesh_tm, _ = request.getfixturevalue(case.removesuffix("_fin"))
+    return _with_fin(mesh_tm)
+
+
+_NON_MANIFOLD_EDGE_CASES = [f"{name}_fin" for name in MESHES] + ["fan", "bowtie"]
+"""The fixtures with a fin (one edge of three faces), the bare fan, and the bow-tie (none)."""
+
+
+@pytest.mark.parametrize("case", _NON_MANIFOLD_EDGE_CASES)
+@pytest.mark.parametrize("allow_boundary_edges", [True, False])
+@pytest.mark.parity("edge_manifold_mask", "open3d")
+def test_edge_manifold_mask_matches_open3d(
+    request: pytest.FixtureRequest, device: str, case: str, allow_boundary_edges: bool
+) -> None:
+    """
+    Class B: ``get_non_manifold_edges`` reduced to the faces those edges bound.
+
+    open3d returns the offending *edges* under the same ``allow_boundary_edges`` switch as
+    ordito's; the transform flags a face when any of its three edges is in that list, which is
+    ``~edge_manifold_mask`` by definition. Non-vacuous on both switches: every fixture carries a
+    fin, so an edge of three faces exists at ``True``, and at ``False`` the boundary edges join it
+    (``saddle_graded``'s rim, the fin's own two edges); the bow-tie flags nothing at ``True`` and
+    both its faces at ``False``.
+    """
+    mesh_tm = _non_manifold_edge_case(request, case)
+    _, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
+    mask_wp = od.validation.edge_manifold_mask(faces_wp, allow_boundary_edges=allow_boundary_edges)
+
+    edges_o3d = np.asarray(
+        trimesh_to_open3d(mesh_tm).get_non_manifold_edges(allow_boundary_edges=allow_boundary_edges)
+    ).reshape(-1, 2)
+    flagged_o3d = {tuple(edge) for edge in np.sort(edges_o3d, axis=1).tolist()}
+    face_edges = undirected_edges(mesh_tm.faces).reshape(-1, 3, 2)
+    mask_o3d = ~np.array(
+        [any(tuple(edge) in flagged_o3d for edge in face.tolist()) for face in face_edges]
+    )
+
+    if case != "bowtie" or not allow_boundary_edges:
+        assert edges_o3d.shape[0] > 0  # non-vacuity: the reference found an offending edge
+    assert np.array_equal(mask_wp.numpy(), mask_o3d)
+
+
+@pytest.mark.parametrize("case", _NON_MANIFOLD_EDGE_CASES)
+@pytest.mark.parity("edge_manifold_mask", "pymeshlab")
+def test_edge_manifold_mask_matches_pymeshlab(
+    request: pytest.FixtureRequest, device: str, case: str
+) -> None:
+    """
+    Class B: ``compute_selection_by_non_manifold_edges_per_face`` is the complement of the mask.
+
+    MeshLab selects the faces on an edge shared by three or more faces and leaves boundary edges
+    alone, which is ``allow_boundary_edges=True``; the transform is the complement. Non-vacuous:
+    every case but the bow-tie selects the fin's three faces (counted), and the bow-tie, which is
+    edge-manifold, selects none.
+    """
+    mesh_tm = _non_manifold_edge_case(request, case)
+    _, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
+    mask_wp = od.validation.edge_manifold_mask(faces_wp, allow_boundary_edges=True)
+
+    meshset_pml = trimesh_to_pymeshlab(mesh_tm)
+    meshset_pml.compute_selection_by_non_manifold_edges_per_face()
+    selected_pml = np.asarray(meshset_pml.current_mesh().face_selection_array())
+
+    assert int(selected_pml.sum()) == (0 if case == "bowtie" else 3)
+    assert np.array_equal(mask_wp.numpy(), ~selected_pml)
 
 
 def test_edge_manifold_mask_checks_faces_against_a_given_vertex_count(
@@ -575,6 +671,93 @@ def test_vertex_manifold_mask(request: pytest.FixtureRequest, mesh_name: str) ->
     assert manifold_wp is True
 
 
+def _pinched(mesh_tm: tm.Trimesh) -> tm.Trimesh:
+    """
+    Glue a point-reflected copy of the mesh to it at one vertex: that vertex's star is two fans.
+
+    The copy is reflected through the first face's first vertex ``p`` and wound the other way, and
+    its own copy of ``p`` is dropped rather than left unreferenced, so ``p`` is the one
+    non-manifold vertex and every other vertex is referenced. The result stays edge-manifold.
+    """
+    n_vertices = mesh_tm.vertices.shape[0]
+    pinch = int(mesh_tm.faces[0, 0])
+    kept = np.flatnonzero(np.arange(n_vertices) != pinch)
+    copy_index = np.empty(n_vertices, dtype=np.int64)
+    copy_index[kept] = n_vertices + np.arange(kept.size)
+    copy_index[pinch] = pinch
+    vertices_np = np.vstack(
+        (mesh_tm.vertices, 2.0 * mesh_tm.vertices[pinch] - mesh_tm.vertices[kept])
+    )
+    faces_np = np.vstack((mesh_tm.faces, copy_index[mesh_tm.faces[:, ::-1]]))
+    return tm.Trimesh(vertices_np, faces_np, process=False)
+
+
+@pytest.mark.parametrize("case", [*(f"{name}_pinched" for name in MESHES), "bowtie"])
+@pytest.mark.parity("vertex_manifold_mask", "open3d", "pymeshlab")
+def test_vertex_manifold_mask_matches_open3d_and_pymeshlab(
+    request: pytest.FixtureRequest, device: str, case: str
+) -> None:
+    """
+    Class B: open3d's non-manifold vertices and MeshLab's vertex selection, on edge-manifold input.
+
+    The transforms: ``get_non_manifold_vertices`` returns indices, scattered into a mask, and
+    ``compute_selection_by_non_manifold_per_vertex`` selects the offending vertices, so both are
+    complemented against ordito's per-vertex *manifold* flag. The restriction to edge-manifold input
+    is the definitions' own: on a vertex of an edge with three faces both references test
+    connectivity and pass it, where ordito requires a fan
+    ([`test_vertex_manifold_mask_non_manifold_edge_divergence`]). Every vertex is referenced (ordito
+    flags an unreferenced one, the references do not look at it).
+
+    Non-vacuous: each case has exactly one non-manifold vertex, a pinch where two copies of a
+    fixture meet (closed and open) or the bow-tie's centre, asserted on both references.
+    """
+    if case == "bowtie":
+        mesh_tm = tm.Trimesh(_BOWTIE_VERTICES, _BOWTIE_FACES, process=False)
+        pinch = 0
+    else:
+        source_tm, _ = request.getfixturevalue(case.removesuffix("_pinched"))
+        mesh_tm, pinch = _pinched(source_tm), int(source_tm.faces[0, 0])
+    assert np.unique(mesh_tm.faces).size == mesh_tm.vertices.shape[0]  # all referenced
+    vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
+    assert od.validation.is_edge_manifold(faces_wp) is True  # the class-B precondition
+    mask_wp = od.validation.vertex_manifold_mask(vertices_wp, faces_wp).numpy()
+
+    mask_o3d = np.ones(mesh_tm.vertices.shape[0], dtype=bool)
+    mask_o3d[np.asarray(trimesh_to_open3d(mesh_tm).get_non_manifold_vertices())] = False
+    meshset_pml = trimesh_to_pymeshlab(mesh_tm)
+    meshset_pml.compute_selection_by_non_manifold_per_vertex()
+    mask_pml = ~np.asarray(meshset_pml.current_mesh().vertex_selection_array())
+
+    assert np.flatnonzero(~mask_o3d).tolist() == [pinch]  # non-vacuity, on both references
+    assert np.flatnonzero(~mask_pml).tolist() == [pinch]
+    assert np.array_equal(mask_wp, mask_o3d)
+    assert np.array_equal(mask_wp, mask_pml)
+
+
+@pytest.mark.parametrize("case", ["fan", *(f"{name}_fin" for name in MESHES)])
+def test_vertex_manifold_mask_non_manifold_edge_divergence(
+    request: pytest.FixtureRequest, device: str, case: str
+) -> None:
+    """
+    Not a parity assert: the input class where ordito and open3d / MeshLab part, pinned.
+
+    On an edge shared by three faces, the faces around each of its two vertices are still
+    edge-connected, which is what open3d and MeshLab test, so neither flags anything; ordito
+    requires the star to be one fan and flags exactly those two vertices. The fixtures with a fin
+    have no other defect, so the references' answers are empty and ordito's is the fin's edge.
+    """
+    mesh_tm = _non_manifold_edge_case(request, case)
+    vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
+    mask_wp = od.validation.vertex_manifold_mask(vertices_wp, faces_wp).numpy()
+    meshset_pml = trimesh_to_pymeshlab(mesh_tm)
+    meshset_pml.compute_selection_by_non_manifold_per_vertex()
+
+    fin_edge = sorted(mesh_tm.faces[-1, :2].tolist())  # the fan's last face also sits on (0, 1)
+    assert np.flatnonzero(~mask_wp).tolist() == fin_edge
+    assert np.asarray(trimesh_to_open3d(mesh_tm).get_non_manifold_vertices()).size == 0
+    assert not np.asarray(meshset_pml.current_mesh().vertex_selection_array()).any()
+
+
 @pytest.mark.parametrize(
     ("vertices_np", "faces_np", "expected"),
     [
@@ -792,6 +975,99 @@ def test_face_self_intersecting_mask_matches_pymeshfix(device: str, kind: str) -
     assert od.validation.is_self_intersecting(mesh_wp) is (n_expected > 0)
 
 
+@pytest.mark.parametrize(
+    ("mesh_name", "n_expected"),
+    [
+        ("boy_surface", 177),
+        ("sphere_irregular", 0),
+        ("sphere_irregular_hollow", 0),
+        ("tangled_boxes", 12),
+        ("torus_self_intersecting", 64),
+    ],
+)
+@pytest.mark.parity("face_self_intersecting_mask", "igl")
+@pytest.mark.parity("is_self_intersecting", "igl")
+def test_face_self_intersecting_mask_matches_igl(
+    request: pytest.FixtureRequest, device: str, mesh_name: str, n_expected: int
+) -> None:
+    """
+    Class B, face for face: ``igl.predicates.find_self_intersections``' pairs reduced to a face set.
+
+    The transform: igl returns the intersecting face *pairs* with a per-pair coplanar flag, it
+    tests pairs that share a vertex or an edge beyond what they share, and it counts a coplanar
+    overlap. ordito skips every pair sharing a vertex and counts no coplanar pair, so those pairs
+    are dropped before a face is flagged for appearing in any remaining pair
+    ([`_igl_self_intersecting_mask`]). On these inputs nothing is dropped and the sets are equal;
+    the input where the conventions part is
+    [`test_face_self_intersecting_mask_igl_contact_divergence`].
+
+    The predicate is compared with igl's ``first_only=True`` verdict, the early-exit form of the
+    same search. Non-vacuous in both directions: three inputs intersect (the counts pin them) and
+    two closed fixtures do not.
+    """
+    if mesh_name == "tangled_boxes":
+        mesh_tm = _tangled_boxes()
+        vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
+        mesh_wp = wp.Mesh(points=vertices_wp, indices=faces_wp)
+    else:
+        mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    mask_igl, n_dropped = _igl_self_intersecting_mask(mesh_tm)
+    mask_wp = od.validation.face_self_intersecting_mask(mesh_wp.points, mesh_wp.indices)
+    assert n_dropped == 0
+    assert int(mask_igl.sum()) == n_expected  # non-vacuity, and it pins the fixture
+    assert np.array_equal(mask_wp.numpy(), mask_igl)
+    found_igl, _, _ = igl.predicates.find_self_intersections(
+        np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64),
+        faces_igl(mesh_tm),
+        first_only=True,
+    )
+    assert od.validation.is_self_intersecting(mesh_wp) is bool(found_igl)
+
+
+def _igl_self_intersecting_mask(mesh_tm: tm.Trimesh) -> tuple[np.ndarray, int]:
+    """
+    Flag igl's intersecting faces under ordito's convention, and count the pairs that drops.
+
+    A pair sharing a vertex, or flagged coplanar, is not an intersection for ordito; the rest are
+    reduced to the faces they name.
+    """
+    faces_np = faces_igl(mesh_tm)
+    _found_igl, pairs_igl, coplanar_igl = igl.predicates.find_self_intersections(
+        np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64), faces_np
+    )
+    pairs_igl = np.asarray(pairs_igl, dtype=np.int64).reshape(-1, 2)
+    first, second = faces_np[pairs_igl[:, 0]], faces_np[pairs_igl[:, 1]]
+    shares_vertex = (first[:, :, None] == second[:, None, :]).any(axis=(1, 2))
+    kept = ~shares_vertex & ~np.asarray(coplanar_igl, dtype=bool).reshape(-1)
+    mask_igl = np.zeros(faces_np.shape[0], dtype=bool)
+    mask_igl[pairs_igl[kept].ravel()] = True
+    return mask_igl, int((~kept).sum())
+
+
+def test_face_self_intersecting_mask_igl_contact_divergence(
+    bohemian_dome: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a parity assert: the contact class igl counts and ordito does not, pinned with numbers.
+
+    On the Bohemian dome igl's exact search reports 207 pairs over 168 faces against ordito's 161.
+    Eleven of its pairs share a vertex or are coplanar (adjacent faces folded onto each other near
+    the dome's tangency curve, which ordito skips by construction); dropping them leaves 163 faces,
+    and the two left over (750 and 2272) each come from a pair where an edge of one triangle lies
+    exactly in the other's plane (exact rational orientation: two zero ``orient3d`` signs). The
+    triangles touch along that edge without crossing, and ordito's docstring states that a pair
+    that touches without crossing is not an intersection. Every face ordito flags, igl flags too.
+    """
+    mesh_tm, mesh_wp = bohemian_dome
+    mask_wp = od.validation.face_self_intersecting_mask(mesh_wp.points, mesh_wp.indices).numpy()
+    mask_igl, n_dropped = _igl_self_intersecting_mask(mesh_tm)
+    assert int(mask_wp.sum()) == 161
+    assert n_dropped == 11
+    assert int(mask_igl.sum()) == 163
+    assert not (mask_wp & ~mask_igl).any()
+    assert np.flatnonzero(mask_igl & ~mask_wp).tolist() == [750, 2272]
+
+
 # Two coplanar triangles from a marching-cubes surface: no shared vertex, and disjoint in the
 # plane they share (a gap of about 15 % of an edge). Their corners are exactly coplanar in float32.
 _COPLANAR_DISJOINT_PAIR = np.array(
@@ -944,6 +1220,42 @@ def test_is_orientable_on_non_orientable_surfaces(
     assert od.validation.is_orientable(mesh_wp.indices) is False
     assert _orientable_np(mesh_tm.faces) is False
     assert od.validation.is_winding_consistent(mesh_wp.indices) is False
+
+
+@pytest.mark.parametrize(
+    ("mesh_name", "orientable"),
+    [
+        ("sphere_irregular", True),
+        ("saddle_graded", True),
+        ("torus_irregular_holes", True),
+        ("bohemian_dome", True),
+        ("mobius", False),
+        ("boy_surface", False),
+    ],
+)
+@pytest.mark.parametrize("flipped", [False, True], ids=["as_built", "half_flipped"])
+@pytest.mark.parity("is_orientable", "open3d")
+def test_is_orientable_matches_open3d(
+    request: pytest.FixtureRequest, mesh_name: str, orientable: bool, flipped: bool
+) -> None:
+    """
+    Class A: ``is_orientable`` against ``open3d.geometry.TriangleMesh.is_orientable``.
+
+    Both answer whether some choice of winding makes every component consistent, so reversing
+    every other face (``half_flipped``) changes neither verdict while it breaks the winding
+    consistency both would otherwise read off directly. Non-vacuous in both directions: two
+    non-orientable surfaces (the Moebius band with a rim, Boy's surface closed) and four orientable
+    ones (closed, disk, genus one with holes, self-intersecting).
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    faces_np = _flip_half(mesh_tm.faces) if flipped else mesh_tm.faces
+    faces_wp = wp.array(
+        faces_np.reshape(-1).astype(np.int32), dtype=wp.int32, device=mesh_wp.device
+    )
+    mesh_o3d = trimesh_to_open3d(tm.Trimesh(mesh_tm.vertices, faces_np, process=False))
+    orientable_o3d = mesh_o3d.is_orientable()
+    assert orientable_o3d is orientable
+    assert od.validation.is_orientable(faces_wp) is orientable_o3d
 
 
 @pytest.mark.parametrize(
@@ -1462,7 +1774,8 @@ def test_is_watertight_calls_a_mesh_factory_only_past_the_manifold_tests(
     assert len(calls) == int(reaches_broad_phase)
 
 
-@pytest.mark.parametrize("mesh_name", OPEN_MESHES)
+@pytest.mark.parametrize("mesh_name", [*MESHES, "torus_irregular_holes"])
+@pytest.mark.parity("face_watertight_mask", "trimesh")
 def test_face_watertight_mask_broken_faces_reference(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -1470,13 +1783,15 @@ def test_face_watertight_mask_broken_faces_reference(
     Class B (complement, then sort): trimesh reports the *broken* faces, this the good ones.
 
     Two named transforms -- invert the mask to indices, and sort both sides, since neither
-    library defines the order.
+    library defines the order. Non-vacuous: the open fixtures have broken faces along their rims
+    (asserted), and the closed one has none, so both answers are covered.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     mask_wp = od.validation.face_watertight_mask(mesh_wp.indices)
     # Faces breaking watertightness are the complement of the mask (trimesh's broken_faces).
     broken_ours = np.flatnonzero(~mask_wp.numpy())
     broken_tm = np.asarray(tm_repair.broken_faces(mesh_tm), dtype=np.int64)
+    assert (broken_tm.size > 0) is (mesh_name not in CLOSED_MESHES)
     assert np.array_equal(np.sort(broken_ours), np.sort(broken_tm))
 
 

@@ -230,6 +230,25 @@ def test_is_watertight(bench_case: BenchCase, warm: bool) -> None:
     _time_property(bench_case, "is_watertight", warm=warm, rounds=_ROUNDS)
 
 
+@pytest.mark.benchmark(group="mesh_body_count")
+@pytest.mark.benchaxis("components")
+@pytest.mark.benchlibs("ordito", "trimesh")
+@pytest.mark.parametrize("warm", [False, True], ids=["cold", "warm"])
+def test_body_count(bench_case: BenchCase, warm: bool) -> None:
+    """
+    ``body_count``: the face-adjacency components counted, on the components axis.
+
+    Cold, it builds the face adjacency and labels it; the count itself is one launch and one read
+    over the labels. ``Trimesh.body_count`` is the reference, the same cached property on the class
+    this one mirrors, labelling the same face-adjacency graph (``tests/test_mesh.py`` compares the
+    counts).
+    """
+    if bench_case.kind == "trimesh":
+        _time_trimesh_property(bench_case, "body_count", warm=warm)
+        return
+    _time_property(bench_case, "body_count", warm=warm)
+
+
 @pytest.mark.benchmark(group="mesh_vector_heat_operators")
 @pytest.mark.benchaxis("scale")
 @pytest.mark.benchlibs("ordito")

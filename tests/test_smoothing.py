@@ -39,6 +39,7 @@ from tests.conftest import (
     sphere_irregular_arrays,
 )
 from tests.conversions import (
+    faces_igl,
     meshlib_bitset_to_numpy,
     meshlib_to_trimesh,
     numpy_to_meshlib,
@@ -102,6 +103,7 @@ def _noisy_icosphere_3(device: str) -> tuple[tm.Trimesh, wp.array[wp.vec3], wp.a
         pytest.param("saddle_graded", 6, False, True, id="saddle_graded-pluggable_operator"),
     ],
 )
+@pytest.mark.parity("filter_laplacian_integration", "trimesh")
 def test_filter_laplacian_matches_trimesh(
     request: pytest.FixtureRequest,
     mesh_name: str,
@@ -535,6 +537,7 @@ def test_filter_laplacian_matches_meshlib_relax(
         pytest.param(50.0, "sphere_irregular", True, id="volume-50.0-sphere_irregular"),
     ],
 )
+@pytest.mark.parity("filter_laplacian_integration", "trimesh")
 def test_filter_laplacian_implicit_matches_trimesh(
     request: pytest.FixtureRequest, mesh_name: str, lamb: float, volume_constraint: bool
 ) -> None:
@@ -3863,6 +3866,59 @@ def test_filter_scalar_laplacian_matches_pymeshlab(
     assert np.allclose(
         smoothed_wp.numpy(), meshset_pml.current_mesh().vertex_scalar_array(), rtol=1e-5, atol=1e-6
     )
+
+
+@pytest.mark.parity("filter_scalar_laplacian", "igl")
+def test_filter_scalar_laplacian_matches_igl(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], saddle_graded: tuple[tm.Trimesh, wp.Mesh]
+) -> None:
+    """
+    Class A: one full-step pass is ``igl.per_vertex_attribute_smoothing`` on a closed mesh.
+
+    igl adds, for each face corner, the attributes of the face's two other corners and divides by
+    twice the incident face count. On a closed edge-manifold mesh every ring edge borders two
+    faces, so that is the unweighted 1-ring average, ``lamb=1.0, iterations=1`` here. igl takes an
+    ``(n, k)`` attribute matrix; two columns (a spike and a random field) are smoothed in one
+    call and compared one at a time.
+
+    On an open mesh the two part, which is why the claim is closed only: a rim neighbour borders
+    one face and counts once in igl's sum where an interior neighbour counts twice, while ordito
+    weighs the whole ring alike. The last assert pins that on ``saddle_graded``.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    rng = np.random.default_rng(31)
+    values_np = np.column_stack(
+        [_scalar_spike(mesh_tm), rng.standard_normal(mesh_tm.vertices.shape[0])]
+    ).astype(np.float32)
+    smoothed_igl = np.asarray(
+        igl.per_vertex_attribute_smoothing(values_np.astype(np.float64), faces_igl(mesh_tm))
+    )
+    for column in range(2):
+        values_wp = wp.array(values_np[:, column], dtype=wp.float32, device=mesh_wp.device)
+        smoothed_wp = od.smoothing.filter_scalar_laplacian(
+            values_wp, mesh_wp.points, mesh_wp.indices, lamb=1.0, iterations=1
+        )
+        assert np.abs(smoothed_igl[:, column] - values_np[:, column]).max() > 0.1  # non-vacuity
+        assert np.allclose(smoothed_wp.numpy(), smoothed_igl[:, column], rtol=1e-5, atol=1e-6)
+
+    open_tm, open_wp = saddle_graded
+    field_np = rng.standard_normal(open_tm.vertices.shape[0]).astype(np.float32)
+    open_igl = np.asarray(
+        igl.per_vertex_attribute_smoothing(field_np.astype(np.float64)[:, None], faces_igl(open_tm))
+    )[:, 0]
+    open_smoothed_wp = od.smoothing.filter_scalar_laplacian(
+        wp.array(field_np, dtype=wp.float32, device=open_wp.device),
+        open_wp.points,
+        open_wp.indices,
+        lamb=1.0,
+        iterations=1,
+    )
+    rim_np = np.unique(open_tm.edges[tm.grouping.group_rows(open_tm.edges_sorted, require_count=1)])
+    interior_np = np.setdiff1d(np.arange(open_tm.vertices.shape[0]), rim_np)
+    assert np.allclose(
+        open_smoothed_wp.numpy()[interior_np], open_igl[interior_np], rtol=1e-5, atol=1e-6
+    )
+    assert np.abs(open_smoothed_wp.numpy()[rim_np] - open_igl[rim_np]).max() > 1e-2
 
 
 def test_filter_scalar_laplacian_conserves_the_degree_weighted_total_on_a_closed_mesh(

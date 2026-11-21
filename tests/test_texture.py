@@ -1,7 +1,8 @@
 """
 Regression tests for ``ordito.texture``.
 
-The forward rasterizers are compared against a vendored moderngl (OpenGL) reference; the inverse
+The forward rasterizers are compared against a vendored moderngl (OpenGL) reference, and
+``rasterize_attribute`` also against open3d's vertex-attribute bake; the inverse
 samplers against ``scipy.ndimage.map_coordinates``. OpenGL's top-left edge fill rule and a
 barycentric pixel-centre coverage test part only on a pixel centre lying exactly on a rim edge,
 which the fixture avoids, so the coverage masks are compared exactly; interpolated values carry
@@ -17,6 +18,7 @@ from typing import Literal
 import moderngl
 import numpy as np
 import numpy.typing as npt
+import open3d as o3d
 import pytest
 import warp as wp
 from scipy.ndimage import map_coordinates
@@ -381,6 +383,68 @@ def test_rasterize_attribute_matches_opengl(
     assert np.allclose(snapped_wp, image_gl, rtol=1e-5, atol=1e-5)
     assert np.array_equal(image_wp[:, :, 0] > 0.5, covered_gl)
     assert np.allclose(image_wp[covered_gl], image_gl[covered_gl], rtol=0.0, atol=unsnapped_atol)
+
+
+@pytest.mark.parity("rasterize_attribute", "open3d")
+@pytest.mark.parametrize("resolution", [64, 256])
+def test_rasterize_attribute_matches_open3d(device: str, resolution: int) -> None:
+    """
+    Class B (ordito's coverage): open3d's ``bake_vertex_attr_textures`` on the texels ordito covers.
+
+    open3d bakes a vertex attribute into a texture through per-corner ``texture_uvs``, in ordito's
+    image orientation (row ``0`` at ``v = 1``) and with the same barycentric interpolation at pixel
+    centres. Its coverage is the named difference: ``margin`` dilates each UV island by that many
+    pixels, and at ``margin=0`` it drops pixel centres on interior triangle edges (99 of ordito's
+    2 320 texels at 64, some 19 pixels inside the island), so it is called at ``margin=1``. Then
+    its texels cover every one of ordito's and its extra texels lie within a pixel of them. On
+    ordito's texels the values agree to 3.6e-07 at 64 and 4.8e-07 at 256 on both devices. The
+    fixture is the anisotropic UV lattice, which a transposed or flipped image would not match.
+    **Mutation probe**: flipping the reference's rows leaves a maximum difference of 1.98 on
+    ordito's texels (the flipped image's fill included).
+
+    Non-vacuous: the attribute is random per vertex, so the shared texels are not constant.
+    """
+    uv_np, faces_np = _anisotropic_grid_uv_mesh()
+    triangles_np = faces_np.reshape(-1, 3)
+    attribute_np = np.random.default_rng(0).random((uv_np.shape[0], 3)).astype(np.float32)
+
+    mesh_o3d = o3d.t.geometry.TriangleMesh()
+    mesh_o3d.vertex.positions = o3d.core.Tensor(  # pyright: ignore[reportCallIssue]  # the stub drops dtype/device defaults
+        np.column_stack([uv_np, np.zeros(uv_np.shape[0])]).astype(np.float32)
+    )
+    mesh_o3d.triangle.indices = o3d.core.Tensor(triangles_np.astype(np.int64))  # pyright: ignore[reportCallIssue]
+    mesh_o3d.vertex["attribute"] = o3d.core.Tensor(attribute_np)  # pyright: ignore[reportCallIssue]
+    mesh_o3d.triangle.texture_uvs = o3d.core.Tensor(uv_np[triangles_np])  # pyright: ignore[reportCallIssue]
+    image_o3d = (
+        mesh_o3d.bake_vertex_attr_textures(
+            resolution, {"attribute"}, margin=1.0, fill=-1.0, update_material=False
+        )["attribute"]
+        .numpy()
+        .astype(np.float32)
+    )
+    covered_o3d = (image_o3d != -1.0).all(axis=-1)
+
+    image_np = od.texture.rasterize_attribute(
+        *_upload_uv_mesh(uv_np, faces_np, device), _float_rows(attribute_np, device), resolution
+    ).numpy()
+    covered_np = (image_np != 0.0).any(axis=-1)
+
+    assert covered_np.sum() > resolution  # non-vacuity: a real island
+    assert np.ptp(image_o3d[covered_np]) > 0.5
+    assert not (covered_np & ~covered_o3d).any()
+    assert np.allclose(image_np[covered_np], image_o3d[covered_np], rtol=1e-5, atol=1e-5)
+    # open3d's extra texels are its one-pixel margin: each touches a texel ordito covers.
+    extra_np = covered_o3d & ~covered_np
+    grown_np = covered_np.copy()
+    grown_np[1:] |= covered_np[:-1]
+    grown_np[:-1] |= covered_np[1:]
+    grown_np[:, 1:] |= covered_np[:, :-1]
+    grown_np[:, :-1] |= covered_np[:, 1:]
+    grown_np[1:, 1:] |= covered_np[:-1, :-1]
+    grown_np[:-1, :-1] |= covered_np[1:, 1:]
+    grown_np[1:, :-1] |= covered_np[:-1, 1:]
+    grown_np[:-1, 1:] |= covered_np[1:, :-1]
+    assert not (extra_np & ~grown_np).any()
 
 
 @pytest.mark.parity(

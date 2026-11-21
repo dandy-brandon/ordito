@@ -74,6 +74,28 @@ def test_sample_fibonacci_sphere_phase_stays_low_discrepancy(device: str):
     assert min_spacing(directions_np) >= 0.99 * min_spacing(expected_np)
 
 
+@pytest.mark.parametrize("count", [1024, 100_000])
+@pytest.mark.parity("sample_fibonacci_sphere", "pymeshlab")
+def test_sample_fibonacci_sphere_matches_pymeshlab(device: str, count: int) -> None:
+    """
+    Class B (``y`` mirrored): MeshLab's ``create_sphere_points(Fibonacci)`` is the same lattice.
+
+    MeshLab winds its spiral the other way about ``z``, the golden angle's sign, so its points are
+    ordito's with ``y`` negated, row for row: measured within **9.1e-7** at 1 024 points and
+    **4.9e-6** at 100 000 (its phase is evaluated in lower precision; ordito's sits within ``1e-5``
+    of the ``float64`` closed form, asserted above). Unmirrored the rows are up to 2.0 apart.
+    """
+    directions_np = od.sample.sample_fibonacci_sphere(count, device=device).numpy()
+    meshset_pml = ml.MeshSet()
+    meshset_pml.create_sphere_points(pointnum=count, spheregentech="Fibonacci")
+    points_pml = np.asarray(meshset_pml.current_mesh().vertex_matrix(), dtype=np.float64)
+
+    assert points_pml.shape == (count, 3)
+    assert np.abs(directions_np - points_pml).max() > 1.0  # non-vacuity: the mirror is needed
+    mirrored_np = directions_np * np.array([1.0, -1.0, 1.0])
+    assert np.allclose(mirrored_np, points_pml, rtol=1e-5, atol=1e-5)
+
+
 def test_sample_fibonacci_cone(device: str) -> None:
     """
     Every direction inside the cone, and both ends of the range match sphere/hemisphere.
@@ -146,6 +168,40 @@ def test_sample_surface(request: pytest.FixtureRequest, mesh_name: str):
     assert np.abs(uniform_np - expected_np).max() > 0.2  # non-vacuity: the deciles differ in area
     for face_idx in (face_idx_wp.numpy(), np.asarray(face_idx_tm), np.asarray(face_idx_igl)):
         assert np.abs(_quantile_bin_shares(face_idx, area_np) - expected_np).max() < 0.03
+
+
+@pytest.mark.parity("sample_surface", "open3d")
+def test_sample_surface_matches_open3d(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
+    """
+    Class C, the area-decile statistic of [`test_sample_surface`] applied to Open3D's sampler.
+
+    ``sample_points_uniformly`` returns bare points, so each sample's face is recovered by a
+    closest-point query (the named transform; every sample lies on the surface, measured
+    2.2e-15 off it). With the faces split into ten bins by area rank, each sampler's share of
+    samples per bin must match the bin's share of the area. **Measured** worst bin error at 10 000
+    samples: Open3D 0.0029 / 0.0054 / 0.0058 over seeds 0-2, ordito 0.0020; bound ``0.03``.
+    **Bug class excluded:** a CDF weighted by anything but area. **Mutation probe**, run below: a
+    sampler uniform per face reads 0.22 on ``saddle_graded``, whose deciles hold 0.05 % to 32 %
+    of the area.
+    """
+    mesh_tm, mesh_wp = saddle_graded
+    count = 10_000
+    n_faces = int(mesh_tm.faces.shape[0])
+    o3d.utility.random.seed(0)
+    samples_o3d = np.asarray(trimesh_to_open3d(mesh_tm).sample_points_uniformly(count).points)
+    _closest_np, distance_o3d, face_idx_o3d = tm.proximity.closest_point(mesh_tm, samples_o3d)
+    assert samples_o3d.shape == (count, 3)
+    assert float(np.max(distance_o3d)) < 1e-6
+
+    face_idx_wp = od.sample.sample_surface(mesh_wp.points, mesh_wp.indices, count, seed=0)[1]
+
+    area_np = mesh_tm.area_faces
+    expected_np = _quantile_bin_shares(np.arange(n_faces), area_np, area_np)
+    for face_idx in (face_idx_wp.numpy(), np.asarray(face_idx_o3d)):
+        assert np.abs(_quantile_bin_shares(face_idx, area_np) - expected_np).max() < 0.03
+
+    uniform_np = np.random.default_rng(0).integers(0, n_faces, size=count)
+    assert np.abs(_quantile_bin_shares(uniform_np, area_np) - expected_np).max() > 0.03
 
 
 def _quantile_bin_shares(

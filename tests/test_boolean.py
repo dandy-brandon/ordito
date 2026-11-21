@@ -432,6 +432,102 @@ def test_batch_booleans_match_manifold3d(
     assert_same_as_manifold3d(result_wp, result_m3)
 
 
+@pytest.mark.parity("union_all", "meshlib")
+@pytest.mark.parametrize("case", ["scattered", "apart"])
+def test_union_all_matches_meshlib(device: str, case: str) -> None:
+    """
+    ``union_all`` is MeshLib's ``uniteManyMeshes`` up to the triangulation of each cut face.
+
+    Class B, the transform of ``test_boolean_matches_meshlib``: MeshLib does not simplify its
+    result, and on these curved operands neither does the collinear collapse, so both results
+    keep every crossing vertex. ``uniteManyMeshes`` unites its meshes in its own order (nested
+    components removed, no random shifts by default), which leaves the same arrangement.
+    ``scattered`` overlaps in a chain. ``apart`` is the spheres of that case whose boxes do not
+    touch, which ``union_all`` joins without a Boolean, without its bar: the bar is a box, whose
+    flat faces Manifold's collapse clears of collinear cut vertices that MeshLib keeps (with the
+    bar: 1 047 vertices and 2 074 faces against 1 010 and 2 000, the same volume). ``row``'s
+    boxes touch face to face, where MeshLib also keeps the contact sheets Manifold removes; both
+    are left to ``test_batch_booleans_match_manifold3d``.
+    """
+    meshes_tm = _batch_meshes(case)[:6]
+    meshes_ml = mm.std_vector_Mesh_const_ptr([trimesh_to_meshlib(mesh) for mesh in meshes_tm])
+    result_tm = meshlib_to_trimesh(mm.uniteManyMeshes(meshes_ml, mm.UniteManyMeshesParams()))
+    volume_sum = sum(float(mesh.volume) for mesh in meshes_tm)
+    if case == "scattered":  # non-vacuity: the spheres overlap (0.97 of the summed volume)
+        assert float(result_tm.volume) < 0.99 * volume_sum
+    else:  # the disjoint shortcut: a concatenation
+        assert np.isclose(float(result_tm.volume), volume_sum, rtol=1e-5)
+    result_wp = od.boolean.union_all(
+        [numpy_to_warp(mesh.vertices, mesh.faces, device) for mesh in meshes_tm]
+    )
+    assert_same_cut_faces(result_wp, result_tm.vertices, result_tm.faces, meshes_tm)
+
+
+def _plane_tm(normal: tuple[float, float, float], offset: float, half_width: float) -> tm.Trimesh:
+    """Return a square of two triangles on the plane ``normal . x == offset`` (unit normal)."""
+    normal_np = np.asarray(normal, dtype=np.float64) / np.linalg.norm(normal)
+    first_np = np.cross(normal_np, [1.0, 0.0, 0.0] if abs(normal_np[0]) < 0.9 else [0.0, 1.0, 0.0])
+    first_np /= np.linalg.norm(first_np)
+    second_np = np.cross(normal_np, first_np)
+    centre_np = normal_np * offset
+    corners_np = [
+        centre_np + half_width * (s * first_np + t * second_np)
+        for s, t in ((-1, -1), (1, -1), (1, 1), (-1, 1))
+    ]
+    return tm.Trimesh(np.array(corners_np), [[0, 1, 2], [0, 2, 3]], process=False)
+
+
+# Planes through the sphere fixtures, offset from the vertex mean: oblique, axis-aligned (through
+# the icosphere's equator vertices), diagonal.
+_TRIMESH_PLANES = [((0.3, -0.5, 0.8), 0.1), ((0.0, 0.0, 1.0), 0.0), ((1.0, 1.0, 0.0), 0.0)]
+
+
+@pytest.mark.parity("split_by_plane", "trimesh")
+@pytest.mark.parity("trim_by_plane", "trimesh")
+@pytest.mark.parametrize("mesh_name", ["icosphere", *CLOSED_MESHES])
+@pytest.mark.parametrize(("normal", "offset"), _TRIMESH_PLANES)
+def test_plane_cuts_match_trimesh(
+    request: pytest.FixtureRequest,
+    device: str,
+    mesh_name: str,
+    normal: tuple[float, float, float],
+    offset: float,
+) -> None:
+    """
+    The plane cuts are trimesh's capped ``slice_mesh_plane`` up to the triangulation of each face.
+
+    Class B through ``assert_same_cut_faces``, with the plane itself as a third operand so the cap
+    has a plane to be assigned to: the side faces, cut into polygons along the plane, and the cap,
+    one polygon per section loop, must match polygon by polygon. trimesh keeps the side of the
+    normal it is handed, so ``-normal`` gives ``split_by_plane``'s second half.
+
+    Curved fixtures only. On a box or a torus, whose grid quads are planar, Manifold removes the
+    cut vertices that fall collinear on a flat polygon and trimesh keeps them (the box cut by
+    ``z = 0.25``: 8 against 12 vertices, the same volume), and on the torus cut by the oblique
+    plane trimesh's cap misses one triangle (365 faces against 366, not watertight).
+    """
+    mesh_tm, _ = request.getfixturevalue(mesh_name)
+    mesh_tm = float32_trimesh(mesh_tm)
+    normal_np = np.asarray(normal) / np.linalg.norm(normal)
+    offset += float(mesh_tm.vertices.mean(axis=0) @ normal_np)
+    origin_np = offset * normal_np
+    above_tm = tm.intersections.slice_mesh_plane(mesh_tm, normal_np, origin_np, cap=True)
+    below_tm = tm.intersections.slice_mesh_plane(mesh_tm, -normal_np, origin_np, cap=True)
+    assert above_tm is not None
+    assert below_tm is not None
+    for half_tm in (above_tm, below_tm):
+        half_tm.remove_unreferenced_vertices()
+        assert 0.0 < float(half_tm.volume) < float(mesh_tm.volume)  # non-vacuity: a real cut
+
+    mesh_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
+    operands = [mesh_tm, _plane_tm(normal, offset, 10.0 * float(mesh_tm.scale) + abs(offset))]
+    trimmed_wp = od.boolean.trim_by_plane(*mesh_wp, normal, offset)
+    assert_same_cut_faces(trimmed_wp, above_tm.vertices, above_tm.faces, operands)
+    above_wp, below_wp = od.boolean.split_by_plane(*mesh_wp, normal, offset)
+    assert_same_cut_faces(above_wp, above_tm.vertices, above_tm.faces, operands)
+    assert_same_cut_faces(below_wp, below_tm.vertices, below_tm.faces, operands)
+
+
 def test_batch_booleans_reject_an_empty_list() -> None:
     """No mesh at all raises ``ValueError``. Not a library comparison: the guard."""
     with pytest.raises(ValueError, match="at least one mesh"):

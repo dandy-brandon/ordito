@@ -27,15 +27,6 @@ from tests.conversions import (
 )
 
 
-def _face_flipped_indices_np(vertices_np: np.ndarray, faces_np: np.ndarray) -> np.ndarray:
-    """NumPy reference for libigl ``flipped_triangles``: 2D signed area strictly negative."""
-    tri = vertices_np[faces_np]  # (n_faces, 3, 2)
-    e0 = tri[:, 1] - tri[:, 0]
-    e1 = tri[:, 2] - tri[:, 0]
-    signed_area2 = e0[:, 0] * e1[:, 1] - e0[:, 1] * e1[:, 0]
-    return np.flatnonzero(signed_area2 < 0.0).astype(np.int64)
-
-
 def _random_2d_mesh(rng: np.random.Generator, n_faces: int):
     """Random 2D triangle soup with mixed orientations as (vertices_2d, flat_faces)."""
     vertices_np = rng.standard_normal((n_faces * 3, 2)).astype(np.float64)
@@ -78,22 +69,39 @@ def _unit_quad(device: str) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     return vertices, faces
 
 
-def test_flipped_faces_random_mixed(device: str):
-    rng = np.random.default_rng(0)
-    vertices_np, faces_np = _random_2d_mesh(rng, n_faces=64)
+@pytest.mark.parametrize("planar_input", ["random_soup", "projected_sphere"])
+@pytest.mark.parity("face_flipped_mask", "igl")
+@pytest.mark.parity("face_flipped_indices", "igl")
+def test_flipped_faces_match_igl(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], device: str, planar_input: str
+) -> None:
+    """
+    Class A on the indices against ``igl.flipped_triangles``; Class B on the mask (its indices set).
+
+    Both flag a face whose signed area is strictly negative (igl through the homogeneous ``3 x 3``
+    determinant). The inputs are a random soup of mixed windings and ``sphere_irregular``
+    projected onto ``xy``, where about half the faces invert. igl is handed the ``float32``-rounded
+    coordinates ordito reads, so a sign is decided on the same numbers.
+    """
+    if planar_input == "random_soup":
+        vertices_np, faces_np = _random_2d_mesh(np.random.default_rng(0), n_faces=64)
+    else:
+        mesh_tm, _mesh_wp = sphere_irregular
+        vertices_np = np.asarray(mesh_tm.vertices)[:, :2]
+        faces_np = np.asarray(mesh_tm.faces, dtype=np.int64)
+    vertices_np = vertices_np.astype(np.float32).astype(np.float64)
     vertices_wp, faces_wp = numpy_to_warp_uv(vertices_np, faces_np, device)
 
-    tri = vertices_np[faces_np]
-    e0 = tri[:, 1] - tri[:, 0]
-    e1 = tri[:, 2] - tri[:, 0]
-    mask_np = (e0[:, 0] * e1[:, 1] - e0[:, 1] * e1[:, 0]) < 0.0
+    flipped_igl = np.asarray(igl.flipped_triangles(vertices_np, faces_np))
+    assert 0 < flipped_igl.size < faces_np.shape[0]  # non-vacuity: both windings occur
+    mask_igl = np.zeros(faces_np.shape[0], dtype=bool)
+    mask_igl[flipped_igl] = True
 
     assert np.array_equal(
-        od.parametrization.face_flipped_mask(vertices_wp, faces_wp).numpy(), mask_np
+        od.parametrization.face_flipped_indices(vertices_wp, faces_wp).numpy(), flipped_igl
     )
     assert np.array_equal(
-        od.parametrization.face_flipped_indices(vertices_wp, faces_wp).numpy(),
-        _face_flipped_indices_np(vertices_np, faces_np),
+        od.parametrization.face_flipped_mask(vertices_wp, faces_wp).numpy(), mask_igl
     )
 
 

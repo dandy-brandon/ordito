@@ -44,6 +44,7 @@ from tests.conversions import (
     pymeshfix_face_remap,
     pymeshfix_intersecting_faces,
     trimesh_to_meshlib,
+    trimesh_to_pymeshlab,
     trimesh_to_pyvista,
     trimesh_to_warp,
     warp_empty,
@@ -341,6 +342,77 @@ def test_plane_and_mesh_sections_match_meshlib(
     )
 
 
+def _lines_pv(lines_pv: object) -> np.ndarray:
+    """Return VTK line output as ``(m, 2, 3)`` segments, asserting every cell is a 2-point line."""
+    assert isinstance(lines_pv, pv.PolyData)
+    cells_np = np.asarray(lines_pv.lines).reshape(-1, 3)
+    assert np.all(cells_np[:, 0] == 2)  # a segment soup, not polylines
+    return np.asarray(lines_pv.points)[cells_np[:, 1:]]
+
+
+def _two_planes(mesh_tm: tm.Trimesh) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Return a horizontal plane through the box centre and the tilted plane, normals unit."""
+    return [
+        (normal_np / np.linalg.norm(normal_np), origin_np)
+        for normal_np, origin_np in [*_axis_planes(mesh_tm)[:1], *_tilted_plane(mesh_tm)]
+    ]
+
+
+@pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parity("mesh_with_plane", "pyvista")
+def test_mesh_with_plane_matches_pyvista(request: pytest.FixtureRequest, mesh_name: str) -> None:
+    """
+    Class B (segment canonicalization): ``PolyData.slice`` is the same segment soup.
+
+    VTK's cutter returns one two-point line cell per cut face over a merged point set, the soup
+    ordito returns, so both go through ``_segments_equal``.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    mesh_pv = trimesh_to_pyvista(mesh_tm)
+    for normal_np, origin_np in _two_planes(mesh_tm):
+        lines_wp = od.intersection.mesh_with_plane(
+            mesh_wp.points, mesh_wp.indices, *_plane_wp(normal_np, origin_np)
+        ).numpy()
+        assert len(lines_wp) > 10  # non-vacuity: a real section
+        lines_pv = _lines_pv(mesh_pv.slice(normal=normal_np, origin=origin_np))
+        assert _segments_equal(lines_wp, lines_pv)
+
+
+@pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parity(
+    "mesh_with_plane",
+    "pymeshlab",
+    benchmarked=False,
+    reason="Tested but not timed: generate_polyline_from_planar_section raises Failed to "
+    "apply filter on every scan mesh this group sweeps, at any axis, offset or reference.",
+)
+def test_mesh_with_plane_matches_pymeshlab(request: pytest.FixtureRequest, mesh_name: str) -> None:
+    """
+    Class B (segment canonicalization): MeshLab's planar section has the same segments.
+
+    ``generate_polyline_from_planar_section`` adds a layer whose edges are the section's segments,
+    read off ``vertex_matrix()[edge_matrix()]``. Its plane is ``n . x == offset`` along a
+    ``Custom Axis`` relative to the origin, so the named transform is ``offset = n . origin``.
+    It raises on the non-manifold scan meshes, not on these fixtures.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    for normal_np, origin_np in _two_planes(mesh_tm):
+        lines_wp = od.intersection.mesh_with_plane(
+            mesh_wp.points, mesh_wp.indices, *_plane_wp(normal_np, origin_np)
+        ).numpy()
+        assert len(lines_wp) > 10  # non-vacuity: a real section
+        meshset_pml = trimesh_to_pymeshlab(mesh_tm)
+        meshset_pml.generate_polyline_from_planar_section(
+            planeaxis="Custom Axis",
+            customaxis=normal_np,
+            planeoffset=float(normal_np @ origin_np),
+            relativeto="Origin",
+        )
+        section_pml = meshset_pml.current_mesh()
+        lines_pml = section_pml.vertex_matrix()[section_pml.edge_matrix()]
+        assert _segments_equal(lines_wp, lines_pml)
+
+
 def _curves_pp(
     vertices_np: np.ndarray, faces_np: np.ndarray, values_np: np.ndarray, isovalue: float
 ) -> tuple[list[np.ndarray], list[bool]]:
@@ -476,6 +548,56 @@ def test_marching_triangles_matches_meshlib(sphere_irregular: tuple[tm.Trimesh, 
         for line_ml in wave_lines_ml
     )
     assert np.isclose(total_wp, total_ml, rtol=1e-5)
+
+
+@pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parametrize("field", ["height", "wave"])
+@pytest.mark.parity("marching_triangles", "pyvista")
+def test_marching_triangles_matches_pyvista(
+    request: pytest.FixtureRequest, mesh_name: str, field: str
+) -> None:
+    """
+    Class B: ``PolyData.contour`` on a triangle mesh is the same level set, as a segment soup.
+
+    VTK's contour filter cuts each crossed triangle into one two-point line cell; ordito links the
+    same segments into curves. The transform splits ordito's curves back into consecutive point
+    pairs (a closed curve's last point joins its first) and compares the two soups through
+    ``_segments_equal``. ``wave`` is the many-curve field of
+    ``test_marching_triangles_matches_meshlib``, ``height`` one long curve (two arcs on the open
+    fixture, which end on the rim).
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_np = np.asarray(mesh_tm.vertices)
+    if field == "height":
+        field_np = np.ascontiguousarray(vertices_np[:, 2], dtype=np.float32)
+        isovalue = float(vertices_np[:, 2].mean() + 0.013 * np.ptp(vertices_np[:, 2]))
+    else:
+        field_np = np.ascontiguousarray(
+            np.sin(6.0 * vertices_np[:, 0])
+            * np.cos(6.0 * vertices_np[:, 1])
+            * np.sin(6.0 * vertices_np[:, 2]),
+            dtype=np.float32,
+        )
+        isovalue = 0.0
+    curves_wp, closed_wp = od.intersection.marching_triangles(
+        mesh_wp.points,
+        mesh_wp.indices,
+        wp.array(field_np, dtype=wp.float32, device=mesh_wp.points.device),
+        isovalue,
+    )
+    segments = []
+    for curve_wp, is_closed in zip(curves_wp, closed_wp, strict=True):
+        points_np = curve_wp.numpy()
+        if is_closed:
+            points_np = np.vstack([points_np, points_np[:1]])
+        segments.append(np.stack([points_np[:-1], points_np[1:]], axis=1))
+    segments_wp = np.concatenate(segments)
+    assert segments_wp.shape[0] > 10  # non-vacuity: a real level set
+
+    mesh_pv = trimesh_to_pyvista(mesh_tm)
+    mesh_pv.point_data["field"] = field_np
+    lines_pv = _lines_pv(mesh_pv.contour([isovalue], scalars="field"))
+    assert _segments_equal(segments_wp, lines_pv)
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)

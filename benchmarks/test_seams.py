@@ -88,7 +88,7 @@ def _cut_edges(bench_case: BenchCase, fraction: float) -> odt.Array2dInt32:
 
 
 @pytest.mark.benchmark(group="crease_edges")
-@pytest.mark.benchlibs("ordito", "pymeshlab", "pyvista", "meshlib")
+@pytest.mark.benchlibs("ordito", "pymeshlab", "pyvista", "meshlib", "igl")
 def test_crease_edges(bench_case: BenchCase) -> None:
     """
     Face adjacency plus a dihedral threshold: the cheap half of the seam workflow.
@@ -103,7 +103,17 @@ def test_crease_edges(bench_case: BenchCase) -> None:
     (``tests/test_seams.py``). Its angle is in **radians** and is measured from planar, so the
     module's degree constant is converted rather than passed. It reads the topology and mutates
     nothing, so one mesh serves every round.
+
+    igl's ``sharp_edges`` returns the vertex pairs directly, ordito's output shape; it builds its
+    own unique-edge map and face normals on each call, as ordito pairs its halfedges, and takes
+    the angle in radians.
     """
+    if bench_case.kind == "igl":
+        vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
+        angle = float(np.radians(_CREASE_ANGLE))
+        sharp_igl = bench_case.run(lambda: igl.sharp_edges(vertices_np, faces_np, angle))
+        assert sharp_igl.shape[1] == 2
+        return
     if bench_case.kind == "meshlib":
         mesh_ml = bench_case.new_mesh_ml()
         angle = float(np.radians(_CREASE_ANGLE))

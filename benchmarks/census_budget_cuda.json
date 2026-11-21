@@ -4643,6 +4643,42 @@
    "alloc": 3
   }
  },
+ "benchmarks/test_mesh.py::test_body_count[parts_1024-ordito-cuda-cold]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 3,
+   "memset": 1,
+   "d2h": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_mesh.py::test_body_count[parts_1024-ordito-cuda-warm]": {
+  "counts": {}
+ },
+ "benchmarks/test_mesh.py::test_body_count[parts_64-ordito-cuda-cold]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 3,
+   "memset": 1,
+   "d2h": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_mesh.py::test_body_count[parts_64-ordito-cuda-warm]": {
+  "counts": {}
+ },
+ "benchmarks/test_mesh.py::test_body_count[sphere_med-ordito-cuda-cold]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 3,
+   "memset": 1,
+   "d2h": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_mesh.py::test_body_count[sphere_med-ordito-cuda-warm]": {
+  "counts": {}
+ },
  "benchmarks/test_mesh.py::test_boundary_loops[holes_many-ordito-cuda-cold]": {
   "counts": {
    "launch": 8,
@@ -6235,6 +6271,12 @@
    "alloc": 2
   }
  },
+ "benchmarks/test_polyline.py::test_resample_polyline[saddle_small-ordito-cuda]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
  "benchmarks/test_polyline.py::test_simplify_polyline[saddle_small-ordito-cuda-0.001]": {
   "counts": {
    "launch": 1,
@@ -6977,6 +7019,15 @@
    "d2h": 1
   }
  },
+ "benchmarks/test_registration.py::test_icp_point_to_plane_huber[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 3,
+   "memset": 1,
+   "h2d": 1,
+   "d2h": 1
+  }
+ },
  "benchmarks/test_registration.py::test_icp_point_to_plane_median_gate[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 22,
@@ -6994,6 +7045,15 @@
    "h2d": 1,
    "d2h": 3,
    "sort": 1
+  }
+ },
+ "benchmarks/test_registration.py::test_icp_point_to_plane_mesh_plain[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 5,
+   "memset": 1,
+   "h2d": 1,
+   "d2h": 1
   }
  },
  "benchmarks/test_registration.py::test_icp_point_to_plane_tukey[sphere_small-ordito-cuda]": {

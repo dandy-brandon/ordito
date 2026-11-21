@@ -17,6 +17,7 @@ from collections.abc import Callable
 from typing import Any, Literal, cast
 
 import igl
+import igl.predicates
 import numpy as np
 import open3d as o3d
 import pymeshlab as ml
@@ -49,6 +50,7 @@ from tests.conversions import (
     meshlib_to_trimesh,
     meshlib_triangulation_to_numpy,
     numpy_to_meshlib,
+    numpy_to_meshlib_coords,
     numpy_to_meshlib_triangulation,
     numpy_to_warp,
     open3d_to_trimesh,
@@ -216,6 +218,47 @@ def test_delaunay_matches_scipy(device: str, make_points: Callable[[], np.ndarra
     )
     tris = points_np.astype(np.float64)[faces_wp.reshape(-1, 3)]
     assert np.all(_cross2(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0]) > 0.0)
+
+
+@pytest.mark.parametrize(
+    "make_points",
+    [
+        pytest.param(_random_points_2d, id="random"),
+        pytest.param(_perturbed_grid_2d, id="perturbed_grid"),
+    ],
+)
+@pytest.mark.parity("delaunay_triangulation", "igl", "meshlib")
+def test_delaunay_matches_igl_and_meshlib(device: str, make_points: Callable[[], np.ndarray]):
+    """
+    Class A (``od.equality.faces_equal``): igl's and MeshLib's triangles, winding included.
+
+    ``igl.predicates.delaunay_triangulation`` (a lexicographic triangulation flipped to Delaunay
+    with exact predicates) and ``mm.delaunayTriangulationXY`` (the cloud projected on ``XY``,
+    vertex ids kept) both return the input's own numbering and counter-clockwise triangles, so the
+    face buffers compare directly up to face order and rotation: 380 triangles on the 200-point
+    cloud, 113 on the jittered grid, the same on all three. The two clouds are the scipy test's.
+    MeshLib's mesh keeps unused face slots, so it is packed before reading; its vertices are
+    asserted to be the input points in order, which is what makes the shared numbering valid.
+    """
+    points_np = make_points()
+    n_points = points_np.shape[0]
+    points_wp = points_to_warp_uv(points_np, device)
+    faces_wp = od.reconstruction.delaunay_triangulation(points_wp)
+
+    faces_igl = np.asarray(
+        igl.predicates.delaunay_triangulation(points_np.astype(np.float64)), dtype=np.int32
+    )
+    mesh_ml = mm.delaunayTriangulationXY(
+        numpy_to_meshlib_coords(np.column_stack((points_np, np.zeros(n_points))))
+    )
+    triangulated_ml = meshlib_to_trimesh(mesh_ml)
+    assert np.array_equal(triangulated_ml.vertices[:, :2], points_np.astype(np.float64))
+
+    for faces_ref in (faces_igl, np.asarray(triangulated_ml.faces)):
+        assert faces_ref.shape[0] > n_points  # non-vacuity: a whole triangulation came back
+        assert od.equality.faces_equal(
+            faces_wp, _flat_faces(faces_ref, device), n_vertices=n_points
+        )
 
 
 @pytest.mark.parity("delaunay_triangulation", "pyvista")
@@ -3066,6 +3109,33 @@ def test_ball_pivoting_matches_pymeshlab_and_open3d(device: str):
     assert len(unwound(triples_wp) - shared) <= 6
     # MeshLab leaves its three missing faces as holes; ordito closes the surface.
     assert not tm.Trimesh(vertices_pml, faces_pml, process=False).is_watertight
+
+
+@pytest.mark.parametrize("subdivisions", [3, 4])
+@pytest.mark.parity("ball_pivoting", "meshlib")
+def test_ball_pivoting_matches_meshlib(device: str, subdivisions: int):
+    """
+    Class A (``od.equality.meshes_allclose``): ``findBallPivotingMesh`` closes the same faces.
+
+    MeshLib's BPA builds the outer shape of the cloud and reads no normals, so it is handed the
+    bare points at ordito's radius, and it still returns ordito's mesh: on ``icosphere(3)`` and
+    ``icosphere(4)`` clouds 1 280 and 5 120 faces, the identical triangles with the identical
+    winding, and its vertices are the input points in their order. Where a quad's four points are
+    co-circular the two can close it either way: a quad-grid torus cloud leaves 32 of 2 304 faces
+    on the other diagonal, which is why the clouds here are icosphere vertices.
+    """
+    points_np, normals_np = _sphere_cloud(subdivisions)
+    points_wp, normals_wp = _to_warp(points_np, normals_np, device)
+    radius = _bpa_radius(points_wp)
+    vertices_wp, faces_wp = od.reconstruction.ball_pivoting(points_wp, normals_wp, radius=radius)
+
+    mesh_ml = meshlib_to_trimesh(mm.findBallPivotingMesh(points_to_meshlib(points_np), radius))
+    assert np.allclose(mesh_ml.vertices, points_np, rtol=1e-5, atol=1e-5)
+    assert mesh_ml.faces.shape[0] == 2 * points_np.shape[0] - 4  # non-vacuity: a closed sphere
+    vertices_ml_wp, faces_ml_wp = numpy_to_warp(mesh_ml.vertices, mesh_ml.faces, device)
+    assert od.equality.meshes_allclose(
+        vertices_wp, faces_wp, vertices_ml_wp, faces_ml_wp, rtol=0.0, atol=1e-6
+    )
 
 
 def test_ball_pivoting_small_radius_leaves_holes(device: str):

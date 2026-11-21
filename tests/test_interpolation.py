@@ -4,7 +4,9 @@ import igl
 import numpy as np
 import pymeshlab as ml
 import pytest
+import pytorch3d.ops as p3d_ops
 import scipy.sparse as sp
+import torch
 import trimesh as tm
 import warp as wp
 
@@ -23,14 +25,16 @@ from tests.conversions import (
 
 
 @pytest.mark.parametrize("mesh_name", ["saddle_graded"])
-@pytest.mark.parity("average_onto_faces", "igl", "pyvista")
+@pytest.mark.parity("average_onto_faces", "igl", "pyvista", "pymeshlab")
 def test_average_onto_faces(request: pytest.FixtureRequest, mesh_name: str):
     """
-    Class A on both: the vertex-to-face mean, element-wise, no transform.
+    Class A on all three: the vertex-to-face mean, element-wise, no transform.
 
     VTK spells it ``point_data_to_cell_data``, which for a triangle *is* the corner mean (measured
     1.3e-07 here); the array has to be seeded on the mesh and read back by name rather than passed,
-    which is where the answer lives rather than a transform of it.
+    which is where the answer lives rather than a transform of it. MeshLab's
+    ``compute_scalar_transfer_vertex_to_face`` is the same mean over the vertex scalar attribute,
+    seeded through ``v_scalar_array`` and read off ``face_scalar_array()``.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     rng = np.random.default_rng(0)
@@ -43,10 +47,23 @@ def test_average_onto_faces(request: pytest.FixtureRequest, mesh_name: str):
     mesh_pv.point_data["field"] = np.ascontiguousarray(vertex_values_np)
     face_values_pv = np.asarray(mesh_pv.point_data_to_cell_data().cell_data["field"])
 
+    meshset_pml = ml.MeshSet()
+    meshset_pml.add_mesh(
+        ml.Mesh(
+            np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64),
+            np.ascontiguousarray(mesh_tm.faces, dtype=np.int32),
+            v_scalar_array=np.ascontiguousarray(vertex_values_np),
+        )
+    )
+    meshset_pml.compute_scalar_transfer_vertex_to_face()
+    face_values_pml = np.asarray(meshset_pml.current_mesh().face_scalar_array())
+    assert face_values_pml.shape == (mesh_tm.faces.shape[0],)
+
     vertex_values_wp = wp.array(vertex_values_np, dtype=wp.float32, device=mesh_wp.device)
     face_values_wp = od.interpolation.average_onto_faces(mesh_wp.indices, vertex_values_wp)
     assert np.allclose(face_values_wp.numpy(), face_values_igl, rtol=1e-5, atol=1e-5)
     assert np.allclose(face_values_wp.numpy(), face_values_pv, rtol=1e-5, atol=1e-5)
+    assert np.allclose(face_values_wp.numpy(), face_values_pml, rtol=1e-5, atol=1e-5)
 
 
 def test_average_onto_faces_without_faces_is_empty(device: str) -> None:
@@ -515,6 +532,51 @@ def test_interpolate_barycentric_matches_trimesh(
             wp.array(barycentric_np[:10], dtype=wp.vec3, device=device),
             mesh_wp.points,
         )
+
+
+@pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parity("interpolate_barycentric", "pytorch3d")
+def test_interpolate_barycentric_matches_pytorch3d(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Class B against ``pytorch3d.ops.interpolate_face_attributes``: the same blend, batched.
+
+    The transform is the layout pytorch3d's rasterizer output has. It takes the field per face
+    corner, ``(n_faces, 3, d)`` (``values[faces]``), and the face index and weights as
+    ``(n, 1, 1, 1)`` and ``(n, 1, 1, 1, 3)`` pixel buffers, one "pixel" per point; its answer is
+    ``(n, 1, 1, 1, d)``, asserted before the values. Both write zero where the face index is
+    ``-1``, which the last third of the points carries, so the miss convention is compared too.
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    device = mesh_wp.points.device
+    rng = np.random.default_rng(6)
+    n_faces = mesh_wp.indices.size // 3
+    n_points = 600
+    face_index_np = rng.integers(0, n_faces, n_points).astype(np.int32)
+    face_index_np[2 * n_points // 3 :] = -1
+    barycentric_np = rng.dirichlet(np.ones(3), n_points).astype(np.float32)
+    colors_np = rng.random((mesh_wp.points.size, 4)).astype(np.float32)
+    faces_np = mesh_wp.indices.numpy().reshape(-1, 3)
+
+    colors_p3d = p3d_ops.interpolate_face_attributes(
+        torch.as_tensor(face_index_np.astype(np.int64), device=str(device)).reshape(
+            n_points, 1, 1, 1
+        ),
+        torch.as_tensor(barycentric_np, device=str(device)).reshape(n_points, 1, 1, 1, 3),
+        torch.as_tensor(colors_np[faces_np], device=str(device)),
+    )
+    assert tuple(colors_p3d.shape) == (n_points, 1, 1, 1, 4)
+    colors_p3d_np = colors_p3d.reshape(n_points, 4).cpu().numpy()
+    assert np.ptp(colors_p3d_np[: 2 * n_points // 3]) > 0.1  # non-vacuity: the hits vary
+
+    colors_wp = od.interpolation.interpolate_barycentric(
+        mesh_wp.indices,
+        wp.array(face_index_np, dtype=wp.int32, device=device),
+        wp.array(barycentric_np, dtype=wp.vec3, device=device),
+        wp.array(colors_np, dtype=wp.vec4, device=device),
+    )
+    assert np.allclose(colors_wp.numpy(), colors_p3d_np, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("dtype", [wp.float32, wp.vec3])

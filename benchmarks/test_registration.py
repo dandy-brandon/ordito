@@ -18,19 +18,20 @@ pure throughput case and cheap everywhere.
 
 References
 ----------
-libigl exposes no Python binding for ``iterative_closest_point``, so **open3d** is the reference
-here: ``open3d.pipelines.registration`` is what ordito's point-to-plane path is ported from
-(``TransformationEstimationPointToPlane`` with an optional ``RobustKernel``), and it is the only
-CPU library in the test group that implements the point-to-plane metric at all.
+**open3d** is the main reference here: ``open3d.pipelines.registration`` is what ordito's
+point-to-plane path is ported from (``TransformationEstimationPointToPlane`` with an optional
+``RobustKernel``). **libigl**'s ``iterative_closest_point`` is point-to-plane against a triangle
+mesh's face normals, so it times in ``icp_point_to_plane_mesh_plain``; its ``procrustes`` times
+in ``procrustes``.
 
-* Procrustes — ``trimesh.registration.procrustes`` and open3d's
+* Procrustes — ``trimesh.registration.procrustes``, ``igl.procrustes`` and open3d's
   ``TransformationEstimationPointToPoint.compute_transformation``, which is the same Kabsch fit on
   an explicit correspondence set.
 * Point-to-point ICP — ``trimesh.registration.icp`` (cKDTree) and open3d's ``registration_icp``
   (KDTreeFlann).
-* Point-to-plane ICP — open3d only, on a point-cloud target so both sides consume the *same*
-  per-vertex normals (computed once with trimesh from the shared float64 source). The robust variant
-  has no reference and is timed for ordito alone.
+* Point-to-plane ICP — open3d, on a point-cloud target so both sides consume the *same*
+  per-vertex normals (computed once with trimesh from the shared float64 source), plain and with
+  its Tukey and Huber losses; libigl against the mesh.
 * Mesh-target ICP — **pymeshlab**'s ``compute_matrix_by_icp_between_meshes``, which correspondences
   against the reference *mesh* rather than a point cloud and so is the equivalent of ``icp`` rather
   than of ``icp_point_cloud``. It is the only reference that group has. One constraint shapes it:
@@ -81,6 +82,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, cast
 
+import igl
 import numpy as np
 import open3d as o3d
 import pymeshlab as ml
@@ -115,6 +117,8 @@ _NOISE_FRACTION = 0.002
 # explicitly (rather than letting ordito derive it from the residual MAD) so ordito and open3d
 # minimize the same objective.
 _TUKEY_FRACTION = 0.01
+# Huber threshold for the other robust fit, in the same units, for the same reason.
+_HUBER_FRACTION = 0.01
 
 # MeshLab's ICP rebuilds its MeshSet per round on top of running ten serial iterations, so it lands
 # in the hundreds of milliseconds where the other libraries are in the tens.
@@ -240,7 +244,7 @@ def _o3d_criteria() -> o3d.pipelines.registration.ICPConvergenceCriteria:
 
 
 @pytest.mark.benchmark(group="procrustes")
-@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "meshlib", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "meshlib", "pytorch3d", "igl")
 def test_procrustes(bench_case: BenchCase) -> None:
     """
     Procrustes fit on exact correspondences: tiled reductions plus the SVD kernel.
@@ -258,6 +262,9 @@ def test_procrustes(bench_case: BenchCase) -> None:
     block transposed; that is a naming difference and not work, which is what makes the ratio
     readable. ``estimate_scale=False`` matches the ``scale=False`` ordito's row passes, and
     ``allow_reflection`` is left at its default ``False`` to match ``reflection=False``.
+
+    **libigl**'s ``procrustes`` at its defaults (no scaling, no reflection) is the same rigid fit,
+    in the row-vector convention pytorch3d uses.
     """
     if bench_case.kind == "pytorch3d":
         source_np, indices = _source_np(bench_case)
@@ -290,6 +297,13 @@ def test_procrustes(bench_case: BenchCase) -> None:
             return aligner_ml.findBestRigidXf()
 
         assert abs(bench_case.run(procrustes_ml).A.x.length() - 1.0) < 1e-5
+        return
+    if bench_case.kind == "igl":
+        target_np = np.ascontiguousarray(bench_case.vertices_np[indices])
+        scale_igl, _rotation_igl, _translation_igl = bench_case.run(
+            lambda: igl.procrustes(source_np, target_np)
+        )
+        assert scale_igl == 1.0
         return
     if bench_case.kind == "ordito":
         source = _source_wp(bench_case)
@@ -753,6 +767,41 @@ def test_icp_point_to_plane_tukey(bench_case: BenchCase) -> None:
         assert np.asarray(result.transformation).shape == (4, 4)
 
 
+@pytest.mark.benchmark(group="icp_point_to_plane_huber")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito", "open3d")
+def test_icp_point_to_plane_huber(bench_case: BenchCase) -> None:
+    """Robust point-to-plane ICP: ordito's Huber weight dispatch against open3d's ``HuberLoss``."""
+    huber_k = _HUBER_FRACTION * _diagonal(bench_case)
+    if bench_case.kind == "ordito":
+        source, target = _source_wp(bench_case), bench_case.vertices_wp
+        normals = _vertex_normals_wp(bench_case)
+        matrix, _transformed, _cost = bench_case.run(
+            lambda: od.registration.icp_point_to_plane(
+                source,
+                target,
+                target_normals=normals,
+                max_iterations=_ICP_ITERATIONS,
+                threshold=-math.inf,
+                robust_kernel="huber",
+                robust_scale=huber_k,
+            )
+        )
+        assert matrix.shape == (1,)
+    else:
+        source_pcd, target_pcd = _pcd(bench_case, "source"), _pcd(bench_case, "target")
+        estimation = o3d.pipelines.registration.TransformationEstimationPointToPlane(
+            o3d.pipelines.registration.HuberLoss(k=huber_k)
+        )
+        criteria, max_dist = _o3d_criteria(), _diagonal(bench_case)
+        result = bench_case.run(
+            lambda: o3d.pipelines.registration.registration_icp(
+                source_pcd, target_pcd, max_dist, np.eye(4), estimation, criteria
+            )
+        )
+        assert np.asarray(result.transformation).shape == (4, 4)
+
+
 @pytest.mark.benchmark(group="icp_point_to_plane_mesh")
 @pytest.mark.benchaxis("scale")
 @pytest.mark.benchlibs("ordito")
@@ -773,6 +822,41 @@ def test_icp_point_to_plane_mesh(bench_case: BenchCase) -> None:
             max_iterations=_ICP_ITERATIONS,
             threshold=-math.inf,
             robust_kernel="tukey",
+        )
+    )
+    assert matrix.shape == (1,)
+
+
+@pytest.mark.benchmark(group="icp_point_to_plane_mesh_plain")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito", "igl")
+def test_icp_point_to_plane_mesh_plain(bench_case: BenchCase) -> None:
+    """
+    Unweighted point-to-plane ICP against the triangle surface, beside libigl's.
+
+    **libigl**'s ``iterative_closest_point`` linearizes the same point-to-plane objective against
+    the closest faces' normals, but draws its correspondences as ``num_samples`` random points on
+    the *source mesh's* surface each iteration, so its source is the whole mesh under the same
+    misalignment and noise (``_source_mesh_np``), sampled at ordito's point count. Both build their
+    tree in the call and run ``_ICP_ITERATIONS`` iterations. The recovered transforms agree in
+    ``tests/test_registration.py``.
+    """
+    skip_larger_than(bench_case, "happy_buddha", "per-iteration mesh queries scale with face count")
+    if bench_case.kind == "igl":
+        source_mesh_np, vertices_np = _source_mesh_np(bench_case), bench_case.vertices_np
+        faces_np = np.ascontiguousarray(bench_case.faces_np, dtype=np.int64)
+        n_samples = min(_N_POINTS, vertices_np.shape[0])
+        rotation_igl, _translation_igl = bench_case.run(
+            lambda: igl.iterative_closest_point(
+                source_mesh_np, faces_np, vertices_np, faces_np, n_samples, _ICP_ITERATIONS
+            )
+        )
+        assert rotation_igl.shape == (3, 3)
+        return
+    source, vertices, faces = _source_wp(bench_case), bench_case.vertices_wp, bench_case.faces_wp
+    matrix, _transformed, _cost = bench_case.run(
+        lambda: od.registration.icp_point_to_plane(
+            source, vertices, faces, max_iterations=_ICP_ITERATIONS, threshold=-math.inf
         )
     )
     assert matrix.shape == (1,)

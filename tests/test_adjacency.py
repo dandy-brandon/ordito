@@ -23,6 +23,7 @@ from tests.conversions import (
     meshlib_bitset_to_numpy,
     numpy_to_meshlib,
     trimesh_to_meshlib,
+    trimesh_to_open3d,
     trimesh_to_pyvista,
     warp_empty,
 )
@@ -1052,6 +1053,53 @@ def test_face_connected_component_labels_matches_igl_scipy_meshlib_and_pyvista(
     compressed_wp = od.adjacency.face_connected_component_labels(doubled_wp).numpy()
     assert np.unique(labels_doubled_wp).size >= 2
     assert np.array_equal(compressed_wp, labels_doubled_wp)
+
+
+@pytest.mark.parametrize("mesh_name", [*MESHES, "bowtie"])
+@pytest.mark.parametrize("copies", [1, 2])
+@pytest.mark.parity("face_connected_component_labels", "open3d")
+def test_face_connected_component_labels_matches_open3d(
+    request: pytest.FixtureRequest, device: str, mesh_name: str, copies: int
+) -> None:
+    """
+    Class A (``od.equality.partitions_equal``): ``cluster_connected_triangles``' cluster ids.
+
+    open3d connects triangles that share an edge, ordito's rule: the bow-tie, two triangles meeting
+    at one vertex, is two clusters on both sides. Its numbering is its own (``0..k-1``), so the
+    partitions are compared, up to label names, and its per-cluster triangle counts against
+    ordito's. Non-vacuous: the two-copy union and the bow-tie have two components each, asserted
+    on the reference, so a labelling that collapsed everything would fail.
+    """
+    if mesh_name == "bowtie":
+        mesh_tm = tm.Trimesh(
+            np.array(
+                [
+                    [0.0, 0.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [-1.0, 0.0, 0.0],
+                    [0.0, -1.0, 0.0],
+                ]
+            ),
+            np.array([[0, 1, 2], [0, 3, 4]]),
+            process=False,
+        )
+    else:
+        mesh_tm, _ = request.getfixturevalue(mesh_name)
+    if copies == 2:
+        mesh_tm = _two_copies(mesh_tm)
+    faces_wp = wp.array(
+        np.ascontiguousarray(mesh_tm.faces.reshape(-1), dtype=np.int32),
+        dtype=wp.int32,
+        device=device,
+    )
+    labels_wp = od.adjacency.face_connected_component_labels(faces_wp).numpy()
+    labels_o3d, counts_o3d, _areas_o3d = trimesh_to_open3d(mesh_tm).cluster_connected_triangles()
+    labels_o3d, counts_o3d = np.asarray(labels_o3d), np.asarray(counts_o3d)
+
+    assert counts_o3d.size == (2 if mesh_name == "bowtie" else 1) * copies
+    assert _partitions_equal(labels_wp, labels_o3d, device)
+    assert np.array_equal(np.sort(np.unique(labels_wp, return_counts=True)[1]), np.sort(counts_o3d))
 
 
 def _partitions_equal(

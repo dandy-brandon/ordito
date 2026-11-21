@@ -169,7 +169,7 @@ def test_face_adjacency_unshared(bench_case: BenchCase, tabled: bool) -> None:
 
 
 @pytest.mark.benchmark(group="face_connected_component_labels")
-@pytest.mark.benchlibs("ordito", "igl", "pyvista", "meshlib")
+@pytest.mark.benchlibs("ordito", "igl", "pyvista", "meshlib", "open3d")
 def test_face_connected_component_labels(bench_case: BenchCase) -> None:
     """
     Per-face component ids over the face-adjacency graph: the edge build plus a label propagation.
@@ -187,7 +187,16 @@ def test_face_connected_component_labels(bench_case: BenchCase) -> None:
     VTK's ``connectivity('all')`` is the same partition under a third numbering, and it returns a
     whole new ``PolyData`` carrying the ``RegionId`` cell array rather than the labels alone -- so
     its row prices the copy as well as the traversal.
+
+    open3d's ``cluster_connected_triangles`` is the same edge-connected partition under a fourth
+    numbering, returned with each cluster's triangle count and area, so its row also prices the
+    per-cluster areas. It caches nothing, so the shared mesh serves every round.
     """
+    if bench_case.kind == "open3d":
+        mesh_o3d = bench_case.mesh_o3d
+        labels_o3d, _counts_o3d, _areas_o3d = bench_case.run(mesh_o3d.cluster_connected_triangles)
+        assert np.asarray(labels_o3d).shape == (bench_case.n_faces,)
+        return
     if bench_case.kind == "meshlib":
         # ``FaceIncidence.PerEdge`` is ordito's rule and is passed explicitly: the ``PerVertex``
         # setting is a different operation, not a tuning (2 components against 1 on a bowtie). It
@@ -272,7 +281,7 @@ def _normals(bench_case: BenchCase) -> wp.array[wp.vec3]:
 
 @pytest.mark.benchmark(group="vertex_face_adjacency")
 @pytest.mark.benchaxis("valence")
-@pytest.mark.benchlibs("ordito", "igl")
+@pytest.mark.benchlibs("ordito", "igl", "trimesh")
 @pytest.mark.parametrize("known_nv", [False, True], ids=["inferred", "known_nv"])
 def test_vertex_face_adjacency(bench_case: BenchCase, known_nv: bool) -> None:
     """
@@ -290,8 +299,24 @@ def test_vertex_face_adjacency(bench_case: BenchCase, known_nv: bool) -> None:
 
     ``igl.vertex_triangle_adjacency(F, n)`` returns the identical CSR with the pair reversed
     (``(VF, NI)``), and always takes ``n`` explicitly, so it has no ``inferred`` row.
+
+    ``Trimesh.vertex_faces`` holds the same rows as a dense ``(n_vertices, max_valence)`` table
+    padded with ``-1`` (``tests/test_mesh.py`` compares them). It knows its vertex count, so it
+    runs at ``known_nv`` alone, rebuilt inside the timed callable since trimesh caches it; and it
+    skips ``fan_hub``, whose two hubs make that table 40 962 x 40 960 entries (13 GB of ``int64``).
     """
     n_vertices = bench_case.n_vertices
+    if bench_case.kind == "trimesh":
+        if not known_nv:
+            pytest.skip("a trimesh mesh always knows its vertex count")
+        if bench_case.mesh_name == "fan_hub":
+            pytest.skip("trimesh's padded table is n_vertices x max_valence: 13 GB on fan_hub")
+        vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
+        padded_tm = bench_case.run(
+            lambda: tm.Trimesh(vertices_np, faces_np, process=False).vertex_faces
+        )
+        assert padded_tm.shape[0] == n_vertices
+        return
     if bench_case.kind == "igl":
         if not known_nv:
             pytest.skip("igl always takes n explicitly")

@@ -1558,6 +1558,61 @@ def test_closing_and_opening_match_scipy(
     assert opened_np.sum() < occupancy_np.sum() < closed_np.sum()
 
 
+def _morphology_pv(occupancy_np: np.ndarray, operation: str) -> np.ndarray:
+    """
+    Run one of ``ImageData``'s binary morphology filters over a dense occupancy array.
+
+    The occupancy is a point array on an ``ImageData`` of the same dimensions, flattened in VTK's
+    order (``x`` fastest, so ``order="F"``) and read back the same way. ``binary=[0, 1]`` names
+    the background and foreground values, so the binary filter runs whatever values the input
+    holds.
+    """
+    image_pv = pv.ImageData(dimensions=occupancy_np.shape)
+    image_pv.point_data["occupancy"] = occupancy_np.ravel(order="F").astype(np.uint8)
+    result_pv = getattr(image_pv, operation)(3, scalars="occupancy", binary=[0, 1])
+    return np.asarray(result_pv.point_data["occupancy"]).reshape(occupancy_np.shape, order="F") > 0
+
+
+@pytest.mark.parity("dilate", "pyvista")
+@pytest.mark.parity("erode", "pyvista")
+@pytest.mark.parity("closing", "pyvista")
+@pytest.mark.parity("opening", "pyvista")
+def test_morphology_matches_pyvista(
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],
+):
+    """
+    Class A on the occupancy: ``ImageData.dilate`` / ``erode`` / ``close`` / ``open`` at 18.
+
+    VTK's binary filter (``vtkImageDilateErode3D``) takes an ellipsoidal kernel; a ``3``-wide one
+    holds the centre, its six face neighbours and its twelve edge neighbours, so one voxel
+    dilates to 19 cells, which is ordito's ``connectivity=18``. VTK has no 6- or 26-neighbour
+    setting, so the comparison is pinned there. The dense box is padded by two cells, as in
+    ``test_closing_and_opening_match_scipy``, so neither side meets the array border. The shell
+    voxelization takes the two growing operations and the solid one the two shrinking ones, so
+    each changes its input.
+    """
+    _mesh_tm, vertices_wp, faces_wp = sphere
+    single_np = np.zeros((5, 5, 5), dtype=bool)
+    single_np[2, 2, 2] = True
+    stencil_pv = _morphology_pv(single_np, "dilate")
+    assert stencil_pv.sum() == 19
+
+    shell = od.voxels.voxelize_mesh(vertices_wp, faces_wp, 0.16)
+    solid = od.voxels.voxelize_mesh(vertices_wp, faces_wp, 0.14, mode="solid")
+    for grid, operations in (
+        (shell, [("dilate", od.voxels.dilate), ("close", od.voxels.closing)]),
+        (solid, [("erode", od.voxels.erode), ("open", od.voxels.opening)]),
+    ):
+        lower, extent = _bounds_of(grid)
+        padded_lower, padded_shape = _padded_box(lower, extent, 2)
+        occupancy_np = _dense(grid, padded_lower, padded_shape)
+        for name, operation in operations:
+            result_np = _dense(operation(grid, connectivity=18), padded_lower, padded_shape)
+            assert result_np.sum() != occupancy_np.sum()  # non-vacuity: not the identity
+            result_pv = _morphology_pv(occupancy_np, name)
+            assert np.array_equal(result_np, result_pv)
+
+
 def test_surface_voxels_is_the_erosion_complement(
     sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],
 ):

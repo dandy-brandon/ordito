@@ -58,6 +58,11 @@ carries the dense reference its test compares against: MeshLib's ``shrinkVoxelsM
 ``erode`` (the twin of the ``dilate`` row), trimesh's ``morphology.binary_closing`` for ``closing``
 and ``scipy.ndimage.binary_opening`` for ``opening``. The dense inputs are padded so the dense side
 sees the same unbounded lattice the sparse side does, as ``tests/test_voxels.py`` pads them.
+**pyvista**'s ``ImageData.dilate`` / ``erode`` / ``close`` / ``open`` (``binary=[0, 1]``, VTK's
+``vtkImageDilateErode3D``) is a third dense implementation of all four, single-threaded, over the
+same padded inputs. Its 3-wide ellipsoidal kernel is the 18-neighbour stencil, which is what its
+test compares (``connectivity=18``); the rows time ordito's default 6, so its rows are upper bounds
+on the stencil.
 ``surface_voxels`` has no reference row: ``trimesh.voxel.morphology.surface`` is the ``erode``
 complement on a dense array, which the ``erode`` row already prices.
 
@@ -592,8 +597,31 @@ def _thick_grid(bench_case: BenchCase, voxel_size: float) -> wp.Volume:
     )
 
 
+def _image_pv(occupancy_np: np.ndarray) -> pv.ImageData:
+    """Load a dense occupancy as a ``uint8`` point array on an ``ImageData`` (``x`` fastest)."""
+    image_pv = pv.ImageData(dimensions=occupancy_np.shape)
+    image_pv.point_data["occupancy"] = occupancy_np.ravel(order="F").astype(np.uint8)
+    return image_pv
+
+
+def _run_morphology_pv(
+    bench_case: BenchCase, occupancy_np: np.ndarray, operation: str
+) -> pv.ImageData:
+    """
+    Time one ``ImageData`` binary morphology filter (3-wide ellipsoid, the 18-neighbour stencil).
+
+    VTK's kernel has no 6-neighbour form, so this row does the ``connectivity=18`` operation
+    against ordito's default 6: three times the neighbours a cell, an upper bound on the stencil.
+    """
+    image_pv = _image_pv(occupancy_np)
+    return bench_case.run(
+        lambda: getattr(image_pv, operation)(3, scalars="occupancy", binary=[0, 1]),
+        rounds=_HEAVY_ROUNDS,
+    )
+
+
 @pytest.mark.benchmark(group="dilate")
-@pytest.mark.benchlibs("ordito", "trimesh", "meshlib")
+@pytest.mark.benchlibs("ordito", "trimesh", "meshlib", "pyvista")
 def test_dilate(bench_case: BenchCase) -> None:
     """
     Grow the set by one shell: a ``(k + 1) * n_voxels`` candidate buffer against dense ndimage.
@@ -610,11 +638,16 @@ def test_dilate(bench_case: BenchCase) -> None:
     which is the whole reason it is here: it walks the same dense box on every core.
     """
     voxel_size = _voxel_size(bench_case, _MORPHOLOGY_DIVISOR)
-    if bench_case.kind in ("trimesh", "meshlib"):
-        skip_larger_than(bench_case, "bunny", "both dilate the whole dense bounding box")
+    if bench_case.kind in ("trimesh", "meshlib", "pyvista"):
+        skip_larger_than(bench_case, "bunny", "each dilates the whole dense bounding box")
         mesh_tm = tm.Trimesh(bench_case.vertices_np, bench_case.faces_np, process=False)
         grid_tm = tm.voxel.creation.voxelize_subdivide(mesh_tm, pitch=voxel_size)
         encoding_tm = grid_tm.encoding
+        if bench_case.kind == "pyvista":
+            occupancy_np = np.pad(encoding_tm.dense, 1)
+            dilated_pv = _run_morphology_pv(bench_case, occupancy_np, "dilate")
+            assert dilated_pv.n_points == occupancy_np.size
+            return
         if bench_case.kind == "trimesh":
             dilated_tm = bench_case.run(
                 lambda: tm_morphology.binary_dilation(encoding_tm), rounds=_HEAVY_ROUNDS
@@ -637,7 +670,7 @@ def test_dilate(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="erode")
-@pytest.mark.benchlibs("ordito", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib", "pyvista")
 def test_erode(bench_case: BenchCase) -> None:
     """
     Shrink the set by one shell: ``dilate``'s probe kernel with the test inverted.
@@ -649,6 +682,12 @@ def test_erode(bench_case: BenchCase) -> None:
     rebuilt in the untimed ``setup`` as in ``dilate``.
     """
     voxel_size = _voxel_size(bench_case, _MORPHOLOGY_DIVISOR)
+    if bench_case.kind == "pyvista":
+        skip_larger_than(bench_case, "bunny", "VTK erodes the whole dense bounding box")
+        occupancy_np = _thick_dense_tm(bench_case, voxel_size, 1)
+        eroded_pv = _run_morphology_pv(bench_case, occupancy_np, "erode")
+        assert eroded_pv.n_points == occupancy_np.size
+        return
     if bench_case.kind == "meshlib":
         skip_larger_than(bench_case, "bunny", "MeshLib erodes the whole dense bounding box")
         occupancy_np = _thick_dense_tm(bench_case, voxel_size, 1)
@@ -666,7 +705,7 @@ def test_erode(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="closing")
-@pytest.mark.benchlibs("ordito", "trimesh")
+@pytest.mark.benchlibs("ordito", "trimesh", "pyvista")
 def test_closing(bench_case: BenchCase) -> None:
     """
     ``dilate`` then ``erode`` on the surface voxelization: two morphology passes in one call.
@@ -676,12 +715,16 @@ def test_closing(bench_case: BenchCase) -> None:
     pads it, so the dense intermediate dilation is not clipped at the array border.
     """
     voxel_size = _voxel_size(bench_case, _MORPHOLOGY_DIVISOR)
-    if bench_case.kind == "trimesh":
-        skip_larger_than(bench_case, "bunny", "two dense ndimage passes over the bounding box")
+    if bench_case.kind in ("trimesh", "pyvista"):
+        skip_larger_than(bench_case, "bunny", "two dense passes over the bounding box")
         mesh_tm = tm.Trimesh(bench_case.vertices_np, bench_case.faces_np, process=False)
         occupancy_np = np.pad(
             tm.voxel.creation.voxelize_subdivide(mesh_tm, pitch=voxel_size).encoding.dense, 2
         )
+        if bench_case.kind == "pyvista":
+            closed_pv = _run_morphology_pv(bench_case, occupancy_np, "close")
+            assert closed_pv.n_points == occupancy_np.size
+            return
         closed_tm = bench_case.run(
             lambda: tm_morphology.binary_closing(occupancy_np), rounds=_HEAVY_ROUNDS
         )
@@ -694,7 +737,7 @@ def test_closing(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="opening")
-@pytest.mark.benchlibs("ordito", "scipy")
+@pytest.mark.benchlibs("ordito", "scipy", "pyvista")
 def test_opening(bench_case: BenchCase) -> None:
     """
     ``erode`` then ``dilate`` on a two-sided shell, so the opening keeps a real core.
@@ -703,6 +746,12 @@ def test_opening(bench_case: BenchCase) -> None:
     (trimesh does not wrap it), run over the dense two-sided shell from trimesh's voxelization.
     """
     voxel_size = _voxel_size(bench_case, _MORPHOLOGY_DIVISOR)
+    if bench_case.kind == "pyvista":
+        skip_larger_than(bench_case, "bunny", "two dense passes over the bounding box")
+        occupancy_np = _thick_dense_tm(bench_case, voxel_size, 2)
+        opened_pv = _run_morphology_pv(bench_case, occupancy_np, "open")
+        assert opened_pv.n_points == occupancy_np.size
+        return
     if bench_case.kind == "scipy":
         skip_larger_than(bench_case, "bunny", "two dense ndimage passes over the bounding box")
         occupancy_np = _thick_dense_tm(bench_case, voxel_size, 2)

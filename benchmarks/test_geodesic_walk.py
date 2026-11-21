@@ -33,6 +33,9 @@ amortized across up to 4 096 rays.
 geodesic needs an unfolding walk across edges, and none of them exposes one. ``igl`` does join
 the ``geodesic_path`` group through ``exact_geodesic``, whose *distance* bounds any path length.
 
+**meshlib** joins the two field walks: ``computeSteepestDescentPath`` is ``descend_field``'s
+walk and ``computeGeodesicPath`` a point-to-point geodesic, one query per call each.
+
 ``geodesic_path_potpourri3d`` times ``geodesic_path(method="potpourri3d")``, the port of
 potpourri3d's ``EdgeFlipGeodesicSolver``, against that solver on the same path-count axis.
 
@@ -48,6 +51,7 @@ import numpy as np
 import potpourri3d as pp3d
 import pytest
 import warp as wp
+from meshlib import mrmeshpy as mm
 
 import ordito as od
 from conftest import BenchCase, skip_larger_than
@@ -195,7 +199,7 @@ _PATH_COUNTS = [1, 64, 4096]
 
 @pytest.mark.benchmark(group="descend_field")
 @pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("ordito")
+@pytest.mark.benchlibs("ordito", "meshlib")
 @pytest.mark.parametrize("n_paths", _PATH_COUNTS)
 def test_descend_field(bench_case: BenchCase, n_paths: int) -> None:
     """
@@ -208,10 +212,33 @@ def test_descend_field(bench_case: BenchCase, n_paths: int) -> None:
     (``halfedge_twins(defect_counts=)`` in two zeroed slots behind the offsets, one readback a call
     fewer) measured at par on CUDA, 0.97-1.01x on ``sphere_small``, ``sphere_med`` and ``dragon``:
     the walks keep the device busy past the twins either way.
+
+    **meshlib**'s ``computeSteepestDescentPath`` is the same walk (``tests/test_geodesic_walk.py``,
+    Class B), one start per call, so its row is a Python loop over the starts, capped at 64. It
+    descends the same heat distance, in ``float32`` (``VertScalars``), filled with the
+    ``MeshPart`` outside the timed callable.
     """
-    device = bench_case.device
     rng = np.random.default_rng(4)
     targets_np = rng.integers(1, bench_case.n_vertices, n_paths).astype(np.int32)
+    if bench_case.kind == "meshlib":
+        if n_paths > 64:
+            pytest.skip("computeSteepestDescentPath walks one start per call: capped at 64 paths")
+        mesh_ml = bench_case.new_mesh_ml()
+        part_ml = mm.MeshPart(mesh_ml)
+        field_ml = mm.VertScalars()
+        for value in _heat_distance_np(bench_case):
+            field_ml.push_back(float(value))
+        starts_ml = [mm.MeshTriPoint(mesh_ml.topology, mm.VertId(int(t))) for t in targets_np]
+
+        def descend_ml() -> int:
+            return sum(
+                len(mm.computeSteepestDescentPath(part_ml, field_ml, start_ml))
+                for start_ml in starts_ml
+            )
+
+        assert bench_case.run(descend_ml, rounds=_ROUNDS) > 0
+        return
+    device = bench_case.device
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     source = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=device)
     distance = od.heat.heat_geodesic(vertices, faces, source)
@@ -223,9 +250,24 @@ def test_descend_field(bench_case: BenchCase, n_paths: int) -> None:
     assert offsets.shape == (n_paths + 1,)
 
 
+def _heat_distance_np(bench_case: BenchCase) -> np.ndarray:
+    """``heat_geodesic`` from vertex 0, read back: the field the meshlib descent row walks."""
+    device = wp.get_preferred_device()
+    vertices = wp.array(
+        np.ascontiguousarray(bench_case.vertices_np, dtype=np.float32), dtype=wp.vec3, device=device
+    )
+    faces = wp.array(
+        np.ascontiguousarray(bench_case.faces_np, dtype=np.int32).ravel(),
+        dtype=wp.int32,
+        device=device,
+    )
+    source = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=device)
+    return od.heat.heat_geodesic(vertices, faces, source).numpy()
+
+
 @pytest.mark.benchmark(group="geodesic_path")
 @pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("ordito", "potpourri3d", "igl")
+@pytest.mark.benchlibs("ordito", "potpourri3d", "igl", "meshlib")
 @pytest.mark.parametrize("n_paths", _PATH_COUNTS)
 def test_geodesic_path(bench_case: BenchCase, n_paths: int) -> None:
     """
@@ -250,6 +292,10 @@ def test_geodesic_path(bench_case: BenchCase, n_paths: int) -> None:
     count and igl is flat but far off, since MMP propagates windows over the whole surface whatever
     is asked of it.
 
+    **meshlib**'s ``computeGeodesicPath`` (fast marching, then ``reducePath`` to a locally
+    shortest path) is the third, also one pair per call and capped at 64 paths; within a per-cent
+    of ordito's length (``tests/test_geodesic_walk.py``, Class C).
+
     ordito's cost at *one* path is almost entirely the factorization, not the walk -- which is the
     honest caveat on the left column and the reason the wrapper takes a ``Trimesh``, which keeps
     it for the next source.
@@ -273,6 +319,26 @@ def test_geodesic_path(bench_case: BenchCase, n_paths: int) -> None:
             )
 
         assert bench_case.run(paths_pp, rounds=_ROUNDS) > 0
+        return
+
+    if bench_case.kind == "meshlib":
+        if n_paths > 64:
+            pytest.skip("computeGeodesicPath answers one pair per call: capped at 64 paths")
+        mesh_ml = bench_case.new_mesh_ml()
+        source_ml = mm.MeshTriPoint(mesh_ml.topology, mm.VertId(0))
+        targets_ml = [mm.MeshTriPoint(mesh_ml.topology, mm.VertId(int(t))) for t in targets_np]
+
+        def paths_ml() -> int:
+            return sum(
+                len(
+                    mm.computeGeodesicPath(
+                        mesh_ml, source_ml, target_ml, mm.GeodesicPathApprox.FastMarching
+                    )
+                )
+                for target_ml in targets_ml
+            )
+
+        assert bench_case.run(paths_ml, rounds=_ROUNDS) > 0
         return
 
     if bench_case.kind == "igl":

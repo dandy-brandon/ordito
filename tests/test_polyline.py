@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Literal, cast
 
+import igl
 import manifold3d as m3
 import numpy as np
 import pytest
@@ -965,7 +966,7 @@ def test_smooth_upsample_detects_an_already_closed_input(device: str) -> None:
     assert np.allclose(np.linalg.norm(smoothed[:, :2], axis=-1), radius, rtol=1e-3, atol=1e-3)
 
 
-# --- cumulative_arc_length (NumPy reference) ---
+# --- cumulative_arc_length (NumPy and pyvista references) ---
 
 
 @pytest.mark.usefixtures("deterministic")
@@ -976,6 +977,25 @@ def test_cumulative_arc_length_matches_reference(device: str) -> None:
     segment_lengths_np = np.linalg.norm(np.diff(pts_np, axis=0), axis=1)
     expected_np = np.concatenate([[0.0], np.cumsum(segment_lengths_np)])
     assert np.allclose(cumulative_wp.numpy(), expected_np, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parity("cumulative_arc_length", "pyvista")
+def test_cumulative_arc_length_matches_pyvista(device: str) -> None:
+    """
+    Class A: VTK's ``compute_arc_length`` point field is the same cumulative table, entry for entry.
+
+    The polyline is one line cell (``polyline_to_pyvista``), the input
+    [`test_polyline_length_matches_pyvista`] explains; ``lines_from_points`` would restart the
+    field at every segment.
+    """
+    pts_np = _random_open_polyline(41, n=60)
+    cumulative_pv = np.asarray(
+        cast("pv.PolyData", polyline_to_pyvista(pts_np).compute_arc_length())["arc_length"]
+    )
+    assert cumulative_pv.shape == (pts_np.shape[0],)
+    assert np.all(np.diff(cumulative_pv) > 0.0)  # non-vacuity: a real, increasing table
+    cumulative_wp = od.polyline.cumulative_arc_length(points_to_warp(pts_np, device))
+    assert np.allclose(cumulative_wp.numpy(), cumulative_pv, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("deterministic", [True, False], indirect=True)
@@ -1199,6 +1219,7 @@ def test_resample_polyline_matches_numpy_interp(device: str, num_points: int) ->
     assert np.allclose(resampled_wp.numpy(), _resample_np(pts_np, num_points), rtol=1e-4, atol=1e-4)
 
 
+@pytest.mark.parity("polyline_resample", "trimesh")
 def test_resample_polyline_matches_trimesh(device: str) -> None:
     """
     Class A: arc-length resampling against ``trimesh.path.traversal.resample_path``.
@@ -1904,52 +1925,24 @@ def test_triangulate_from_offsets_with_only_degenerate_loops(device: str) -> Non
     assert sorted(faces_wp.numpy()[0].tolist()) == [3, 4, 5]
 
 
-# --- simplify (Ramer-Douglas-Peucker, NumPy reference) ---
+# --- simplify (Ramer-Douglas-Peucker, against ``igl.ramer_douglas_peucker``) ---
 
 
-def _simplify_np(pts_np: np.ndarray, tol: float) -> tuple[np.ndarray, np.ndarray]:
-    # Mirrors ``igl::ramer_douglas_peucker``; returns (S, J).
-    n = len(pts_np)
-    keep = np.ones(n, dtype=bool)
-    stol = tol * tol
+@pytest.mark.parametrize("tol", [0.5, 2.0])
+@pytest.mark.parity("polyline_simplify", "igl")
+def test_simplify_matches_igl(device: str, tol: float) -> None:
+    """
+    Class A: ``igl.ramer_douglas_peucker`` keeps the same indices ``J`` and points ``S``.
 
-    def rec(ixs: int, ixe: int) -> None:
-        sdmax, ixc = 0.0, -1
-        if ixe - ixs > 1:
-            s, d = pts_np[ixs], pts_np[ixe]
-            dms = d - s
-            sdes = float(dms @ dms)
-            for k in range(ixs + 1, ixe):
-                p = pts_np[k]
-                if sdes <= 1e-7:
-                    sd = float((p - s) @ (p - s))
-                else:
-                    t = -(dms @ (s - p)) / sdes
-                    proj = (1.0 - t) * s + t * d
-                    sd = float((p - proj) @ (p - proj))
-                if sd > sdmax:
-                    sdmax, ixc = sd, k
-        if sdmax <= stol:
-            keep[ixs + 1 : ixe] = False
-        else:
-            rec(ixs, ixc)
-            rec(ixc, ixe)
-
-    if n >= 2:
-        rec(0, n - 1)
-    indices = np.flatnonzero(keep)
-    return pts_np[indices], indices
-
-
-@pytest.mark.parametrize("tol", [0.1, 0.5])
-def test_simplify_matches_reference(device: str, tol: float) -> None:
+    The same recursive split at the farthest interior point, kept above ``tol``. The two
+    tolerances drop 4 and 18 of the 40 points.
+    """
     pts_np = _random_open_polyline(0, n=40)
     simplified_wp, indices_wp = od.polyline.polyline_simplify(points_to_warp(pts_np, device), tol)
-    simplified_np, indices_np = _simplify_np(pts_np, tol)
-    assert np.array_equal(indices_wp.numpy(), indices_np.astype(np.int32))
-    assert np.allclose(
-        simplified_wp.numpy(), simplified_np.astype(np.float32), rtol=1e-4, atol=1e-4
-    )
+    simplified_igl, indices_igl = map(np.asarray, igl.ramer_douglas_peucker(pts_np, tol))
+    assert 2 < indices_igl.size < pts_np.shape[0]  # non-vacuity: some points dropped, some kept
+    assert np.array_equal(indices_wp.numpy(), indices_igl)
+    assert np.allclose(simplified_wp.numpy(), simplified_igl, rtol=1e-4, atol=1e-4)
 
 
 @pytest.mark.parametrize(
@@ -2034,7 +2027,7 @@ def test_simplify_block_and_round_loop_match_reference(
     device: str, shape: str, cap: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
-    Class A, against the recursive NumPy port, through both forms of the round loop.
+    Class A, against ``igl.ramer_douglas_peucker``, through both forms of the round loop.
 
     Up to ``RDP_ONE_BLOCK_MAX`` points on CUDA -- and at every length on the CPU device -- the whole
     loop runs as one block (``rdp_simplify_block``), longer polylines on CUDA as the captured
@@ -2055,10 +2048,10 @@ def test_simplify_block_and_round_loop_match_reference(
         pts_np = np.cumsum(np.random.default_rng(5).normal(size=(1500, 3)), axis=0)
         tol = 0.5
     _, indices_wp = od.polyline.polyline_simplify(points_to_warp(pts_np, device), tol)
-    _, indices_np = _simplify_np(pts_np, tol)
+    indices_igl = np.asarray(igl.ramer_douglas_peucker(pts_np, tol)[1])
     # Non-vacuous: a real share of the points is dropped and a real share kept.
-    assert 10 < indices_np.size < pts_np.shape[0] - 100
-    assert np.array_equal(indices_wp.numpy(), indices_np.astype(np.int32))
+    assert 10 < indices_igl.size < pts_np.shape[0] - 100
+    assert np.array_equal(indices_wp.numpy(), indices_igl)
 
 
 @pytest.mark.parametrize("cap", [0, 10**9])
@@ -2067,13 +2060,14 @@ def test_simplify_closed_through_both_round_forms(
     device: str, cap: int, repeated: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
-    Class A, against the recursive NumPy port of the closed loop, through both round forms.
+    Class B, against ``igl.ramer_douglas_peucker``, through both round forms.
 
-    ``closed=True`` reaches its closing point by wrapping the index over ``n + 1`` entries; an
-    input that already repeats its first point (``repeated``) leaves the last entry a dead slot
-    the seed must settle unkept, where a missed slot would add a spurious index ``n``. ``cap``
-    forces the one-block form (``10**9``) or the captured launches (``0``) as in
-    ``test_simplify_block_and_round_loop_match_reference``.
+    The named transform is ``closed=True``'s own: igl simplifies the loop with its first point
+    repeated at the end, an open polyline of ``n + 1`` points. ``closed=True`` reaches its closing
+    point by wrapping the index over ``n + 1`` entries; an input that already repeats its first
+    point (``repeated``) leaves the last entry a dead slot the seed must settle unkept, where a
+    missed slot would add a spurious index ``n``. ``cap`` forces the one-block form (``10**9``) or
+    the captured launches (``0``) as in ``test_simplify_block_and_round_loop_match_reference``.
     """
     monkeypatch.setattr(kernel_polyline, "RDP_ONE_BLOCK_MAX", cap)
     angle = np.linspace(0.0, 2.0 * np.pi, 400, endpoint=False)
@@ -2084,14 +2078,12 @@ def test_simplify_closed_through_both_round_forms(
     simplified_wp, indices_wp = od.polyline.polyline_simplify(
         points_to_warp(input_np, device), 0.02, closed=True
     )
-    simplified_np, indices_np = _simplify_np(closed_np, 0.02)
+    simplified_igl, indices_igl = map(np.asarray, igl.ramer_douglas_peucker(closed_np, 0.02))
     # Non-vacuous: the loop keeps both ends of the seam and drops a real share of the rest.
-    assert 10 < indices_np.size < pts_np.shape[0] - 100
-    assert indices_np[-1] == pts_np.shape[0]
-    assert np.array_equal(indices_wp.numpy(), indices_np.astype(np.int32))
-    assert np.allclose(
-        simplified_wp.numpy(), simplified_np.astype(np.float32), rtol=1e-5, atol=1e-5
-    )
+    assert 10 < indices_igl.size < pts_np.shape[0] - 100
+    assert indices_igl[-1] == pts_np.shape[0]
+    assert np.array_equal(indices_wp.numpy(), indices_igl)
+    assert np.allclose(simplified_wp.numpy(), simplified_igl, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parity("polyline_simplify", "meshlib", "pyvista")

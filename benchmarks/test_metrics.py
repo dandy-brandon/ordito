@@ -33,15 +33,19 @@ symmetric answer needs both calls (both are timed); and ``samplenum`` defaults t
 point instead of measuring almost nothing. It has no Chamfer entry point -- the mean of the squares
 is not among the statistics it returns -- so it appears in the Hausdorff group alone.
 
+**meshlib**'s ``findMaxDistanceSq`` over two ``PointCloud`` objects is the Hausdorff group's third
+reference (multi-threaded); each cloud caches its point tree, so the row drops both caches in an
+untimed setup and builds them inside the call, as ordito does.
+
 trimesh and libigl have no point-cloud Chamfer/Hausdorff entry point (``igl.hausdorff`` is
-mesh-to-mesh only and is already the documented reference for
-[`hausdorff_mesh_to_mesh`][ordito.metrics.hausdorff_mesh_to_mesh] in ``tests/``), so neither
-appears here.
+mesh-to-mesh only and is timed in the ``hausdorff_mesh_to_mesh`` group), so neither appears in the
+point-cloud groups.
 """
 
 from __future__ import annotations
 
-from typing import cast
+from collections.abc import Callable
+from typing import TYPE_CHECKING, cast
 
 import igl
 import numpy as np
@@ -51,11 +55,21 @@ import pytest
 import pytorch3d.loss as p3d_loss
 import pytorch3d.structures as p3d_structures
 import warp as wp
+from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
 from pytorch3d.loss import point_mesh_distance as p3d_point_mesh_distance
 
 import ordito as od
-from conftest import BenchCase, points_torch_from_numpy, skip_larger_than, vert_coords_ml
+from conftest import (
+    BenchCase,
+    mesh_ml_from_numpy,
+    points_torch_from_numpy,
+    skip_larger_than,
+    vert_coords_ml,
+)
+
+if TYPE_CHECKING:
+    from typing_extensions import Buffer
 
 _TRANSLATION_FRACTION = 0.05
 
@@ -258,7 +272,7 @@ def test_chamfer_mesh_to_mesh_loss(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="hausdorff_points_to_mesh")
-@pytest.mark.benchlibs("ordito", "igl")
+@pytest.mark.benchlibs("ordito", "igl", "open3d")
 def test_hausdorff_points_to_mesh(bench_case: BenchCase) -> None:
     """
     Cloud-to-surface Hausdorff: ``chamfer_points_to_mesh``'s two halves, reduced with ``max``.
@@ -266,9 +280,15 @@ def test_hausdorff_points_to_mesh(bench_case: BenchCase) -> None:
     **libigl's row is the forward half only**, the lower bound ``chamfer_points_to_mesh``'s igl row
     is: ``igl.point_mesh_squared_distance`` is the oracle for this half in
     ``tests/test_metrics.py`` and has no cloud-to-cloud counterpart for the other.
+
+    **open3d's row is both halves**, the composition ``_points_to_mesh_o3d`` describes.
     """
     skip_larger_than(bench_case, "dragon")
     cloud_np = _clouds_np(bench_case)[1]
+    if bench_case.kind == "open3d":
+        forward_o3d, backward_o3d = bench_case.run(_points_to_mesh_o3d(bench_case, cloud_np))
+        assert max(float(forward_o3d.max()), float(backward_o3d.max())) > 0.0
+        return
     if bench_case.kind == "igl":
         skip_larger_than(bench_case, "bunny", "the reference builds its AABB tree per call")
         vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
@@ -284,16 +304,41 @@ def test_hausdorff_points_to_mesh(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="hausdorff_mesh_to_mesh")
-@pytest.mark.benchlibs("ordito")
+@pytest.mark.benchlibs("ordito", "igl", "meshlib")
 def test_hausdorff_mesh_to_mesh(bench_case: BenchCase) -> None:
     """
     Symmetric vertex-to-surface Hausdorff: both meshes' trees built, both directions queried.
 
-    ordito-only: it is the row for the plain (untaped) mesh-to-mesh distances, whose two directions
-    share one query launch, and ``igl.hausdorff`` is its oracle in ``tests/test_metrics.py`` rather
-    than a timed baseline here.
+    **libigl**'s ``hausdorff`` is the same two vertex-to-surface queries, each building its AABB
+    tree per call as ordito builds its two BVHs. **meshlib**'s ``findMaxDistanceSq`` is the
+    multi-threaded one; its trees are cached on the two ``Mesh`` objects, so an untimed setup drops
+    them and the call builds them, matching the other rows. Both are compared with ordito in
+    ``tests/test_metrics.py``.
     """
     skip_larger_than(bench_case, "dragon")
+    if bench_case.kind == "igl":
+        skip_larger_than(bench_case, "bunny", "the reference builds its AABB tree per call")
+        cloud_a_np, cloud_b_np = _clouds_np(bench_case)
+        faces_np = bench_case.faces_np
+        hausdorff_igl = bench_case.run(
+            lambda: igl.hausdorff(cloud_a_np, faces_np, cloud_b_np, faces_np), rounds=3
+        )
+        assert hausdorff_igl > 0.0
+        return
+    if bench_case.kind == "meshlib":
+        mesh_a_ml = bench_case.new_mesh_ml()
+        mesh_b_ml = mesh_ml_from_numpy(_clouds_np(bench_case)[1], bench_case.faces_np)
+        part_a_ml, part_b_ml = mm.MeshPart(mesh_a_ml), mm.MeshPart(mesh_b_ml)
+
+        def drop_trees() -> None:
+            mesh_a_ml.invalidateCaches()
+            mesh_b_ml.invalidateCaches()
+
+        hausdorff_ml = bench_case.run(
+            lambda _: mm.findMaxDistanceSq(part_a_ml, part_b_ml), setup=drop_trees
+        )
+        assert hausdorff_ml > 0.0
+        return
     cloud_a, cloud_b = _clouds_wp(bench_case)
     faces = bench_case.faces_wp
     hausdorff = bench_case.run(
@@ -420,10 +465,25 @@ def _clouds_meshset_pml(bench_case: BenchCase) -> tuple[ml.MeshSet, int]:
 
 
 @pytest.mark.benchmark(group="hausdorff_points_to_points")
-@pytest.mark.benchlibs("ordito", "open3d", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "open3d", "pymeshlab", "meshlib")
 def test_hausdorff_points_to_points(bench_case: BenchCase) -> None:
     """Symmetric point-cloud Hausdorff: the same two searches, reduced with ``max`` instead."""
     skip_larger_than(bench_case, "dragon")
+    if bench_case.kind == "meshlib":
+        cloud_a_ml, cloud_b_ml = (
+            mn.pointCloudFromPoints(cast("Buffer", np.ascontiguousarray(cloud_np)))
+            for cloud_np in _clouds_np(bench_case)
+        )
+
+        def drop_trees() -> None:
+            cloud_a_ml.invalidateCaches()
+            cloud_b_ml.invalidateCaches()
+
+        hausdorff_ml = bench_case.run(
+            lambda _: mm.findMaxDistanceSq(cloud_a_ml, cloud_b_ml), setup=drop_trees
+        )
+        assert hausdorff_ml > 0.0
+        return
     if bench_case.kind == "pymeshlab":
         # ``get_hausdorff_distance`` is *one-directional* by construction -- it samples one layer
         # and searches the other -- so the symmetric answer is both directions, and both are timed.
@@ -457,15 +517,15 @@ def test_hausdorff_points_to_points(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="chamfer_points_to_mesh")
-@pytest.mark.benchlibs("ordito", "igl", "meshlib", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "igl", "meshlib", "pytorch3d", "open3d")
 def test_chamfer_points_to_mesh(bench_case: BenchCase) -> None:
     """
     Cloud-to-surface Chamfer: an exact mesh query forward, a ``k=1`` cloud search backward.
 
-    open3d's closest-point-on-surface equivalent lives in the *tensor* API
-    (``o3d.t.geometry.RaycastingScene.compute_distance``), which is a different implementation from
-    the legacy ``o3d.geometry`` baselines the rest of this suite uses; mixing the two in one table
-    would compare implementations, not libraries.
+    **open3d's row is both halves**: the tensor API's ``RaycastingScene.compute_distance`` forward
+    (Embree, its scene built inside the call as ordito builds its ``wp.Mesh``) and the legacy
+    ``compute_point_cloud_distance`` from the mesh vertices back (``_points_to_mesh_o3d``), the
+    composition compared with ordito in ``tests/test_metrics.py``.
 
     **libigl's row is the forward half only**, and is a *lower* bound rather than a race:
     ``igl.point_mesh_squared_distance`` is exactly the cloud-to-surface query -- it is already the
@@ -503,6 +563,12 @@ def test_chamfer_points_to_mesh(bench_case: BenchCase) -> None:
             lambda: p3d_loss.point_mesh_face_distance(mesh_p3d, cloud_p3d)
         )
         assert float(distance_p3d) > 0.0
+        return
+    if bench_case.kind == "open3d":
+        forward_o3d, backward_o3d = bench_case.run(
+            _points_to_mesh_o3d(bench_case, _clouds_np(bench_case)[1])
+        )
+        assert float(np.mean(forward_o3d**2) + np.mean(backward_o3d**2)) > 0.0
         return
     if bench_case.kind == "meshlib":
         cloud_np = _clouds_np(bench_case)[1]
@@ -543,6 +609,33 @@ def test_chamfer_points_to_mesh(bench_case: BenchCase) -> None:
         lambda: od.metrics.chamfer_points_to_mesh(cloud, vertices, faces, squared=True)
     )
     assert chamfer > 0.0
+
+
+def _points_to_mesh_o3d(
+    bench_case: BenchCase, cloud_np: np.ndarray
+) -> Callable[[], tuple[np.ndarray, np.ndarray]]:
+    """
+    Return a callable giving open3d's two cloud-to-mesh halves: forward distances, then backward.
+
+    The forward half is ``RaycastingScene.compute_distance`` (the scene and its Embree BVH built
+    inside the call, as ordito builds its ``wp.Mesh``); the backward half is the legacy
+    ``compute_point_cloud_distance`` from the mesh vertices to the cloud. Both clouds and the
+    tensors are built here, outside the timed region.
+    """
+    vertices_t = o3d.core.Tensor(np.ascontiguousarray(bench_case.vertices_np, dtype=np.float32))  # pyright: ignore[reportCallIssue]
+    faces_t = o3d.core.Tensor(np.ascontiguousarray(bench_case.faces_np, dtype=np.uint32))  # pyright: ignore[reportCallIssue]
+    queries_t = o3d.core.Tensor(np.ascontiguousarray(cloud_np, dtype=np.float32))  # pyright: ignore[reportCallIssue]
+    vertices_o3d = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(bench_case.vertices_np))
+    cloud_o3d = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(cloud_np))
+
+    def distances_o3d() -> tuple[np.ndarray, np.ndarray]:
+        scene_o3d = o3d.t.geometry.RaycastingScene()
+        scene_o3d.add_triangles(vertices_t, faces_t)
+        forward_o3d = scene_o3d.compute_distance(queries_t).numpy()
+        backward_o3d = np.asarray(vertices_o3d.compute_point_cloud_distance(cloud_o3d))
+        return forward_o3d, backward_o3d
+
+    return distances_o3d
 
 
 @pytest.mark.benchmark(group="chamfer_mesh_to_mesh")

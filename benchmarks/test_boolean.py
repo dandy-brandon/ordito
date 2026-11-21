@@ -18,13 +18,18 @@ row passes ``check_volume=False`` so its per-call watertightness check is not ti
 equal ordito's (``tests/test_boolean.py``, Class A).
 
 **pymeshlab**'s ``generate_boolean_*`` is libigl's exact CGAL Boolean (single-threaded), and
-**meshlib**'s ``boolean`` is MeshLib's (multi-threaded). Neither simplifies its result, so their
+**meshlib**'s ``boolean`` is MeshLib's (multi-threaded), and its ``uniteManyMeshes`` the
+``union_all`` row's. Neither simplifies its result, so their
 answers equal ordito's ``collapse_collinear=False`` up to the triangulation of each cut face
 (``tests/test_boolean.py``, Class B); on these curved operands that is the default's answer too.
 The pymeshlab row deletes the result layer it adds inside the timed call, so the set does not grow
 across rounds. The meshlib row builds its two operands inside the timed call: MeshLib caches each
 mesh's AABB tree on the mesh, so shared operands would skip on every round after the first the
 tree builds ordito pays on each call (3-6x faster rows, 5 k to 328 k faces).
+
+**trimesh**'s capped ``intersections.slice_mesh_plane`` is the plane cuts' second reference:
+the same polygons, its cap triangulated by the ``manifold`` engine (``tests/test_boolean.py``,
+Class B on curved meshes).
 
 Measured (2026-11-21, CUDA, two icospheres rotated and shifted, union): ordito 1.4x faster than
 Manifold at 5 k faces and 3.8x at 328 k. The serial parts -- the inputs' coplanar groups and the
@@ -217,11 +222,31 @@ def _plane_offset(bench_case: BenchCase) -> float:
 
 
 @pytest.mark.benchmark(group="split_by_plane")
-@pytest.mark.benchlibs("ordito", "manifold3d")
+@pytest.mark.benchlibs("ordito", "manifold3d", "trimesh")
 @pytest.mark.benchaxis("scale")
 def test_split_by_plane(bench_case: BenchCase) -> None:
-    """``od.boolean.split_by_plane`` by an oblique plane through the middle."""
+    """
+    ``od.boolean.split_by_plane`` by an oblique plane through the middle.
+
+    trimesh's row is two capped ``slice_mesh_plane`` calls, one per side, each triangulating the
+    cap through its ``manifold`` engine; the ``Trimesh`` is built inside the timed call, since
+    the slice reads cached per-face properties.
+    """
     offset = _plane_offset(bench_case)
+    if bench_case.kind == "trimesh":
+        vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
+        normal_np = np.asarray(_PLANE_NORMAL) / np.linalg.norm(_PLANE_NORMAL)
+
+        def split_tm() -> tuple[tm.Trimesh, tm.Trimesh]:
+            mesh_tm = tm.Trimesh(vertices_np, faces_np, process=False)
+            return (
+                _slice_tm(mesh_tm, normal_np, offset * normal_np),
+                _slice_tm(mesh_tm, -normal_np, offset * normal_np),
+            )
+
+        above_tm, _below_tm = bench_case.run(split_tm)
+        assert len(above_tm.faces) > 0
+        return
     if bench_case.kind == "manifold3d":
         a_m3, _ = _manifolds_m3(bench_case)
 
@@ -240,11 +265,21 @@ def test_split_by_plane(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="trim_by_plane")
-@pytest.mark.benchlibs("ordito", "manifold3d")
+@pytest.mark.benchlibs("ordito", "manifold3d", "trimesh")
 @pytest.mark.benchaxis("scale")
 def test_trim_by_plane(bench_case: BenchCase) -> None:
     """``od.boolean.trim_by_plane`` by an oblique plane through the middle."""
     offset = _plane_offset(bench_case)
+    if bench_case.kind == "trimesh":
+        vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
+        normal_np = np.asarray(_PLANE_NORMAL) / np.linalg.norm(_PLANE_NORMAL)
+        kept_tm = bench_case.run(
+            lambda: _slice_tm(
+                tm.Trimesh(vertices_np, faces_np, process=False), normal_np, offset * normal_np
+            )
+        )
+        assert len(kept_tm.faces) > 0
+        return
     if bench_case.kind == "manifold3d":
         a_m3, _ = _manifolds_m3(bench_case)
         kept_m3 = bench_case.run(lambda: _forced(a_m3.trim_by_plane(_PLANE_NORMAL, offset)))
@@ -255,6 +290,13 @@ def test_trim_by_plane(bench_case: BenchCase) -> None:
         lambda: od.boolean.trim_by_plane(vertices, faces, _PLANE_NORMAL, offset)
     )
     assert kept_faces.size > 0
+
+
+def _slice_tm(mesh_tm: tm.Trimesh, normal_np: np.ndarray, origin_np: np.ndarray) -> tm.Trimesh:
+    """Return the capped side of ``mesh_tm`` that ``normal_np`` points into."""
+    sliced_tm = tm.intersections.slice_mesh_plane(mesh_tm, normal_np, origin_np, cap=True)
+    assert sliced_tm is not None
+    return sliced_tm
 
 
 # Batches: the sphere and copies turned and moved around it, overlapping in a ring.
@@ -305,10 +347,27 @@ def _run_batch(
 
 
 @pytest.mark.benchmark(group="union_all")
-@pytest.mark.benchlibs("ordito", "manifold3d")
+@pytest.mark.benchlibs("ordito", "manifold3d", "meshlib")
 @pytest.mark.benchaxis("scale")
 def test_union_all(bench_case: BenchCase) -> None:
-    """``od.boolean.union_all`` of the sphere and three copies around it."""
+    """
+    ``od.boolean.union_all`` of the sphere and three copies around it.
+
+    meshlib's ``uniteManyMeshes`` is the multi-threaded reference; its operands are built inside
+    the timed call, as in the two-operand rows, since MeshLib caches each mesh's AABB tree.
+    """
+    if bench_case.kind == "meshlib":
+        meshes = _batch_inputs(bench_case)
+
+        def unite_ml() -> mm.Mesh:
+            meshes_ml = [mesh_ml_from_numpy(vertices, faces) for vertices, faces in meshes]
+            return mm.uniteManyMeshes(
+                mm.std_vector_Mesh_const_ptr(meshes_ml), mm.UniteManyMeshesParams()
+            )
+
+        united_ml = bench_case.run(unite_ml)
+        assert united_ml.topology.numValidFaces() > 0
+        return
     _run_batch(bench_case, od.boolean.union_all, m3.OpType.Add)
 
 

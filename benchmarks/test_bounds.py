@@ -80,12 +80,13 @@ import igl
 import numpy as np
 import open3d as o3d
 import pytest
+import pytorch3d.structures as p3d_structures
 import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
 
 import ordito as od
-from conftest import BenchCase, BenchLibrary
+from conftest import BenchCase, BenchLibrary, points_torch_from_numpy
 
 # Candidate orientations scored by every ``oriented_bounding_box`` row, ordito's and igl's alike.
 # Fixed and shared: the two libraries search the identical candidate set, so a row that let them
@@ -127,7 +128,7 @@ def _queries_wp(bench_case: BenchCase) -> wp.array[wp.vec3]:
 
 
 @pytest.mark.benchmark(group="aabb")
-@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "igl", "pyvista", "meshlib")
+@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "igl", "pyvista", "meshlib", "pytorch3d")
 def test_aabb(bench_case: BenchCase) -> None:
     """
     A min/max reduce over the vertices, and the suite's clearest host-latency floor.
@@ -138,7 +139,18 @@ def test_aabb(bench_case: BenchCase) -> None:
     meshlib's ``computeBoundingBox`` returns the two corners directly and is the only row here that
     is **multi-threaded**, which on a reduce this cheap mostly prices its own fork-join -- read it
     against ``ordito-cuda``, not ``ordito-cpu``.
+
+    pytorch3d's ``Pointclouds.get_bounding_boxes`` is the GPU row. The container memoizes its
+    padded and packed forms, so it is built inside the timed callable from the uploaded tensor: the
+    row prices the wrap and the reduction, where the vertices are already on the device for both.
     """
+    if bench_case.kind == "pytorch3d":
+        points_p3d = points_torch_from_numpy(bench_case.vertices_np, bench_case.torch_device)[0]
+        boxes_p3d = bench_case.run(
+            lambda: p3d_structures.Pointclouds([points_p3d]).get_bounding_boxes()
+        )
+        assert tuple(boxes_p3d.shape) == (1, 3, 2)
+        return
     if bench_case.kind == "meshlib":
         mesh_ml = bench_case.new_mesh_ml()
         box_ml = bench_case.run(

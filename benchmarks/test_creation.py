@@ -512,14 +512,25 @@ def test_cylinder_transformed(bench_lib: BenchLibrary, sections: int, mirror: bo
 
 
 @pytest.mark.benchmark(group="axis")
-@pytest.mark.benchlibs("ordito")
+@pytest.mark.benchlibs("ordito", "trimesh")
 @pytest.mark.parametrize("transformed", [False, True], ids=["identity", "rotated"])
 def test_axis(bench_lib: BenchLibrary, transformed: bool) -> None:
     """
     The XYZ marker: a ball and three cylinders written into views of one pair of buffers.
 
     Fixed size, so this is the call's floor: four generator launches and no concatenation.
+    ``trimesh.creation.axis`` builds the same marker (``tests/test_creation.py``, Class A by
+    component) from an icosphere, three cylinders and a concatenation, colours included.
     """
+    if bench_lib.kind == "trimesh":
+        matrix_np = (
+            od.transform.matrix_to_numpy(od.transform.rotation_matrix((1.0, 2.0, 3.0), 0.7))
+            if transformed
+            else None
+        )
+        marker_tm = bench_lib.run(lambda: tm.creation.axis(transform=matrix_np))
+        assert len(marker_tm.faces) > 0
+        return
     device = bench_lib.device
     matrix = od.transform.rotation_matrix((1.0, 2.0, 3.0), 0.7) if transformed else None
     _, faces_wp = bench_lib.run(lambda: od.creation.axis(transform=matrix, device=device))
@@ -660,17 +671,44 @@ def test_torus(bench_lib: BenchLibrary, sections: int) -> None:
     "a surface: the row closes the profile by its chord, so its solid has one wall more and "
     "a different volume (a 9-point profile: 80 and 144 vertices)",
 )
-@pytest.mark.benchlibs("ordito", "trimesh", "meshlib", "manifold3d")
+@pytest.mark.benchlibs("ordito", "trimesh", "meshlib", "manifold3d", "pyvista", "open3d")
 @pytest.mark.parametrize("sections", _SECTIONS)
 def test_revolve(bench_lib: BenchLibrary, sections: int) -> None:
     # The shared engine, timed directly on a 64-point profile so the per-slice work dominates the
-    # fixed host prologue. No open3d counterpart; meshlib's ``makeSolidOfRevolution`` is the third
-    # sweep and builds the identical mesh -- same counts, area and bounding box
-    # (``tests/test_creation.py``). Its profile is a ``std_vector_Vector2_float``, filled per point
-    # outside the timed callable like every other row's input.
+    # fixed host prologue. meshlib's ``makeSolidOfRevolution`` is the third sweep and builds the
+    # identical mesh -- same counts, area and bounding box (``tests/test_creation.py``). Its
+    # profile is a ``std_vector_Vector2_float``, filled per point outside the timed callable like
+    # every other row's input. pyvista's ``extrude_rotate`` and open3d's
+    # ``t.LineSet.extrude_rotation`` are both ``vtkRotationalExtrusionFilter``, sweeping the profile
+    # as a polyline in the ``xz`` plane: the same vertices once the seam ring is welded, the same
+    # area and volume, quads split on their own diagonals (``tests/test_creation.py``). pyvista's
+    # row includes ``triangulate()``, since the filter emits strips; open3d's returns triangles.
     profile_np = np.column_stack(
         (1.0 + 0.25 * np.cos(np.linspace(0.0, np.pi, 64)), np.linspace(-1.0, 1.0, 64))
     )
+    line_np = np.column_stack((profile_np[:, 0], np.zeros(64), profile_np[:, 1]))
+    if bench_lib.kind == "pyvista":
+        line_pv = pv.PolyData(line_np, lines=np.hstack([[64], np.arange(64)]))
+        swept_pv = bench_lib.run(
+            lambda: line_pv.extrude_rotate(resolution=sections, capping=False).triangulate()
+        )
+        assert swept_pv.n_cells == 2 * 63 * sections
+        return
+    if bench_lib.kind == "open3d":
+        import open3d as o3d
+
+        # The stubs omit ``Tensor``'s dtype/device defaults and the list-to-tensor conversion.
+        line_o3d = o3d.t.geometry.LineSet(
+            o3d.core.Tensor(np.ascontiguousarray(line_np)),  # pyright: ignore[reportCallIssue]
+            o3d.core.Tensor(  # pyright: ignore[reportCallIssue]
+                np.column_stack((np.arange(63), np.arange(1, 64))).astype(np.int64)
+            ),
+        )
+        swept_o3d = bench_lib.run(
+            lambda: line_o3d.extrude_rotation(360.0, [0.0, 0.0, 1.0], resolution=sections)  # pyright: ignore[reportArgumentType]
+        )
+        assert int(swept_o3d.triangle.indices.shape[0]) == 2 * 63 * sections
+        return
     if bench_lib.kind == "manifold3d":
         # ``revolve`` sweeps a region, so the profile is closed by its chord: the same sections,
         # one more wall between the profile's ends; ``CrossSection`` keeps about half the
@@ -758,7 +796,7 @@ def test_extrude_polygon(bench_lib: BenchLibrary, ring_size: int) -> None:
 
 
 @pytest.mark.benchmark(group="extrude_triangulation")
-@pytest.mark.benchlibs("ordito", "manifold3d")
+@pytest.mark.benchlibs("ordito", "manifold3d", "trimesh")
 @pytest.mark.parametrize("ring_size", [64, 1024])
 def test_extrude_triangulation(bench_lib: BenchLibrary, ring_size: int) -> None:
     """
@@ -768,7 +806,17 @@ def test_extrude_triangulation(bench_lib: BenchLibrary, ring_size: int) -> None:
     difference between this row and ``extrude_polygon``'s at the same ``ring_size`` is the cap
     triangulation. manifold3d's ``extrude`` of the ring triangulates its own cap inside the row
     (``tests/test_creation.py`` compares the two solids' vertices and volume).
+    ``trimesh.creation.extrude_triangulation``, the port source, takes the same triangulation
+    (built outside the timed callable as NumPy arrays) and returns the same mesh (Class A).
     """
+    if bench_lib.kind == "trimesh":
+        ring_np = _ring_np(ring_size)
+        fan_np = np.column_stack(
+            (np.zeros(ring_size - 2), np.arange(1, ring_size - 1), np.arange(2, ring_size))
+        ).astype(np.int64)
+        solid_tm = bench_lib.run(lambda: tm.creation.extrude_triangulation(ring_np, fan_np, 1.0))
+        assert len(solid_tm.faces) == 2 * (ring_size - 2) + 2 * ring_size
+        return
     if bench_lib.kind == "manifold3d":
         section_m3 = m3.CrossSection([_ring_np(ring_size)])
         n_tri = bench_lib.run(lambda: m3.Manifold.extrude(section_m3, 1.0).num_tri())

@@ -70,6 +70,7 @@ import math
 import warnings
 from typing import TYPE_CHECKING, Literal, cast
 
+import igl
 import numpy as np
 import pymeshlab as ml
 import pytest
@@ -193,7 +194,7 @@ def test_filter_mut_dif_laplacian(bench_case: BenchCase, volume_constraint: bool
 
 @pytest.mark.benchmark(group="filter_laplacian_integration")
 @pytest.mark.benchaxis("quality")
-@pytest.mark.benchlibs("ordito", "pymeshlab", "meshlib")
+@pytest.mark.benchlibs("ordito", "pymeshlab", "meshlib", "trimesh")
 @pytest.mark.parametrize("implicit", [False, True], ids=["explicit", "implicit"])
 def test_filter_laplacian_integration(bench_case: BenchCase, implicit: bool) -> None:
     """
@@ -207,7 +208,31 @@ def test_filter_laplacian_integration(bench_case: BenchCase, implicit: bool) -> 
     noise where ordito is orders of magnitude faster and equally flat -- the same statement its
     harmonic-field row makes in [`test_linalg.py`](test_linalg.py) about where the conditioning cost
     actually lives.
+
+    trimesh's ``smoothing.filter_laplacian`` is the function ordito's ports, both halves of it
+    (Class A in ``tests/test_smoothing.py``): its explicit pass is a sparse product and its
+    implicit one a SciPy direct solve each iteration. It mutates the mesh, so the ``Trimesh`` is
+    rebuilt inside the timed callable, while its operator is built outside it, as ordito's is.
     """
+    if bench_case.kind == "trimesh":
+        vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
+        operator_tm = tm.smoothing.laplacian_calculation(
+            tm.Trimesh(vertices_np, faces_np, process=False)
+        )
+
+        def filter_laplacian_tm() -> tm.Trimesh:
+            mesh_tm = tm.Trimesh(vertices_np, faces_np, process=False)
+            tm.smoothing.filter_laplacian(
+                mesh_tm,
+                iterations=_ITERATIONS,
+                implicit_time_integration=implicit,
+                volume_constraint=False,
+                laplacian_operator=operator_tm,
+            )
+            return mesh_tm
+
+        assert bench_case.run(filter_laplacian_tm).vertices.shape == vertices_np.shape
+        return
     if bench_case.kind == "meshlib":
         if implicit:
             pytest.skip("relax is an explicit per-iteration pass: no backward-Euler variant")
@@ -595,10 +620,30 @@ def _new_scalar_meshset_pml(bench_case: BenchCase) -> ml.MeshSet:
 
 
 @pytest.mark.benchmark(group="filter_scalar_laplacian")
-@pytest.mark.benchlibs("ordito", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "pymeshlab", "igl")
 def test_filter_scalar_laplacian(bench_case: BenchCase) -> None:
-    """Ten diffusion passes over a scalar field, against MeshLab's single full-step pass."""
+    """
+    Ten diffusion passes over a scalar field, against MeshLab's single full-step pass.
+
+    igl's ``per_vertex_attribute_smoothing`` is one full-step pass of the same 1-ring average on a
+    closed mesh (``tests/test_smoothing.py``); its row runs it ten times, the pass count ordito's
+    row runs (full steps against ordito's default half steps, the same work a pass), each a corner
+    scatter over the faces.
+    """
     n_vertices = bench_case.n_vertices
+    if bench_case.kind == "igl":
+        values_np, faces_np = _spike_field_np(bench_case)[:, None], bench_case.faces_np
+
+        def smooth_igl() -> np.ndarray:
+            smoothed_igl = values_np
+            for _ in range(_ITERATIONS):
+                smoothed_igl = np.asarray(
+                    igl.per_vertex_attribute_smoothing(smoothed_igl, faces_np)
+                )
+            return smoothed_igl
+
+        assert bench_case.run(smooth_igl).shape == (n_vertices, 1)
+        return
     if bench_case.kind == "pymeshlab":
         _skip_pml_beyond_bunny(bench_case)
 

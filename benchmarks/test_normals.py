@@ -77,7 +77,7 @@ def _face_normals_and_areas(
 
 
 @pytest.mark.benchmark(group="mean_vertex_normals")
-@pytest.mark.benchlibs("ordito", "pymeshlab", "pyvista")
+@pytest.mark.benchlibs("ordito", "pymeshlab", "pyvista", "trimesh")
 def test_mean_vertex_normals(bench_case: BenchCase) -> None:
     """
     The unweighted scatter, on the scan sweep: the throughput baseline for the group below.
@@ -86,7 +86,20 @@ def test_mean_vertex_normals(bench_case: BenchCase) -> None:
     the same pass where ordito is handed them, so its row carries the cross products as well --
     read the pair against ``face_normals_and_areas`` in
     [`test_triangles.py`](test_triangles.py) to separate the two halves.
+
+    ``trimesh.geometry.mean_vertex_normals`` is the same function under the same name, handed the
+    face normals as ordito is (built outside the timed region from trimesh's own mesh), and the
+    reference ``tests/test_normals.py`` compares against.
     """
+    if bench_case.kind == "trimesh":
+        n_vertices = bench_case.n_vertices
+        mesh_tm = tm.Trimesh(bench_case.vertices_np, bench_case.faces_np, process=False)
+        faces_np, normals_np = mesh_tm.faces, mesh_tm.face_normals
+        normals_tm = bench_case.run(
+            lambda: tm.geometry.mean_vertex_normals(n_vertices, faces_np, normals_np)
+        )
+        assert normals_tm.shape == (n_vertices, 3)
+        return
     if bench_case.kind == "pyvista":
         mesh_pv = bench_case.mesh_pv
         normals_pv = bench_case.run(

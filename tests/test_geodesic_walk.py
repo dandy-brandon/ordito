@@ -868,6 +868,58 @@ def test_geodesic_path_matches_potpourri3d_on_a_sphere(
     assert ratio_np.max() < 1.2
 
 
+@pytest.mark.parity("geodesic_path", "meshlib")
+def test_geodesic_path_matches_meshlib_on_a_sphere(
+    sphere_well_shaped: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Class C: within a per-cent of MeshLib's ``computeGeodesicPath``, on a sphere.
+
+    MeshLib's default fast-marching approximation followed by ``reducePath`` shortens an edge
+    path into a locally shortest one, and on this simply connected fixture it is the exact
+    geodesic: measured against ``igl.exact_geodesic`` over the same 24 targets, its ratio is
+    1.0000 at the median and 1.0004 at worst. Its path is the edge points between the two
+    vertices, so the named step is to add both ends before measuring.
+
+    Measured ordito/MeshLib ratios: minimum **1.0000**, median **1.0122**, worst **1.0848**, the
+    heat field's first-order excess, as against potpourri3d. The bounds are the potpourri3d test's:
+    the median at 1.035, nearly 3x the measured excess. Mutation probe: the shortest *edge* path
+    (Dijkstra over the edge graph), the answer of a walk that never leaves the edges, reads a
+    median of 1.0768 against MeshLib and fails it by 2.2x the bound's excess.
+    """
+    mesh_tm, mesh_wp = sphere_well_shaped
+    vertices_np = np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64)
+    mesh_ml = trimesh_to_meshlib(mesh_tm)
+    rng = np.random.default_rng(0)
+    targets_np = rng.choice(np.arange(1, vertices_np.shape[0]), 24, replace=False).astype(np.int32)
+
+    paths = _paths_to_source(mesh_wp, targets_np)
+    lengths_np = np.array([float(od.polyline.polyline_length(path)) for path in paths])
+    lengths_ml = []
+    for target in targets_np:
+        crossings_ml = mm.computeGeodesicPath(
+            mesh_ml,
+            mm.MeshTriPoint(mesh_ml.topology, mm.VertId(0)),
+            mm.MeshTriPoint(mesh_ml.topology, mm.VertId(int(target))),
+            mm.GeodesicPathApprox.FastMarching,
+        )
+        path_ml = np.vstack(
+            [
+                vertices_np[0],
+                *[[*mesh_ml.edgePoint(point_ml)] for point_ml in crossings_ml],
+                vertices_np[target],
+            ]
+        )
+        lengths_ml.append(float(np.linalg.norm(np.diff(path_ml, axis=0), axis=1).sum()))
+    lengths_ml = np.array(lengths_ml)
+    assert np.all(lengths_ml > 0.0)  # non-vacuity: the reference found every path
+
+    ratio_np = lengths_np / lengths_ml
+    assert ratio_np.min() > 0.999
+    assert np.median(ratio_np) < 1.035
+    assert ratio_np.max() < 1.2
+
+
 # --- method="potpourri3d": geometry-central's edge-flip geodesics ---
 # ``unit_box`` for the exact distance ties of a grid, which Dijkstra breaks by halfedge number;
 # ``torus_irregular_holes`` for rims and a homotopy class the short way round need not be in.
@@ -1170,6 +1222,75 @@ def test_descend_field_guards_and_empty(sphere_irregular: tuple[tm.Trimesh, wp.M
     assert points_wp.shape == (0,)
     assert offsets_wp.shape == (1,)
     assert od.array.split(points_wp, offsets_wp) == []
+
+
+def _vert_scalars_ml(values_np: np.ndarray) -> mm.VertScalars:
+    """Fill a MeshLib ``VertScalars`` (``float32``) from a per-vertex array, in vertex order."""
+    values_ml = mm.VertScalars()
+    for value in values_np:
+        values_ml.push_back(float(value))
+    return values_ml
+
+
+def _exact_distance_igl(mesh_tm: tm.Trimesh, source: int) -> np.ndarray:
+    """``igl.exact_geodesic`` from ``source`` to every vertex, all six arguments passed."""
+    return np.asarray(
+        igl.exact_geodesic(
+            np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64),
+            np.ascontiguousarray(mesh_tm.faces, dtype=np.int64),
+            np.array([source], dtype=np.int64),
+            np.array([], dtype=np.int64),
+            np.arange(mesh_tm.vertices.shape[0], dtype=np.int64),
+            np.array([], dtype=np.int64),
+        ),
+        dtype=np.float64,
+    )
+
+
+@pytest.mark.parity("descend_field", "meshlib")
+def test_descend_field_matches_meshlib(sphere_well_shaped: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Class B: ``computeSteepestDescentPath`` crosses the same edges at the same points.
+
+    Both walk the piecewise-linear field down its per-face gradient and return the edge points
+    they cross; MeshLib's path omits the start vertex, which is the named transform (prepend it),
+    after which the two polylines agree point for point. The field is ``igl.exact_geodesic``'s
+    distance to vertex 0, whose one vertex minimum is the source on this fixture, so every path
+    must arrive there.
+
+    Not on the needle fixtures, where the two walks break the ties at a vertex or along an edge
+    differently: with the same field and 64 random starts, 57 of 64 paths agree point for point on
+    ``torus_irregular`` (all 64 reach the source), and 44 of 64 on ``sphere_irregular``, whose
+    exact field has three spurious vertex minima besides the source, so 5 paths settle in
+    different basins.
+    """
+    mesh_tm, mesh_wp = sphere_well_shaped
+    device = mesh_wp.points.device
+    vertices_np = mesh_wp.points.numpy()
+    distance_np = _exact_distance_igl(mesh_tm, 0)
+    rng = np.random.default_rng(1)
+    starts_np = rng.choice(np.arange(1, mesh_wp.points.size), 64, replace=False).astype(np.int32)
+
+    points_wp, offsets_wp = od.geodesic_walk.descend_field(
+        mesh_wp.points,
+        mesh_wp.indices,
+        wp.array(distance_np, dtype=wp.float64, device=device),
+        wp.array(starts_np, dtype=wp.int32, device=device),
+    )
+    paths_wp = [path.numpy() for path in od.array.split(points_wp, offsets_wp)]
+
+    mesh_ml = trimesh_to_meshlib(mesh_tm)
+    field_ml = _vert_scalars_ml(distance_np)
+    for start, path_wp in zip(starts_np, paths_wp, strict=True):
+        crossings_ml = mm.computeSteepestDescentPath(
+            mm.MeshPart(mesh_ml), field_ml, mm.MeshTriPoint(mesh_ml.topology, mm.VertId(int(start)))
+        )
+        path_ml = np.vstack(
+            [vertices_np[start], *[[*mesh_ml.edgePoint(point_ml)] for point_ml in crossings_ml]]
+        )
+        assert np.allclose(path_ml[-1], vertices_np[0], atol=1e-5)  # non-vacuity: it arrived
+        assert path_wp.shape == path_ml.shape
+        assert np.allclose(path_wp, path_ml, rtol=1e-5, atol=1e-5)
 
 
 def _cycle_length(vertices_np: np.ndarray, loop_np: np.ndarray) -> float:

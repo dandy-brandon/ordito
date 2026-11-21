@@ -43,6 +43,11 @@ callable and the row prices that construction along with the transform -- the sa
 ``remove_*`` rows follow. On this operation the construction is the larger half at every size, so
 the row is an upper bound with a wide margin rather than a close comparison.
 
+**pytorch3d**'s ``Transform3d`` is the GPU reference for the point and normal maps, built once
+outside the timed callable from the transposed matrix (it multiplies row vectors). Its
+``transform_points`` divides by the homogeneous coordinate as well, a few more flops on a
+bandwidth row.
+
 **libigl** binds no transform: the C++ examples apply a matrix with Eigen directly, which would
 make an igl row a NumPy row under another name. **meshlib**'s ``Mesh.transform`` mutates and needs
 a fresh mesh per round like open3d's, and its ``AffineXf3f`` has to be assembled per call from
@@ -55,11 +60,13 @@ from __future__ import annotations
 import numpy as np
 import open3d as o3d
 import pytest
+import pytorch3d.transforms as p3d_transforms
+import torch
 import trimesh as tm
 import warp as wp
 
 import ordito as od
-from conftest import BenchCase, BenchLibrary
+from conftest import BenchCase, BenchLibrary, points_torch_from_numpy
 
 # The matrix every row applies: a rotation about an off-origin centre, so no component of the
 # multiply is trivially zero and none of the libraries can shortcut a translation-only path.
@@ -69,7 +76,7 @@ _MATRIX_WP = wp.mat44(*_MATRIX_NP.flatten().tolist())
 
 
 @pytest.mark.benchmark(group="transform_points")
-@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pyvista")
+@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pyvista", "pytorch3d")
 def test_transform_points(bench_case: BenchCase) -> None:
     """
     One 4x4 applied to every vertex: the suite's purest bandwidth row.
@@ -79,6 +86,12 @@ def test_transform_points(bench_case: BenchCase) -> None:
     a regression to. The three references each do strictly more work than the multiply -- see the
     module docstring for what each adds -- so all three are upper bounds.
     """
+    if bench_case.kind == "pytorch3d":
+        transform_p3d = _transform_p3d(bench_case)
+        points_p3d = points_torch_from_numpy(bench_case.vertices_np, bench_case.torch_device)[0]
+        moved_p3d = bench_case.run(lambda: transform_p3d.transform_points(points_p3d))
+        assert tuple(moved_p3d.shape) == (bench_case.n_vertices, 3)
+        return
     if bench_case.kind == "trimesh":
         points_np = bench_case.vertices_np.astype(np.float64)
         moved_np = bench_case.run(
@@ -195,7 +208,7 @@ def test_transform_mesh_device_matrix(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="transform_normals")
-@pytest.mark.benchlibs("ordito", "pyvista")
+@pytest.mark.benchlibs("ordito", "pyvista", "pytorch3d")
 def test_transform_normals(bench_case: BenchCase) -> None:
     """
     The inverse-transpose map, which is a different quantity from the point map and not a variant.
@@ -205,7 +218,22 @@ def test_transform_normals(bench_case: BenchCase) -> None:
     the point transform and the topology copy on top of the normal map, and is an upper bound by a
     wide margin. It is here because it is the only reference in the suite that applies the
     covector map at all.
+
+    **pytorch3d**'s ``Transform3d.transform_normals`` applies the same inverse transpose on the GPU
+    and does not renormalize, so its row adds ``torch.nn.functional.normalize`` to return what
+    ordito returns; the normals are ordito's own, uploaded outside the timed callable.
     """
+    if bench_case.kind == "pytorch3d":
+        transform_p3d = _transform_p3d(bench_case)
+        normals_p3d = torch.as_tensor(
+            od.normals.vertex_normals(bench_case.vertices_wp, bench_case.faces_wp).numpy(),
+            device=bench_case.torch_device,
+        )
+        moved_p3d = bench_case.run(
+            lambda: torch.nn.functional.normalize(transform_p3d.transform_normals(normals_p3d))
+        )
+        assert tuple(moved_p3d.shape) == (bench_case.n_vertices, 3)
+        return
     if bench_case.kind == "pyvista":
         mesh_pv = bench_case.mesh_pv.compute_normals(point_normals=True, cell_normals=False)
         moved_pv = bench_case.run(
@@ -220,6 +248,18 @@ def test_transform_normals(bench_case: BenchCase) -> None:
     # map preserves zero by design rather than producing a direction out of nothing.
     lengths = np.linalg.norm(moved_wp.numpy(), axis=1)
     assert np.isclose(lengths[lengths > 0.0], 1.0, rtol=1e-4, atol=1e-4).all()
+
+
+def _transform_p3d(bench_case: BenchCase) -> p3d_transforms.Transform3d:
+    """
+    Return ``_MATRIX_NP`` as a ``Transform3d`` on the row's device, built outside the timed call.
+
+    pytorch3d multiplies row vectors, so it takes the transpose of the column-vector matrix.
+    """
+    matrix_p3d = torch.as_tensor(
+        _MATRIX_NP.T.astype(np.float32), device=bench_case.torch_device
+    ).unsqueeze(0)
+    return p3d_transforms.Transform3d(matrix=matrix_p3d, device=bench_case.torch_device)
 
 
 # The two forms a transform parameter arrives in. A ``(1,)`` device array is what a fitted

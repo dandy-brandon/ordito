@@ -6,16 +6,14 @@ all -- ``harmonic_integrated_from_laplacian_and_mass``, ``hessian_energy``,
 ``curved_hessian_energy``, the Crouzeix-Raviart pair and ``lscm``'s ``Q``. Mirrors the module's
 source order: k-harmonic, the two Hessian energies, the Crouzeix-Raviart pair, the LSCM operators.
 
-``vector_area_matrix`` has no binding of its own, so it is derived from the two things that do:
-``A = (-repdiag(L, 2) - Q) / 2``. That is a class-B transform, named here so the assert is not
-mistaken for a direct one.
+``vector_area_matrix`` is compared with ``igl.vector_area_matrix`` directly.
 """
 
 from __future__ import annotations
 
 import itertools
 from collections.abc import Callable
-from typing import Literal, cast
+from typing import Literal
 
 import igl
 import numpy as np
@@ -877,25 +875,21 @@ def test_lscm_hessian_on_a_hub_matches_its_definition(device: str) -> None:
 
 
 @pytest.mark.parametrize("mesh_name", BOUNDARY_MESHES)
-def test_vector_area_matrix_matches_igl_derived(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
+@pytest.mark.parity("vector_area_matrix", "igl")
+def test_vector_area_matrix_matches_igl(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
-    Class B: ``vector_area_matrix`` is unbound, so it is solved for from two functions that are.
+    Class A: ``igl.vector_area_matrix`` is the same ``2 n_vertices`` square matrix, entry for entry.
 
-    ``A = (-repdiag(L, 2) - Q) / 2`` inverts the definition of the LSCM Hessian, giving an
-    independent reference out of ``igl.cotmatrix`` and ``igl.lscm`` -- both of which ordito is
-    compared against separately, so the derivation does not smuggle in ordito's own answer.
-    It is among the C++ functions with no Python binding. On ``BOUNDARY_MESHES``, one rim and four,
-    since the matrix is a sum over boundary edges and is zero on a closed mesh.
+    Both stack the ``u`` block before the ``v`` block, so no permutation is needed. igl's call
+    takes ``F`` alone and sizes the matrix by ``F.max() + 1``, which equals ``n_vertices`` on these
+    fixtures (asserted). On ``BOUNDARY_MESHES``, one rim and four, since the matrix is a sum over
+    boundary edges and is zero on a closed mesh.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    vertices_np, faces_np = mesh_igl(mesh_tm)
-    laplacian_igl = igl.cotmatrix(vertices_np, faces_np)
-    area_igl = cast(
-        sp.csr_matrix, (-sp.block_diag([laplacian_igl, laplacian_igl]) - _lscm_q_igl(mesh_tm)) / 2.0
-    )
+    _vertices_np, faces_np = mesh_igl(mesh_tm)
+    area_igl = igl.vector_area_matrix(faces_np)
 
+    assert area_igl.shape == (2 * mesh_wp.points.size, 2 * mesh_wp.points.size)
     assert abs(area_igl).max() > 1e-3  # non-vacuity: the rims contribute
     area_wp = bsr_to_csr(od.energies.vector_area_matrix(mesh_wp.points, mesh_wp.indices))
     assert sparse_allclose(area_wp, area_igl, rtol=1e-5, atol=1e-5)

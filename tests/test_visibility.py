@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Literal, cast
 
+import igl.embree as igl_embree
 import numpy as np
 import pymeshlab as ml
 import pytest
@@ -18,6 +19,7 @@ import ordito as od
 import ordito.typing as odt
 from tests.comparisons import assert_nonconstant
 from tests.conversions import (
+    mesh_igl,
     meshlib_scalars_to_numpy,
     points_to_warp,
     trimesh_to_meshlib,
@@ -137,6 +139,42 @@ def test_ambient_occlusion_ranks_like_pymeshlab(
     rank_pml = np.argsort(np.argsort(exposure_pml))
     rank_wp = np.argsort(np.argsort(occlusion_np))
     assert np.corrcoef(rank_pml, rank_wp)[0, 1] < -0.85
+
+
+@pytest.mark.parity("ambient_occlusion", "igl")
+@pytest.mark.parametrize("mesh_name", ["torus_irregular", "sphere_irregular_hollow"])
+def test_ambient_occlusion_matches_igl(request: pytest.FixtureRequest, mesh_name: str) -> None:
+    """
+    Class C (a mean absolute difference): libigl's Monte Carlo estimate of the same fraction.
+
+    ``igl.embree.ambient_occlusion`` casts ``num_samples`` random directions over each point's
+    hemisphere and returns the share that hit, unweighted: ordito's ``weight="uniform"`` integral,
+    estimated by sampling where ordito integrates on a Fibonacci lattice. Its directions are
+    redrawn on every call, so the two agree only to the estimator's noise: measured on both
+    devices, a mean absolute difference of 4.2e-03 to 5.0e-03 at 1 024 samples against ordito's
+    256 rays (two igl calls differ from each other by 2.6e-03 to 3.8e-03), and 99-100 % of
+    vertices within 0.05. The bars are a mean of 0.02 (4x the measurement) and 95 % within 0.05.
+    **Mutation probe**: shuffling the ordito side, 30 permutations, gives a mean difference of at
+    least **0.17** (8.5x the bar) and at most 30 % of vertices within 0.05.
+
+    Non-vacuous: the torus's hole and the hollow sphere's cavity occlude, and the convex outer
+    regions do not, so the reference is not constant.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    normals_wp = _vertex_normals_wp(mesh_wp)
+    vertices_igl, faces_igl = mesh_igl(mesh_tm)
+    occlusion_igl = np.asarray(
+        igl_embree.ambient_occlusion(
+            vertices_igl, faces_igl, vertices_igl, normals_wp.numpy().astype(np.float64), 1024
+        )
+    )
+    assert_nonconstant(occlusion_igl, 0.5)
+    occlusion_np = od.visibility.ambient_occlusion(
+        mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=256, weight="uniform"
+    ).numpy()
+    difference_np = np.abs(occlusion_np - occlusion_igl)
+    assert difference_np.mean() < 0.02
+    assert np.mean(difference_np < 0.05) >= 0.95
 
 
 @pytest.mark.parity(
@@ -456,6 +494,34 @@ def test_shape_diameter_trimming_rejects_the_escaping_rays(device: str) -> None:
     assert untrimmed_np[outer_np].mean() > trimmed_np[outer_np].mean()
 
 
+def _dumbbell_tm() -> tm.Trimesh:
+    """
+    Two radius-1 balls joined by a radius-0.2 bar, subdivided to 0.25 after the union.
+
+    The raw cylinder carries vertices only at its two end caps, which the union buries inside the
+    balls, leaving the bar's *surface* with nothing to measure on.
+    """
+    ball_left_tm = tm.creation.icosphere(subdivisions=3, radius=1.0)
+    ball_right_tm = tm.creation.icosphere(subdivisions=3, radius=1.0)
+    ball_right_tm.apply_translation([4.0, 0.0, 0.0])
+    bar_tm = tm.creation.cylinder(radius=0.2, height=5.0, sections=24)
+    bar_tm.apply_transform(tm.transformations.rotation_matrix(np.pi / 2.0, [0.0, 1.0, 0.0]))
+    bar_tm.apply_translation([2.0, 0.0, 0.0])
+    return tm.boolean.union([ball_left_tm, ball_right_tm, bar_tm]).subdivide_to_size(0.25)
+
+
+def _dumbbell_parts(dumbbell_tm: tm.Trimesh) -> tuple[np.ndarray, np.ndarray]:
+    """Masks of the vertices on the bar's middle and on the left ball's far side."""
+    vertices_np = np.asarray(dumbbell_tm.vertices)
+    bar_np = (np.abs(vertices_np[:, 0] - 2.0) < 0.8) & (
+        np.linalg.norm(vertices_np[:, 1:], axis=1) < 0.3
+    )
+    ball_np = vertices_np[:, 0] < -0.3  # only the left ball reaches there
+    assert bar_np.sum() > 10
+    assert ball_np.sum() > 10
+    return bar_np, ball_np
+
+
 @pytest.mark.parity("shape_diameter", "pymeshlab")
 def test_shape_diameter_agrees_with_pymeshlab_on_which_part_is_thinner(device: str) -> None:
     """
@@ -475,15 +541,7 @@ def test_shape_diameter_agrees_with_pymeshlab_on_which_part_is_thinner(device: s
     cross-section rather than any global extent — which is exactly why a 1 x 1 x 4 box reads ~1 at
     both ends and is useless as a fixture here.
     """
-    ball_left_tm = tm.creation.icosphere(subdivisions=3, radius=1.0)
-    ball_right_tm = tm.creation.icosphere(subdivisions=3, radius=1.0)
-    ball_right_tm.apply_translation([4.0, 0.0, 0.0])
-    bar_tm = tm.creation.cylinder(radius=0.2, height=5.0, sections=24)
-    bar_tm.apply_transform(tm.transformations.rotation_matrix(np.pi / 2.0, [0.0, 1.0, 0.0]))
-    bar_tm.apply_translation([2.0, 0.0, 0.0])
-    # Subdivided after the union: the raw cylinder carries vertices only at its two end caps, which
-    # the union buries inside the balls, leaving the bar's *surface* with nothing to measure on.
-    dumbbell_tm = tm.boolean.union([ball_left_tm, ball_right_tm, bar_tm]).subdivide_to_size(0.25)
+    dumbbell_tm = _dumbbell_tm()
 
     meshset_pml = ml.MeshSet()
     meshset_pml.add_mesh(
@@ -501,13 +559,7 @@ def test_shape_diameter_agrees_with_pymeshlab_on_which_part_is_thinner(device: s
         mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=256
     ).numpy()
 
-    vertices_np = np.asarray(dumbbell_tm.vertices)
-    bar_np = (np.abs(vertices_np[:, 0] - 2.0) < 0.8) & (
-        np.linalg.norm(vertices_np[:, 1:], axis=1) < 0.3
-    )
-    ball_np = vertices_np[:, 0] < -0.3  # only the left ball reaches there
-    assert bar_np.sum() > 10
-    assert ball_np.sum() > 10
+    bar_np, ball_np = _dumbbell_parts(dumbbell_tm)
     # Both must call the bar the thinner part, each at its own measured contrast: MeshLab
     # compresses it to a 0.683 bar-to-ball ratio where this port reads 0.255 (the true diameters'
     # ratio is 0.2).
@@ -518,6 +570,46 @@ def test_shape_diameter_agrees_with_pymeshlab_on_which_part_is_thinner(device: s
     rank_pml = np.argsort(np.argsort(diameter_pml))
     rank_wp = np.argsort(np.argsort(diameter_np))
     assert np.corrcoef(rank_pml, rank_wp)[0, 1] > 0.5
+
+
+@pytest.mark.parity("shape_diameter", "igl")
+def test_shape_diameter_agrees_with_igl_on_which_part_is_thinner(device: str) -> None:
+    """
+    Class C (rank structure): libigl's SDF is an unweighted hemisphere mean, ordito's a cone's.
+
+    ``igl.embree.shape_diameter_function`` fires ``num_samples`` random directions over the whole
+    inward hemisphere and averages the distances with equal weight and no trimming, where ordito
+    averages a 60-degree cone cosine-weighted after discarding outliers. The two are different
+    statistics of the same rays: on a unit sphere the chord at angle ``t`` from the inward normal is
+    ``2 cos t``, whose uniform hemisphere mean is ``1`` and whose cosine-weighted mean is ``4 / 3``,
+    and igl reads 1.04 where ordito reads 1.52 at its defaults (1.33 with the cone opened to 90
+    degrees and no trimming). So no value comparison holds and ordito has no option reproducing
+    igl's weights. What both must agree on is the dumbbell's segmentation cue, as in the pymeshlab
+    comparison above: the bar is thin and the balls thick.
+
+    Measured on both devices over ten igl calls (its directions are redrawn every call): igl's
+    bar-to-ball ratio 0.42-0.45 (ordito's 0.255, bounded in the pymeshlab test), and the per-vertex
+    Spearman correlation 0.61-0.63 over 4 550 vertices against a shuffled-side null of at most
+    0.033 over 30 permutations (15x below the 0.5 bar).
+    """
+    dumbbell_tm = _dumbbell_tm()
+    mesh_wp = trimesh_to_warp(dumbbell_tm, device)
+    normals_wp = od.normals.vertex_normals(mesh_wp.points, mesh_wp.indices)
+    vertices_igl, faces_igl = mesh_igl(dumbbell_tm)
+    diameter_igl = np.asarray(
+        igl_embree.shape_diameter_function(
+            vertices_igl, faces_igl, vertices_igl, normals_wp.numpy().astype(np.float64), 256
+        )
+    )
+    diameter_np = od.visibility.shape_diameter(
+        mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=256
+    ).numpy()
+
+    bar_np, ball_np = _dumbbell_parts(dumbbell_tm)
+    assert diameter_igl[bar_np].mean() < 0.6 * diameter_igl[ball_np].mean()
+    rank_igl = np.argsort(np.argsort(diameter_igl))
+    rank_wp = np.argsort(np.argsort(diameter_np))
+    assert np.corrcoef(rank_igl, rank_wp)[0, 1] > 0.5
 
 
 @pytest.mark.parity(

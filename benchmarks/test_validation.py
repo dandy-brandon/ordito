@@ -71,6 +71,7 @@ bit, so they share the MeshSet; ``get_topological_measures`` is read-only.
 from __future__ import annotations
 
 import igl
+import igl.predicates
 import numpy as np
 import pytest
 import trimesh as tm
@@ -120,15 +121,29 @@ def test_is_vertex_manifold(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="vertex_manifold_mask")
 @pytest.mark.benchaxis("valence")
-@pytest.mark.benchlibs("ordito", "igl")
+@pytest.mark.benchlibs("ordito", "igl", "open3d", "pymeshlab")
 def test_vertex_manifold_mask(bench_case: BenchCase) -> None:
     """
     The per-vertex form ``is_vertex_manifold`` reduces, at the same valence points.
 
     ``igl.is_vertex_manifold`` returns exactly this mask
     (``tests/test_validation.py::test_vertex_manifold_mask``), so here its row is like-for-like
-    rather than a mask against a ``bool``.
+    rather than a mask against a ``bool``. ``open3d``'s ``get_non_manifold_vertices`` returns the
+    offending indices and MeshLab's ``compute_selection_by_non_manifold_per_vertex`` selects them
+    (a selection filter, so its MeshSet is shared); both test connectivity rather than a fan, which
+    agrees with this mask on edge-manifold input, the class these meshes are in and the test
+    compares on.
     """
+    if bench_case.kind == "open3d":
+        mesh_o3d = bench_case.mesh_o3d
+        vertices_o3d = bench_case.run(mesh_o3d.get_non_manifold_vertices)
+        assert np.asarray(vertices_o3d).shape[0] == 0
+        return
+    if bench_case.kind == "pymeshlab":
+        meshset_pml = bench_case.meshset_pml
+        bench_case.run(meshset_pml.compute_selection_by_non_manifold_per_vertex)
+        assert meshset_pml.current_mesh().vertex_selection_array().shape == (bench_case.n_vertices,)
+        return
     if bench_case.kind == "igl":
         faces_np = np.ascontiguousarray(bench_case.faces_np, dtype=np.int64)
         mask_igl = np.asarray(bench_case.run(lambda: igl.is_vertex_manifold(faces_np)))
@@ -186,14 +201,33 @@ def test_is_edge_manifold(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="edge_manifold_mask")
 @pytest.mark.benchaxis("valence")
-@pytest.mark.benchlibs("ordito")
+@pytest.mark.benchlibs("ordito", "open3d", "pymeshlab")
 @pytest.mark.parametrize("allow_boundary_edges", [True, False], ids=["boundary_ok", "closed"])
 def test_edge_manifold_mask(bench_case: BenchCase, allow_boundary_edges: bool) -> None:
     """
     The per-face form ``is_edge_manifold`` reduces, at the same valence points, both settings.
 
-    Ordito only: the test oracle is a NumPy edge count.
+    ``open3d``'s ``get_non_manifold_edges`` takes the same ``allow_boundary_edges`` switch and
+    returns the offending edges rather than the faces they bound (an empty list on these closed
+    meshes), timed at both settings. MeshLab's ``compute_selection_by_non_manifold_edges_per_face``
+    is the per-face complement at ``allow_boundary_edges=True`` alone, the only setting it has, so
+    its row runs there; a selection filter, it shares its MeshSet across rounds.
+    ``tests/test_validation.py`` compares both on meshes with a non-manifold edge.
     """
+    if bench_case.kind == "open3d":
+        mesh_o3d = bench_case.mesh_o3d
+        edges_o3d = bench_case.run(
+            lambda: mesh_o3d.get_non_manifold_edges(allow_boundary_edges=allow_boundary_edges)
+        )
+        assert np.asarray(edges_o3d).shape[0] == 0
+        return
+    if bench_case.kind == "pymeshlab":
+        if not allow_boundary_edges:
+            pytest.skip("MeshLab's selection always allows boundary edges")
+        meshset_pml = bench_case.meshset_pml
+        bench_case.run(meshset_pml.compute_selection_by_non_manifold_edges_per_face)
+        assert meshset_pml.current_mesh().face_selection_array().shape == (bench_case.n_faces,)
+        return
     faces, n_vertices = bench_case.faces_wp, bench_case.n_vertices
     mask = bench_case.run(
         lambda: od.validation.edge_manifold_mask(faces, allow_boundary_edges, n_vertices=n_vertices)
@@ -279,14 +313,20 @@ def test_face_orientation_bits(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="is_orientable")
 @pytest.mark.benchaxis("diameter")
-@pytest.mark.benchlibs("ordito")
+@pytest.mark.benchlibs("ordito", "open3d")
 def test_is_orientable(bench_case: BenchCase) -> None:
     """
     The orientability verdict of the parity union-find, read against ``face_orientation_bits``.
 
-    On its diameter axis, where it must stay as flat. Ordito only: the test oracle is a NumPy
-    parity flood fill.
+    On its diameter axis, where it must stay as flat. ``open3d``'s ``is_orientable`` answers the
+    same question by a breadth-first walk of the face adjacency, so it is the row where the axis
+    should show on the reference side; ``tests/test_validation.py`` compares the verdicts. It
+    caches nothing, so the shared mesh serves every round.
     """
+    if bench_case.kind == "open3d":
+        mesh_o3d = bench_case.mesh_o3d
+        assert bench_case.run(mesh_o3d.is_orientable) is True
+        return
     faces, n_vertices = bench_case.faces_wp, bench_case.n_vertices
     result = bench_case.run(lambda: od.validation.is_orientable(faces, n_vertices=n_vertices))
     assert result is True
@@ -372,14 +412,23 @@ def test_is_watertight(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="face_watertight_mask")
 @pytest.mark.benchaxis("overlap")
-@pytest.mark.benchlibs("ordito")
+@pytest.mark.benchlibs("ordito", "trimesh")
 def test_face_watertight_mask(bench_case: BenchCase) -> None:
     """
     Faces all of whose edges have exactly two faces: the edge-count clause of ``is_watertight``.
 
     At ``is_watertight``'s points, so the gap between the two rows is the vertex-manifold and
-    self-intersection clauses. Ordito only: the test oracle is a NumPy edge count.
+    self-intersection clauses. ``trimesh.repair.broken_faces`` returns the complement as indices
+    (``tests/test_validation.py`` compares them); it reads the mesh's cached face adjacency, so the
+    mesh is rebuilt inside the timed callable.
     """
+    if bench_case.kind == "trimesh":
+        vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
+        broken_tm = bench_case.run(
+            lambda: tm.repair.broken_faces(tm.Trimesh(vertices_np, faces_np, process=False))
+        )
+        assert len(broken_tm) == 0
+        return
     faces, n_vertices = bench_case.faces_wp, bench_case.n_vertices
     mask = bench_case.run(lambda: od.validation.face_watertight_mask(faces, n_vertices=n_vertices))
     assert mask.shape == (bench_case.n_faces,)
@@ -404,16 +453,29 @@ def test_is_volume(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="is_self_intersecting")
 @pytest.mark.benchaxis("overlap")
-@pytest.mark.benchlibs("ordito", "meshlib", "pymeshfix")
+@pytest.mark.benchlibs("ordito", "meshlib", "pymeshfix", "igl")
 def test_is_self_intersecting(bench_case: BenchCase) -> None:
     """
     Whether any two faces intersect, over a ``wp.Mesh`` the caller already holds.
 
     The verdict ``face_self_intersecting_mask`` reduces, with the BVH built outside the timed
-    callable, so read against that row for what building it costs. The two references answer it as
-    the ``any()`` of their face sets, compared with this predicate in
+    callable, so read against that row for what building it costs. meshlib and pymeshfix answer it
+    as the ``any()`` of their face sets, compared with this predicate in
     ``tests/test_validation.py``; both are timed exactly as in ``face_self_intersecting_mask``.
+
+    ``igl.predicates.find_self_intersections(first_only=True)`` is the one reference with an
+    early-exit predicate: it stops at the first pair its exact test accepts. Measured at par with
+    its full search on ``tangle_2`` (1.0x), so the early exit buys it nothing there. Its AABB tree
+    is built inside the call, which ordito's prebuilt ``wp.Mesh`` spares.
     """
+    if bench_case.kind == "igl":
+        vertices_np = np.ascontiguousarray(bench_case.vertices_np, dtype=np.float64)
+        faces_np = np.ascontiguousarray(bench_case.faces_np, dtype=np.int64)
+        found_igl, _pairs_igl, _coplanar_igl = bench_case.run(
+            lambda: igl.predicates.find_self_intersections(vertices_np, faces_np, first_only=True)
+        )
+        assert bool(found_igl) is (bench_case.mesh_name != "sphere_med")
+        return
     if bench_case.kind == "pymeshfix":
         faces_pmf = bench_case.run(
             lambda: bench_case.new_tmesh_pmf().select_intersecting_triangles(
@@ -436,7 +498,7 @@ def test_is_self_intersecting(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="face_self_intersecting_mask")
 @pytest.mark.benchaxis("overlap")
-@pytest.mark.benchlibs("ordito", "meshlib", "pymeshfix", "open3d", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "meshlib", "pymeshfix", "open3d", "pymeshlab", "igl")
 def test_face_self_intersecting_mask(bench_case: BenchCase) -> None:
     """
     The per-face self-intersection flags, which ``is_watertight`` reduces to a single bool.
@@ -466,7 +528,20 @@ def test_face_self_intersecting_mask(bench_case: BenchCase) -> None:
     differences to read the rows through: open3d returns pairs, so its output is larger than a mask
     and ``np.unique`` is the reduction (outside the timed callable, as ordito's mask needs none);
     and MeshLab mutates ``current_mesh()``, so its MeshSet is rebuilt per round.
+
+    libigl's ``igl.predicates.find_self_intersections`` is the sixth, and the only one deciding
+    each pair with exact predicates: an AABB tree built inside the call, single-threaded, returning
+    pairs. It also tests pairs that share a vertex and counts coplanar contact, which ordito does
+    not; the test drops those pairs before comparing face sets.
     """
+    if bench_case.kind == "igl":
+        vertices_np = np.ascontiguousarray(bench_case.vertices_np, dtype=np.float64)
+        faces_np = np.ascontiguousarray(bench_case.faces_np, dtype=np.int64)
+        _found_igl, pairs_igl, _coplanar_igl = bench_case.run(
+            lambda: igl.predicates.find_self_intersections(vertices_np, faces_np)
+        )
+        assert np.asarray(pairs_igl).shape[1] == 2
+        return
     if bench_case.kind == "open3d":
         mesh_o3d = bench_case.mesh_o3d
         pairs_o3d = bench_case.run(mesh_o3d.get_self_intersecting_triangles)

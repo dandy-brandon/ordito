@@ -43,6 +43,9 @@ boundary the libigl and potpourri3d references hit elsewhere, and this module's 
 the scan sweep, so there is nowhere for the row to move. Recorded rather than skipped so it is not
 re-derived.
 
+**pyvista** also answers ``mesh_with_plane`` (``slice``, ``vtkCutter``) and ``marching_triangles``
+(``contour`` over the per-vertex field), both as the same segment soup ordito emits.
+
 **libigl** has no plane-section or mesh-mesh binding, so it is absent from those groups. It *does*
 have the isocontour operation: ``igl.isolines`` is precisely ``marching_triangles``, and it is a row
 in both of that function's groups.
@@ -190,7 +193,7 @@ def _plane_ml(bench_case: BenchCase) -> mm.Plane3f:
 
 
 @pytest.mark.benchmark(group="mesh_with_plane")
-@pytest.mark.benchlibs("ordito", "trimesh", "meshlib")
+@pytest.mark.benchlibs("ordito", "trimesh", "meshlib", "pyvista")
 def test_mesh_with_plane(bench_case: BenchCase) -> None:
     """
     Cross-section segments of a mid-mesh plane: a full face sweep plus a compaction.
@@ -201,8 +204,16 @@ def test_mesh_with_plane(bench_case: BenchCase) -> None:
     section's length where ordito's and trimesh's track the face count. Read the pair across mesh
     sizes rather than at one point. Its output is ``EdgePoint`` contours, which
     ``tests/test_intersection.py`` decodes; the row asserts only that a section came back.
+
+    pyvista's ``slice`` (``vtkCutter``) returns the segment soup ordito does, one line cell per
+    cut face over merged points; single-threaded VTK.
     """
     origin = _plane_origin(bench_case)
+    if bench_case.kind == "pyvista":
+        mesh_pv = bench_case.mesh_pv
+        lines_pv = bench_case.run(lambda: mesh_pv.slice(normal=_PLANE_NORMAL, origin=origin))
+        assert lines_pv.n_lines > 0
+        return
     if bench_case.kind == "meshlib":
         mesh_part_ml = mm.MeshPart(_mesh_ml(bench_case))
         plane_ml = _plane_ml(bench_case)
@@ -682,7 +693,17 @@ def _field_wp(bench_case: BenchCase, field: str) -> wp.array[wp.float64]:
 
 
 def _run_case(bench_case: BenchCase, field: str) -> None:
-    """Extract one level set, in ordito, potpourri3d, libigl or meshlib."""
+    """Extract one level set, in ordito, potpourri3d, libigl, meshlib or pyvista."""
+    if bench_case.kind == "pyvista":
+        # VTK's contour filter returns igl's kind of segment soup over merged points: one line
+        # cell per crossed triangle. The field is seeded on the shared ``PolyData`` outside.
+        mesh_pv = bench_case.mesh_pv
+        mesh_pv.point_data["field"] = _field_np(bench_case, field)
+        lines_pv = bench_case.run(
+            lambda: mesh_pv.contour([_ISOVALUE], scalars="field"), rounds=_ROUNDS
+        )
+        assert lines_pv.n_lines > 0
+        return
     if bench_case.kind == "meshlib":
         # ``extractIsolines`` returns linked contours like ordito and potpourri3d, not igl's
         # segment soup. Its ``VertScalars`` field has no array constructor -- the fill is a
@@ -731,7 +752,7 @@ def _run_case(bench_case: BenchCase, field: str) -> None:
 
 @pytest.mark.benchmark(group="marching_triangles")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("ordito", "potpourri3d", "igl", "meshlib")
+@pytest.mark.benchlibs("ordito", "potpourri3d", "igl", "meshlib", "pyvista")
 def test_marching_triangles(bench_case: BenchCase) -> None:
     """One long closed contour of a coordinate function, over the clean size sweep."""
     _run_case(bench_case, "plane")

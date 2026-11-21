@@ -3854,13 +3854,6 @@
    "group": "moments",
    "mesh_name": "bunny",
    "rest": [],
-   "library": "meshlib",
-   "ratio": 384.0
-  },
-  {
-   "group": "moments",
-   "mesh_name": "bunny",
-   "rest": [],
    "library": "pyvista",
    "ratio": 42.0
   },
@@ -3875,13 +3868,6 @@
    "group": "moments",
    "mesh_name": "bunny_decimated",
    "rest": [],
-   "library": "meshlib",
-   "ratio": 94.3
-  },
-  {
-   "group": "moments",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
    "library": "pyvista",
    "ratio": 13.3
   },
@@ -3891,13 +3877,6 @@
    "rest": [],
    "library": "trimesh",
    "ratio": 89.4
-  },
-  {
-   "group": "moments",
-   "mesh_name": "dragon",
-   "rest": [],
-   "library": "meshlib",
-   "ratio": 1940.3
   },
   {
    "group": "moments",

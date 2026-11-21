@@ -22,7 +22,9 @@ number appears as the ``mean_edge_length`` reference in [`test_edges.py`](test_e
 worth knowing before reading either as a per-quantity cost. It is read-only, so it shares the
 MeshSet.
 
-``volume`` has **no group**; see the known-gaps table in ``README.md``.
+``volume``'s group is ordito-only: its references (igl, meshlib, pyvista, trimesh) are timed in
+``moments``, and manifold3d's ``volume()`` refuses every open scan mesh the group sweeps, so it is
+compared in ``tests/test_measures.py`` and not timed.
 """
 
 from __future__ import annotations
@@ -101,6 +103,8 @@ def test_moments(bench_case: BenchCase) -> None:
     **pyvista answers the volume alone**, so its row does strictly less: ``PolyData.volume`` is the
     same divergence integral over the faces with no centre of mass and no inertia tensor. Unlike
     open3d's it does *not* validate first, which is what makes it safe to time here at all.
+    **meshlib's** ``volume(topology, points)`` is the same volume alone, its mesh built outside the
+    timed callable.
 
     There is no open3d row, measured rather than assumed: ``get_volume`` validates before it
     integrates, and the validation is the same brute-force ``IsWatertight`` composition its
@@ -113,10 +117,19 @@ def test_moments(bench_case: BenchCase) -> None:
     reductions over the per-face ``vec3d`` integrands, 72 bytes per face rather than per return --
     for as long as nobody checked which of the two the number was. A caller wanting only the volume
     should still call [`volume`][ordito.measures.volume], which pays one crossing.
+
+    **There is no pymeshlab row**: ``get_geometric_measures`` computes ``mesh_volume``,
+    ``center_of_mass`` and ``inertia_tensor`` only on a watertight mesh and silently omits them on
+    every open scan mesh this group sweeps, so a row would time a call that integrates nothing
+    (its keys are compared on closed fixtures in ``tests/test_measures.py``).
     """
     if bench_case.kind == "pyvista":
         mesh_pv = bench_case.mesh_pv
         assert np.isfinite(bench_case.run(lambda: float(mesh_pv.volume)))
+        return
+    if bench_case.kind == "meshlib":
+        mesh_ml = bench_case.new_mesh_ml()
+        assert np.isfinite(bench_case.run(lambda: mm.volume(mesh_ml.topology, mesh_ml.points)))
         return
     if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
@@ -153,7 +166,7 @@ def test_volume(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="euler_characteristic")
-@pytest.mark.benchlibs("ordito", "trimesh")
+@pytest.mark.benchlibs("ordito", "trimesh", "igl", "open3d", "pymeshlab")
 def test_euler_characteristic(bench_case: BenchCase) -> None:
     """
     ``V - E + F`` over the referenced vertices and the unique edges: one launch, one readback.
@@ -163,12 +176,37 @@ def test_euler_characteristic(bench_case: BenchCase) -> None:
     passes the vertex count, so the index-bound read of the inferred path is not timed. The
     trimesh row is the uncached ``euler_number`` on a fresh ``Trimesh`` (its own ``edges_unique``
     grouping and referenced-vertex count).
+
+    ``igl.euler_characteristic(F)`` takes ``F.max() + 1`` vertices and its own unique-edge list;
+    Open3D's ``euler_poincare_characteristic`` counts every stored vertex and builds an edge set,
+    recomputed on each call of the shared mesh. pymeshlab's ``get_topological_measures`` is an
+    **upper** bound: it also counts boundary edges, components, genus and non-manifold elements,
+    and the row reads chi off its vertex, edge and face counts. It is read-only, so it shares the
+    MeshSet.
     """
     if bench_case.kind == "ordito":
         faces = bench_case.faces_wp
         result = bench_case.run(
             lambda: od.measures.euler_characteristic(faces, n_vertices=bench_case.n_vertices)
         )
+    elif bench_case.kind == "igl":
+        faces_np = bench_case.faces_np
+        result = bench_case.run(lambda: igl.euler_characteristic(faces_np))
+    elif bench_case.kind == "open3d":
+        mesh_o3d = bench_case.mesh_o3d
+        result = bench_case.run(mesh_o3d.euler_poincare_characteristic)
+    elif bench_case.kind == "pymeshlab":
+        meshset_pml = bench_case.meshset_pml
+
+        def euler_pml() -> int:
+            measures_pml = meshset_pml.get_topological_measures()
+            return (
+                int(measures_pml["vertices_number"])
+                - int(measures_pml["edges_number"])
+                + int(measures_pml["faces_number"])
+            )
+
+        result = bench_case.run(euler_pml)
     else:
         vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
         result = bench_case.run(

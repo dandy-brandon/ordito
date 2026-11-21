@@ -38,7 +38,8 @@ the missing timings):
   both sides receive the identical edge indexing rather than each building its own.
 
 **pymeshlab**'s ``compute_scalar_transfer_face_to_vertex(areaweight=False)`` is the plain corner
-mean of ``average_onto_vertices``, and ``transfer_attributes_per_vertex(qualitytransfer=True)`` is
+mean of ``average_onto_vertices``, ``compute_scalar_transfer_vertex_to_face`` that of
+``average_onto_faces``, and ``transfer_attributes_per_vertex(qualitytransfer=True)`` is
 the barycentric pull. Both read and write mesh *attributes* rather than taking arrays, so each row
 seeds the input attribute and reads the output one; the transfer needs **two** meshes in the set and
 writes into the second, so that row builds a fresh two-mesh MeshSet inside the timed callable --
@@ -48,8 +49,12 @@ happens.
 **pyvista**'s ``DataSet.interpolate`` is ``interpolate_from_points``'s reference: a
 ``vtkPointInterpolator`` with a ``vtkGaussianKernel``, given the identical radius and sharpness, so
 the two compute the same weighted mean and differ only in the locator (a
-``vtkStaticPointLocator`` against ordito's hash grid). It is the module's only pyvista row -- VTK
-has no per-element averaging filter, so the three ``average_*`` groups keep libigl.
+``vtkStaticPointLocator`` against ordito's hash grid). VTK's ``point_data_to_cell_data`` /
+``cell_data_to_point_data`` are the two vertex-face averages and ``sample`` is the transfer, so
+pyvista also has rows in those groups; the edge-to-vertex average keeps libigl alone.
+
+**pytorch3d**'s ``ops.interpolate_face_attributes`` is ``interpolate_barycentric``'s GPU
+reference, the blend its rasterizer's shaders run.
 
 trimesh and open3d have no equivalent for any of the four mesh-side functions: attribute averaging
 over a mesh's incidence structure is not something either exposes as a function.
@@ -61,7 +66,9 @@ import igl
 import numpy as np
 import pymeshlab as ml
 import pytest
+import pytorch3d.ops as p3d_ops
 import pyvista as pv
+import torch
 import trimesh as tm
 import warp as wp
 
@@ -142,7 +149,7 @@ def _edge_numbering(bench_case: BenchCase) -> tuple[np.ndarray, np.ndarray, np.n
 
 @pytest.mark.benchmark(group="average_onto_faces")
 @pytest.mark.benchaxis("valence")
-@pytest.mark.benchlibs("ordito", "igl", "pyvista")
+@pytest.mark.benchlibs("ordito", "igl", "pyvista", "pymeshlab")
 def test_average_onto_faces(bench_case: BenchCase) -> None:
     """
     Vertex-to-face mean: a ``3F`` **gather**, so the one direction valence cannot hurt.
@@ -154,12 +161,20 @@ def test_average_onto_faces(bench_case: BenchCase) -> None:
 
     VTK spells it ``point_data_to_cell_data``; the field is seeded on the shared ``PolyData`` once,
     outside the timed region, since what a gather costs depends on the indices and not the values.
+    MeshLab's ``compute_scalar_transfer_vertex_to_face`` reads the vertex scalar attribute, which is
+    seeded the same way (``z``, like ``_vertex_field_np``) on the shared mesh set.
     """
     if bench_case.kind == "pyvista":
         mesh_pv = bench_case.mesh_pv
         mesh_pv.point_data["field"] = _vertex_field_np(bench_case).astype(np.float64)
         transferred_pv = bench_case.run(mesh_pv.point_data_to_cell_data)
         assert np.asarray(transferred_pv.cell_data["field"]).shape == (bench_case.n_faces,)
+        return
+    if bench_case.kind == "pymeshlab":
+        meshset_pml = bench_case.meshset_pml
+        meshset_pml.compute_scalar_by_function_per_vertex(q="z")
+        bench_case.run(meshset_pml.compute_scalar_transfer_vertex_to_face)
+        assert meshset_pml.current_mesh().face_scalar_array().shape == (bench_case.n_faces,)
         return
     if bench_case.kind == "ordito":
         faces = bench_case.faces_wp
@@ -313,7 +328,7 @@ def test_transfer_onto_vertices(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="interpolate_barycentric")
-@pytest.mark.benchlibs("ordito", "trimesh")
+@pytest.mark.benchlibs("ordito", "trimesh", "pytorch3d")
 def test_interpolate_barycentric(bench_case: BenchCase) -> None:
     """
     A per-vertex field at one surface point per face, from the face and barycentric coordinates.
@@ -321,9 +336,30 @@ def test_interpolate_barycentric(bench_case: BenchCase) -> None:
     The positions are the field, which is what ``trimesh.triangles.barycentric_to_points`` computes
     from the triangle soup (built outside the timed region, as ordito's indexed input is); the row
     is a ``3F`` gather and a weighted sum on both sides.
+
+    **pytorch3d**'s ``ops.interpolate_face_attributes`` is the same blend on the GPU, over the
+    field laid out per face corner (``(F, 3, 3)``, the soup again, built outside) with one
+    ``(1, 1, 1)`` "pixel" per point. Its corner layout reads three times the field's bytes where
+    ordito gathers through the face indices.
     """
     rng = np.random.default_rng(_FIELD_SEED)
     barycentric_np = rng.dirichlet(np.ones(3), bench_case.n_faces).astype(np.float32)
+    if bench_case.kind == "pytorch3d":
+        n_faces, torch_device = bench_case.n_faces, bench_case.torch_device
+        corners_p3d = torch.as_tensor(
+            bench_case.vertices_np[bench_case.faces_np].astype(np.float32), device=torch_device
+        )
+        face_index_p3d = torch.arange(n_faces, device=torch_device).reshape(n_faces, 1, 1, 1)
+        barycentric_p3d = torch.as_tensor(barycentric_np, device=torch_device).reshape(
+            n_faces, 1, 1, 1, 3
+        )
+        points_p3d = bench_case.run(
+            lambda: p3d_ops.interpolate_face_attributes(
+                face_index_p3d, barycentric_p3d, corners_p3d
+            )
+        )
+        assert tuple(points_p3d.shape) == (n_faces, 1, 1, 1, 3)
+        return
     if bench_case.kind == "trimesh":
         triangles_np = bench_case.vertices_np[bench_case.faces_np]
         points_tm = bench_case.run(

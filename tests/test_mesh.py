@@ -302,6 +302,7 @@ def test_mass_properties_match_trimesh(request: pytest.FixtureRequest, mesh_name
 
 
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular", "three_spheres"])
+@pytest.mark.parity("mesh_body_count", "trimesh")
 def test_body_count_matches_trimesh(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class A: ``body_count`` against ``trimesh.Trimesh.body_count``.
@@ -577,11 +578,14 @@ def test_face_adjacency_matches_trimesh(request: pytest.FixtureRequest, mesh_nam
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parity("vertex_face_adjacency", "trimesh")
 def test_vertex_face_adjacency_matches_trimesh(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     Class B on ``vertex_face_adjacency``: rows in order, after two named transforms.
+
+    The property and the free function ``adjacency.vertex_face_adjacency`` are both compared.
 
     trimesh returns a dense ``(n_vertices, max_degree)`` array right-padded with ``-1`` where
     ordito returns a CSR pair, so the padding is stripped; and trimesh lists each row's faces in
@@ -594,11 +598,18 @@ def test_vertex_face_adjacency_matches_trimesh(
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     faces_np, offsets_np = (array.numpy() for array in mesh.vertex_face_adjacency)
 
+    free_faces, free_offsets = od.adjacency.vertex_face_adjacency(
+        mesh_wp.indices, n_vertices=mesh.n_vertices
+    )
+    assert np.array_equal(free_faces.numpy(), faces_np)
+    assert np.array_equal(free_offsets.numpy(), offsets_np)
+
     padded_tm = mesh_tm.vertex_faces
     assert padded_tm.shape[0] == mesh.n_vertices
     for vertex in range(mesh.n_vertices):
         row = faces_np[offsets_np[vertex] : offsets_np[vertex + 1]]
         row_tm = padded_tm[vertex][padded_tm[vertex] >= 0]
+        assert row_tm.size > 0  # every fixture vertex is referenced
         assert np.array_equal(row, row_tm[::-1])
 
 

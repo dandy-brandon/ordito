@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import pytest
+import pytorch3d.transforms as p3d_transforms
+import torch
 import trimesh as tm
 import warp as wp
 
@@ -401,6 +403,50 @@ def test_transform_normals_matches_pyvista(sphere_irregular: tuple[tm.Trimesh, w
     # Both sides are unit and share a sign convention (VTK's own normals are the input), so this
     # is elementwise rather than up-to-sign.
     assert np.allclose(mapped_wp, expected_pv, rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.parity("transform_points", "pytorch3d")
+@pytest.mark.parity("transform_normals", "pytorch3d")
+def test_transforms_match_pytorch3d(
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
+) -> None:
+    """
+    Class B against ``pytorch3d.transforms.Transform3d``: the row-vector convention, transposed.
+
+    pytorch3d multiplies row vectors, ``x @ M``, so the ``Transform3d`` is built from the
+    transpose of ordito's column-vector matrix (the trap ``corresponding_points_alignment`` has
+    too); a ``Transform3d`` handed the matrix itself applies its transpose and moves the points
+    elsewhere. ``transform_normals`` maps by the inverse transpose on both sides, but pytorch3d
+    does not renormalize, so its normals are scaled to unit length: the second named transform.
+
+    The matrix is a non-uniform scale after a rotation, translated, so the inverse transpose and
+    the linear map differ (an isometry would pass with either) and no axis is left fixed. The
+    linear map measures 0.90 away from the reference normals here, against this assert's 1e-5.
+    """
+    _, mesh_wp = sphere_irregular
+    matrix = _compose(od.transform.scale_matrix((3.0, 1.0, 0.4)), _ROTATION)
+    matrix_np = np.array(matrix, dtype=np.float32).reshape(4, 4)
+    transform_p3d = p3d_transforms.Transform3d(
+        matrix=torch.as_tensor(matrix_np.T.copy(), device=device)[None], device=device
+    )
+
+    points_np = mesh_wp.points.numpy()
+    moved_p3d = transform_p3d.transform_points(torch.as_tensor(points_np, device=device))
+    assert tuple(moved_p3d.shape) == points_np.shape
+    moved_wp = od.transform.transform_points(points_to_warp(points_np, device), matrix)
+    assert np.allclose(moved_wp.numpy(), moved_p3d.cpu().numpy(), rtol=1e-5, atol=1e-5)
+
+    normals_np = od.normals.vertex_normals(mesh_wp.points, mesh_wp.indices).numpy()
+    mapped_p3d = transform_p3d.transform_normals(torch.as_tensor(normals_np, device=device))
+    assert tuple(mapped_p3d.shape) == normals_np.shape
+    mapped_p3d_np = mapped_p3d.cpu().numpy()
+    mapped_p3d_np /= np.linalg.norm(mapped_p3d_np, axis=1, keepdims=True)
+    mapped_wp = od.transform.transform_normals(points_to_warp(normals_np, device), matrix).numpy()
+    assert np.allclose(mapped_wp, mapped_p3d_np, rtol=1e-5, atol=1e-5)
+    # Non-vacuity: the plain linear map, renormalized, is far from the covector map here.
+    linear_np = normals_np @ matrix_np[:3, :3].T
+    linear_np /= np.linalg.norm(linear_np, axis=1, keepdims=True)
+    assert np.abs(linear_np - mapped_p3d_np).max() > 0.1
 
 
 @pytest.mark.parametrize("mesh", ["sphere_irregular", "saddle_graded_large"])

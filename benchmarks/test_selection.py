@@ -254,7 +254,7 @@ def _face_indices(bench_case: BenchCase) -> tuple[wp.array[wp.int32], np.ndarray
 
 @pytest.mark.benchmark(group="submesh_from_face_indices")
 @pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pyvista")
+@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pyvista", "pymeshlab")
 def test_submesh_from_face_indices(bench_case: BenchCase) -> None:
     """
     Face gather plus a vertex remap.
@@ -267,12 +267,26 @@ def test_submesh_from_face_indices(bench_case: BenchCase) -> None:
     and pyvista's ``vtkOriginalPointIds`` both do, which is why the correctness
     comparison has to match its positions instead (``tests/test_selection.py``).
 
-    **pymeshlab is absent for an interface reason rather than a cost one.** It has no array-valued
-    face-selection setter: a selection has to be produced by a
+    **pymeshlab can be handed this input only because it is a contiguous range.** It has no
+    array-valued face-selection setter: a selection has to be produced by a
     ``compute_selection_by_condition_per_face`` *expression* over face attributes, so it can express
-    a contiguous range (``fi<80``) and not an arbitrary index list. This group's input is a random
-    index set, which that filter cannot be handed at all.
+    a contiguous range (``fi<k``) and not an arbitrary index list. This group's input is the first
+    half of the faces, so its row selects ``fi<k`` and calls ``generate_from_selected_faces``, which
+    pushes the compacted submesh as a new layer; both filters are inside the timed callable, on a
+    MeshSet built per round outside it (``generate_*`` grows the set).
     """
+    if bench_case.kind == "pymeshlab":
+        _indices_wp, indices_np = _face_indices(bench_case)
+        count = int(indices_np.size)
+        assert np.array_equal(indices_np, np.arange(count))  # the range the expression names
+
+        def select_and_generate_pml(meshset_pml: ml.MeshSet) -> int:
+            meshset_pml.compute_selection_by_condition_per_face(condselect=f"fi<{count}")
+            meshset_pml.generate_from_selected_faces()
+            return int(meshset_pml.current_mesh().face_number())
+
+        assert bench_case.run(select_and_generate_pml, setup=bench_case.new_meshset_pml) == count
+        return
     if bench_case.kind == "open3d":
         import open3d as o3d
 
@@ -374,7 +388,7 @@ def _region_vertex_indices_np(bench_case: BenchCase) -> np.ndarray:
 
 @pytest.mark.benchmark(group="submesh_from_vertex_indices")
 @pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("ordito", "trimesh")
+@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pyvista")
 @pytest.mark.parametrize("face_mode", ["all", "any"])
 def test_submesh_from_vertex_indices(bench_case: BenchCase, face_mode: str) -> None:
     """
@@ -383,9 +397,15 @@ def test_submesh_from_vertex_indices(bench_case: BenchCase, face_mode: str) -> N
     A membership mask, a face predicate and the face-index compaction. trimesh has no
     vertex-driven submesh, so its row picks the faces with the same NumPy predicate the test uses
     (``tests/test_selection.py::test_submesh_from_vertex_indices``) and calls ``submesh``, both
-    inside the timed callable.
+    inside the timed callable. open3d's ``select_by_index(cleanup=True)`` and pyvista's
+    ``extract_points`` are vertex-driven submeshes of their own, equal vertex for vertex
+    (``::test_submesh_from_vertex_selection_matches_open3d_and_pyvista``); open3d has the ``all``
+    rule alone, and takes its indices as a Python list, converted inside the callable.
     """
     vertex_indices_np = _region_vertex_indices_np(bench_case)
+    if bench_case.kind in ("open3d", "pyvista"):
+        _submesh_from_vertex_selection_reference(bench_case, vertex_indices_np, face_mode)
+        return
     if bench_case.kind == "trimesh":
         mesh_tm = tm.Trimesh(bench_case.vertices_np, bench_case.faces_np, process=False)
         faces_np = bench_case.faces_np
@@ -410,17 +430,22 @@ def test_submesh_from_vertex_indices(bench_case: BenchCase, face_mode: str) -> N
 
 @pytest.mark.benchmark(group="submesh_from_vertex_mask")
 @pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("ordito")
+@pytest.mark.benchlibs("ordito", "open3d", "pyvista")
 @pytest.mark.parametrize("face_mode", ["all", "any"])
 def test_submesh_from_vertex_mask(bench_case: BenchCase, face_mode: str) -> None:
     """
     The ``submesh_from_vertex_indices`` selection given as a vertex mask, at the same points.
 
-    The mask skips the membership scatter, so the two rows read side by side. Ordito only: the test
-    pins it against the index form.
+    The mask skips the membership scatter, so the two rows read side by side. Neither reference
+    has a mask form that compacts the vertices (open3d's ``remove_vertices_by_mask`` keeps the
+    unreferenced ones), so both rows convert the mask with ``flatnonzero`` inside the timed
+    callable and call their index form, as in ``submesh_from_vertex_indices``.
     """
     mask_np = np.zeros(bench_case.n_vertices, dtype=bool)
     mask_np[_region_vertex_indices_np(bench_case)] = True
+    if bench_case.kind in ("open3d", "pyvista"):
+        _submesh_from_vertex_selection_reference(bench_case, mask_np, face_mode)
+        return
     mask = wp.array(mask_np, dtype=wp.bool, device=bench_case.device)
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     mode = cast("Literal['all', 'any']", face_mode)
@@ -428,6 +453,36 @@ def test_submesh_from_vertex_mask(bench_case: BenchCase, face_mode: str) -> None
         lambda: od.selection.submesh_from_vertex_mask(vertices, faces, mask, face_mode=mode)
     )
     assert sub_faces.size > 0
+
+
+def _submesh_from_vertex_selection_reference(
+    bench_case: BenchCase, selection_np: np.ndarray, face_mode: str
+) -> None:
+    """
+    Time open3d's ``select_by_index`` or pyvista's ``extract_points`` on a vertex selection.
+
+    ``selection_np`` is sorted indices, or a bool mask that the timed callable converts with
+    ``flatnonzero``. open3d has no ``any`` rule and skips it.
+    """
+    is_mask = selection_np.dtype == np.bool_
+    if bench_case.kind == "open3d":
+        if face_mode != "all":
+            pytest.skip("open3d's select_by_index keeps whole faces only")
+        mesh_o3d = bench_case.mesh_o3d
+
+        def select_o3d() -> int:
+            indices_np = np.flatnonzero(selection_np) if is_mask else selection_np
+            return len(mesh_o3d.select_by_index(indices_np.tolist(), cleanup=True).triangles)
+
+        assert bench_case.run(select_o3d) > 0
+        return
+    mesh_pv = bench_case.mesh_pv
+
+    def extract_pv() -> int:
+        indices_np = np.flatnonzero(selection_np) if is_mask else selection_np
+        return mesh_pv.extract_points(indices_np, adjacent_cells=face_mode == "any").n_cells
+
+    assert bench_case.run(extract_pv) > 0
 
 
 @pytest.mark.benchmark(group="face_indices_from_vertex_indices")

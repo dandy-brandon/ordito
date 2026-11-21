@@ -62,10 +62,15 @@ input. Note ``add_triangles`` accepts ``uint32`` faces where the vtkutils-backed
 in open3d demand ``Int32``/``Int64``; two conventions inside one API.
 
 **trimesh** has all three functions (``ray.intersects_first`` / ``intersects_any`` /
-``intersects_id``) and is deliberately absent: its pure-Python engine takes minutes on these
-meshes, and ``tests/test_ray.py`` already holds it as the correctness oracle, which is the useful
-half. ``longest_ray`` is the exception: ``trimesh.proximity.longest_ray`` is the oracle that test
-compares it with, so its group times it.
+``intersects_location``), and with ``embreex`` installed ``Trimesh.ray`` is its embree intersector
+(``ray_pyembree.RayMeshIntersector``), not the pure-Python engine, so it takes a row in each group
+and in ``longest_ray``. The ``tm.Trimesh`` and its lazily built embree scene are made once per
+mesh and pre-warmed outside the timed callable, as the other references' structures are;
+``intersects_location`` passes ``multiple_hits=False``, ordito's one-hit-a-ray rule.
+``tests/test_ray.py`` compares all three, face for face.
+
+**open3d**'s ``compute_occupancy`` is the ``contains_points`` row: Embree casting ``nsamples`` rays
+a point and taking the parity majority, which is ordito's vote, at ordito's default of five rays.
 
 **manifold3d** ``Manifold.ray_cast`` is ``segment_hits``' reference (``segment_hits``): Manifold
 itself, timed one segment a call as its API takes them, on a ``Manifold`` built outside the timed
@@ -210,6 +215,24 @@ def _scene_o3d(bench_case: BenchCase) -> o3d.t.geometry.RaycastingScene:
     return _scene_o3d_cache[bench_case.mesh_name]
 
 
+_mesh_tm_cache: dict[str, tm.Trimesh] = {}
+
+
+def _mesh_tm(bench_case: BenchCase) -> tm.Trimesh:
+    """
+    Build the ``tm.Trimesh`` once per mesh, its embree scene pre-warmed by one throwaway query.
+
+    ``Trimesh.ray`` builds the embree scene lazily and caches it on the mesh, so the scene is the
+    rows' input, as the ``wp.Mesh``, MeshLib's AABB tree and open3d's scene are.
+    """
+    if bench_case.mesh_name not in _mesh_tm_cache:
+        mesh_tm = tm.Trimesh(bench_case.vertices_np, bench_case.faces_np, process=False)
+        origins_np, directions_np = _rays_np(bench_case)
+        mesh_tm.ray.intersects_any(origins_np[:1], directions_np[:1])  # pre-warm
+        _mesh_tm_cache[bench_case.mesh_name] = mesh_tm
+    return _mesh_tm_cache[bench_case.mesh_name]
+
+
 def _mesh_part_ml(bench_case: BenchCase) -> mm.MeshPart:
     """
     Build a ``MeshPart``, keeping its mesh alive in a module-level cache.
@@ -258,7 +281,7 @@ def _multi_ray_query_ml(
 
 @pytest.mark.benchmark(group="intersects_first")
 @pytest.mark.benchaxis("depth")
-@pytest.mark.benchlibs("ordito", "meshlib", "open3d")
+@pytest.mark.benchlibs("ordito", "meshlib", "open3d", "trimesh")
 def test_intersects_first(bench_case: BenchCase) -> None:
     """
     Nearest-hit face per ray: the traversal that cannot stop early.
@@ -270,7 +293,14 @@ def test_intersects_first(bench_case: BenchCase) -> None:
 
     open3d's ``cast_rays`` is Embree's nearest-hit query and returns ``primitive_ids`` densely,
     matching ordito's shape with ``INVALID_ID`` for a miss.
+
+    trimesh's ``ray.intersects_first`` is Embree's nearest hit too, with ``-1`` for a miss.
     """
+    if bench_case.kind == "trimesh":
+        mesh_tm, (origins_np, directions_np) = _mesh_tm(bench_case), _rays_np(bench_case)
+        faces_tm = bench_case.run(lambda: mesh_tm.ray.intersects_first(origins_np, directions_np))
+        assert faces_tm.shape == (_N_RAYS,)
+        return
     if bench_case.kind == "open3d":
         scene_o3d, rays_o3d = _scene_o3d(bench_case), _rays_o3d(bench_case)
         hits_o3d = bench_case.run(lambda: scene_o3d.cast_rays(rays_o3d))
@@ -317,7 +347,7 @@ def test_first_hits(bench_case: BenchCase, both_ways: bool) -> None:
 
 @pytest.mark.benchmark(group="intersects_any")
 @pytest.mark.benchaxis("depth")
-@pytest.mark.benchlibs("ordito", "meshlib", "open3d")
+@pytest.mark.benchlibs("ordito", "meshlib", "open3d", "trimesh")
 def test_intersects_any(bench_case: BenchCase) -> None:
     """
     Any-hit per ray: the one group here that is allowed to stop at the first triangle it finds.
@@ -331,8 +361,14 @@ def test_intersects_any(bench_case: BenchCase) -> None:
 
     **open3d's ``test_occlusions`` is the one reference here that is genuinely any-hit**, so this is
     the group where the three rows answer three different amounts of work: ordito and open3d may
-    stop at the first triangle, MeshLib may not.
+    stop at the first triangle, MeshLib may not. trimesh's ``ray.intersects_any`` is Embree's
+    occlusion query, any-hit as well.
     """
+    if bench_case.kind == "trimesh":
+        mesh_tm, (origins_np, directions_np) = _mesh_tm(bench_case), _rays_np(bench_case)
+        hit_tm = bench_case.run(lambda: mesh_tm.ray.intersects_any(origins_np, directions_np))
+        assert hit_tm.shape == (_N_RAYS,)
+        return
     if bench_case.kind == "open3d":
         scene_o3d, rays_o3d = _scene_o3d(bench_case), _rays_o3d(bench_case)
         hit_o3d = bench_case.run(lambda: scene_o3d.test_occlusions(rays_o3d))
@@ -349,7 +385,7 @@ def test_intersects_any(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="intersects_location")
 @pytest.mark.benchaxis("depth")
-@pytest.mark.benchlibs("ordito", "meshlib", "open3d")
+@pytest.mark.benchlibs("ordito", "meshlib", "open3d", "trimesh")
 def test_intersects_location(bench_case: BenchCase) -> None:
     """
     The hit positions, compacted: ``intersects_first``'s traversal plus a scan and a gather.
@@ -360,7 +396,16 @@ def test_intersects_location(bench_case: BenchCase) -> None:
     to the caller, so its row is the lower bound of the same work. open3d is denser still: its
     ``cast_rays`` returns ``t_hit`` and the hit *position* is ``origin + t_hit * direction``, a host
     multiply-add the row leaves out, so it is the same lower bound one step further down.
+    trimesh compacts as ordito does (``multiple_hits=False``: one row per hitting ray), so its row
+    is the like-for-like one.
     """
+    if bench_case.kind == "trimesh":
+        mesh_tm, (origins_np, directions_np) = _mesh_tm(bench_case), _rays_np(bench_case)
+        locations_tm, rays_tm, _faces_tm = bench_case.run(
+            lambda: mesh_tm.ray.intersects_location(origins_np, directions_np, multiple_hits=False)
+        )
+        assert locations_tm.shape[0] == rays_tm.shape[0] <= _N_RAYS
+        return
     if bench_case.kind == "open3d":
         scene_o3d, rays_o3d = _scene_o3d(bench_case), _rays_o3d(bench_case)
         hits_o3d = bench_case.run(lambda: scene_o3d.cast_rays(rays_o3d))
@@ -425,7 +470,7 @@ def _inside_points_np(bench_case: BenchCase) -> np.ndarray:
 
 @pytest.mark.benchmark(group="contains_points")
 @pytest.mark.benchaxis("depth")
-@pytest.mark.benchlibs("ordito", "pyvista")
+@pytest.mark.benchlibs("ordito", "pyvista", "open3d")
 def test_contains_points(bench_case: BenchCase) -> None:
     """
     Inside/outside by ray parity over a few jittered directions: the crossing count is the work.
@@ -438,8 +483,23 @@ def test_contains_points(bench_case: BenchCase) -> None:
     ``check_surface=False`` for the reason the ``winding_number`` group gives: the check rejects
     meshes VTK considers open, and both axis meshes are closed, so it only adds a validation pass
     ordito's row does not run.
+
+    open3d's ``RaycastingScene.compute_occupancy`` is Embree's parity vote over ``nsamples`` rays,
+    passed ordito's default of five (``tests/test_ray.py`` compares it point for point); its scene
+    is the pre-warmed one the other open3d rows here share, and the query tensor is an input.
     """
     points_np = _inside_points_np(bench_case)
+    if bench_case.kind == "open3d":
+        import open3d as o3d
+
+        scene_o3d = _scene_o3d(bench_case)
+        # The stub omits Tensor's device default.
+        points_o3d = o3d.core.Tensor(  # pyright: ignore[reportCallIssue]
+            np.ascontiguousarray(points_np, dtype=np.float32), dtype=o3d.core.Dtype.Float32
+        )
+        occupied_o3d = bench_case.run(lambda: scene_o3d.compute_occupancy(points_o3d, nsamples=5))
+        assert occupied_o3d.shape[0] == _N_RAYS
+        return
     if bench_case.kind == "pyvista":
         mesh_pv = bench_case.mesh_pv
         cloud_pv = pv.PolyData(np.ascontiguousarray(points_np, dtype=np.float64))

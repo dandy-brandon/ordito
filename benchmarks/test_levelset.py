@@ -295,7 +295,7 @@ def test_thicken_mesh(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="signed_distance_grid")
-@pytest.mark.benchlibs("ordito", "open3d")
+@pytest.mark.benchlibs("ordito", "open3d", "meshlib")
 @pytest.mark.parametrize("divisor", _CELL_DIVISORS)
 def test_signed_distance_grid(bench_case: BenchCase, divisor: int) -> None:
     """
@@ -314,8 +314,37 @@ def test_signed_distance_grid(bench_case: BenchCase, divisor: int) -> None:
     The two slopes are the whole row. For 8x the samples open3d grows 6.7x -- a saturated CPU doing
     the work -- where ordito grows 1.9x, a GPU that was not full at the coarser lattice, so the gap
     widens several-fold across the resolution pair.
+
+    meshlib's ``meshToDistanceVolume`` fills the same lattice in one multi-threaded call, signed by
+    ``OddCrossings`` (ray parity, ordito's default); it equals ordito's field to 9.8e-07
+    (``tests/test_proximity.py``). Its lattice is ordito's box with the origin a half cell lower
+    (MeshLib's origin is voxel ``[0, 0, 0]``'s corner), and the mesh's lazily built AABB tree is
+    warmed by one untimed call, so the row prices the samples, as open3d's does.
     """
     cell, _distance = _cell_and_offset(bench_case, divisor)
+
+    if bench_case.kind == "meshlib":
+        skip_larger_than(bench_case, "dragon", "one lattice of closest-point queries a call")
+        vertices_np = bench_case.vertices_np
+        shape, (lower, _upper) = od.proximity.signed_distance_lattice(
+            wp.array(
+                np.ascontiguousarray(vertices_np, dtype=np.float32), dtype=wp.vec3, device="cpu"
+            ),
+            cell,
+        )
+        lower_np = np.asarray(odt.vec3_floats(lower))
+        mesh_ml = bench_case.new_mesh_ml()  # must outlive the part: MeshPart holds a raw pointer
+        part_ml = mm.MeshPart(mesh_ml)
+        params_ml = mm.MeshToDistanceVolumeParams()
+        params_ml.vol.origin = mm.Vector3f(*(lower_np - 0.5 * cell).tolist())
+        params_ml.vol.voxelSize = mm.Vector3f(cell, cell, cell)
+        params_ml.vol.dimensions = mm.Vector3i(*shape)
+        params_ml.dist.signMode = mm.SignDetectionMode.OddCrossings
+        params_ml.dist.nullOutsideMinMax = False
+        mm.meshToDistanceVolume(part_ml, params_ml)  # pre-warm the lazily built AABB tree
+        volume_ml = bench_case.run(lambda: mm.meshToDistanceVolume(part_ml, params_ml), rounds=3)
+        assert volume_ml.dims.x == shape[0]
+        return
 
     if bench_case.kind == "open3d":
         import open3d as o3d

@@ -930,7 +930,7 @@ def test_face_selections_of_nothing_are_empty(device: str) -> None:
     assert od.selection.fill_face_mask_holes(vertices_wp, empty_wp, no_face_mask_wp).size == 0
 
 
-@pytest.mark.parity("submesh_from_face_indices", "open3d", "pyvista")
+@pytest.mark.parity("submesh_from_face_indices", "open3d", "pyvista", "pymeshlab")
 def test_submesh_from_face_indices_matches_open3d_and_pyvista(
     request: pytest.FixtureRequest,
 ) -> None:
@@ -959,11 +959,13 @@ def test_submesh_from_face_indices_matches_open3d_and_pyvista(
     with every vertex still referenced, all three compactions are no-ops and the whole transform
     goes untested.
 
-    **pymeshlab cannot be compared here at all, and the reason is its interface.** It has no
+    **pymeshlab takes a contiguous range only, and the reason is its interface.** It has no
     array-valued face-selection setter -- a selection comes from a
     ``compute_selection_by_condition_per_face`` *expression* over face attributes, which can
-    express a contiguous range (``fi<80``) and not an arbitrary index set. Asserted on the range
-    form, so the limitation is pinned and the filter is exercised on the one shape it accepts.
+    express a contiguous range (``fi<80``) and not an arbitrary index set. On that shape,
+    ``generate_from_selected_faces`` compacts the same way: its new layer's positions and faces
+    equal ordito's for the first half of the faces, element for element (Class A, ``float32``
+    positions against its ``float64`` copy).
 
     And all three compact the *same way*: each keeps the input's vertices in ascending order and the
     selected faces in index order, so ordito's vertex map equals pyvista's ``vtkOriginalPointIds``
@@ -1025,7 +1027,16 @@ def test_submesh_from_face_indices_matches_open3d_and_pyvista(
     meshset_pml = trimesh_to_pymeshlab(mesh_tm)
     meshset_pml.compute_selection_by_condition_per_face(condselect=f"fi<{half}")
     meshset_pml.generate_from_selected_faces()
-    assert int(meshset_pml.current_mesh().face_number()) == half
+    submesh_pml = meshset_pml.current_mesh()
+    half_vertices_wp, half_faces_wp = od.selection.submesh_from_face_indices(
+        mesh_wp.points,
+        mesh_wp.indices,
+        wp.array(np.arange(half, dtype=np.int32), dtype=wp.int32, device=mesh_wp.points.device),
+    )
+    assert int(submesh_pml.face_number()) == half
+    assert int(submesh_pml.vertex_number()) < mesh_tm.vertices.shape[0]  # it compacted
+    assert np.allclose(half_vertices_wp.numpy(), submesh_pml.vertex_matrix(), rtol=0.0, atol=1e-6)
+    assert np.array_equal(half_faces_wp.numpy().reshape(-1, 3), submesh_pml.face_matrix())
 
 
 @pytest.mark.parametrize(
@@ -1626,6 +1637,75 @@ def test_submesh_from_vertex_mask(
     assert exp_faces_wp.size > 0
     assert np.allclose(got_vertices_wp.numpy(), exp_vertices_wp.numpy())
     assert np.array_equal(got_faces_wp.numpy(), exp_faces_wp.numpy())
+
+
+@pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parametrize("face_mode", ["all", "any"])
+@pytest.mark.parity("submesh_from_vertex_indices", "open3d", "pyvista")
+@pytest.mark.parity("submesh_from_vertex_mask", "open3d", "pyvista")
+def test_submesh_from_vertex_selection_matches_open3d_and_pyvista(
+    request: pytest.FixtureRequest, mesh_name: str, face_mode: Literal["all", "any"]
+) -> None:
+    """
+    Class A: open3d's ``select_by_index`` and pyvista's ``extract_points``, vertex for vertex.
+
+    ``select_by_index(indices, cleanup=True)`` keeps the faces whose three corners are selected
+    (``face_mode="all"``; it has no ``any`` form) and drops the vertices no kept face references;
+    ``extract_points(indices, adjacent_cells=False / True)`` is ``"all"`` / ``"any"``, its kept
+    vertices named by ``vtkOriginalPointIds``. open3d returns no map, so its positions are matched
+    to the input's by nearest neighbour (a copy, so a zero residual, and a bijection). All three
+    keep the referenced vertices in ascending input order and the faces in input order, so the
+    vertex map and the faces lifted back to the input's numbering are compared exactly; the mask
+    form is the same selection given as a mask (the transform: ``flatnonzero``).
+
+    Non-vacuous: the selection is the vertices on one side of a plane through the centroid, a
+    strict subset that leaves vertices unreferenced under both rules, asserted.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    device = mesh_wp.points.device
+    vertices_np = np.asarray(mesh_tm.vertices)
+    side_np = vertices_np[:, 0] > vertices_np[:, 0].mean()
+    vertex_indices_np = np.flatnonzero(side_np).astype(np.int32)
+
+    sub_vertices_wp, sub_faces_wp, provenance = od.selection.submesh_from_vertex_indices(
+        mesh_wp.points,
+        mesh_wp.indices,
+        wp.array(vertex_indices_np, dtype=wp.int32, device=device),
+        face_mode=face_mode,
+        return_provenance=True,
+    )
+    vertex_map_wp = provenance.vertex_index.numpy()
+    faces_wp = vertex_map_wp[sub_faces_wp.numpy().reshape(-1, 3)]
+    assert 0 < sub_vertices_wp.size < vertices_np.shape[0]
+    assert faces_wp.shape[0] > 0
+
+    mask_vertices_wp, mask_faces_wp = od.selection.submesh_from_vertex_mask(
+        mesh_wp.points,
+        mesh_wp.indices,
+        wp.array(side_np, dtype=wp.bool, device=device),
+        face_mode=face_mode,
+    )
+    assert np.array_equal(mask_vertices_wp.numpy(), sub_vertices_wp.numpy())
+    assert np.array_equal(mask_faces_wp.numpy(), sub_faces_wp.numpy())
+
+    extracted_pv = trimesh_to_pyvista(mesh_tm).extract_points(
+        vertex_indices_np, adjacent_cells=face_mode == "any"
+    )
+    original_pv = np.asarray(extracted_pv.point_data["vtkOriginalPointIds"])
+    assert np.array_equal(original_pv, vertex_map_wp)
+    assert np.array_equal(original_pv[np.asarray(extracted_pv.cells_dict[5])], faces_wp)
+
+    if face_mode == "all":
+        selected_o3d = trimesh_to_open3d(mesh_tm).select_by_index(
+            vertex_indices_np.tolist(), cleanup=True
+        )
+        residual_o3d, original_o3d = map(
+            np.asarray, KDTree(vertices_np).query(np.asarray(selected_o3d.vertices))
+        )
+        assert residual_o3d.max() == 0.0  # every kept position is a copy
+        assert np.unique(original_o3d).size == original_o3d.size
+        assert np.array_equal(original_o3d, vertex_map_wp)
+        assert np.array_equal(original_o3d[np.asarray(selected_o3d.triangles)], faces_wp)
 
 
 @pytest.mark.parametrize("face_mode", ["all", "any"])

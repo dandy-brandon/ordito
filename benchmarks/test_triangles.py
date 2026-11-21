@@ -324,18 +324,24 @@ def test_points_to_barycentric(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="triangle_closest_point")
-@pytest.mark.benchlibs("ordito")
+@pytest.mark.benchlibs("ordito", "trimesh")
 def test_closest_point(bench_case: BenchCase) -> None:
     """
     The closest point of each triangle to its own query point, one triangle per row.
 
     The scan sweep beside ``points_to_barycentric``: the queries are the face barycentres pushed
     off the surface along a fixed direction by a mean edge, so the projection's region tests are
-    all reached. ordito-only: MeshLib's ``closestPointInTriangle``, its test's reference, is a
-    per-point call, so a row would time a Python loop over the faces.
+    all reached. ``trimesh.triangles.closest_point`` is the same array-form query (Class A in
+    ``tests/test_triangles.py``), handed the ``(n_faces, 3, 3)`` corner array built outside the
+    timed callable. MeshLib's ``closestPointInTriangle`` is a per-point call, so it has no row.
     """
     centres_np = bench_case.vertices_np[bench_case.faces_np].mean(axis=1)
     queries_np = centres_np + bench_case.mean_edge * np.array([0.6, -0.48, 0.64])
+    if bench_case.kind == "trimesh":
+        triangles_np = np.asarray(bench_case.vertices_np, dtype=np.float64)[bench_case.faces_np]
+        closest_tm = bench_case.run(lambda: tm.triangles.closest_point(triangles_np, queries_np))
+        assert closest_tm.shape == (bench_case.n_faces, 3)
+        return
     queries = wp.array(
         np.ascontiguousarray(queries_np, dtype=np.float32), dtype=wp.vec3, device=bench_case.device
     )

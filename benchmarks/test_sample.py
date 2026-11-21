@@ -95,15 +95,25 @@ _FIBONACCI_COUNTS = [1 << 10, 1 << 20]
 
 
 @pytest.mark.benchmark(group="sample_fibonacci_sphere")
-@pytest.mark.benchlibs("ordito")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
 @pytest.mark.parametrize("count", _FIBONACCI_COUNTS, ids=["n1k", "n1m"])
 def test_sample_fibonacci_sphere(bench_lib: BenchLibrary, count: int) -> None:
     """
     The Fibonacci lattice: one closed-form direction per thread, so the axis is the count alone.
 
-    Mesh-free (``bench_lib``): the lattice has no input. ordito-only, since no registered library
-    builds this lattice (``tests/test_sample.py`` checks it against its own closed form).
+    Mesh-free (``bench_lib``): the lattice has no input. MeshLab's ``create_sphere_points`` with
+    ``spheregentech="Fibonacci"`` builds the same lattice mirrored in ``y``
+    (``tests/test_sample.py``, Class B); it pushes a new mesh, so each round takes a fresh MeshSet.
     """
+    if bench_lib.kind == "pymeshlab":
+
+        def sphere_points_pml() -> int:
+            meshset_pml = ml.MeshSet()
+            meshset_pml.create_sphere_points(pointnum=count, spheregentech="Fibonacci")
+            return meshset_pml.current_mesh().vertex_number()
+
+        assert bench_lib.run(sphere_points_pml) == count
+        return
     device = bench_lib.device
     directions = bench_lib.run(lambda: od.sample.sample_fibonacci_sphere(count, device=device))
     assert directions.shape == (count,)
@@ -171,7 +181,7 @@ def _mesh_p3d_fresh(bench_case: BenchCase):
 
 
 @pytest.mark.benchmark(group="sample_surface")
-@pytest.mark.benchlibs("ordito", "igl", "trimesh", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "igl", "trimesh", "pytorch3d", "open3d")
 @pytest.mark.parametrize("count", _UNIFORM_COUNTS, ids=["n10k", "n100k"])
 def test_sample_surface(bench_case: BenchCase, count: int) -> None:
     """
@@ -188,10 +198,11 @@ def test_sample_surface(bench_case: BenchCase, count: int) -> None:
     as the statement: the crossover where ordito's per-sample cost becomes visible is above a
     hundred thousand samples.
 
-    open3d's ``sample_points_uniformly`` and MeshLab's ``generate_sampling_montecarlo`` are the same
-    operation but return a bare point cloud with no face index, so they would need a closest-point
-    decode before they could be asserted against the area law -- a transform on the *reference* to
-    make it comparable, which is what the two references above avoid.
+    open3d's ``sample_points_uniformly`` is the same operation but returns a bare point cloud with
+    no face index; its test decodes the faces by a closest-point query outside anything timed and
+    asserts the area law on them (``tests/test_sample.py``, Class C), so its row times the sampler
+    alone. It returns a new cloud and leaves the mesh alone, so the shared mesh serves every round.
+    MeshLab's ``generate_sampling_montecarlo`` has the same bare output and no row.
 
     trimesh rebuilds its ``tm.Trimesh`` inside the timed callable, as the other trimesh rows do,
     because the area CDF is cached on the mesh object and reusing it would time a lookup.
@@ -220,6 +231,11 @@ def test_sample_surface(bench_case: BenchCase, count: int) -> None:
         assert samples_p3d.shape == (1, count, 3)
         return
     skip_larger_than(bench_case, "bunny", "the CPU references are single-threaded per sample")
+    if bench_case.kind == "open3d":
+        mesh_o3d = bench_case.mesh_o3d
+        cloud_o3d = bench_case.run(lambda: mesh_o3d.sample_points_uniformly(count))
+        assert len(cloud_o3d.points) == count
+        return
     if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         points, face_index = bench_case.run(

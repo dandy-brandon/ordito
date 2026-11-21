@@ -38,7 +38,8 @@ first, untimed — that is how the filter is told "fit all the points", not part
 builds a rotation onto a target plane, which ordito does not, so its row is an upper bound. Third,
 ``compute_selection_point_cloud_outliers`` is the LoOP score behind ``outlier_probability``.
 MeshLab has nothing for the array primitives (``fit_line``, ``point_plane_distance``,
-``vector_angle``, ``radial_sort``). **libigl** has no point-cloud entry points at all.
+``vector_angle``, ``radial_sort``). **libigl** covers ``fit_plane`` alone: ``igl.fit_plane``
+returns the centred covariance's smallest eigenvector and the centroid, ordito's answer exactly.
 
 Caps
 ----
@@ -89,6 +90,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal, cast
 
+import igl
 import manifold3d as m3
 import numpy as np
 import open3d as o3d
@@ -427,7 +429,7 @@ def test_half_space_mask(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="principal_axes")
-@pytest.mark.benchlibs("ordito", "pyvista", "meshlib")
+@pytest.mark.benchlibs("ordito", "pyvista", "meshlib", "pymeshlab")
 def test_principal_axes(bench_case: BenchCase) -> None:
     """
     Principal frame: centroid reduction, centred scatter, then one 3x3 SVD.
@@ -436,7 +438,16 @@ def test_principal_axes(bench_case: BenchCase) -> None:
     and ``getCenteredCovarianceEigen`` decomposes it -- and only the pair is comparable, so both are
     inside the timed callable. The ``std_vector_Vector3_float`` the accumulator consumes is *not*:
     filling it is a per-point Python loop, which is the input rather than the fit.
+
+    pymeshlab's ``get_geometric_measures`` on a *face-less* MeshSet returns the vertex barycenter,
+    the bounding box and the ``pca`` axes, so beyond ordito's answer it adds only a box. It is
+    read-only, so the cloud MeshSet is shared across rounds.
     """
+    if bench_case.kind == "pymeshlab":
+        meshset_pml = _cloud_meshset_pml(bench_case)
+        measures_pml = bench_case.run(meshset_pml.get_geometric_measures)
+        assert np.asarray(measures_pml["pca"]).shape == (3, 3)
+        return
     if bench_case.kind == "meshlib":
         skip_larger_than(bench_case, "bunny_decimated", _HOST_CAP_REASON)
         points_ml = _points_ml(bench_case)
@@ -465,7 +476,7 @@ def test_principal_axes(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="fit_plane")
-@pytest.mark.benchlibs("ordito", "trimesh", "pymeshlab", "pyvista", "meshlib")
+@pytest.mark.benchlibs("ordito", "trimesh", "igl", "pymeshlab", "pyvista", "meshlib")
 def test_fit_plane(bench_case: BenchCase) -> None:
     """
     Least-squares plane: centroid reduction, centred covariance, then the smallest-sigma axis.
@@ -508,6 +519,14 @@ def test_fit_plane(bench_case: BenchCase) -> None:
             lambda: meshset_pml.compute_matrix_by_fitting_to_plane(targetplane="XY plane")
         )
         assert result_pml["fitting_plane_normal"].shape == (3,)
+        return
+    if bench_case.kind == "igl":
+        # ``igl.fit_plane`` returns the normal and the centroid, ordito's answer and nothing else:
+        # two linear passes over the points and a 3x3 eigensolve, so the row runs uncapped.
+        points_np = bench_case.vertices_np
+        normal_igl, centroid_igl = bench_case.run(lambda: igl.fit_plane(points_np))
+        assert normal_igl.shape == (3,)
+        assert centroid_igl.shape == (3,)
         return
     if bench_case.kind == "ordito":
         points = bench_case.vertices_wp
@@ -801,19 +820,31 @@ def _find_outliers_ml(
 
 
 @pytest.mark.benchmark(group="cluster_outlier_mask")
-@pytest.mark.benchlibs("ordito", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib", "open3d")
 def test_cluster_outlier_mask(bench_case: BenchCase) -> None:
     """
     Clusters of the radius graph: a ball walk hooking a union-find as it goes, a count.
 
     meshlib's ``findOutliers(SmallComponents)`` is the same union of balls (equal sets in
-    ``tests/test_points.py``), unioned on its threads as it searches. Two mean edges, the default
-    cluster size of 20.
+    ``tests/test_points.py``), unioned on its threads as it searches. open3d's
+    ``cluster_dbscan(eps=radius, min_points=1)`` makes every point a core point, so its labels are
+    the same components; the row times the labelling plus the label-size count that turns it into
+    the mask, and the k-d tree the call builds for itself. Two mean edges, the default cluster
+    size of 20.
     """
     radius = 2.0 * bench_case.mean_edge
     if bench_case.kind == "meshlib":
         cloud_ml = _cloud_ml(bench_case)  # held in a name: MeshLib's trees point into it
         _find_outliers_ml(bench_case, mm.OutlierTypeMask.SmallComponents, radius, cloud_ml)
+        return
+    if bench_case.kind == "open3d":
+        pcd = _pcd(bench_case)
+
+        def cluster_outlier_mask_o3d() -> np.ndarray:
+            labels_o3d = np.asarray(pcd.cluster_dbscan(eps=radius, min_points=1))
+            return np.bincount(labels_o3d)[labels_o3d] <= 20
+
+        assert bench_case.run(cluster_outlier_mask_o3d).shape == (bench_case.n_vertices,)
         return
     points = bench_case.vertices_wp
     mask = bench_case.run(lambda: od.points.cluster_outlier_mask(points, radius))
@@ -994,20 +1025,35 @@ _SUBDIVISIONS = [1, 3]
 
 
 @pytest.mark.benchmark(group="convex_hull")
-@pytest.mark.benchlibs("ordito", "scipy", "trimesh", "open3d", "pymeshlab", "manifold3d")
+@pytest.mark.benchlibs(
+    "ordito", "scipy", "trimesh", "open3d", "pymeshlab", "manifold3d", "meshlib", "pyvista"
+)
 def test_convex_hull(bench_case: BenchCase) -> None:
     """
-    The exact hull against qhull, directly and through the three mesh wrappers.
+    The exact hull against qhull, directly and through the three mesh wrappers, and three others.
 
     The same result on both sides: the hull's triangles, ordito's over the input points and the
     wrappers' as a compacted mesh (``scipy`` returns ``simplices`` over the input, like ordito).
     qhull is single-threaded on the host, which is the comparison: a registry mesh's vertices are a
     scan cloud, whose hull holds a few thousand of its points, and both sides discard the rest.
+    manifold3d, MeshLib (``makeConvexHull`` of a ``PointCloud``) and pyvista (VTK 9.7's
+    ``vtkConvexHull``) each build the hull without qhull; their input cloud is built outside the
+    timed callable.
     """
     if bench_case.kind == "ordito":
         points = bench_case.vertices_wp
         faces = bench_case.run(lambda: od.points.convex_hull(points))
         assert faces.shape[0] >= 12
+        return
+    if bench_case.kind == "meshlib":
+        cloud_ml = _cloud_ml(bench_case)
+        hull_ml = bench_case.run(lambda: mm.makeConvexHull(cloud_ml))
+        assert hull_ml.topology.numValidFaces() >= 4
+        return
+    if bench_case.kind == "pyvista":
+        cloud_pv = pv.PolyData(np.array(bench_case.vertices_np, dtype=np.float64))
+        hull_pv = bench_case.run(cloud_pv.convex_hull)
+        assert hull_pv.n_cells >= 4
         return
     if bench_case.kind == "manifold3d":
         # QuickHull on the host, multi-threaded, returning the hull as a solid.

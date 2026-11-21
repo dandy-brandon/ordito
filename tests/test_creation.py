@@ -26,6 +26,7 @@ from ordito.creation import ParametricSurfaceKind
 from tests.comparisons import canonical_winding, euler_characteristic, lexsort_rows, open_edge_count
 from tests.conversions import (
     meshlib_to_trimesh,
+    numpy_to_warp,
     open3d_to_trimesh,
     points_to_warp,
     points_to_warp_uv,
@@ -1314,6 +1315,68 @@ def test_revolve_matches_trimesh(device: str) -> None:
     )
 
 
+@pytest.mark.parametrize("closed", [False, True], ids=["open", "closed"])
+@pytest.mark.parity("revolve", "pyvista", "open3d")
+def test_revolve_matches_pyvista_and_open3d(device: str, closed: bool) -> None:
+    """
+    Class B (seam welded) on the vertices, Class C on area and volume: VTK's rotational extrusion.
+
+    pyvista's ``extrude_rotate`` and Open3D's ``t.LineSet.extrude_rotation`` are both
+    ``vtkRotationalExtrusionFilter``: the profile, placed in the ``xz`` plane, swept about ``z``.
+    They emit ``sections + 1`` copies of every profile point, the last on the first (and a closed
+    profile's repeated end too), and quads split by their own diagonals, so coincident points are
+    welded (the named transform) and the vertex sets then compare
+    point for point; the faces are compared through what a diagonal cannot change, the area and the
+    signed volume, which a missing, extra or flipped wall moves. Measured on a 9-point arc swept
+    in 16 sections: 144 vertices on all three, area and volume within 3.4e-8 relative.
+    """
+    profile_np = np.column_stack(
+        (1.0 + 0.25 * np.cos(np.linspace(0.0, np.pi, 9)), np.linspace(-1.0, 1.0, 9))
+    )
+    if closed:
+        profile_np = np.vstack([profile_np, [[0.5, 1.0], [0.5, -1.0], profile_np[0]]])
+    sections = 16
+    vertices_wp, faces_wp = od.creation.revolve(
+        points_to_warp_uv(profile_np, device), sections=sections
+    )
+    solid_wp = warp_to_trimesh(vertices_wp, faces_wp)
+
+    line_np = np.column_stack((profile_np[:, 0], np.zeros(len(profile_np)), profile_np[:, 1]))
+    line_pv = pv.PolyData(line_np, lines=np.hstack([[len(line_np)], np.arange(len(line_np))]))
+    swept_pv = line_pv.extrude_rotate(resolution=sections, capping=False).triangulate()
+    line_o3d = o3d.t.geometry.LineSet(
+        o3d.core.Tensor(line_np),  # pyright: ignore[reportCallIssue]
+        o3d.core.Tensor(  # pyright: ignore[reportCallIssue]
+            np.column_stack((np.arange(len(line_np) - 1), np.arange(1, len(line_np))))
+        ),
+    )
+    swept_o3d = line_o3d.extrude_rotation(360.0, [0.0, 0.0, 1.0], resolution=sections)  # pyright: ignore[reportArgumentType]
+    for vertices_ref, faces_ref in (
+        (np.asarray(swept_pv.points, dtype=np.float64), np.asarray(swept_pv.regular_faces)),
+        (swept_o3d.vertex.positions.numpy().astype(np.float64), swept_o3d.triangle.indices.numpy()),
+    ):
+        assert vertices_ref.shape[0] == len(profile_np) * (sections + 1)  # one ring a profile point
+        welded_ref = tm.Trimesh(vertices_ref, faces_ref, process=False)
+        welded_ref.merge_vertices()
+        assert welded_ref.faces.shape[0] == faces_wp.size // 3
+        assert od.equality.points_allclose(
+            vertices_wp, points_to_warp(welded_ref.vertices, device), rtol=0.0, atol=1e-5
+        )
+        assert math.isclose(solid_wp.area, welded_ref.area, rel_tol=1e-6)
+        assert math.isclose(
+            _signed_volume(solid_wp), _signed_volume(welded_ref), rel_tol=1e-6, abs_tol=1e-9
+        )
+
+
+def _signed_volume(mesh_tm: tm.Trimesh) -> float:
+    """Return the signed volume of a possibly open mesh: the divergence sum, unchecked."""
+    corners_np = np.asarray(mesh_tm.vertices)[np.asarray(mesh_tm.faces)]
+    return float(
+        np.einsum("ij,ij->i", corners_np[:, 0], np.cross(corners_np[:, 1], corners_np[:, 2])).sum()
+        / 6.0
+    )
+
+
 def _axis_touching_profile(n_points: int, scale: float) -> np.ndarray:
     """Return an open profile touching the axis at every fourth point, interior ones included."""
     height_np = np.linspace(0.0, 3.0, n_points)
@@ -1636,6 +1699,38 @@ def test_extrude_triangulation_matches_manifold3d(device: str) -> None:
     assert math.isclose(od.measures.volume(vertices, faces), solid_m3.volume(), rel_tol=1e-6)
 
 
+@pytest.mark.parametrize("region", ["notched", "holed"])
+@pytest.mark.parity("extrude_triangulation", "trimesh")
+def test_extrude_triangulation_matches_trimesh(device: str, region: str) -> None:
+    """
+    Class A (``od.equality.meshes_allclose``): ``trimesh.creation.extrude_triangulation``.
+
+    The creation module's port source, handed the same cap triangulation: the same vertices (in
+    the same order, bottom cap then top), the same faces with their winding, up to face order.
+    A notched pentagon (a non-convex ring) and a square with a square hole, so the boundary walls
+    are recovered from two loops.
+    """
+    if region == "notched":
+        ring = np.array([[0, 0], [2, 0], [2, 1], [1, 0.4], [0, 1]], dtype=np.float32)
+        cap_points, cap_faces = od.polyline.triangulate_polygon(points_to_warp_uv(ring, device))
+    else:
+        outer = np.array([[0, 0], [4, 0], [4, 4], [0, 4]], dtype=np.float32)
+        hole = np.array([[1, 1], [1, 3], [3, 3], [3, 1]], dtype=np.float32)
+        cap_points = points_to_warp_uv(np.vstack([outer, hole]), device)
+        cap_faces = od.polyline.triangulate_polygons(
+            [points_to_warp_uv(outer, device), points_to_warp_uv(hole, device)]
+        )
+    vertices_wp, faces_wp = od.creation.extrude_triangulation(cap_points, cap_faces, 0.7)
+    solid_tm = tm.creation.extrude_triangulation(
+        cap_points.numpy().astype(np.float64), cap_faces.numpy().reshape(-1, 3), 0.7
+    )
+    assert solid_tm.is_watertight  # non-vacuity: the reference closed the solid
+    assert np.allclose(vertices_wp.numpy(), solid_tm.vertices, rtol=1e-5, atol=1e-5)
+    assert od.equality.meshes_allclose(
+        vertices_wp, faces_wp, *numpy_to_warp(solid_tm.vertices, solid_tm.faces, device)
+    )
+
+
 _SWEEP_PATHS = {
     "straight": np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 2.0]]),
     "bent": np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 2.0], [0.0, 2.0, 2.0]]),
@@ -1804,7 +1899,12 @@ def test_truncated_prisms(device: str, case: str) -> None:
 
 
 def test_axis(device: str) -> None:
-    """Not a library comparison: a ball and three shafts; ``transform`` moves the whole marker."""
+    """
+    Ordito against ordito: the marker's sizes and the rigid move ``transform`` applies.
+
+    The shape itself is compared with trimesh in
+    [`test_axis_matches_trimesh`][tests.test_creation.test_axis_matches_trimesh].
+    """
     vertices_wp, faces_wp = od.creation.axis(device=device)
     ball_v, ball_f = od.creation.icosphere(radius=0.04, device=device)
     shaft_v, shaft_f = od.creation.cylinder(radius=0.008, height=0.4, device=device)
@@ -1822,6 +1922,55 @@ def test_axis(device: str) -> None:
     expected_np = tm.transform_points(vertices_wp.numpy().astype(np.float64), matrix_np)
     assert np.allclose(moved_wp.numpy(), expected_np, rtol=1e-5, atol=1e-5)
     assert np.array_equal(moved_faces_wp.numpy(), faces_wp.numpy())
+
+
+@pytest.mark.parametrize("transformed", [False, True], ids=["identity", "rotated"])
+@pytest.mark.parity("axis", "trimesh")
+def test_axis_matches_trimesh(device: str, transformed: bool) -> None:
+    """
+    Class A (``od.equality.meshes_allclose``, component by component): ``trimesh.creation.axis``.
+
+    Both build the origin ball and the X, Y and Z shafts in that order, with the same defaults
+    (ball radius 0.04, shafts 0.008 by 0.4): 840 vertices and 1 664 faces on both sides. The
+    three shafts each put a cap centre on the origin, so the whole marker holds one point three
+    times and a nearest-point match over it is ambiguous; each of the four components is therefore
+    compared on its own, up to its vertex numbering, faces and winding included. Measured within
+    1.9e-8. The rotated case passes the same rigid matrix to both.
+    """
+    matrix_np = np.eye(4)
+    if transformed:
+        matrix_np = np.asarray(tm.transformations.rotation_matrix(0.7, [1.0, 2.0, 3.0]))
+        matrix_np[:3, 3] = np.array([0.3, -0.2, 0.5])
+    vertices_wp, faces_wp = od.creation.axis(
+        transform=_mat44(matrix_np) if transformed else None, device=device
+    )
+    axis_tm = cast("tm.Trimesh", tm.creation.axis(transform=matrix_np))
+    assert vertices_wp.size == len(axis_tm.vertices)
+    assert faces_wp.size // 3 == len(axis_tm.faces)
+
+    ball_tm = tm.creation.icosphere(radius=0.04)
+    shaft_tm = tm.creation.cylinder(radius=0.008, height=0.4)
+    sizes = [(len(ball_tm.vertices), len(ball_tm.faces))] + 3 * [
+        (len(shaft_tm.vertices), len(shaft_tm.faces))
+    ]
+    vertices_np = vertices_wp.numpy().astype(np.float64)
+    faces_np = faces_wp.numpy().reshape(-1, 3)
+    vertex_start = face_start = 0
+    for n_vertices, n_faces in sizes:
+        vertex_stop, face_stop = vertex_start + n_vertices, face_start + n_faces
+        part_wp = numpy_to_warp(
+            vertices_np[vertex_start:vertex_stop],
+            faces_np[face_start:face_stop] - vertex_start,
+            device,
+        )
+        part_tm = numpy_to_warp(
+            np.asarray(axis_tm.vertices)[vertex_start:vertex_stop],
+            np.asarray(axis_tm.faces)[face_start:face_stop] - vertex_start,
+            device,
+        )
+        assert od.equality.meshes_allclose(*part_wp, *part_tm, rtol=0.0, atol=1e-5)
+        vertex_start, face_start = vertex_stop, face_stop
+    assert vertex_start == vertices_wp.size
 
 
 @pytest.mark.parametrize("surface", sorted(_PARAMETRIC_TABLE))

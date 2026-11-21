@@ -115,26 +115,49 @@ def _projected_uv(bench_case: BenchCase) -> wp.array[wp.vec2]:
 
 
 @pytest.mark.benchmark(group="face_flipped_mask")
-@pytest.mark.benchlibs("ordito")
+@pytest.mark.benchlibs("ordito", "igl")
 def test_face_flipped_mask(bench_case: BenchCase) -> None:
     """
     One signed-area test per face: a per-face map, so the scan sweep is its axis.
 
     The planar input is the mesh projected onto ``xy``, where about half the faces are inverted.
-    ordito alone: its test oracle is a NumPy cross product, not a library function.
+    **libigl**'s ``flipped_triangles`` returns the indices, not a mask, so its row is the same call
+    as in the ``face_flipped_indices`` group: the mask is its one-line scatter on the host.
     """
+    if bench_case.kind == "igl":
+        uv_np, faces_np = _projected_uv_np(bench_case)
+        flipped_igl = bench_case.run(lambda: igl.flipped_triangles(uv_np, faces_np))
+        assert 0 < flipped_igl.shape[0] < bench_case.n_faces
+        return
     uv, faces = _projected_uv(bench_case), bench_case.faces_wp
     mask = bench_case.run(lambda: od.parametrization.face_flipped_mask(uv, faces))
     assert mask.shape == (bench_case.n_faces,)
 
 
 @pytest.mark.benchmark(group="face_flipped_indices")
-@pytest.mark.benchlibs("ordito")
+@pytest.mark.benchlibs("ordito", "igl")
 def test_face_flipped_indices(bench_case: BenchCase) -> None:
-    """The same test compacted to indices: read against ``face_flipped_mask``, the compaction."""
+    """
+    The same test compacted to indices: read against ``face_flipped_mask``, the compaction.
+
+    **libigl**'s ``flipped_triangles`` is the Class A oracle in ``tests/test_parametrization.py``.
+    """
+    if bench_case.kind == "igl":
+        uv_np, faces_np = _projected_uv_np(bench_case)
+        flipped_igl = bench_case.run(lambda: igl.flipped_triangles(uv_np, faces_np))
+        assert 0 < flipped_igl.shape[0] < bench_case.n_faces
+        return
     uv, faces = _projected_uv(bench_case), bench_case.faces_wp
     indices = bench_case.run(lambda: od.parametrization.face_flipped_indices(uv, faces))
     assert 0 < indices.shape[0] < bench_case.n_faces
+
+
+def _projected_uv_np(bench_case: BenchCase) -> tuple[np.ndarray, np.ndarray]:
+    """``(uv, faces_i64)``: the ``xy`` projection and faces as libigl takes them, built untimed."""
+    return (
+        np.ascontiguousarray(bench_case.vertices_np[:, :2], dtype=np.float64),
+        np.ascontiguousarray(bench_case.faces_np, dtype=np.int64),
+    )
 
 
 @pytest.mark.benchmark(group="map_vertices_to_circle")

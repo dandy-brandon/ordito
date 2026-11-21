@@ -97,6 +97,34 @@ def test_edges_to_neighbor_lists_matches_igl(
         assert np.array_equal(repeat_wp.numpy(), sorted_np)
 
 
+@pytest.mark.parity("edges_to_neighbor_lists", "trimesh")
+@pytest.mark.parametrize("mesh_name", MESHES)
+def test_edges_to_neighbor_lists_matches_trimesh(
+    mesh_name: str, request: pytest.FixtureRequest
+) -> None:
+    """
+    Class B (rows sorted): ``trimesh.graph.neighbors`` of the same unique edges.
+
+    trimesh gathers each node's neighbours into a ``set`` and returns one list per node, in set
+    order, so the named transform sorts each row; ``sort_rows=True`` is that sorted form exactly,
+    compared as the concatenated rows. On unique edges the set drops nothing, so the multisets are
+    the same. Both sides take trimesh's own ``edges_unique``, so the input is not ordito's.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    n_vertices = mesh_wp.points.size
+    edges_np = np.ascontiguousarray(mesh_tm.edges_unique, dtype=np.int32)
+    neighbors_tm = tm.graph.neighbors(edges_np, max_index=n_vertices)
+    edges_wp = odt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=mesh_wp.device), wp.int32)
+
+    sorted_wp, offsets_wp = od.graph.edges_to_neighbor_lists(n_vertices, edges_wp, sort_rows=True)
+    degrees_tm = np.array([len(row) for row in neighbors_tm])
+    assert int(degrees_tm.max()) > int(degrees_tm.min()) > 0  # non-vacuity: irregular rows
+    assert np.array_equal(np.diff(offsets_wp.numpy()), degrees_tm)
+    assert np.array_equal(
+        sorted_wp.numpy(), np.concatenate([np.sort(np.asarray(row)) for row in neighbors_tm])
+    )
+
+
 def test_edges_to_neighbor_lists_rows_repeat_under_the_deterministic_setting(device: str) -> None:
     """
     Ordito against ordito: with the setting on, the default rows are the same on every call.
@@ -982,6 +1010,37 @@ def test_shortest_path_envelope_is_the_edge_graph_distance(
     assert distance_sp.max() > 0.5
     assert envelope_wp.numpy().max() < 1e5
     assert np.allclose(envelope_wp.numpy(), distance_sp, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+@pytest.mark.parity("shortest_path_envelope", "igl")
+def test_shortest_path_envelope_matches_igl_dijkstra(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Class A against ``igl.dijkstra``: the single-source edge-graph distance.
+
+    ``igl.dijkstra(V, VV, source, targets)`` walks the adjacency lists ``VV`` with Euclidean edge
+    lengths from ``V`` and, with no targets, settles every vertex. Seeded with zero at the source
+    and a large value elsewhere, the envelope over the same length-weighted graph is that
+    distance. igl reads the ``float32``-rounded coordinates ordito reads, so the only difference
+    is ``float32`` against ``float64`` accumulation along the paths.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    n_vertices = mesh_tm.vertices.shape[0]
+    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float32).astype(np.float64)
+    adjacency_igl = igl.adjacency_list(np.asarray(mesh_tm.faces, dtype=np.int64))
+    distance_igl = np.asarray(igl.dijkstra(vertices_np, adjacency_igl, 0, set())[0])
+
+    seeded_np = np.full(n_vertices, 1e6, dtype=np.float32)
+    seeded_np[0] = 0.0
+    envelope_wp = od.graph.shortest_path_envelope(
+        _length_weighted_csr(mesh_wp), wp.array(seeded_np, dtype=wp.float32, device=mesh_wp.device)
+    )
+
+    assert np.isfinite(distance_igl).all()  # non-vacuity: every vertex reached ...
+    assert distance_igl.max() > 0.5  # ... and the field propagated
+    assert np.allclose(envelope_wp.numpy(), distance_igl, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("order", ["none", "hilbert", "shuffled"])

@@ -422,6 +422,7 @@ def test_vertex_normals_guards_and_faceless_mwselr(
 
 
 @pytest.mark.parity("weighted_vertex_normals", "trimesh")
+@pytest.mark.parity("mean_vertex_normals", "trimesh")
 def test_scatter_wrappers_match_trimesh_on_their_inputs_device(
     saddle_graded: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:

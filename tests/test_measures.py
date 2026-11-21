@@ -9,6 +9,7 @@ source order -- volume, surface centroid, moments, Euler characteristic.
 from __future__ import annotations
 
 import igl
+import manifold3d as m3
 import numpy as np
 import pytest
 import trimesh as tm
@@ -21,7 +22,9 @@ from tests.conftest import MESHES
 from tests.conversions import (
     faces_igl,
     numpy_to_warp,
+    trimesh_to_manifold3d,
     trimesh_to_meshlib,
+    trimesh_to_open3d,
     trimesh_to_pymeshlab,
     trimesh_to_pyvista,
     trimesh_to_warp,
@@ -69,6 +72,33 @@ def test_volume(request: pytest.FixtureRequest, mesh_name: str):
     faces_flipped_wp = wp.array(faces_flipped_np, dtype=wp.int32, device=mesh_wp.device)
     volume_flipped_wp = od.measures.volume(mesh_wp.points, faces_flipped_wp)
     assert np.isclose(volume_flipped_wp, -mesh_tm.volume, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "sphere_irregular_hollow"])
+@pytest.mark.parity(
+    "volume",
+    "manifold3d",
+    benchmarked=False,
+    reason=(
+        "the volume group sweeps the open scan meshes, every one of which Manifold refuses as "
+        "not closed, so a manifold3d row there would skip on every mesh it is given"
+    ),
+)
+def test_volume_matches_manifold3d(request: pytest.FixtureRequest, mesh_name: str) -> None:
+    """
+    Class A: Manifold's ``volume()`` of the same solid.
+
+    Manifold reads the same ``float32`` coordinates, so the two divergence-theorem sums differ
+    by rounding alone: measured 2.7e-8 and 2.2e-8 relative, bounded at ``1e-6``. The hollow
+    fixture is two shells, the inner one wound inward, which Manifold accepts as one solid: its
+    volume is the outer body less the cavity, so a volume taken without signs fails.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    solid_m3 = trimesh_to_manifold3d(mesh_tm)
+    assert solid_m3.status() == m3.Error.NoError
+    volume_m3 = solid_m3.volume()
+    assert volume_m3 > 0.0  # non-vacuity
+    assert np.isclose(od.measures.volume(mesh_wp.points, mesh_wp.indices), volume_m3, rtol=1e-6)
 
 
 @pytest.mark.parametrize("deterministic", [True, False], indirect=True)
@@ -254,6 +284,41 @@ def test_moments(request: pytest.FixtureRequest, mesh_name: str):
     )
 
 
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "sphere_irregular_hollow"])
+@pytest.mark.parity(
+    "moments",
+    "pymeshlab",
+    benchmarked=False,
+    reason=(
+        "get_geometric_measures omits mesh_volume, center_of_mass and inertia_tensor on a mesh "
+        "that is not watertight, and every scan mesh the moments group sweeps is open, so a row "
+        "would time a call that integrates nothing"
+    ),
+)
+def test_moments_match_pymeshlab(request: pytest.FixtureRequest, mesh_name: str) -> None:
+    """
+    Class A: MeshLab's ``mesh_volume``, ``center_of_mass`` and ``inertia_tensor``.
+
+    ``get_geometric_measures`` returns the three integrals among its keys on a watertight mesh
+    (it omits them on an open one), indexed directly: the inertia tensor is already referred to
+    the centre of mass, ordito's convention. The fixtures sit off the origin and are rotated, so
+    an inertia about the origin or a centre at it fails, and the hollow fixture's inward shell
+    makes the signed integrals matter. The tolerances follow
+    ``test_moments``: the inertia relative to the tensor's own scale.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    measures_pml = trimesh_to_pymeshlab(mesh_tm).get_geometric_measures()
+    inertia_pml = np.asarray(measures_pml["inertia_tensor"])
+    center_pml = np.asarray(measures_pml["center_of_mass"])
+    assert np.abs(center_pml).max() > 1e-2  # non-vacuity: the centre is not the origin
+
+    volume_wp, center_wp, inertia_wp = od.measures.moments(mesh_wp.points, mesh_wp.indices)
+    assert np.isclose(volume_wp, measures_pml["mesh_volume"], rtol=1e-5)
+    assert np.allclose(odt.vec3_floats(center_wp), center_pml, rtol=1e-5, atol=1e-5)
+    scale = float(np.abs(inertia_pml).max())
+    assert np.abs(np.asarray(inertia_wp).reshape(3, 3) - inertia_pml).max() < 1e-5 * scale
+
+
 def test_empty_mesh(device: str):
     """
     Not a library comparison: every reduction's answer on a mesh with no faces.
@@ -280,8 +345,9 @@ def test_euler_characteristic(request: pytest.FixtureRequest, mesh_name: str) ->
     """
     Class A on an integer, against ``Trimesh.euler_number`` across the fixture set.
 
-    Non-vacuous by construction: the parametrisation spans chi = 2, 1 and 0, so a constant
-    answer cannot pass. A given ``n_vertices`` (the readback skipped) gives the same count.
+    Non-vacuous by construction: the parametrisation spans chi = 2 and 1, so a constant answer
+    cannot pass (the igl and Open3D comparison below spans five values). A given ``n_vertices``
+    (the readback skipped) gives the same count.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     euler_wp = od.measures.euler_characteristic(mesh_wp.indices)
@@ -290,6 +356,111 @@ def test_euler_characteristic(request: pytest.FixtureRequest, mesh_name: str) ->
         mesh_wp.indices, n_vertices=mesh_wp.points.size
     )
     assert euler_bound_wp == int(mesh_tm.euler_number)
+
+
+_TOPOLOGY_MESHES = [
+    "sphere_irregular",
+    "saddle_graded",
+    "torus_irregular",
+    "sphere_irregular_hollow",
+    "torus_irregular_holes",
+    "boy_surface",
+    "mobius",
+]
+"""Fixtures spanning chi = 2, 1, 0, 4 and -3: closed, open, genus 1, two shells, three holes."""
+
+
+@pytest.mark.parametrize("mesh_name", _TOPOLOGY_MESHES)
+@pytest.mark.parity("euler_characteristic", "igl", "open3d")
+def test_euler_characteristic_matches_igl_and_open3d(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Class A on an integer: igl's ``euler_characteristic`` and Open3D's Euler-Poincare count.
+
+    igl counts ``F.max() + 1`` vertices and Open3D every stored vertex, where ordito counts the
+    referenced ones; on these fixtures, which reference every vertex (asserted), the three counts
+    are one number. The parametrisation spans five values of chi, so a constant answer cannot pass.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    faces_np = np.asarray(mesh_tm.faces)
+    assert np.unique(faces_np).shape[0] == faces_np.max() + 1 == len(mesh_tm.vertices)
+
+    euler_igl = igl.euler_characteristic(faces_igl(mesh_tm))
+    euler_o3d = trimesh_to_open3d(mesh_tm).euler_poincare_characteristic()
+    euler_wp = od.measures.euler_characteristic(mesh_wp.indices)
+    assert euler_wp == euler_igl
+    assert euler_wp == euler_o3d
+
+
+@pytest.mark.parametrize("mesh_name", [*_TOPOLOGY_MESHES, "non_manifold_fin"])
+@pytest.mark.parity("euler_characteristic", "pymeshlab")
+def test_euler_characteristic_matches_pymeshlab(
+    request: pytest.FixtureRequest, device: str, mesh_name: str
+) -> None:
+    """
+    Class B (``V - E + F`` from MeshLab's counts): ``get_topological_measures``.
+
+    MeshLab reports ``vertices_number``, ``edges_number`` and ``faces_number`` rather than chi, so
+    the named transform is the alternating sum. The last case is not edge-manifold: a closed
+    tetrahedron with a fin, a fourth face on one of its edges, so that edge counts once though
+    three faces share it. MeshLab's ``is_mesh_two_manifold`` must read ``False`` there and
+    ``validation.is_edge_manifold`` agree, which keeps the edge count honest on input where a
+    halfedge-pairing count and a unique-edge count part.
+    """
+    if mesh_name == "non_manifold_fin":
+        vertices_np = np.array(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 1.0, -1.0]]
+        )
+        faces_np = np.array([[0, 2, 1], [0, 1, 3], [1, 2, 3], [0, 3, 2], [0, 1, 4]])
+        mesh_tm = tm.Trimesh(vertices_np, faces_np, process=False)
+        faces_wp = wp.array(faces_np.reshape(-1).astype(np.int32), device=device)
+    else:
+        mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+        faces_wp = mesh_wp.indices
+
+    measures_pml = trimesh_to_pymeshlab(mesh_tm).get_topological_measures()
+    euler_pml = (
+        int(measures_pml["vertices_number"])
+        - int(measures_pml["edges_number"])
+        + int(measures_pml["faces_number"])
+    )
+    euler_wp = od.measures.euler_characteristic(faces_wp)
+    assert euler_wp == euler_pml
+    assert euler_wp == int(mesh_tm.euler_number)
+    manifold_pml = bool(measures_pml["is_mesh_two_manifold"])
+    assert manifold_pml == (mesh_name != "non_manifold_fin")
+    assert od.validation.is_edge_manifold(faces_wp, allow_boundary_edges=True) == manifold_pml
+
+
+@pytest.mark.parametrize(
+    "mesh_name", ["sphere_irregular", "torus_irregular", "sphere_irregular_hollow"]
+)
+@pytest.mark.parity(
+    "euler_characteristic",
+    "manifold3d",
+    benchmarked=False,
+    reason=(
+        "Manifold.genus() reads vertex, edge and triangle counts the Manifold constructor already "
+        "holds, so a timed row would price a cached lookup and not the count"
+    ),
+)
+def test_euler_characteristic_matches_manifold3d_genus(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Class B (``chi = 2 - 2 * genus``): Manifold's ``genus()`` on closed manifold solids.
+
+    Manifold reports ``genus = 1 - chi / 2`` over the whole solid, components summed, so the named
+    transform is ``2 - 2 * genus``: 2 for the sphere, 0 for the torus and 4 for the hollow sphere,
+    whose genus reads -1. Manifold accepts only closed, oriented, manifold input, so the open and
+    non-orientable fixtures stay with the other references.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    solid_m3 = trimesh_to_manifold3d(mesh_tm)
+    assert solid_m3.status() == m3.Error.NoError
+    euler_m3 = 2 - 2 * solid_m3.genus()
+    assert od.measures.euler_characteristic(mesh_wp.indices) == euler_m3
 
 
 def test_euler_characteristic_on_tiny_random_face_sets(device: str) -> None:

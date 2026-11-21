@@ -43,13 +43,14 @@ in place and the operation is idempotent, so its mesh is rebuilt inside the time
 **trimesh**'s ``repair.fix_winding`` is the orientation reference; it has no non-manifold face
 removal.
 
-**pymeshlab** is the only library covering *all four* groups, and the first reference of any kind
-for ``remove_non_manifold_faces`` — neither trimesh nor open3d nor libigl removes non-manifold faces
-at all:
+**pymeshlab** is the only library covering *all four* groups. Neither trimesh nor libigl removes
+non-manifold faces; MeshLab and Open3D do, both by area:
 
-* ``meshing_repair_non_manifold_edges(method='Remove Faces')`` is the same idea, greedier: for each
-  non-manifold edge MeshLab iteratively deletes the *smallest-area* incident face until the edge is
-  2-manifold, where ordito drops every face on an over-incident edge and re-tests.
+* ``meshing_repair_non_manifold_edges(method='Remove Faces')`` deletes the *smallest-area* faces on
+  a non-manifold edge until the edge is 2-manifold, the rule of ``method="meshlab"``, where the
+  default drops every face on an over-incident edge and re-tests. Open3D's
+  ``remove_non_manifold_edges`` deletes by area too, edge by edge, and keeps more faces (a timed
+  row of ``remove_non_manifold_faces_meshlab`` with the measured difference).
 * ``meshing_remove_duplicate_faces`` is orientation-*insensitive*, so unlike open3d's hash it does
   see the flipped copies — but it keeps one representative rather than cancelling pairs.
 * ``meshing_remove_duplicate_vertices`` and ``meshing_merge_close_vertices(threshold=...)`` are
@@ -69,6 +70,7 @@ from __future__ import annotations
 from typing import Literal
 
 import igl
+import manifold3d as m3
 import numpy as np
 import pymeshlab as ml
 import pytest
@@ -317,7 +319,7 @@ def test_make_solid(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="remove_small_components")
 @pytest.mark.benchaxis("components")
-@pytest.mark.benchlibs("ordito", "pymeshlab", "open3d")
+@pytest.mark.benchlibs("ordito", "pymeshlab", "open3d", "meshlib", "pyvista")
 def test_remove_small_components(bench_case: BenchCase) -> None:
     """
     Label the components, threshold them, re-extract: the first step of every repair pipeline.
@@ -342,12 +344,34 @@ def test_remove_small_components(bench_case: BenchCase) -> None:
     count and area, and the mask and the removal are the caller's, which is what the row times; it
     also mutates, so its mesh is rebuilt per round too.
 
+    MeshLib's ``MeshComponents.getLargeByAreaComponents`` is the ``min_area`` filter: it labels the
+    components and returns the kept faces as a bitset without touching the mesh, so one mesh serves
+    every round; at ``minArea=0`` it keeps everything, as the threshold here does, and the
+    extraction it leaves to the caller would delete nothing. VTK's connectivity filter is
+    ``keep_largest`` in its ``"largest"`` mode (``extract_largest``, compared in
+    ``tests/test_repair.py``); the row runs its ``"all"`` mode, which labels every region and
+    extracts all of them, so it too keeps every face and the rows stay comparable along the axis.
+
     pymeshfix is **not** a row here: ``remove_smallest_components`` is a tenth or so of a round
     behind a load that cannot be hoisted out of it, so the number would be the load. Its rule is
     nonetheless what
     ``keep_largest`` defaults to, and ``tests/test_repair.py`` pins that.
     """
     min_faces = 2
+    if bench_case.kind == "meshlib":
+        mesh_ml = bench_case.new_mesh_ml()
+        kept_ml = bench_case.run(
+            lambda: mm.MeshComponents.getLargeByAreaComponents(
+                mm.MeshPart(mesh_ml), 0.0, mm.UndirectedEdgeBitSet()
+            )
+        )
+        assert kept_ml.count() == bench_case.n_faces
+        return
+    if bench_case.kind == "pyvista":
+        mesh_pv = bench_case.mesh_pv
+        kept_pv = bench_case.run(lambda: mesh_pv.connectivity("all"))
+        assert kept_pv.n_cells == bench_case.n_faces
+        return
     if bench_case.kind == "pymeshlab":
         vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
 
@@ -395,9 +419,9 @@ def test_remove_non_manifold_faces(bench_case: BenchCase, extra: int) -> None:
     Iterated edge-sort and manifold test: a clean mesh exits in one round, a broken one loops.
 
     Ordito only: no library drops every face on a crowded edge. MeshLab deletes the smallest faces
-    first until each edge is manifold, the rule of ``method="meshlab"``, timed against MeshLab in
-    ``remove_non_manifold_faces_meshlab`` (Open3D does the same edge by edge, in hash order); the
-    post-condition is asserted through igl and open3d in ``tests/test_repair.py``.
+    first until each edge is manifold, the rule of ``method="meshlab"``, timed against MeshLab (and
+    Open3D's per-edge variant of it) in ``remove_non_manifold_faces_meshlab``; the post-condition
+    is asserted through igl and open3d in ``tests/test_repair.py``.
     """
     vertices = bench_case.vertices_wp
     faces = _faces_with_non_manifold_wp(bench_case, extra)
@@ -409,7 +433,18 @@ def test_remove_non_manifold_faces(bench_case: BenchCase, extra: int) -> None:
 
 @pytest.mark.benchmark(group="remove_non_manifold_faces_meshlab")
 @pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("ordito", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "pymeshlab", "open3d")
+@pytest.mark.noparity(
+    "open3d",
+    oracle="pymeshlab",
+    reason="D2 a different removal rule: remove_non_manifold_edges deletes the smallest-area faces "
+    "of each crowded edge in turn until two remain, where MeshLab and method='meshlab' visit all "
+    "faces in ascending area and delete one while any of its edges is still crowded. Both outputs "
+    "are edge-manifold but the face sets differ: on nm1024 Open3D keeps 81 113 of 82 944 faces "
+    "against 80 645 (the default drops to 77 915), and on sphere_irregular with 20 fins and 60 "
+    "copies it keeps 950 of 1 076 against 919, a strict superset. pymeshlab is the oracle, in "
+    "tests/test_repair.py::test_remove_non_manifold_faces_meshlab_matches_pymeshlab.",
+)
 @pytest.mark.parametrize("extra", _NON_MANIFOLD_COUNTS, ids=["clean", "nm1024"])
 def test_remove_non_manifold_faces_meshlab(bench_case: BenchCase, extra: int) -> None:
     """
@@ -418,7 +453,25 @@ def test_remove_non_manifold_faces_meshlab(bench_case: BenchCase, extra: int) ->
     On ``nm1024`` every appended copy ties its original, so each crowded edge keeps one copy, and
     the rounds number the longest chain of increasing area through shared crowded edges. The
     clean row exits after one count readback.
+
+    Open3D's ``remove_non_manifold_edges`` is the per-edge form of the rule (see the exemption);
+    it mutates, so its legacy mesh is rebuilt inside the timed callable.
     """
+    if bench_case.kind == "open3d":
+        import open3d as o3d
+
+        vertices_o3d = o3d.utility.Vector3dVector(bench_case.vertices_np)
+        faces_nm_np = _faces_with_non_manifold_np(bench_case, extra)
+
+        def remove_o3d() -> o3d.geometry.TriangleMesh:
+            mesh_o3d = o3d.geometry.TriangleMesh(
+                vertices_o3d, o3d.utility.Vector3iVector(faces_nm_np)
+            )
+            return mesh_o3d.remove_non_manifold_edges()
+
+        kept_o3d = bench_case.run(remove_o3d)
+        assert 0 < len(kept_o3d.triangles) <= faces_nm_np.shape[0]
+        return
     if bench_case.kind == "pymeshlab":
         vertices_np = bench_case.vertices_np
         faces_nm_np = _faces_with_non_manifold_np(bench_case, extra)
@@ -458,7 +511,7 @@ def test_remove_degenerate_and_non_manifold_faces(bench_case: BenchCase, extra: 
 
 @pytest.mark.benchmark(group="split_non_manifold_vertices")
 @pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("ordito", "igl", "meshlib")
+@pytest.mark.benchlibs("ordito", "igl", "meshlib", "pymeshlab")
 @pytest.mark.parametrize("extra", _NON_MANIFOLD_COUNTS, ids=["clean", "nm1024"])
 def test_split_nonmanifold(bench_case: BenchCase, extra: int) -> None:
     """
@@ -483,7 +536,23 @@ def test_split_nonmanifold(bench_case: BenchCase, extra: int) -> None:
     (18 vertices against 15 on an icosahedron with one face duplicated). Both outputs are
     manifold with every face kept; the rows are a cost comparison, and ``tests/test_repair.py``
     carries both the agreement and the divergence.
+
+    pymeshlab's ``meshing_repair_non_manifold_vertices`` splits vertices whose faces form several
+    fans and leaves non-manifold *edges* alone, so on both ids here it finds nothing to split: its
+    row prices the detection a clean input costs every side (``tests/test_repair.py`` compares the
+    splits on edge-manifold input). It mutates, so the MeshSet is built inside the timed callable.
     """
+    if bench_case.kind == "pymeshlab":
+        vertices_np = bench_case.vertices_np
+        faces_nm_np = _faces_with_non_manifold_np(bench_case, extra)
+
+        def split_pml() -> int:
+            meshset_pml = _new_meshset_pml(vertices_np, faces_nm_np)
+            meshset_pml.meshing_repair_non_manifold_vertices(vertdispratio=0.0)
+            return meshset_pml.current_mesh().vertex_number()
+
+        assert bench_case.run(split_pml) == bench_case.n_vertices  # nothing to split, as above
+        return
     if bench_case.kind == "meshlib":
         # The build is inside the timed callable and that is not a converter tax: MeshLib's
         # half-edge topology cannot represent a non-edge-manifold mesh at all, so
@@ -519,7 +588,7 @@ def test_split_nonmanifold(bench_case: BenchCase, extra: int) -> None:
 
 
 @pytest.mark.benchmark(group="remove_unreferenced_vertices")
-@pytest.mark.benchlibs("ordito", "igl", "open3d", "meshlib")
+@pytest.mark.benchlibs("ordito", "igl", "open3d", "meshlib", "pymeshlab", "pyvista", "trimesh")
 @pytest.mark.parametrize("unreferenced", [0, 1], ids=["clean", "padded"])
 def test_remove_unreferenced_vertices(bench_case: BenchCase, unreferenced: int) -> None:
     """
@@ -544,16 +613,47 @@ def test_remove_unreferenced_vertices(bench_case: BenchCase, unreferenced: int) 
     ``Vector3dVector`` copy along with the compaction, which is what a caller holding NumPy buffers
     pays. It agrees with ordito element-wise on both compacted buffers
     (``tests/test_repair.py::test_remove_unreferenced_matches_open3d``).
+
+    pymeshlab's ``meshing_remove_unreferenced_vertices`` and trimesh's
+    ``Trimesh.remove_unreferenced_vertices`` mutate, so their containers are rebuilt inside the
+    timed callable as open3d's is; VTK's ``remove_unused_points`` returns a new mesh from one
+    ``PolyData`` built outside. All three keep the survivors in input order, as ordito does.
     """
     vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
     if unreferenced:
         vertices_np = np.ascontiguousarray(np.vstack([vertices_np, vertices_np]))
+    if bench_case.kind == "pymeshlab":
+        skip_larger_than(bench_case, "bunny", "the MeshSet rebuild dominates past bunny")
+
+        def remove_unreferenced_pml() -> int:
+            meshset_pml = _new_meshset_pml(vertices_np, faces_np)
+            meshset_pml.meshing_remove_unreferenced_vertices()
+            return meshset_pml.current_mesh().vertex_number()
+
+        assert bench_case.run(remove_unreferenced_pml) <= vertices_np.shape[0]
+        return
+    if bench_case.kind == "pyvista":
+        mesh_pv = pv.PolyData.from_regular_faces(vertices_np, faces_np)
+        kept_pv = bench_case.run(mesh_pv.remove_unused_points)
+        assert kept_pv.n_cells == bench_case.n_faces
+        assert kept_pv.n_points <= vertices_np.shape[0]
+        return
+    if bench_case.kind == "trimesh":
+        skip_larger_than(bench_case, "bunny", "the reference is a single-threaded mask and gather")
+
+        def remove_unreferenced_tm() -> int:
+            mesh_tm = tm.Trimesh(vertices_np, faces_np, process=False)
+            mesh_tm.remove_unreferenced_vertices()
+            return len(mesh_tm.vertices)
+
+        assert bench_case.run(remove_unreferenced_tm) <= vertices_np.shape[0]
+        return
     if bench_case.kind == "meshlib":
         # ``pack()`` renumbers in place, so the mesh is built inside the timed callable and this
         # row prices the build with it. The ``padded`` id costs meshlib nothing extra either way:
         # the duplicated block is *trailing*, and ``meshFromFacesVerts`` sizes its point buffer by
         # ``F.max() + 1``, so those vertices never reach the mesh. What it does price is the case
-        # the other three rows cannot show -- bunny's 1 113 *interior* unreferenced vertices, which
+        # the other rows cannot show -- bunny's 1 113 *interior* unreferenced vertices, which
         # arrive as invalid entries and are what pack() compacts away.
         def pack_ml() -> int:
             mesh_ml = mesh_ml_from_numpy(vertices_np, faces_np)
@@ -622,7 +722,9 @@ def _soup(bench_case: BenchCase) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]
 
 @pytest.mark.benchmark(group="remove_duplicated_vertices")
 @pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("ordito", "open3d", "pymeshlab", "pyvista", "meshlib")
+@pytest.mark.benchlibs(
+    "ordito", "open3d", "pymeshlab", "pyvista", "meshlib", "igl", "manifold3d", "trimesh"
+)
 @pytest.mark.parametrize("epsilon", _MERGE_EPSILONS, ids=["exact", "eps1e-6"])
 def test_remove_duplicated_vertices(bench_case: BenchCase, epsilon: float) -> None:
     """
@@ -633,7 +735,48 @@ def test_remove_duplicated_vertices(bench_case: BenchCase, epsilon: float) -> No
     points, so its row does a little more than the weld. The soup is rebuilt inside the timed
     callable because ``clean`` returns a new mesh from an input this benchmark does not otherwise
     hold as a ``PolyData``.
+
+    ``igl.remove_duplicate_vertices`` takes the tolerance directly (``0`` is exact) and returns new
+    arrays, so its input is built once. Manifold's ``Mesh.merge`` records a from/to map of the
+    vertices on open edges -- every vertex of a soup -- within ``tolerance``; a second call on the
+    same ``Mesh`` finds nothing new, so the ``Mesh`` (a copy of the two arrays) is built inside the
+    timed callable. trimesh's ``merge_vertices`` snaps to ``digits_vertex`` decimals, so the
+    ``eps1e-6`` id passes 6 and the exact id its default (``tol.merge``, eight digits); it mutates,
+    so the ``Trimesh`` is rebuilt inside the callable.
     """
+    if bench_case.kind == "igl":
+        soup_np = np.ascontiguousarray(bench_case.vertices_np[bench_case.faces_np].reshape(-1, 3))
+        faces_np = np.ascontiguousarray(np.arange(soup_np.shape[0], dtype=np.int64).reshape(-1, 3))
+        welded_igl, _indices_igl, _inverse_igl, _faces_igl = bench_case.run(
+            lambda: igl.remove_duplicate_vertices(soup_np, faces_np, epsilon)
+        )
+        assert 0 < welded_igl.shape[0] < soup_np.shape[0]
+        return
+    if bench_case.kind == "manifold3d":
+        soup_np = np.ascontiguousarray(
+            bench_case.vertices_np[bench_case.faces_np].reshape(-1, 3), dtype=np.float32
+        )
+        faces_np = np.ascontiguousarray(np.arange(soup_np.shape[0], dtype=np.uint32).reshape(-1, 3))
+
+        def merge_m3() -> int:
+            mesh_m3 = m3.Mesh(vert_properties=soup_np, tri_verts=faces_np, tolerance=epsilon)
+            mesh_m3.merge()
+            return len(mesh_m3.merge_from_vert)
+
+        assert 0 < bench_case.run(merge_m3) < soup_np.shape[0]
+        return
+    if bench_case.kind == "trimesh":
+        soup_np = np.ascontiguousarray(bench_case.vertices_np[bench_case.faces_np].reshape(-1, 3))
+        faces_np = np.ascontiguousarray(np.arange(soup_np.shape[0], dtype=np.int64).reshape(-1, 3))
+        digits = 6 if epsilon > 0.0 else None
+
+        def merge_tm() -> int:
+            mesh_tm = tm.Trimesh(soup_np, faces_np, process=False)
+            mesh_tm.merge_vertices(digits_vertex=digits)
+            return len(mesh_tm.vertices)
+
+        assert 0 < bench_case.run(merge_tm) < soup_np.shape[0]
+        return
     if bench_case.kind == "meshlib":
         # ``uniteCloseVertices`` welds in place and returns the merge count, so the soup mesh is
         # rebuilt inside the timed callable. ``uniteOnlyBd=False`` is the setting that matches
@@ -694,13 +837,15 @@ def test_remove_duplicated_vertices(bench_case: BenchCase, epsilon: float) -> No
 
 
 @pytest.mark.benchmark(group="split_vertices_by_corner_values")
-@pytest.mark.benchlibs("ordito")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
 def test_split_vertices_by_corner_values(bench_case: BenchCase) -> None:
     """
     Unweld a mesh along a two-chart UV atlas: one vertex per distinct ``(vertex, texcoord)`` pair.
 
-    No reference row: no installed library splits vertices by a per-corner field as a function
-    (trimesh does it inside its OBJ loader, on the host). Each corner's texcoord is its vertex's
+    pymeshlab's ``meshing_vertex_attribute_seam(texcoordmode="Wedge")`` is the same split for a
+    texcoord field (``tests/test_repair.py`` compares the two); it mutates, so the MeshSet, which
+    carries the per-corner texcoords, is built inside the timed callable. Each corner's texcoord is
+    its vertex's
     ``(x, y)`` shifted by the side of the ``x = 0`` plane its face's centroid lies on, so every
     vertex on a face crossing that plane splits in two. The corners are grouped by comparing
     values within each vertex's ring, with no sort; a ring past ``VALUE_RING_LONG`` corners sends
@@ -710,6 +855,20 @@ def test_split_vertices_by_corner_values(bench_case: BenchCase) -> None:
     corners_np = bench_case.vertices_np[bench_case.faces_np]
     chart_np = np.repeat(corners_np.mean(axis=1)[:, 0] > 0.0, 3)
     uv_np = (corners_np.reshape(-1, 3)[:, :2] + chart_np[:, None]).astype(np.float32)
+    if bench_case.kind == "pymeshlab":
+        skip_larger_than(bench_case, "bunny", "MeshLab's seam split is a serial pass beyond bunny")
+        vertices_np = np.ascontiguousarray(bench_case.vertices_np, dtype=np.float64)
+        faces_np = np.ascontiguousarray(bench_case.faces_np, dtype=np.int32)
+        wedge_uv_np = uv_np.astype(np.float64)
+
+        def split_pml() -> int:
+            meshset_pml = ml.MeshSet()
+            meshset_pml.add_mesh(ml.Mesh(vertices_np, faces_np, w_tex_coords_matrix=wedge_uv_np))
+            meshset_pml.meshing_vertex_attribute_seam(texcoordmode="Wedge")
+            return meshset_pml.current_mesh().vertex_number()
+
+        assert bench_case.run(split_pml) > 0
+        return
     corner_uv = wp.array(np.ascontiguousarray(uv_np), dtype=wp.vec2, device=bench_case.device)
     new_vertices, new_faces, _uv = bench_case.run(
         lambda: od.repair.split_vertices_by_corner_values(
@@ -737,7 +896,7 @@ def test_duplicate_vertex_inverse(bench_case: BenchCase, epsilon: float) -> None
 
 
 @pytest.mark.benchmark(group="reverse_winding")
-@pytest.mark.benchlibs("ordito", "trimesh")
+@pytest.mark.benchlibs("ordito", "trimesh", "pymeshlab")
 def test_reverse_winding(bench_case: BenchCase) -> None:
     """
     One unconditional corner swap per face: the floor every orientation row is measured against.
@@ -749,7 +908,19 @@ def test_reverse_winding(bench_case: BenchCase) -> None:
 
     trimesh's ``invert`` is an ``np.fliplr`` **plus** a cache invalidation and a normal flip on
     whatever it had cached, so it is an upper bound; it also mutates, hence a fresh mesh per round.
+    pymeshlab's ``meshing_invert_face_orientation`` mutates too, so its row carries the MeshSet
+    build, most of the row at this cost.
     """
+    if bench_case.kind == "pymeshlab":
+        vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
+
+        def invert_pml() -> int:
+            meshset_pml = _new_meshset_pml(vertices_np, faces_np)
+            meshset_pml.meshing_invert_face_orientation(forceflip=True)
+            return meshset_pml.current_mesh().face_number()
+
+        assert bench_case.run(invert_pml) == bench_case.n_faces
+        return
     if bench_case.kind == "trimesh":
         vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
 
@@ -768,21 +939,53 @@ def test_reverse_winding(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="make_winding_consistent")
 @pytest.mark.benchaxis("diameter")
-@pytest.mark.benchlibs("ordito", "trimesh", "igl", "pymeshlab", "meshlib")
+@pytest.mark.benchlibs("ordito", "trimesh", "igl", "pymeshlab", "meshlib", "open3d", "pyvista")
 def test_make_winding_consistent(bench_case: BenchCase) -> None:
     """
     Flip mask from the parity union-find, then one relabel pass: flat across the axis.
 
-    Three references, three traversals, and this is the group where the ``diameter`` axis earns its
+    The references are traversals, and this is the group where the ``diameter`` axis earns its
     keep: ``igl.bfs_orient`` is a breadth-first walk, MeshLab's
     ``meshing_re_orient_faces_coherently`` a serial face-to-face visit and ``trimesh.repair
-    .fix_winding`` a flood fill, so all three grow with graph depth where the union-find does not.
+    .fix_winding`` a flood fill, so they grow with graph depth where the union-find does not.
 
     ``igl.bfs_orient`` returns ``(FF, C)`` -- the reoriented faces and the per-face *component id*,
     not the flip mask; the mask is recovered by comparing ``FF`` to ``F`` (see
-    ``tests/test_validation.py``). Unlike the other two it does not mutate an input, so nothing is
-    rebuilt inside the callable.
+    ``tests/test_validation.py``). Unlike MeshLab and trimesh it does not mutate an input, so
+    nothing is rebuilt inside the callable.
+
+    Open3D's ``orient_triangles`` (a traversal from a seed face) mutates, so its legacy mesh is
+    rebuilt inside the callable; VTK's ``compute_normals(consistent_normals=True,
+    auto_orient_normals=False)`` returns a new mesh from one ``PolyData`` and must compute one
+    normal field (with neither it raises); the row asks for the cell normals, a cross product a
+    face, so it is a slight upper bound on the reorder pass.
     """
+    if bench_case.kind == "open3d":
+        import open3d as o3d
+
+        vertices_o3d = o3d.utility.Vector3dVector(bench_case.vertices_np)
+        faces_np = np.ascontiguousarray(bench_case.faces_np, dtype=np.int32)
+
+        def orient_o3d() -> o3d.geometry.TriangleMesh:
+            mesh_o3d = o3d.geometry.TriangleMesh(vertices_o3d, o3d.utility.Vector3iVector(faces_np))
+            mesh_o3d.orient_triangles()
+            return mesh_o3d
+
+        assert len(bench_case.run(orient_o3d).triangles) == bench_case.n_faces
+        return
+    if bench_case.kind == "pyvista":
+        mesh_pv = bench_case.mesh_pv
+        oriented_pv = bench_case.run(
+            lambda: mesh_pv.compute_normals(
+                cell_normals=True,
+                point_normals=False,
+                consistent_normals=True,
+                auto_orient_normals=False,
+                split_vertices=False,
+            )
+        )
+        assert oriented_pv.n_cells == bench_case.n_faces
+        return
     if bench_case.kind == "meshlib":
         # A fourth traversal, and the only one that also decides the *global* sign: it ray-casts to
         # find which side is outside, so it does strictly more than the flip mask and is expected
@@ -879,7 +1082,7 @@ def test_make_volume(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="make_normals_outward")
-@pytest.mark.benchlibs("ordito", "trimesh")
+@pytest.mark.benchlibs("ordito", "trimesh", "pymeshlab")
 def test_make_normals_outward(bench_case: BenchCase) -> None:
     """
     Consistent winding, then outward orientation: ``make_winding_consistent`` plus ``make_volume``.
@@ -887,7 +1090,25 @@ def test_make_normals_outward(bench_case: BenchCase) -> None:
     At ``make_volume``'s points. ``trimesh.repair.fix_normals`` is the same composition
     (``tests/test_repair.py::test_make_normals_outward`` compares the face normals); it mutates and
     caches, so the ``tm.Trimesh`` is rebuilt inside the timed callable, and is capped at ``bunny``.
+
+    pymeshlab's ``meshing_re_orient_faces_by_geometry`` makes the winding coherent and then casts
+    rays to choose each piece's outward side, where ordito reads the sign of the enclosed volume
+    and leaves an open mesh's sign alone; the two agree on a closed mesh
+    (``tests/test_repair.py``). On these open scan meshes it still casts its rays, so its row
+    prices the ray test that ordito's watertightness check rules out. It mutates, so the MeshSet
+    is built inside the timed callable, and it is capped at ``bunny``.
     """
+    if bench_case.kind == "pymeshlab":
+        skip_larger_than(bench_case, "bunny", "MeshLab's ray-cast orientation runs on one core")
+        vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
+
+        def orient_pml() -> int:
+            meshset_pml = _new_meshset_pml(vertices_np, faces_np)
+            meshset_pml.meshing_re_orient_faces_by_geometry()
+            return meshset_pml.current_mesh().face_number()
+
+        assert bench_case.run(orient_pml) == bench_case.n_faces
+        return
     if bench_case.kind == "trimesh":
         skip_larger_than(bench_case, "bunny", "the reference's winding flood fill runs on one core")
         vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np

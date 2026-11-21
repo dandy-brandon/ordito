@@ -233,6 +233,48 @@ def test_corner_normals_match_manifold3d(
     assert np.allclose(normals.numpy().reshape(-1, 3), corners_m3, rtol=0.0, atol=1e-6)
 
 
+@pytest.mark.parity(
+    "corner_normals",
+    "igl",
+    benchmarked=False,
+    reason="igl.per_corner_normals averages every face at the vertex whose normal is within the "
+    "threshold of the corner's own face, not a crease-bounded group: on sphere_irregular at 20 "
+    "degrees 1 063 of 2 988 corners differ by up to 0.45, so a timed row would race two answers",
+)
+@pytest.mark.parametrize("shape", ["unit_box", "cylinder", "saddle_graded"])
+@pytest.mark.parametrize("angle", [20.0, 45.0])
+def test_corner_normals_match_igl_where_the_rules_coincide(
+    request: pytest.FixtureRequest, device: str, shape: str, angle: float
+) -> None:
+    """
+    Class A at the **area** weighting, on inputs where igl's threshold rule makes crease groups.
+
+    ``igl.per_corner_normals(V, F, angle)`` gives corner ``(f, v)`` the area-weighted mean of the
+    faces at ``v`` whose normal lies within ``angle`` of face ``f``'s. That equals ordito's
+    crease-bounded group at ``crease_edges(angle)`` wherever "close to my face" is an equivalence
+    whose classes are contiguous around each vertex: flat facets meeting at sharp creases (the box;
+    the cylinder, whose side seams are creases at 20 degrees and smooth at 45) and a surface with
+    no crease at all (``saddle_graded``: vertex normals). Measured within 1.4e-7 on all six cases.
+    On a curved mesh with creases the two rules part: igl's is not transitive, so a corner can
+    average a face across a crease that ordito's walk stops at (the reason above).
+    """
+    if shape == "cylinder":
+        mesh_tm = tm.creation.cylinder(radius=0.3, height=3.0, sections=12)
+    else:
+        mesh_tm = request.getfixturevalue(shape)[0]
+    vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
+    creases_wp = od.seams.crease_edges(vertices_wp, faces_wp, angle)
+    if shape != "saddle_graded":
+        assert int(creases_wp.shape[0]) > 0  # non-vacuity: the walk stops at hard edges here
+    normals_wp = od.triangles.corner_normals(vertices_wp, faces_wp, creases_wp, weighting="area")
+    normals_igl = np.asarray(
+        igl.per_corner_normals(
+            np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64), faces_igl(mesh_tm), angle
+        )
+    )
+    assert np.allclose(normals_wp.numpy().reshape(-1, 3), normals_igl, rtol=1e-5, atol=1e-5)
+
+
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 @pytest.mark.parametrize("weighting", ["angle", "area"])
 def test_corner_normals_degenerate_crease_sets_are_exact(
@@ -999,8 +1041,8 @@ def test_points_to_barycentric_on_a_zero_area_triangle(device: str) -> None:
     benchmarked=False,
     reason="MeshLib's closestPointInTriangle is a four-vector primitive, so a row in the "
     "triangle_closest_point group would time a Python loop over the face buffer -- the "
-    "per-element rule. The group times ordito alone; the whole-mesh query is "
-    "closest_point_on_mesh, where scipy and open3d carry the rows.",
+    "per-element rule. The group's timed reference is trimesh's array form, compared in "
+    "test_closest_point_matches_trimesh.",
 )
 @pytest.mark.parity(
     "barycentric_to_points",
@@ -1084,6 +1126,41 @@ def test_soup_quantities_match_meshlib(request: pytest.FixtureRequest, mesh_name
             )
         ]
     assert np.allclose(points_wp.numpy(), interpolated_ml, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular"])
+@pytest.mark.parity("triangle_closest_point", "trimesh")
+def test_closest_point_matches_trimesh(request: pytest.FixtureRequest, mesh_name: str):
+    """
+    Class A: ``trimesh.triangles.closest_point`` projects each query onto its own triangle alike.
+
+    One query per face, the face's centroid pushed off by a Gaussian offset of 0.35, so the
+    queries land in every Voronoi region of the triangle (face, edges, corners), which is asserted
+    on the reference's answer before the comparison. The reference runs in ``float64`` on the
+    ``float32`` corners ordito reads.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float32).astype(np.float64)
+    faces_np = np.asarray(mesh_tm.faces)
+    triangles_np = vertices_np[faces_np]
+    rng = np.random.default_rng(35)
+    queries_np = triangles_np.mean(axis=1) + rng.standard_normal((faces_np.shape[0], 3)) * 0.35
+    queries_np = queries_np.astype(np.float32).astype(np.float64)
+
+    closest_tm = tm.triangles.closest_point(triangles_np, queries_np)
+    barycentric_tm = tm.triangles.points_to_barycentric(triangles_np, closest_tm)
+    on_corner = (barycentric_tm > 1.0 - 1e-6).any(axis=1)
+    on_edge = ~on_corner & (barycentric_tm < 1e-6).any(axis=1)
+    inside = (barycentric_tm > 1e-6).all(axis=1)
+    # Non-vacuity: every region of the projection is reached.
+    assert on_corner.any()
+    assert on_edge.any()
+    assert inside.any()
+
+    closest_wp = od.triangles.closest_point(
+        mesh_wp.points, mesh_wp.indices, points_to_warp(queries_np, mesh_wp.points.device)
+    )
+    assert np.allclose(closest_wp.numpy(), closest_tm, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular"])

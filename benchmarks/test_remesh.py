@@ -25,8 +25,9 @@ passes it feeds.
 References
 ----------
 ``subdivide`` has an exact open3d equivalent in ``subdivide_midpoint(1)`` (same 1:4 split, and it
-returns a new mesh so the shared one is reusable) and a trimesh one; ``subdivide_to_size`` has a
-trimesh counterpart. Open3D has no edge-flip pass and no isotropic remesher, and its
+returns a new mesh so the shared one is reusable), a trimesh one and VTK's
+``subdivide(1, "linear")``; ``subdivide_to_size`` has trimesh's and VTK's ``subdivide_adaptive``
+counterparts. Open3D has no edge-flip pass and no isotropic remesher, and its
 ``subdivide_midpoint`` takes an iteration count rather than a length target so it cannot split
 adaptively. trimesh has neither iterative path.
 
@@ -57,17 +58,19 @@ the MeshSet.
 
 ``quadric_decimate`` pairs with ``cluster_decimate`` because they solve one problem with opposite
 structures: clustering is three data-independent passes, the quadric method an iterated greedy loop
-whose pass count depends on how contested the rings are — exactly what triangle shape changes. All
-three serial references are here (``igl.decimate``, open3d, pymeshlab), the best-referenced port in
-the package. Note MeshLab's filter defaults to ``autoclean=True`` and deletes unreferenced vertices,
-so its MeshSet is rebuilt per round; and the *quality* comparison lives in ``tests/test_remesh.py``,
-where ordito measures a lower Hausdorff error than igl and open3d on ``icosphere(4)``. On
-``bunny`` and ``dragon`` at 0.1 and 0.01 its mean deviation is below MeshLib's, pymeshlab's and
-open3d's, and within 1.1x of the best at 0.5; its maximum ranges from below the best of them to 5x
-MeshLib's (``dragon`` at 0.5, where MeshLib's is unusually low). **That held only once it stopped
-freezing features by default** (every reference keeps none; at 30 degrees a scan could not go below
-about a tenth of its faces and its mean deviation was 3-60x the references') **and gained
-Garland-Heckbert's boundary planes**, without which rim vertices slid off the surface.
+whose pass count depends on how contested the rings are — exactly what triangle shape changes. The
+serial references are open3d, pymeshlab, pyvista and meshlib, the best-referenced port in the
+package; ``igl.decimate`` is timed beside them but collapses the shortest edge to its midpoint by
+default, so libigl's quadric counterpart, ``igl.qslim``, has a group of its own
+(``quadric_decimate_qslim``). Note MeshLab's filter defaults to ``autoclean=True`` and deletes
+unreferenced vertices, so its MeshSet is rebuilt per round; and the *quality* comparison lives in
+``tests/test_remesh.py``, where ordito measures a lower Hausdorff error than igl and open3d on
+``icosphere(4)``. On ``bunny`` and ``dragon`` at 0.1 and 0.01 its mean deviation is below MeshLib's,
+pymeshlab's and open3d's, and within 1.1x of the best at 0.5; its maximum ranges from below the best
+of them to 5x MeshLib's (``dragon`` at 0.5, where MeshLib's is unusually low). **That held only once
+it stopped freezing features by default** (every reference keeps none; at 30 degrees a scan could
+not go below about a tenth of its faces and its mean deviation was 3-60x the references') **and
+gained Garland-Heckbert's boundary planes**, without which rim vertices slid off the surface.
 
 **Ordito was long the slower one on that group, and the reason is the pass count rather than the
 per-pass work**: an independent set commits a fraction of the candidates, so reaching a tenth of the
@@ -147,7 +150,7 @@ _ROUNDS = 3
 
 
 @pytest.mark.benchmark(group="subdivide")
-@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pytorch3d", "manifold3d")
+@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pytorch3d", "manifold3d", "pyvista")
 def test_subdivide(bench_case: BenchCase) -> None:
     """
     Exactly 4x the faces in one pass: the module's clean throughput baseline.
@@ -179,6 +182,17 @@ def test_subdivide(bench_case: BenchCase) -> None:
     ``Meshes`` build, which is cheap next to a 4x face expansion.
     """
     skip_larger_than(bench_case, "dragon", "a 1:4 subdivision above dragon exceeds memory")
+    if bench_case.kind == "pyvista":
+        # ``vtkLinearSubdivisionFilter``: the same split, returned as a new ``PolyData``.
+        if bench_case.mesh_name == "bunny_decimated":
+            pytest.skip(
+                "vtkLinearSubdivisionFilter returns an empty mesh ('Subdivision failed') on "
+                "bunny_decimated, whose duplicated faces leave it not edge-manifold"
+            )
+        mesh_pv = bench_case.mesh_pv
+        subdivided_pv = bench_case.run(lambda: mesh_pv.subdivide(1, "linear"))
+        assert subdivided_pv.n_cells == 4 * bench_case.n_faces
+        return
     if bench_case.kind == "manifold3d":
         # ``refine(2)``: the same four triangles a face, then the Morton sort of the result.
         manifold_m3 = bench_case.manifold_m3
@@ -208,7 +222,7 @@ def test_subdivide(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="subdivide_loop")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("ordito", "igl", "open3d")
+@pytest.mark.benchlibs("ordito", "igl", "open3d", "pymeshlab", "pyvista")
 def test_subdivide_loop(bench_case: BenchCase) -> None:
     """
     Loop subdivision: the same 1:4 split as ``subdivide``, with smooth stencils not midpoints.
@@ -232,7 +246,14 @@ def test_subdivide_loop(bench_case: BenchCase) -> None:
     where ``igl::loop`` indexes it to ``n_verts``. That is exactly the hazard the ``scale`` axis
     exists for.
 
-    ``trimesh.remesh.subdivide_loop`` gets no row either, for two independent reasons: it uses
+    MeshLab's ``meshing_surface_subdivision_loop`` and VTK's ``subdivide(1, "loop")`` use Loop's
+    original trigonometric ``beta``, so they place the even vertices elsewhere (up to 0.04 on
+    ``sphere_irregular``); with the even vertices re-weighted to that ``beta`` the meshes are
+    equal (``tests/test_remesh.py``, Class B), so the two rows time the same stencil work.
+    MeshLab's ``threshold`` is ``PureValue(0)``, since its 1 % default skips short edges, and its
+    MeshSet is rebuilt inside the row because the filter rewrites it.
+
+    ``trimesh.remesh.subdivide_loop`` gets no row, for two independent reasons: it uses
     Loop's *original* trigonometric ``beta``, which agrees with Warren's exactly at valence 6 and
     differs elsewhere, so it could not be a parity oracle; and it divides by the neighbour count, so
     its own ``assert np.isfinite`` fails on any mesh with an unreferenced vertex. ordito keeps an
@@ -251,6 +272,19 @@ def test_subdivide_loop(bench_case: BenchCase) -> None:
         )
         assert faces_loop_igl.shape[0] == 4 * bench_case.n_faces
         assert np.isfinite(vertices_loop_igl).all()
+    elif bench_case.kind == "pymeshlab":
+        new_meshset_pml = bench_case.new_meshset_pml
+
+        def loop_pml() -> int:
+            meshset_pml = new_meshset_pml()
+            meshset_pml.meshing_surface_subdivision_loop(iterations=1, threshold=ml.PureValue(0.0))
+            return meshset_pml.current_mesh().face_number()
+
+        assert bench_case.run(loop_pml, rounds=3) == 4 * bench_case.n_faces
+    elif bench_case.kind == "pyvista":
+        mesh_pv = bench_case.mesh_pv
+        subdivided_pv = bench_case.run(lambda: mesh_pv.subdivide(1, "loop"), rounds=3)
+        assert subdivided_pv.n_cells == 4 * bench_case.n_faces
     else:  # open3d returns a new mesh, so the shared one is reusable
         mesh_o3d = bench_case.mesh_o3d
         n_faces = bench_case.n_faces
@@ -268,7 +302,7 @@ def test_subdivide_loop(bench_case: BenchCase) -> None:
     "icosphere(2) at 0.15 the two give 2 400 and 3 200 triangles, different meshes",
 )
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("ordito", "trimesh", "pymeshlab", "meshlib", "manifold3d")
+@pytest.mark.benchlibs("ordito", "trimesh", "pymeshlab", "meshlib", "manifold3d", "pyvista")
 @pytest.mark.parametrize("split_fraction", _SPLIT_FRACTIONS)
 def test_subdivide_to_size(bench_case: BenchCase, split_fraction: float) -> None:
     """
@@ -282,8 +316,19 @@ def test_subdivide_to_size(bench_case: BenchCase, split_fraction: float) -> None
     ``maxDeviationAfterFlip`` from its default of 1.0 -- an *absolute* length, so leaving it would
     make the flip gate depend on the fixture's units. It mutates in place, so its mesh is rebuilt
     inside the timed callable.
+
+    VTK's ``subdivide_adaptive`` splits by the same rule and lands on the same mesh
+    (``tests/test_remesh.py``, Class A); it returns a new ``PolyData``, so the shared one serves
+    every round.
     """
     max_edge = split_fraction * bench_case.mean_edge
+    if bench_case.kind == "pyvista":
+        mesh_pv = bench_case.mesh_pv
+        subdivided_pv = bench_case.run(
+            lambda: mesh_pv.subdivide_adaptive(max_edge_len=max_edge), rounds=_ROUNDS
+        )
+        assert subdivided_pv.n_cells >= bench_case.n_faces
+        return
     if bench_case.kind == "manifold3d":
         # ``refine_to_length``: each edge split once into ``floor(length / max_edge)`` pieces and
         # each face tiled to match, where trimesh's semantics bisect until short enough.
@@ -881,6 +926,43 @@ def test_quadric_decimate(bench_case: BenchCase, target_ratio: float) -> None:
             rounds=_ROUNDS,
         )
         assert len(simplified_o3d.triangles) > 0
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    _decimated_vertices, decimated_faces = bench_case.run(
+        lambda: od.remesh.quadric_decimate(vertices, faces, target_faces=target_faces),
+        rounds=_ROUNDS,
+    )
+    assert decimated_faces.size // 3 <= bench_case.n_faces
+
+
+@pytest.mark.benchmark(group="quadric_decimate_qslim")
+@pytest.mark.censusskip(
+    "saddle", reason="the ordito row is test_quadric_decimate's call, counted there"
+)
+@pytest.mark.censusskip(
+    "saddle_graded", reason="the ordito row is test_quadric_decimate's call, counted there"
+)
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito", "igl")
+@pytest.mark.parametrize("target_ratio", _QUADRIC_RATIOS)
+def test_quadric_decimate_qslim(bench_case: BenchCase, target_ratio: float) -> None:
+    """
+    ``quadric_decimate`` against ``igl.qslim``, libigl's Garland-Heckbert decimator.
+
+    A group of its own beside ``quadric_decimate`` because igl's row there times ``igl.decimate``,
+    whose default cost is the shortest edge collapsed to its midpoint; ``qslim`` is the quadric
+    method, and on ``icosphere(4)`` ordito's deviation is 0.76-0.99x its own
+    (``tests/test_remesh.py``). It takes ``int32`` faces in Fortran order, converted outside the
+    timed callable, and returns a new mesh, so its input is reusable.
+    """
+    target_faces = max(4, int(target_ratio * bench_case.n_faces))
+    if bench_case.kind == "igl":
+        vertices_np = np.asfortranarray(bench_case.vertices_np, dtype=np.float64)
+        faces_np = np.asfortranarray(bench_case.faces_np, dtype=np.int32)
+        result_igl = bench_case.run(
+            lambda: igl.qslim(vertices_np, faces_np, target_faces), rounds=_ROUNDS
+        )
+        assert np.asarray(result_igl[1]).shape[0] > 0
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     _decimated_vertices, decimated_faces = bench_case.run(

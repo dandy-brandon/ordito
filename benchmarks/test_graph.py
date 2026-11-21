@@ -62,6 +62,7 @@ import numpy as np
 import pymeshlab as ml
 import pytest
 import scipy.sparse as sp
+import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
 
@@ -111,7 +112,7 @@ def test_edges_to_csr(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="edges_to_neighbor_lists")
-@pytest.mark.benchlibs("ordito", "igl")
+@pytest.mark.benchlibs("ordito", "igl", "trimesh")
 def test_edges_to_neighbor_lists(bench_case: BenchCase) -> None:
     """
     Packed per-vertex neighbour lists from the unique edges: a degree count, a scan and a scatter.
@@ -121,7 +122,20 @@ def test_edges_to_neighbor_lists(bench_case: BenchCase) -> None:
     Python list of lists (``tests/test_graph.py::test_edges_to_neighbor_lists_matches_igl``); it
     reads the faces directly, so its row includes the edge discovery ordito's input already holds.
     Capped at ``bunny``, past which building one Python list per vertex dominates.
+
+    ``trimesh.graph.neighbors`` takes the same unique edges ordito's row does (as NumPy, built
+    outside the timed callable) and fills one Python ``set`` per node in a per-edge loop, so it is
+    capped at ``bunny`` too.
     """
+    if bench_case.kind == "trimesh":
+        skip_larger_than(bench_case, "bunny", "the reference loops over the edges in Python")
+        edges_np = tm.Trimesh(
+            bench_case.vertices_np, bench_case.faces_np, process=False
+        ).edges_unique
+        n_vertices = bench_case.n_vertices
+        neighbors_tm = bench_case.run(lambda: tm.graph.neighbors(edges_np, max_index=n_vertices))
+        assert len(neighbors_tm) == n_vertices
+        return
     if bench_case.kind == "igl":
         skip_larger_than(bench_case, "bunny", "the reference builds one Python list per vertex")
         faces_igl = np.ascontiguousarray(bench_case.faces_np, dtype=np.int64)
@@ -480,7 +494,7 @@ def _source_field_np(bench_case: BenchCase) -> np.ndarray:
 
 
 @pytest.mark.benchmark(group="shortest_path_envelope")
-@pytest.mark.benchlibs("ordito", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "pymeshlab", "igl")
 def test_shortest_path_envelope(bench_case: BenchCase) -> None:
     """
     Weighted relaxation to the shortest-path envelope: pass count is the graph diameter.
@@ -490,9 +504,21 @@ def test_shortest_path_envelope(bench_case: BenchCase) -> None:
     region -- neither says anything new at larger scale that the two smallest meshes do not. The
     weighted adjacency is an input and is built outside the timed callable, like the unweighted
     one the labelling groups take.
+
+    ``igl.dijkstra(V, VV, 0, set())`` is the same single-source distance from vertex 0, a heap
+    walk over Euclidean edge lengths it takes from ``V``; its adjacency lists are an input, built
+    outside the timed callable like ordito's weighted adjacency.
     """
     skip_larger_than(bench_case, "bunny_decimated", "a source-seeded relaxation is diameter-deep")
     n_vertices = bench_case.n_vertices
+    if bench_case.kind == "igl":
+        vertices_np = bench_case.vertices_np
+        adjacency_igl = igl.adjacency_list(np.ascontiguousarray(bench_case.faces_np, np.int64))
+        distance_igl, _previous_igl = bench_case.run(
+            lambda: igl.dijkstra(vertices_np, adjacency_igl, 0, set())
+        )
+        assert distance_igl.shape == (len(adjacency_igl),)
+        return
     if bench_case.kind == "pymeshlab":
 
         def saturate_pml() -> int:

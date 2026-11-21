@@ -8,7 +8,9 @@ import igl
 import numpy as np
 import open3d as o3d
 import pytest
+import pytorch3d.structures as p3d_structures
 import pyvista as pv
+import torch
 import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
@@ -40,7 +42,7 @@ def _bounds_np(lower_wp: wp.vec3, upper_wp: wp.vec3) -> np.ndarray:
 
 
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular"])
-@pytest.mark.parity("aabb", "trimesh", "open3d", "igl", "meshlib", "pyvista")
+@pytest.mark.parity("aabb", "trimesh", "open3d", "igl", "meshlib", "pyvista", "pytorch3d")
 @pytest.mark.parity("enclosing_diagonal", "pyvista", "igl")
 def test_aabb_and_diagonal_match_the_references(
     request: pytest.FixtureRequest, mesh_name: str
@@ -48,11 +50,11 @@ def test_aabb_and_diagonal_match_the_references(
     """
     The axis-aligned bounding box against five references, and its diagonal against two.
 
-    Box: Class A on trimesh, open3d, MeshLib and pyvista, Class B on igl. Trivial to compute and
-    trivial to get subtly wrong -- a reduction that seeds its accumulator at zero rather than at
-    +/-inf returns a box clamped to the origin, which is correct for any mesh straddling it and
-    wrong for every mesh that does not. Every fixture here is translated away from the origin, so
-    that bug would show.
+    Box: Class A on trimesh, open3d, MeshLib and pyvista, Class B on igl and pytorch3d. Trivial to
+    compute and trivial to get subtly wrong -- a reduction that seeds its accumulator at zero
+    rather than at +/-inf returns a box clamped to the origin, which is correct for any mesh
+    straddling it and wrong for every mesh that does not. Every fixture here is translated away
+    from the origin, so that bug would show.
 
     The benchmark's trimesh row is the uncached ``vstack((v.min(0), v.max(0)))`` formula behind
     ``Trimesh.bounds`` rather than the cached property, and that formula is what is compared here.
@@ -67,6 +69,9 @@ def test_aabb_and_diagonal_match_the_references(
     *topology* as well as the points, so on a mesh with unreferenced vertices it would box only the
     referenced ones, where ordito's takes the point buffer alone. Every fixture here references
     every vertex, so the two coincide.
+
+    pytorch3d's ``Pointclouds.get_bounding_boxes`` is batched and per axis: ``(1, 3, 2)``, one
+    ``(min, max)`` pair per axis, so the transform is to drop the batch and transpose.
 
     pyvista's ``DataSet.bounds`` needs one layout transform: it is **interleaved per axis** as
     ``(xmin, xmax, ymin, ymax, zmin, zmax)``, so it is reshaped to ``(3, 2)`` and transposed.
@@ -111,6 +116,12 @@ def test_aabb_and_diagonal_match_the_references(
     assert np.allclose(bounds_wp, bounds_pv, rtol=1e-5, atol=1e-5)
     # The bbox midpoint, which is what pyvista's ``center`` is -- not the surface centroid.
     assert np.allclose(np.asarray(mesh_pv.center), bounds_pv.mean(axis=0), rtol=1e-5, atol=1e-5)
+
+    boxes_p3d = p3d_structures.Pointclouds(
+        [torch.as_tensor(np.asarray(mesh_tm.vertices, dtype=np.float32))]
+    ).get_bounding_boxes()
+    assert tuple(boxes_p3d.shape) == (1, 3, 2)
+    assert np.allclose(bounds_wp, boxes_p3d[0].numpy().T, rtol=1e-5, atol=1e-5)
 
     diagonal_wp = od.bounds.enclosing_diagonal(mesh_wp.points)
     assert np.isclose(diagonal_wp, float(mesh_pv.length), rtol=1e-5, atol=1e-5)

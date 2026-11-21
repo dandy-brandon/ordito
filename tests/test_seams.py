@@ -25,6 +25,7 @@ from tests.comparisons import (
 )
 from tests.conftest import MESHES
 from tests.conversions import (
+    faces_igl,
     meshlib_bitset_to_numpy,
     meshlib_to_trimesh,
     numpy_to_warp,
@@ -191,6 +192,28 @@ def test_crease_edges_matches_pyvista(
         mesh_tm.vertices,
     )
     assert rows_wp == {(min(a, b), max(a, b)) for a, b in edges_pv.tolist()}
+
+
+@pytest.mark.parametrize(("mesh_name", "angle"), _CREASE_CASES)
+@pytest.mark.parity("crease_edges", "igl")
+def test_crease_edges_matches_igl(
+    request: pytest.FixtureRequest, mesh_name: str, angle: float
+) -> None:
+    """
+    Class B (radians, rows sorted): ``igl.sharp_edges`` is the same strict dihedral threshold.
+
+    igl flags an edge when ``|dihedral - pi| > angle`` for a pair of its faces, with the angle in
+    **radians**, and returns each edge as a vertex pair in its unique-edge order; a boundary edge
+    has one face and is never sharp, as with ordito's ``include_boundary=False``. So the named
+    transforms are the unit and the row order, the sets compared as undirected pairs. igl reads
+    the fixture's coordinates rounded to ``float32``, as ordito does, so both judge one geometry.
+    """
+    mesh_tm, rows_wp = _crease_rows(request, mesh_name, angle)
+    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float32).astype(np.float64)
+    sharp_igl = np.asarray(
+        igl.sharp_edges(vertices_np, faces_igl(mesh_tm), float(np.radians(angle)))
+    )
+    assert rows_wp == {(min(a, b), max(a, b)) for a, b in sharp_igl.tolist()}
 
 
 def test_crease_edges_include_boundary(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
@@ -622,6 +645,53 @@ def test_cut_along_edges_matches_pymeshlab_and_igl(
         dtype=bool,
     )
     assert np.asarray(igl.cut_mesh(vertices_np, faces_np, opposite_mask_igl)[0]).shape[0] == 28
+
+
+@pytest.mark.parametrize(("mesh_name", "angle"), _CREASE_CASES)
+@pytest.mark.parity(
+    "cut_along_edges",
+    "pyvista",
+    benchmarked=False,
+    reason=(
+        "compute_normals(split_vertices=True) finds its own feature edges and computes point "
+        "normals in the same pass, so a row would time crease_edges plus normals against a cut "
+        "that is handed its edges"
+    ),
+)
+def test_cut_along_crease_edges_matches_pyvista(
+    request: pytest.FixtureRequest, mesh_name: str, angle: float
+) -> None:
+    """
+    Class B (corner partition): VTK's ``compute_normals(split_vertices=True)`` is this composite.
+
+    ``vtkPolyDataNormals`` with splitting on duplicates a vertex across every edge whose faces'
+    normals part by more than ``feature_angle``, the crease rule, so
+    ``cut_along_edges(crease_edges(angle))`` is the same mesh. With face reordering and orienting
+    off it keeps the face order but numbers its points its own way, so the named transform reads
+    each output as the partition of the ``3 * n_faces`` corners by output vertex, which must be
+    the same partition, with every corner at its input position.
+    The vertex counts are compared too, and the cut must split something (non-vacuity).
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    creases_wp = od.seams.crease_edges(mesh_wp.points, mesh_wp.indices, angle=angle)
+    vertices_wp, faces_wp = od.seams.cut_along_edges(mesh_wp.points, mesh_wp.indices, creases_wp)
+
+    split_pv = trimesh_to_pyvista(mesh_tm).compute_normals(
+        split_vertices=True,
+        feature_angle=angle,
+        consistent_normals=False,
+        auto_orient_normals=False,
+        non_manifold_traversal=False,
+    )
+    corners_pv = split_pv.faces.reshape(-1, 4)[:, 1:].reshape(-1)
+    assert split_pv.n_points > len(mesh_tm.vertices)  # non-vacuity: the split duplicated vertices
+    assert split_pv.n_points == vertices_wp.shape[0]
+    assert same_partition(faces_wp.numpy(), corners_pv)
+    corner_positions_np = mesh_tm.vertices[mesh_tm.faces.reshape(-1)]
+    assert np.array_equal(np.asarray(split_pv.points)[corners_pv], corner_positions_np)
+    assert np.allclose(
+        vertices_wp.numpy()[faces_wp.numpy()], corner_positions_np, rtol=0.0, atol=1e-6
+    )
 
 
 def _input_corner_vertices(

@@ -81,14 +81,16 @@ is ``polyline_point_distance``'s question, which already carries its rows); **``
 ``polyline_triangulate``, whose sibling ``triangulate_polygon`` carries trimesh while the clipper
 itself carries meshlib and pyvista.
 
-trimesh, libigl and open3d are unregistered, each for its own reason: trimesh models polylines as
-``Path3D`` entities and its only simplification is a colinear-run merge; libigl's ``igl.upsample``
-is *mesh* subdivision and its C++ ``ramer_douglas_peucker`` is not bound; and open3d's ``LineSet``
+trimesh carries one group, ``polyline_resample``: ``trimesh.path.traversal.resample_path`` is the
+same arc-length resampling, while its only simplification is a colinear-run merge. libigl carries
+``polyline_simplify`` through ``igl.ramer_douglas_peucker``, the same algorithm at the same
+tolerance (its ``igl.upsample`` is *mesh* subdivision). open3d is unregistered: its ``LineSet``
 stores unordered segments with no ordering, length, resampling or simplification at all.
 """
 
 from __future__ import annotations
 
+import igl
 import manifold3d as m3
 import numpy as np
 import pytest
@@ -97,6 +99,7 @@ import shapely.geometry as sg
 import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
+from trimesh.path import traversal as tm_traversal
 
 import ordito as od
 from conftest import BenchCase, BenchLibrary, skip_larger_than, std_points_ml
@@ -429,13 +432,21 @@ def test_polyline_angles(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="cumulative_arc_length")
 @pytest.mark.benchaxis("polyline")
-@pytest.mark.benchlibs("ordito")
+@pytest.mark.benchlibs("ordito", "pyvista")
 def test_cumulative_arc_length(bench_case: BenchCase) -> None:
     """
     The arc-length table every resampler reads: one length per segment and one float32 scan.
 
     The scan is CUB's arrival-order one, as every ordito row runs with determinism off.
+    **pyvista**'s ``compute_arc_length`` writes the same table as a point field (the
+    ``polyline_length`` row reads its last entry), compared entry for entry in
+    ``tests/test_polyline.py``.
     """
+    if bench_case.kind == "pyvista":
+        line_pv = _polyline_pv(bench_case)
+        arc_pv = bench_case.run(line_pv.compute_arc_length)
+        assert np.asarray(arc_pv["arc_length"]).shape == (line_pv.n_points,)
+        return
     polyline = _polyline_wp(bench_case)
     table = bench_case.run(lambda: od.polyline.cumulative_arc_length(polyline))
     assert table.size == polyline.size
@@ -573,7 +584,7 @@ def test_downsample_polyline(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="polyline_simplify")
 @pytest.mark.benchaxis("polyline")
-@pytest.mark.benchlibs("ordito", "meshlib", "pyvista")
+@pytest.mark.benchlibs("ordito", "meshlib", "pyvista", "igl")
 @pytest.mark.parametrize("tolerance_fraction", _SIMPLIFY_FRACTIONS)
 def test_simplify_polyline(bench_case: BenchCase, tolerance_fraction: float) -> None:
     """
@@ -584,9 +595,13 @@ def test_simplify_polyline(bench_case: BenchCase, tolerance_fraction: float) -> 
     longest rim. Read the two ``saddle`` rows as floor rows, the graph capture being a large share
     of a sub-millisecond call, rather than as outliers.
 
-    Neither reference is Ramer-Douglas-Peucker, and **neither is driven by ordito's tolerance**,
-    which is the thing to know before reading the ratio: both are given the *reduction* ordito's
-    tolerance produces, so the rows price three ways of removing the same number of points.
+    **libigl**'s ``ramer_douglas_peucker`` is the same algorithm at the same tolerance (one thread,
+    recursive), and the Class A oracle in ``tests/test_polyline.py``.
+
+    The other two references are not Ramer-Douglas-Peucker, and **neither is driven by ordito's
+    tolerance**, which is the thing to know before reading their ratios: both are given the
+    *reduction* ordito's tolerance produces, so the rows price three ways of removing the same
+    number of points.
 
     Driving them by their own error parameter was rejected on a measurement.
     ``decimatePolyline``'s ``maxError`` is a collapse cost, **not** a deviation bound: on a random
@@ -619,6 +634,13 @@ def test_simplify_polyline(bench_case: BenchCase, tolerance_fraction: float) -> 
             return int(mm.decimatePolyline(polyline_ml, settings_ml).vertsDeleted)
 
         assert bench_case.run(simplify_ml) >= 0
+        return
+    if bench_case.kind == "igl":
+        polyline_np = _polyline_np(bench_case)
+        _simplified_igl, kept_igl = bench_case.run(
+            lambda: igl.ramer_douglas_peucker(polyline_np, tol)
+        )
+        assert kept_igl.size >= 2
         return
     if bench_case.kind == "pyvista":
         line_pv = _polyline_pv(bench_case)
@@ -717,6 +739,30 @@ def test_downsample_closed_polyline(bench_case: BenchCase) -> None:
     polyline = _polyline_wp(bench_case)
     sparse = bench_case.run(lambda: od.polyline.polyline_downsample(polyline, step, closed=True))
     assert sparse.size >= 2
+
+
+@pytest.mark.benchmark(group="polyline_resample")
+@pytest.mark.benchaxis("polyline")
+@pytest.mark.benchlibs("ordito", "trimesh")
+def test_resample_polyline(bench_case: BenchCase) -> None:
+    """
+    ``polyline_resample`` to the input's own point count, on the open polyline.
+
+    **trimesh**'s ``resample_path(points, count=n)`` is the same arc-length resampling in NumPy,
+    and the Class A oracle in ``tests/test_polyline.py``.
+    """
+    if bench_case.kind == "trimesh":
+        polyline_np = _polyline_np(bench_case)
+        n_points = polyline_np.shape[0]
+        resampled_tm = bench_case.run(
+            lambda: tm_traversal.resample_path(polyline_np, count=n_points)
+        )
+        assert resampled_tm.shape == (n_points, 3)
+        return
+    polyline = _polyline_wp(bench_case)
+    n_points = polyline.size
+    resampled = bench_case.run(lambda: od.polyline.polyline_resample(polyline, n_points))
+    assert resampled.size == n_points
 
 
 @pytest.mark.benchmark(group="polyline_resample_closed")

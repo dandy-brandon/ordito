@@ -7,6 +7,7 @@ from collections.abc import Callable, Sequence
 from typing import Any, Literal, TypedDict, cast
 
 import igl
+import manifold3d as m3
 import numpy as np
 import open3d as o3d
 import pymeshlab as ml
@@ -583,6 +584,65 @@ def test_remove_unreferenced_vertices_matches_pymeshfix(device: str, placement: 
     assert np.allclose(kept_wp.numpy().astype(np.float64), kept_pmf, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parity("remove_unreferenced_vertices", "pymeshlab", "pyvista", "trimesh")
+def test_remove_unreferenced_vertices_matches_pymeshlab_pyvista_and_trimesh(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], device: str
+) -> None:
+    """
+    Class A on both compacted buffers, in order, against three more compactions.
+
+    MeshLab's ``meshing_remove_unreferenced_vertices``, VTK's ``remove_unused_points`` and
+    trimesh's ``Trimesh.remove_unreferenced_vertices`` all keep the survivors in input order, as
+    ordito does, so the vertex buffers compare row for row and the face buffers exactly. The
+    input orphans an interior vertex of ``sphere_irregular`` (its faces dropped) and inserts four
+    unreferenced points at the front, the middle and the end of the buffer: a compaction that kept
+    a prefix, or that sized its buffer by ``F.max() + 1``, fails on one of them. 500 + 4 vertices
+    come back as 499 on every side.
+    """
+    mesh_tm, _mesh_wp = sphere_irregular
+    orphan = 7
+    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
+    faces_np = np.asarray(mesh_tm.faces, dtype=np.int64)
+    faces_np = faces_np[~(faces_np == orphan).any(axis=1)]
+    spares_np = np.random.default_rng(2).normal(size=(4, 3))
+    slots = [0, 250, 250, vertices_np.shape[0]]
+    padded_np = np.insert(vertices_np, slots, spares_np, axis=0)
+    shift_np = np.searchsorted(np.asarray(slots), np.arange(vertices_np.shape[0]), side="right")
+    padded_faces_np = (faces_np + shift_np[faces_np]).astype(np.int32)
+    assert np.array_equal(padded_np[padded_faces_np], vertices_np[faces_np])
+
+    vertices_wp, faces_wp = numpy_to_warp(padded_np, padded_faces_np, device)
+    kept_wp, kept_faces_wp, _remap_wp = od.repair.remove_unreferenced_vertices(
+        vertices_wp, faces_wp
+    )
+
+    meshset_pml = ml.MeshSet()
+    meshset_pml.add_mesh(ml.Mesh(padded_np, padded_faces_np))
+    meshset_pml.meshing_remove_unreferenced_vertices()
+    vertices_pml = meshset_pml.current_mesh().vertex_matrix()
+    faces_pml = meshset_pml.current_mesh().face_matrix()
+
+    kept_pv = trimesh_to_pyvista(
+        tm.Trimesh(padded_np, padded_faces_np, process=False)
+    ).remove_unused_points()
+    vertices_pv, faces_pv = np.asarray(kept_pv.points), np.asarray(kept_pv.regular_faces)
+
+    kept_tm = tm.Trimesh(padded_np, padded_faces_np, process=False)
+    kept_tm.remove_unreferenced_vertices()
+    vertices_tm, faces_tm = np.asarray(kept_tm.vertices), np.asarray(kept_tm.faces)
+
+    n_kept = vertices_np.shape[0] - 1
+    assert kept_wp.size == n_kept
+    for vertices_ref, faces_ref in (
+        (vertices_pml, faces_pml),
+        (vertices_pv, faces_pv),
+        (vertices_tm, faces_tm),
+    ):
+        assert vertices_ref.shape[0] == n_kept  # the reference really compacted
+        assert np.allclose(kept_wp.numpy(), vertices_ref, rtol=1e-5, atol=1e-5)
+        assert np.array_equal(kept_faces_wp.numpy().reshape(-1, 3), faces_ref)
+
+
 _DUPLICATE_VERTEX_CASES = {
     # Two exactly coincident positions, no faces.
     "exact": ([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]], None, 0.0),
@@ -597,6 +657,7 @@ _DUPLICATE_VERTEX_CASES = {
 }
 
 
+@pytest.mark.parity("remove_duplicated_vertices", "igl")
 @pytest.mark.parametrize("case", list(_DUPLICATE_VERTEX_CASES))
 def test_remove_duplicated_vertices_matches_igl(device: str, case: str) -> None:
     """
@@ -609,6 +670,9 @@ def test_remove_duplicated_vertices_matches_igl(device: str, case: str) -> None:
     """
     vertices_list, faces_list, epsilon = _DUPLICATE_VERTEX_CASES[case]
     vertices_np = np.array(vertices_list, dtype=np.float64)
+    # Non-vacuity: the reference itself merges, so what is compared below is a real weld.
+    survivors_igl = np.asarray(igl.remove_duplicate_vertices(vertices_np, epsilon)[0])
+    assert 0 < survivors_igl.shape[0] < vertices_np.shape[0]
     if faces_list is None:
         vertices_wp = points_to_warp(vertices_np, device)
         sv_wp, _, svj_wp, _ = od.repair.remove_duplicated_vertices(
@@ -708,7 +772,9 @@ def test_split_vertices_by_corner_values_matches_a_numpy_oracle(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh], dtype: type
 ) -> None:
     """
-    Not a library comparison: no reference splits vertices by a per-corner field.
+    Not a library comparison: no reference splits by an ``int32`` field or returns the provenance.
+
+    MeshLab splits by a ``vec2`` texcoord, compared in the next test.
 
     The oracle is the definition: one output vertex per distinct ``(vertex, value)`` pair, ordered
     by vertex. The split mesh carries each corner's own value back, sits at its sources'
@@ -747,6 +813,62 @@ def test_split_vertices_by_corner_values_matches_a_numpy_oracle(
     assert welded_v.size == new_v.size
     position_v, _index, _inverse, _faces = od.repair.remove_duplicated_vertices(new_v, new_f, 1e-7)
     assert position_v.size == mesh_wp.points.size
+
+
+@pytest.mark.parity("split_vertices_by_corner_values", "pymeshlab")
+def test_split_vertices_by_corner_values_matches_pymeshlab(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Class A: ``meshing_vertex_attribute_seam(texcoordmode="Wedge")`` splits by corner texcoords.
+
+    MeshLab makes one vertex per distinct ``(vertex, wedge texcoord)`` pair and copies the
+    texcoord onto it, as ordito does, but numbers the copies its own way, and the copies of one
+    vertex share a position, so neither ``meshes_allclose`` nor a lexsort can match them. Each
+    output vertex is named by its pair instead -- its source vertex (ordito's provenance; MeshLab's
+    copies sit exactly on an input position) and its texcoord -- and the two meshes compare as the
+    same set of names and the same faces over them, in the same face order. The two-chart atlas
+    splits 500 vertices into 552 on both sides; ``texcoordmode="Vertex"`` would split none.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    device = mesh_wp.points.device
+    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
+    faces_np = np.asarray(mesh_tm.faces, dtype=np.int32)
+    corners_np = vertices_np[faces_np]
+    chart_np = np.repeat(corners_np.mean(axis=1)[:, 0] > vertices_np[:, 0].mean(), 3)
+    uv_np = (corners_np.reshape(-1, 3)[:, :2] * 0.25 + chart_np[:, None]).astype(np.float32)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    new_v, new_f, new_uv, provenance = od.repair.split_vertices_by_corner_values(
+        vertices_wp, faces_wp, wp.array(uv_np, dtype=wp.vec2, device=device), return_provenance=True
+    )
+
+    meshset_pml = ml.MeshSet()
+    meshset_pml.add_mesh(
+        ml.Mesh(vertices_np, faces_np, w_tex_coords_matrix=uv_np.astype(np.float64))
+    )
+    meshset_pml.meshing_vertex_attribute_seam(texcoordmode="Wedge")
+    split_pml = meshset_pml.current_mesh()
+    positions_pml = split_pml.vertex_matrix()
+    source_pml = np.asarray(KDTree(vertices_np).query(positions_pml)[1], dtype=np.int64)
+    assert np.array_equal(vertices_np[source_pml], positions_pml)
+    names_pml = [
+        (int(source), tuple(uv.tolist()))
+        for source, uv in zip(
+            source_pml, split_pml.vertex_tex_coord_matrix().astype(np.float32), strict=True
+        )
+    ]
+    names_wp = [
+        (int(source), tuple(uv.tolist()))
+        for source, uv in zip(provenance.vertex_index.numpy(), new_uv.numpy(), strict=True)
+    ]
+
+    assert vertices_np.shape[0] < len(names_pml) == len(set(names_pml))  # a real split
+    assert sorted(names_wp) == sorted(names_pml)
+    number = {name: index for index, name in enumerate(sorted(names_wp))}
+    faces_named_wp = np.array([number[names_wp[i]] for i in new_f.numpy()])
+    faces_named_pml = np.array([number[names_pml[i]] for i in split_pml.face_matrix().ravel()])
+    assert np.array_equal(faces_named_wp, faces_named_pml)
+    assert np.allclose(new_v.numpy(), vertices_np[provenance.vertex_index.numpy()], atol=1e-6)
 
 
 @pytest.mark.parametrize("dtype", [wp.vec3, wp.int32])
@@ -1257,6 +1379,94 @@ def test_remove_duplicated_vertices_welds_a_soup_like_the_references(
     assert len(coincident_pv) == 0
 
 
+def _soup_of(mesh_tm: tm.Trimesh) -> tuple[np.ndarray, np.ndarray]:
+    """Unweld ``mesh_tm`` so every face owns its three vertices: corner ``i`` is vertex ``i``."""
+    soup_np = np.ascontiguousarray(mesh_tm.vertices[mesh_tm.faces].reshape(-1, 3))
+    return soup_np, np.arange(soup_np.shape[0], dtype=np.int32).reshape(-1, 3)
+
+
+@pytest.mark.parametrize("epsilon", [0.0, 1e-6])
+@pytest.mark.parity("remove_duplicated_vertices", "manifold3d")
+def test_remove_duplicated_vertices_welds_a_soup_like_manifold3d(
+    device: str, epsilon: float, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
+) -> None:
+    """
+    Class A: the weld's partition of the soup, and the welded mesh up to numbering.
+
+    ``Mesh.merge`` does not rewrite the mesh: it fills ``merge_from_vert`` / ``merge_to_vert``, a
+    map from each merged vertex to the one it joins, and welds only vertices on open edges -- which
+    on a soup is every vertex. Following that map to its fixpoint gives each soup position a class,
+    compared with ordito's inverse map as a partition (``od.equality.partitions_equal``), and the
+    faces relabelled by it give the welded mesh, compared with ordito's through
+    ``od.equality.meshes_allclose`` (Manifold names a class by a member it picks, ordito by its
+    first occurrence). ``tolerance`` is the same ``epsilon`` on both sides. Measured: 2 988 soup
+    positions, 2 488 merged, 500 classes, at both values.
+    """
+    mesh_tm, _mesh_wp = sphere_irregular
+    soup_np, faces_np = _soup_of(mesh_tm)
+    vertices_wp, faces_wp = numpy_to_warp(soup_np, faces_np, device)
+    unique_wp, _indices_wp, inverse_wp, welded_faces_wp = od.repair.remove_duplicated_vertices(
+        vertices_wp, faces_wp, epsilon
+    )
+
+    mesh_m3 = m3.Mesh(
+        vert_properties=soup_np.astype(np.float32),
+        tri_verts=faces_np.astype(np.uint32),
+        tolerance=epsilon,
+    )
+    assert mesh_m3.merge()  # non-vacuity: Manifold found merges to make
+    class_m3 = np.arange(soup_np.shape[0])
+    class_m3[np.asarray(mesh_m3.merge_from_vert)] = np.asarray(mesh_m3.merge_to_vert)
+    while not np.array_equal(class_m3, class_m3[class_m3]):
+        class_m3 = class_m3[class_m3]
+    survivors_m3, welded_m3 = np.unique(class_m3, return_inverse=True)
+
+    assert survivors_m3.size == mesh_tm.vertices.shape[0]
+    assert unique_wp.size == survivors_m3.size
+    class_m3_wp = wp.array(class_m3.astype(np.int32), dtype=wp.int32, device=device)
+    assert od.equality.partitions_equal(inverse_wp, class_m3_wp)
+    vertices_m3_wp, faces_m3_wp = numpy_to_warp(
+        soup_np[survivors_m3], welded_m3[faces_np].astype(np.int32), device
+    )
+    assert od.equality.meshes_allclose(unique_wp, welded_faces_wp, vertices_m3_wp, faces_m3_wp)
+
+
+@pytest.mark.parametrize(("epsilon", "digits"), [(0.0, None), (1e-6, 6)])
+@pytest.mark.parity("remove_duplicated_vertices", "trimesh")
+def test_remove_duplicated_vertices_welds_a_soup_like_trimesh(
+    device: str, epsilon: float, digits: int | None, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
+) -> None:
+    """
+    Class A: ``Trimesh.merge_vertices`` welds the soup to the same mesh, up to numbering.
+
+    trimesh snaps each coordinate to ``round(v * 10**digits)``; ordito snaps to ``epsilon`` cells
+    measured from the data's minimum corner, so the two grids are offset and a pair a hair apart
+    can fall on one side of a cell wall in one and not the other. The soup's duplicates are exact,
+    which no grid separates, so ``digits_vertex=6`` is ``epsilon=1e-6`` here and trimesh's default
+    (``tol.merge``, eight digits) stands for the exact path. ``merge_vertices`` also drops
+    unreferenced vertices, of which a soup has none. Partition (read off the welded faces, since
+    soup corner ``i`` is vertex ``i``) and mesh are compared as against Manifold; 2 988 positions
+    become 500 on both sides.
+    """
+    mesh_tm, _mesh_wp = sphere_irregular
+    soup_np, faces_np = _soup_of(mesh_tm)
+    vertices_wp, faces_wp = numpy_to_warp(soup_np, faces_np, device)
+    unique_wp, _indices_wp, inverse_wp, welded_faces_wp = od.repair.remove_duplicated_vertices(
+        vertices_wp, faces_wp, epsilon
+    )
+
+    welded_tm = tm.Trimesh(soup_np, faces_np, process=False)
+    welded_tm.merge_vertices(digits_vertex=digits)
+    class_tm = np.asarray(welded_tm.faces).reshape(-1)
+
+    assert welded_tm.vertices.shape[0] == mesh_tm.vertices.shape[0]  # the reference welded
+    assert unique_wp.size == welded_tm.vertices.shape[0]
+    class_tm_wp = wp.array(class_tm.astype(np.int32), dtype=wp.int32, device=device)
+    assert od.equality.partitions_equal(inverse_wp, class_tm_wp)
+    vertices_tm_wp, faces_tm_wp = numpy_to_warp(welded_tm.vertices, welded_tm.faces, device)
+    assert od.equality.meshes_allclose(unique_wp, welded_faces_wp, vertices_tm_wp, faces_tm_wp)
+
+
 def test_reverse_winding_leaves_its_input_alone(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
@@ -1271,6 +1481,28 @@ def test_reverse_winding_leaves_its_input_alone(
     reversed_faces = od.repair.reverse_winding(mesh_wp.indices)
     assert reversed_faces.ptr != mesh_wp.indices.ptr
     assert np.array_equal(mesh_wp.indices.numpy(), before)
+
+
+@pytest.mark.parity("reverse_winding", "pymeshlab")
+def test_reverse_winding_matches_pymeshlab(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Class A (``od.equality.faces_equal``): ``meshing_invert_face_orientation`` reverses every face.
+
+    MeshLab swaps two corners where ordito writes ``(c, b, a)``, so its rows are rotations of
+    ordito's (``(b, a, c)`` against ``(c, b, a)``); a rotation keeps the winding, so the faces
+    compare equal up to it and a face left unreversed would not. Non-vacuous: the input is
+    asserted unequal to its own reversal.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    reversed_wp = od.repair.reverse_winding(mesh_wp.indices)
+
+    meshset_pml = trimesh_to_pymeshlab(mesh_tm)
+    meshset_pml.meshing_invert_face_orientation(forceflip=True)
+    faces_pml = meshset_pml.current_mesh().face_matrix()
+    _, faces_pml_wp = numpy_to_warp(mesh_tm.vertices, faces_pml, mesh_wp.device)
+
+    assert not od.equality.faces_equal(mesh_wp.indices, faces_pml_wp)
+    assert od.equality.faces_equal(reversed_wp, faces_pml_wp)
 
 
 @pytest.mark.parity("make_winding_consistent", "pymeshlab")
@@ -1423,6 +1655,57 @@ def test_make_winding_consistent_matches_igl_and_trimesh(
     same = np.allclose(ours_tm.face_normals, reference_tm.face_normals, atol=1e-5)
     opposite = np.allclose(ours_tm.face_normals, -reference_tm.face_normals, atol=1e-5)
     assert same or opposite
+
+
+@pytest.mark.parametrize("flip_seed_face", [False, True])
+@pytest.mark.parity("make_winding_consistent", "open3d", "pyvista")
+def test_make_winding_consistent_matches_open3d_and_pyvista(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], device: str, flip_seed_face: bool
+) -> None:
+    """
+    Class A against VTK, Class B against Open3D up to the global flip.
+
+    ``compute_normals(consistent_normals=True, auto_orient_normals=False)`` is VTK's coherent-only
+    pass: it keeps the first face's winding, as ordito keeps each component's lowest face, and
+    writes a flipped face as the full reversal, so its face table equals ordito's row for row
+    with face 0 flipped or not (40 and 956 of 996 faces rewritten, measured).
+
+    ``TriangleMesh.orient_triangles`` reaches the same coherent winding but picks the global
+    sign apart from the seed face and starts a flipped row at another corner: with face 0 left
+    alone the two face sets are equal up to rotation (``od.equality.faces_equal``), with face 0
+    among the flipped ones each equals the other's reversal. The named transform is that one
+    global flip. The input is asserted inconsistent first.
+    """
+    mesh_tm, _mesh_wp = sphere_irregular
+    rng = np.random.default_rng(3)
+    n_faces = mesh_tm.faces.shape[0]
+    flipped = rng.choice(np.arange(1, n_faces), size=39, replace=False)
+    flipped = np.concatenate([[0], flipped]) if flip_seed_face else flipped
+    faces_np = np.asarray(mesh_tm.faces, dtype=np.int32).copy()
+    faces_np[flipped] = faces_np[flipped][:, ::-1]
+
+    _vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, faces_np, device)
+    assert not od.validation.is_winding_consistent(faces_wp)
+    fixed_wp = od.repair.make_winding_consistent(faces_wp)
+    fixed_np = _faces_2d(fixed_wp)
+
+    input_tm = tm.Trimesh(mesh_tm.vertices, faces_np, process=False)
+    oriented_pv = trimesh_to_pyvista(input_tm).compute_normals(
+        consistent_normals=True, auto_orient_normals=False, split_vertices=False
+    )
+    assert oriented_pv.n_points == mesh_tm.vertices.shape[0]  # no seam split moved the numbering
+    assert np.array_equal(fixed_np, np.asarray(oriented_pv.regular_faces))
+
+    mesh_o3d = trimesh_to_open3d(input_tm)
+    assert mesh_o3d.orient_triangles()  # it found the surface orientable
+    faces_o3d = np.asarray(mesh_o3d.triangles)
+    _, faces_o3d_wp = numpy_to_warp(mesh_tm.vertices, faces_o3d, device)
+    _, reversed_wp = numpy_to_warp(mesh_tm.vertices, fixed_np[:, ::-1], device)
+    assert od.validation.is_winding_consistent(faces_o3d_wp)
+    if flip_seed_face:
+        assert od.equality.faces_equal(reversed_wp, faces_o3d_wp)
+    else:
+        assert od.equality.faces_equal(fixed_wp, faces_o3d_wp)
 
 
 def test_make_winding_consistent_on_a_non_orientable_mesh(
@@ -1658,6 +1941,92 @@ def test_make_normals_outward(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> N
     reference_tm = tm.Trimesh(vertices=mesh_tm.vertices, faces=faces_bad, process=False)
     tm_repair.fix_normals(reference_tm)
     assert np.array_equal(_faces_2d(repaired_wp), reference_tm.faces)
+
+
+def _inverted_and_mixed_faces_np(faces_np: np.ndarray, case: str) -> np.ndarray:
+    """Wind every face backwards (``inverted``), or every second face and then all (``mixed``)."""
+    faces_np = np.asarray(faces_np, dtype=np.int32).copy()
+    if case == "mixed":
+        faces_np[::2] = faces_np[::2][:, ::-1]
+    return np.ascontiguousarray(faces_np[:, ::-1])
+
+
+@pytest.mark.parity("make_normals_outward", "pymeshlab")
+@pytest.mark.parametrize("case", ["inverted", "mixed"])
+def test_make_normals_outward_matches_pymeshlab(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], case: str
+) -> None:
+    """
+    Class A (``od.equality.faces_equal``): ``meshing_re_orient_faces_by_geometry`` on a closed mesh.
+
+    MeshLab makes the winding coherent and then decides each piece's side by casting rays from it,
+    where ordito takes the sign of the enclosed volume; on a closed surface the outward winding is
+    unique, so both reach it. MeshLab writes a flipped face as a rotation of ordito's row, which
+    ``faces_equal`` allows and a reversed face would not pass. Two inputs: wound wholly backwards,
+    and inconsistent (every second face flipped) as well as backwards. Ray casting could make the
+    reference vary between runs; three runs are asserted identical.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    faces_bad = _inverted_and_mixed_faces_np(mesh_tm.faces, case)
+    vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, faces_bad, mesh_wp.device)
+    assert od.validation.is_volume(vertices_wp, faces_wp) is False
+    repaired_wp = od.repair.make_normals_outward(vertices_wp, faces_wp)
+
+    runs_pml = []
+    for _ in range(3):
+        meshset_pml = ml.MeshSet()
+        meshset_pml.add_mesh(ml.Mesh(np.asarray(mesh_tm.vertices, dtype=np.float64), faces_bad))
+        meshset_pml.meshing_re_orient_faces_by_geometry()
+        runs_pml.append(meshset_pml.current_mesh().face_matrix())
+    assert all(np.array_equal(runs_pml[0], run_pml) for run_pml in runs_pml[1:])
+    _, faces_pml_wp = numpy_to_warp(mesh_tm.vertices, runs_pml[0], mesh_wp.device)
+
+    assert not od.equality.faces_equal(faces_wp, faces_pml_wp)  # the reference rewrote faces
+    assert od.equality.faces_equal(repaired_wp, faces_pml_wp)
+
+
+@pytest.mark.parity(
+    "make_normals_outward",
+    "igl",
+    benchmarked=False,
+    reason="igl.orient_outward points each orientable patch away from the patch's centroid, where "
+    "ordito takes the sign of the enclosed volume, and it rewinds nothing within a patch, so a row "
+    "times bfs_orient plus a centroid test against make_winding_consistent plus make_volume. The "
+    "two rules agree on the closed star-shaped fixture compared here and part on a mesh with a "
+    "cavity or on the open scan meshes the make_normals_outward group times.",
+)
+@pytest.mark.parametrize("case", ["inverted", "mixed"])
+def test_make_normals_outward_matches_igl(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], case: str
+) -> None:
+    """
+    Class A: the face table equals ``igl.orient_outward``'s, after ``igl.bfs_orient`` when mixed.
+
+    ``orient_outward`` flips whole patches only (``C`` from ``igl.orientable_patches``, one patch
+    here), so it fixes a wholly backwards mesh alone and an inconsistent one after ``bfs_orient``
+    has made the winding coherent: the same composition as ordito's. Both write a flipped face as
+    the full reversal, so the tables compare element for element. Its rule is the patch centroid,
+    not the volume: the two agree on this closed star-shaped surface.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    faces_bad = _inverted_and_mixed_faces_np(mesh_tm.faces, case)
+    vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, faces_bad, mesh_wp.device)
+    repaired_wp = od.repair.make_normals_outward(vertices_wp, faces_wp)
+
+    faces_igl = np.ascontiguousarray(faces_bad, dtype=np.int64)
+    if case == "mixed":
+        faces_igl, _components_igl = igl.bfs_orient(faces_igl)
+    # The single-return overload; the binding stub types the call as either.
+    patches_igl = cast("np.ndarray", igl.orientable_patches(faces_igl))
+    assert np.unique(patches_igl).size == 1
+    oriented_igl, flipped_igl = igl.orient_outward(
+        np.asarray(mesh_tm.vertices, dtype=np.float64), faces_igl, patches_igl.reshape(-1, 1)
+    )
+
+    # bfs_orient keeps face 0, wound outward in the mixed input: only the inverted patch turns.
+    assert np.asarray(flipped_igl).tolist() == [int(case == "inverted")]
+    assert not np.array_equal(np.asarray(oriented_igl), faces_bad)  # the reference rewrote faces
+    assert np.array_equal(_faces_2d(repaired_wp), np.asarray(oriented_igl))
 
 
 def test_make_volume_multibody(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
@@ -1940,7 +2309,8 @@ def _edge_manifold_o3d(vertices_np: np.ndarray, faces_np: np.ndarray) -> bool:
     benchmarked=False,
     reason="both are used here as the post-condition detector rather than as the repair. libigl "
     "binds no non-manifold face remover at all, so there is nothing on its side to time; Open3D's "
-    "remove_non_manifold_edges is a comparable repair and would be its own row. What this claims "
+    "remove_non_manifold_edges is a smallest-area repair, timed under remove_non_manifold_faces_"
+    "meshlab with its measured disagreement. What this claims "
     "is is_edge_manifold(allow_boundary_edges=True), which both answer identically to ordito and "
     "which is timed in the is_edge_manifold group.",
 )
@@ -2406,6 +2776,67 @@ def test_remove_small_components_min_area_matches_open3d(three_shells: _ThreeShe
     _assert_same_surviving_mesh(kept_wp, kept_faces_wp, vertices_o3d, faces_o3d)
 
 
+@pytest.mark.parity("remove_small_components", "meshlib")
+@pytest.mark.parametrize(("min_area", "n_kept"), [(11.0, 480), (12.0, 400), (20.0, 80)])
+def test_remove_small_components_min_area_matches_meshlib(
+    three_shells: _ThreeShells, min_area: float, n_kept: int
+) -> None:
+    """
+    Class A on the kept-face mask: ``min_area`` is ``getLargeByAreaComponents``.
+
+    MeshLib returns the faces of every component of at least ``minArea`` as a ``FaceBitSet``,
+    read at the face count (``meshlib_bitset_to_numpy``); ordito's survivors are the faces its
+    provenance traces back. Three thresholds keep all three shells, the two above 12, and the
+    radius-10 shell alone. Both keep a component at exactly its own area, but the bound is not
+    compared closer than that: an ulp above the 320-face shell's ``float64`` area MeshLib still
+    keeps it (its area sums round differently). ``getLargestComponent`` is not ``keep_largest``:
+    it ranks by area and keeps the 80-face radius-10 shell, where ordito (and pymeshfix) keep the
+    320-face one.
+    """
+    mesh_tm, vertices_wp, faces_wp = three_shells
+    _kept_wp, kept_faces_wp, provenance = od.repair.remove_small_components(
+        vertices_wp, faces_wp, min_area=min_area, return_provenance=True
+    )
+    kept_np = np.zeros(mesh_tm.faces.shape[0], dtype=bool)
+    kept_np[provenance.face_index.numpy()] = True
+
+    mesh_ml = trimesh_to_meshlib(mesh_tm)
+    kept_ml = meshlib_bitset_to_numpy(
+        mm.MeshComponents.getLargeByAreaComponents(
+            mm.MeshPart(mesh_ml), min_area, mm.UndirectedEdgeBitSet()
+        ),
+        mesh_tm.faces.shape[0],
+    )
+
+    assert kept_ml.sum() == n_kept
+    assert kept_faces_wp.size // 3 == n_kept
+    assert np.array_equal(kept_np, kept_ml)
+
+
+@pytest.mark.parity("remove_small_components", "pyvista")
+def test_remove_small_components_keep_largest_matches_pyvista(three_shells: _ThreeShells) -> None:
+    """
+    Class A (``od.equality.meshes_allclose``): ``keep_largest`` is VTK's ``extract_largest``.
+
+    VTK's largest region is the one with the most cells, ordito's the one with the most faces, so
+    both keep the 320-face shell over the radius-10 one of 80 faces and 100 times its area.
+    ``extract_largest`` drops the other shells' points but renumbers the survivors, so the mesh is
+    compared up to numbering (the shell's closest vertex pair is far apart against ``atol``).
+    """
+    mesh_tm, vertices_wp, faces_wp = three_shells
+    kept_wp, kept_faces_wp = od.repair.remove_small_components(
+        vertices_wp, faces_wp, keep_largest=True
+    )
+
+    largest_pv = trimesh_to_pyvista(mesh_tm).extract_largest()
+    assert largest_pv.n_cells == 320  # face count, not area
+    assert largest_pv.n_points == 162
+    vertices_pv_wp, faces_pv_wp = numpy_to_warp(
+        np.asarray(largest_pv.points), np.asarray(largest_pv.regular_faces), vertices_wp.device
+    )
+    assert od.equality.meshes_allclose(kept_wp, kept_faces_wp, vertices_pv_wp, faces_pv_wp)
+
+
 def test_remove_small_components_invariants(three_shells: _ThreeShells) -> None:
     """
     Not a library comparison: the three properties the criteria share, on the same fixture.
@@ -2669,6 +3100,66 @@ def test_split_nonmanifold_matches_meshlib(mesh_kind: str, device: str) -> None:
     assert split_faces_wp.size // 3 == faces_np.shape[0]
     assert same_partition(split_faces_wp.numpy(), meshlib_to_trimesh(mesh_ml).faces.ravel())
     assert od.validation.is_vertex_manifold(split_faces_wp)
+
+
+def _kissing_spheres_np(mesh_tm: tm.Trimesh) -> tuple[np.ndarray, np.ndarray]:
+    """Glue a translated copy of ``mesh_tm`` to it at one vertex: two closed shells, one pinch."""
+    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
+    faces_np = np.asarray(mesh_tm.faces, dtype=np.int64)
+    n_vertices = vertices_np.shape[0]
+    shared, moved = int(np.argmax(vertices_np[:, 0])), int(np.argmin(vertices_np[:, 0]))
+    copy_np = np.delete(vertices_np - vertices_np[moved] + vertices_np[shared], moved, axis=0)
+    index = np.arange(n_vertices)
+    renumber = np.where(index < moved, index + n_vertices, index + n_vertices - 1)
+    renumber[moved] = shared
+    return (
+        np.vstack([vertices_np, copy_np]),
+        np.vstack([faces_np, renumber[faces_np]]).astype(np.int32),
+    )
+
+
+@pytest.mark.parity("split_non_manifold_vertices", "pymeshlab")
+@pytest.mark.parametrize(("mesh_kind", "n_split"), [("bowtie", 6), ("kissing_spheres", 1_000)])
+def test_split_nonmanifold_matches_pymeshlab_on_edge_manifold_input(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], device: str, mesh_kind: str, n_split: int
+) -> None:
+    """
+    Class B on the corner partition, on edge-manifold input with non-manifold vertices.
+
+    ``meshing_repair_non_manifold_vertices(vertdispratio=0)`` splits a vertex whose faces form
+    more than one fan, leaving the copies where they were, and keeps the face order, so the corners'
+    vertex labels compare as partitions (``same_partition``, as against igl) and every corner sits
+    at its source's position on both sides. The bowtie's centre and the vertex two closed spheres
+    share each become two (5 -> 6, 999 -> 1 000). The transform is the input class: MeshLab leaves
+    a non-manifold *edge* alone (three faces on one edge stay at 5 vertices, where ordito cuts 9;
+    a face duplicated five times on ``sphere_irregular`` stays at 500 against ordito's 530), so
+    edge defects are not compared.
+    """
+    if mesh_kind == "bowtie":
+        vertices_np, faces_np = _bowtie_np()
+    else:
+        vertices_np, faces_np = _kissing_spheres_np(sphere_irregular[0])
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    assert od.validation.is_edge_manifold(faces_wp)
+    assert not od.validation.is_vertex_manifold(faces_wp)
+    split_wp, split_faces_wp, _source_wp = od.repair.split_non_manifold_vertices(
+        vertices_wp, faces_wp
+    )
+
+    meshset_pml = ml.MeshSet()
+    meshset_pml.add_mesh(ml.Mesh(np.asarray(vertices_np, dtype=np.float64), faces_np))
+    meshset_pml.meshing_repair_non_manifold_vertices(vertdispratio=0.0)
+    vertices_pml = meshset_pml.current_mesh().vertex_matrix()
+    faces_pml = meshset_pml.current_mesh().face_matrix()
+
+    assert vertices_pml.shape[0] == n_split  # the reference split exactly the shared vertex
+    assert split_wp.size == n_split
+    assert faces_pml.shape == (faces_np.shape[0], 3)
+    split_faces_np = split_faces_wp.numpy()
+    assert same_partition(split_faces_np, faces_pml.ravel())
+    assert np.allclose(
+        split_wp.numpy()[split_faces_np], vertices_pml[faces_pml.ravel()], rtol=1e-5, atol=1e-5
+    )
 
 
 def test_split_nonmanifold_splits_a_duplicated_face_further_than_igl(

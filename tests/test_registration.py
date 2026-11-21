@@ -6,6 +6,7 @@ import math
 from functools import partial
 from typing import TYPE_CHECKING, Literal, Required, TypedDict, cast
 
+import igl
 import numpy as np
 import open3d as o3d
 import pytest
@@ -143,6 +144,49 @@ def test_procrustes_matches_trimesh(
     assert np.allclose(matrix_od, matrix_tm, rtol=1e-4, atol=1e-4)
     assert np.allclose(transformed_wp.numpy()[kept], transformed_tm[kept], rtol=1e-4, atol=1e-4)
     assert np.allclose(cost_od, cost_tm, rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.parametrize(
+    ("planted", "scale", "reflection"),
+    [(False, False, True), (False, False, False), (True, True, False)],
+    ids=["rigid_reflection", "rigid", "planted_similarity"],
+)
+@pytest.mark.parity("procrustes", "igl")
+def test_procrustes_matches_igl(device: str, planted: bool, scale: bool, reflection: bool) -> None:
+    """
+    Class B: ``igl.procrustes``'s ``(s, R, t)`` of ``s X R + t`` is ordito's ``[s R^T | t]``.
+
+    igl applies ``R`` to row vectors, so the named transform is the transpose of its rotation
+    scaled by its ``s``. The rigid arms fit two unrelated random clouds, so the answer is a genuine
+    least-squares optimum rather than a planted motion; there ``reflection=True`` finds a
+    reflection (its determinant is asserted negative) that ``reflection=False`` must refuse.
+
+    The scale arm is a planted similarity with no noise. ``scale=True`` follows trimesh, whose
+    scale is the ratio of the two clouds' spreads, where igl's is the least-squares ``s``: on two
+    unrelated clouds of equal spread ordito returns 1 and igl 0.097. The two coincide only on an
+    exact similarity, which is what that arm compares.
+    """
+    rng = np.random.default_rng(20)
+    a_np, b_np = _make_point_clouds(rng)
+    if planted:
+        rotation_np, translation_np = _rigid_transform(0.4, [0.3, -0.5, 0.8], [0.4, -0.2, 0.7])
+        b_np = 1.3 * (a_np @ rotation_np.T.astype(np.float64)) + translation_np
+    scale_igl, rotation_igl, translation_igl = igl.procrustes(
+        a_np, b_np, include_scaling=scale, include_reflections=reflection
+    )
+    matrix_igl = np.eye(4)
+    matrix_igl[:3, :3] = scale_igl * np.asarray(rotation_igl).T
+    matrix_igl[:3, 3] = translation_igl
+    assert (np.linalg.det(np.asarray(rotation_igl)) < 0.0) == reflection
+    assert np.isclose(scale_igl, 1.3 if planted else 1.0)
+
+    matrix_wp, _transformed_wp, _cost_wp = od.registration.procrustes(
+        points_to_warp(a_np, device),
+        points_to_warp(b_np, device),
+        reflection=reflection,
+        scale=scale,
+    )
+    assert np.allclose(matrix_wp.numpy()[0], matrix_igl, rtol=1e-4, atol=1e-4)
 
 
 @pytest.mark.parity("procrustes", "meshlib")
@@ -982,6 +1026,63 @@ def test_icp_point_to_plane_matches_open3d(
     assert _rms(moved_o3d, target_np) < 1.5e-6
 
 
+@pytest.mark.parity("icp_point_to_plane_huber", "open3d")
+def test_icp_point_to_plane_huber_matches_open3d(
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
+) -> None:
+    """
+    Class A on the transformed source: Huber point-to-plane ICP against Open3D's ``HuberLoss``.
+
+    Both weight a residual ``r`` by ``min(1, k / |r|)``. A tenth of the source is thrown off the
+    surface (outliers) so the Huber optimum is not the clean alignment, and the weights decide
+    where each fit lands: ordito's unweighted fit ends 8.3e-2 away from Open3D's Huber fit
+    (asserted above 1e-3), while the two Huber fits agree to 9.3e-7 per point on both devices over
+    50 pinned iterations (Open3D's relative stops set to zero), inside the ``1e-5`` bound.
+    """
+    mesh_tm, _mesh_wp = sphere_irregular
+    target_np = np.asarray(mesh_tm.vertices, dtype=np.float32)
+    normals_np = np.asarray(mesh_tm.vertex_normals, dtype=np.float32)
+    rotation_np, translation_np = _rigid_transform(0.08, [0.1, 0.9, 0.2], [0.02, -0.01, 0.015])
+    source_np = (target_np @ rotation_np.T + translation_np).astype(np.float32)
+    rng = np.random.default_rng(3)
+    outliers = rng.choice(source_np.shape[0], source_np.shape[0] // 10, replace=False)
+    source_np[outliers] += rng.normal(scale=0.3, size=(outliers.size, 3)).astype(np.float32)
+    scale = 0.02
+    criteria_o3d = o3d.pipelines.registration.ICPConvergenceCriteria(
+        relative_fitness=0.0, relative_rmse=0.0, max_iteration=50
+    )
+
+    def register(robust_kernel: _RobustKernel) -> np.ndarray:
+        _matrix_wp, transformed_wp, _cost_wp = od.registration.icp_point_to_plane(
+            points_to_warp(source_np, device),
+            points_to_warp(target_np, device),
+            target_normals=points_to_warp(normals_np, device),
+            max_iterations=50,
+            threshold=-np.inf,
+            robust_kernel=robust_kernel,
+            robust_scale=scale,
+        )
+        return transformed_wp.numpy()
+
+    huber_wp = register("huber")
+    result_o3d = o3d.pipelines.registration.registration_icp(
+        points_to_open3d(source_np),
+        points_to_open3d(target_np, normals_np),
+        1e9,
+        np.eye(4),
+        o3d.pipelines.registration.TransformationEstimationPointToPlane(
+            o3d.pipelines.registration.HuberLoss(k=scale)
+        ),
+        criteria_o3d,
+    )
+    matrix_o3d = np.asarray(result_o3d.transformation)
+    huber_o3d = (matrix_o3d[:3, :3] @ source_np.T).T + matrix_o3d[:3, 3]
+
+    # Non-vacuity: without the weights the fit lands elsewhere, so agreement tests the kernel.
+    assert np.abs(register("none") - huber_o3d).max() > 1e-3
+    assert np.allclose(huber_wp, huber_o3d, rtol=0.0, atol=1e-5)
+
+
 @pytest.mark.parity("icp_point_to_plane_cloud", "open3d")
 @pytest.mark.parametrize("max_iterations", [0, 1, 3, 30])
 def test_icp_point_to_plane_cost_matches_open3d_evaluation(
@@ -1473,6 +1574,45 @@ def test_icp_point_to_plane_mesh_matches_meshlib(
     # Both converged, rather than agreeing on a transform that fits nothing.
     assert _rms(transformed_wp.numpy(), vertices_np) < 1e-5
     assert _rms(moved_ml, vertices_np) < 1e-5
+
+
+@pytest.mark.parity("icp_point_to_plane_mesh_plain", "igl")
+def test_icp_point_to_plane_mesh_matches_igl(
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
+) -> None:
+    """
+    Class C: the recovered transform against ``igl.iterative_closest_point``'s.
+
+    Both minimize the point-to-plane distance to the target's closest faces, but igl correspondences
+    random points drawn on the source mesh each iteration where ordito takes the source vertices,
+    so only the converged pose is shared: igl's ``(R, t)`` of ``X R + t`` is the matrix
+    ``[R^T | t]``. The source is ``sphere_irregular`` under a planted 0.08 rad motion (vertices
+    0.34 off at the start). Measured agreement 5.9e-7 on both devices, against the ``1e-5`` bound
+    (17x). Bug class excluded: a transposed rotation or a mis-composed step, which lands elsewhere;
+    mutation probe: ordito's rotation block transposed is 0.155 off igl's matrix, 15 500x the bound.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
+    faces_np = np.asarray(mesh_tm.faces, dtype=np.int64)
+    rotation_np, translation_np = _rigid_transform(0.08, [0.1, 0.9, 0.2], [0.02, -0.01, 0.015])
+    source_np = vertices_np @ rotation_np.T.astype(np.float64) + translation_np
+    assert np.abs(source_np - vertices_np).max() > 0.1  # non-vacuity: a real misalignment
+
+    rotation_igl, translation_igl = igl.iterative_closest_point(
+        source_np, faces_np, vertices_np, faces_np, 2000, 30
+    )
+    matrix_igl = np.eye(4)
+    matrix_igl[:3, :3] = np.asarray(rotation_igl).T
+    matrix_igl[:3, 3] = np.asarray(translation_igl).reshape(3)
+
+    matrix_wp, _transformed_wp, _cost_wp = od.registration.icp_point_to_plane(
+        points_to_warp(source_np, device),
+        mesh_wp.points,
+        mesh_wp.indices,
+        max_iterations=30,
+        threshold=-np.inf,
+    )
+    assert np.allclose(matrix_wp.numpy()[0], matrix_igl, rtol=0.0, atol=1e-5)
 
 
 @pytest.mark.parametrize("max_iterations", [0, 1, 3, 30])

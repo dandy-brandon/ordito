@@ -1117,14 +1117,16 @@ Modules with **no** VTK equivalent: `heat/*` beyond the graph-distance bound, `t
 142 filter names — it is vedo's, not pyvista's). Structurally out of scope: every `pyvista.core`
 dataset *type* that is not a surface (`ImageData`, `RectilinearGrid`, `StructuredGrid`,
 `UnstructuredGrid`, `MultiBlock`, `Table`), `delaunay_3d` and everything downstream, `streamlines`,
-and all of `pyvista.plotting`.
+and all of `pyvista.plotting`. The one exception is `ImageData`'s binary morphology (`dilate` /
+`erode` / `close` / `open` with a 3-wide kernel, which is the 18-neighbour stencil): it carries the
+`test_voxels` morphology rows.
 
 ### potpourri3d
 
 | module | potpourri3d reference |
 |---|---|
 | `test_heat_distance` | `MeshHeatMethodDistanceSolver` (`use_robust=False`, the same discretization as ordito's), and `MeshFastMarchingDistanceSolver` as a different algorithm for the same task |
-| `test_intersection` | `marching_triangles` — the only reference for isocontours of an arbitrary vertex field |
+| `test_intersection` | `marching_triangles` — isocontours of an arbitrary vertex field (igl, meshlib and pyvista's `contour` carry rows in the same group) |
 | `test_geodesic_walk` | `GeodesicTracer.trace_geodesic_from_vertex` — one ray per call, so its row is linear in the ray count by construction |
 | `test_heat_signed` | `MeshSignedHeatSolver.compute_distance` — requires every curve segment inside one face, which is why the source curves are edge paths |
 | `test_heat_vector` | `MeshVectorHeatSolver.{extend_scalar,transport_tangent_vectors,compute_log_map}` (`use_intrinsic_delaunay=False`) |
@@ -1276,6 +1278,9 @@ Where the reference is not algorithmically identical, the module docstring says 
 | `test_sample` | `ops.sample_points_from_meshes` |
 | `test_reduce` | `ops.utils.wmean` |
 | `test_array` | `ops.packed_to_padded` / `padded_to_packed` |
+| `test_interpolation` | `ops.interpolate_face_attributes` |
+| `test_transform` | `transforms.Transform3d.transform_points` / `transform_normals` (row vectors: it takes the transposed matrix) |
+| `test_bounds` | `structures.Pointclouds.get_bounding_boxes` |
 
 **It is the only reference with CUDA kernels of its own, and it is registered for those alone** —
 a single `pytorch3d-cuda` row, the suite's only GPU-against-GPU comparison, and no host row at

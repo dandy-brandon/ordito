@@ -2,6 +2,7 @@ import math
 from collections.abc import Callable
 from typing import Literal, cast
 
+import igl
 import manifold3d as m3
 import numpy as np
 import open3d as o3d
@@ -31,6 +32,7 @@ from tests.comparisons import assert_same_up_to_sign, lexsort_rows
 from tests.conversions import (
     meshlib_bitset_to_numpy,
     meshlib_indices_to_numpy,
+    meshlib_to_trimesh,
     numpy_to_meshlib_point_vector,
     numpy_to_warp,
     points_to_meshlib,
@@ -413,6 +415,34 @@ def test_principal_axes_matches_meshlib(device: str) -> None:
         assert np.isclose(abs(float(np.dot(rotation_np[row], axes_ml[row]))), 1.0, atol=1e-6)
 
 
+@pytest.mark.parity("principal_axes", "pymeshlab")
+def test_principal_axes_matches_pymeshlab(device: str) -> None:
+    """
+    Class B: MeshLab's ``pca`` holds the same axes as **columns**, in the opposite order.
+
+    ``get_geometric_measures()`` on a face-less MeshSet returns ``barycenter``, ``bbox`` and
+    ``pca``, a 3x3 matrix whose columns are the centred covariance's eigenvectors, smallest spread
+    first. The named transform is a transpose, a reversal and the per-axis sign every eigenvector
+    comparison needs. ``barycenter`` is the centroid, compared directly. The cloud is anisotropic,
+    rotated off the coordinate axes and moved off the origin, so an uncentred or axis-aligned
+    answer fails.
+    """
+    rng = np.random.default_rng(4)
+    points_np = (rng.standard_normal((500, 3)) @ np.diag([3.0, 1.0, 0.2])) @ _rotation(rng)
+    points_np += np.array([2.0, -1.0, 0.5])
+    measures_pml = points_to_pymeshlab(points_np).get_geometric_measures()
+    axes_pml = np.asarray(measures_pml["pca"]).T[::-1]  # columns, ascending -> rows, descending
+
+    points_wp = points_to_warp(points_np, device)
+    rotation_wp, _eigenvalues_wp, centroid_wp = od.principal_axes(points_wp)
+    rotation_np = np.array(rotation_wp).reshape(3, 3)
+
+    assert np.abs(axes_pml).max(axis=1).min() < 0.99  # non-vacuity: no axis is a coordinate one
+    assert np.allclose(np.array(centroid_wp), measures_pml["barycenter"], rtol=1e-5, atol=1e-5)
+    for row in range(3):
+        assert np.isclose(abs(float(np.dot(rotation_np[row], axes_pml[row]))), 1.0, atol=1e-5)
+
+
 def test_principal_axes_is_not_fit_line(device: str) -> None:
     """
     Pin the distinction the two functions exist to keep apart.
@@ -569,6 +599,32 @@ def test_fit_plane_normal_matches_pyvista(device: str) -> None:
     # The origins are different quantities; asserting that keeps the projection above honest.
     assert np.allclose(np.array(centroid_wp), points_np.mean(axis=0), rtol=1e-5, atol=1e-5)
     assert not np.allclose(np.asarray(centre_pv), points_np.mean(axis=0), atol=1e-2)
+
+
+@pytest.mark.parametrize(("n_points", "seed"), [(80, 9), (5000, 10)], ids=["small", "multi_tile"])
+@pytest.mark.parity("fit_plane", "igl")
+def test_fit_plane_matches_igl(device: str, n_points: int, seed: int) -> None:
+    """
+    Class B (sign gauge only): ``igl.fit_plane`` returns the same normal and the centroid.
+
+    ``igl.fit_plane(V)`` returns ``(N, C)``, the smallest-eigenvalue eigenvector of the covariance
+    and the point the plane passes through, which is the centroid. The centroid is compared
+    directly; the normal, a covariance eigenvector whose sign neither library fixes, up to sign.
+    The cloud is anisotropic and off the origin, so the normal is well determined and a fit
+    through the origin fails the centroid assert.
+    """
+    rng = np.random.default_rng(seed)
+    points_np = (rng.standard_normal((n_points, 3)) @ np.diag([3.0, 1.0, 0.2])) + np.array(
+        [2.0, -1.0, 0.5]
+    )
+    normal_igl, centroid_igl = igl.fit_plane(points_np)
+
+    points_wp = points_to_warp(points_np, device)
+    normal_wp, centroid_wp = od.fit_plane(points_wp)
+
+    assert np.isclose(np.linalg.norm(normal_igl), 1.0, atol=1e-6)  # non-vacuity: a real plane
+    assert np.allclose(np.array(centroid_wp), centroid_igl, rtol=1e-5, atol=1e-5)
+    assert np.isclose(abs(float(np.dot(np.array(normal_wp), normal_igl))), 1.0, atol=1e-6)
 
 
 @pytest.mark.parametrize(
@@ -1315,6 +1371,39 @@ def test_cluster_outlier_mask_matches_meshlib(device: str, max_cluster_size: int
     assert np.array_equal(outlier_wp.numpy(), outlier_ml)
 
 
+@pytest.mark.parametrize("max_cluster_size", [5, 20])
+@pytest.mark.parity("cluster_outlier_mask", "open3d")
+def test_cluster_outlier_mask_matches_open3d(device: str, max_cluster_size: int) -> None:
+    """
+    Class B (labels to sizes to a mask): Open3D's ``cluster_dbscan`` at ``min_points=1``.
+
+    With ``min_points=1`` every point is a core point, so DBSCAN's clusters are exactly the
+    connected components of the radius graph. The named transform reads each point's cluster size
+    off the labels and flags it at most ``max_cluster_size``. The planted clusters of 3, 12 and 25
+    points sit on either side of the two sizes, so each size flags a different set.
+
+    Open3D's radius search is exclusive at exactly ``eps`` where ordito's link is inclusive; no
+    pair of this cloud lies within ``1e-5`` of the radius (measured 7.5e-6 off it at the closest),
+    so the comparison does not depend on it, and the tie itself is pinned below.
+    """
+    points_np, _normals_np = _scan_with_outliers()
+    labels_o3d = np.asarray(
+        points_to_open3d(points_np.astype(np.float64)).cluster_dbscan(eps=0.1, min_points=1)
+    )
+    assert labels_o3d.min() == 0  # min_points=1 leaves no noise label
+    outlier_o3d = np.bincount(labels_o3d)[labels_o3d] <= max_cluster_size
+    assert 0 < outlier_o3d.sum() < 100  # non-vacuity: the stragglers, not the sphere
+    outlier_wp = od.cluster_outlier_mask(points_to_warp(points_np, device), 0.1, max_cluster_size)
+    assert np.array_equal(outlier_wp.numpy(), outlier_o3d)
+
+    # At a pair exactly ``radius`` apart the two rules part: ordito links it, Open3D does not.
+    pair_np = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [5.0, 0.0, 0.0]])
+    pair_labels_o3d = np.asarray(points_to_open3d(pair_np).cluster_dbscan(eps=1.0, min_points=1))
+    assert np.unique(pair_labels_o3d).shape[0] == 3
+    pair_wp = od.cluster_outlier_mask(points_to_warp(pair_np, device), 1.0, 1)
+    assert pair_wp.numpy().tolist() == [False, False, True]
+
+
 @pytest.mark.parametrize("min_height", [0.1, 0.3])
 @pytest.mark.parity("plane_outlier_mask", "meshlib")
 def test_plane_outlier_mask_matches_meshlib(device: str, min_height: float) -> None:
@@ -1877,6 +1966,45 @@ def test_convex_hull_matches_the_qhull_mesh_wrappers(device: str) -> None:
             meshset_pml.current_mesh().vertex_matrix(),
             meshset_pml.current_mesh().face_matrix(),
         ),
+    }
+
+    faces_np = od.convex_hull(points_to_warp(points_np, device)).numpy().reshape(-1, 3)
+    used_np, hull_faces_np = np.unique(faces_np, return_inverse=True)
+    assert len(used_np) > 20
+    hull_vertices_wp, hull_faces_wp = numpy_to_warp(
+        points_np[used_np], hull_faces_np.reshape(-1, 3), device
+    )
+    for name, (vertices_ref, faces_ref) in hulls.items():
+        assert len(faces_ref) == 2 * len(vertices_ref) - 4, name  # non-vacuity: a closed hull
+        vertices_ref_wp, faces_ref_wp = numpy_to_warp(vertices_ref, faces_ref, device)
+        assert od_equality.meshes_allclose(
+            hull_vertices_wp, hull_faces_wp, vertices_ref_wp, faces_ref_wp, rtol=0.0, atol=0.0
+        ), name
+
+
+@pytest.mark.parity("convex_hull", "meshlib", "pyvista")
+def test_convex_hull_matches_meshlib_and_pyvista(device: str) -> None:
+    """
+    Class A (`od.equality.meshes_allclose`): the hull mesh is MeshLib's and VTK's.
+
+    MeshLib's ``makeConvexHull(PointCloud)`` and pyvista's ``PolyData.convex_hull()`` both return
+    the hull as a compacted mesh of copied points, where ordito returns faces over the input cloud,
+    so ordito's faces are read as the mesh over the points they name. On a cloud in general
+    position the triangulation is unique, and each mesh must be ordito's exactly up to vertex
+    numbering, face order and face rotation, outward winding included. The cloud is
+    ``float32``-exact, so MeshLib's ``float32`` copy of the points loses nothing. Neither runs
+    qhull: MeshLib builds its own hull (``MRConvexHull.cpp``) and pyvista 0.49 calls VTK 9.7's
+    ``vtkConvexHull`` (it falls back to scipy's qhull only below VTK 9.7), so these are two
+    answers independent of the qhull wrappers above.
+    """
+    points_np = _hull_cloud("gaussian", 2000, seed=23).astype(np.float64)
+
+    hull_ml = meshlib_to_trimesh(mm.makeConvexHull(points_to_meshlib(points_np)))
+    hull_pv = pv.PolyData(points_np).convex_hull()
+    assert hull_pv.is_all_triangles
+    hulls = {
+        "meshlib": (hull_ml.vertices, hull_ml.faces),
+        "pyvista": (np.asarray(hull_pv.points), hull_pv.faces.reshape(-1, 4)[:, 1:]),
     }
 
     faces_np = od.convex_hull(points_to_warp(points_np, device)).numpy().reshape(-1, 3)

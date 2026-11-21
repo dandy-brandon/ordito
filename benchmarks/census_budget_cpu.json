@@ -4210,6 +4210,39 @@
    "alloc": 3
   }
  },
+ "benchmarks/test_mesh.py::test_body_count[parts_1024-ordito-cpu-cold]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 3,
+   "readback": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_mesh.py::test_body_count[parts_1024-ordito-cpu-warm]": {
+  "counts": {}
+ },
+ "benchmarks/test_mesh.py::test_body_count[parts_64-ordito-cpu-cold]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 3,
+   "readback": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_mesh.py::test_body_count[parts_64-ordito-cpu-warm]": {
+  "counts": {}
+ },
+ "benchmarks/test_mesh.py::test_body_count[sphere_med-ordito-cpu-cold]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 3,
+   "readback": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_mesh.py::test_body_count[sphere_med-ordito-cpu-warm]": {
+  "counts": {}
+ },
  "benchmarks/test_mesh.py::test_boundary_loops[holes_many-ordito-cpu-cold]": {
   "counts": {
    "launch": 6,
@@ -5651,6 +5684,12 @@
    "alloc": 2
   }
  },
+ "benchmarks/test_polyline.py::test_resample_polyline[saddle_small-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
  "benchmarks/test_polyline.py::test_simplify_polyline[saddle_small-ordito-cpu-0.001]": {
   "counts": {
    "launch": 1,
@@ -6330,6 +6369,14 @@
    "readback": 1
   }
  },
+ "benchmarks/test_registration.py::test_icp_point_to_plane_huber[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 3,
+   "h2h": 1,
+   "readback": 1
+  }
+ },
  "benchmarks/test_registration.py::test_icp_point_to_plane_median_gate[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 34,
@@ -6346,6 +6393,14 @@
    "h2h": 1,
    "readback": 3,
    "sort": 1
+  }
+ },
+ "benchmarks/test_registration.py::test_icp_point_to_plane_mesh_plain[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 5,
+   "h2h": 1,
+   "readback": 1
   }
  },
  "benchmarks/test_registration.py::test_icp_point_to_plane_tukey[sphere_small-ordito-cpu]": {

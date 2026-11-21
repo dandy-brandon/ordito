@@ -2001,6 +2001,54 @@ def test_quadric_decimate_stays_within_the_pyvista_band(device: str, target_face
     assert radius_error(decimated_vertices_np) > 1e-5
 
 
+@pytest.mark.parametrize("target_faces", [2560, 1024, 512])
+@pytest.mark.parity("quadric_decimate_qslim", "igl")
+def test_quadric_decimate_matches_igl_qslim_on_deviation(device: str, target_faces: int) -> None:
+    """
+    Class C by deviation: within 1.25x of ``igl.qslim``, libigl's Garland-Heckbert decimator.
+
+    ``igl.decimate``, the igl row of ``quadric_decimate``, collapses the shortest edge to its
+    midpoint by default, so it is not a quadric method; ``qslim`` is (quadric cost, quadric-optimal
+    placement, a serial queue). Measured two-sided Hausdorff to ``icosphere(4)``, both devices:
+
+    | target faces | ordito | qslim | ordito / qslim | igl.decimate / qslim |
+    |---|---|---|---|---|
+    | 2 560 | 0.00209 | 0.00210 | 0.993 | 2.80 |
+    | 1 024 | 0.00567 | 0.00618 | 0.917 | 2.17 |
+    | 512 | 0.00900 | 0.01187 | 0.758 | 2.10 |
+
+    The bound is 1.25x qslim's deviation, a 1.26x margin on the worst reading. **Bug class
+    excluded:** a quadric summed over the wrong faces or a placement off the quadric's minimizer.
+    **Mutation probe**, run below: igl's own midpoint-placement decimation, the placement such a
+    bug degrades to, reads 2.1-2.8x qslim and fails the bound.
+    """
+    sphere_tm = tm.creation.icosphere(subdivisions=4, radius=1.0)
+    vertices_np = np.ascontiguousarray(sphere_tm.vertices, dtype=np.float64)
+    faces_np = np.asarray(sphere_tm.faces)
+
+    faces_int32_np = np.asfortranarray(faces_np, dtype=np.int32)
+    vertices_qslim_igl, faces_qslim_igl, _birth_faces_igl, _birth_vertices_igl = igl.qslim(
+        np.asfortranarray(vertices_np), faces_int32_np, target_faces
+    )
+    assert np.asarray(faces_qslim_igl).shape[0] == target_faces, "qslim reached the target"
+    deviation_igl = hausdorff_surface_two_sided(
+        vertices_np, faces_np, np.asarray(vertices_qslim_igl), np.asarray(faces_qslim_igl)
+    )
+
+    _decimated_vertices_np, decimated_faces_np, deviation_wp = _quadric_decimated_sphere(
+        device, target_faces
+    )
+    assert decimated_faces_np.shape[0] == target_faces
+    assert deviation_igl > 0.0
+    assert deviation_wp <= 1.25 * deviation_igl
+
+    midpoint_igl = igl.decimate(np.asfortranarray(vertices_np), faces_int32_np, target_faces)
+    deviation_midpoint_igl = hausdorff_surface_two_sided(
+        vertices_np, faces_np, np.asarray(midpoint_igl[0]), np.asarray(midpoint_igl[1])
+    )
+    assert deviation_midpoint_igl > 1.25 * deviation_igl
+
+
 @pytest.mark.parametrize("target_ratio", [0.75, 0.5, 0.25])
 def test_quadric_decimate_is_reproducible(device: str, target_ratio: float) -> None:
     """
@@ -2905,6 +2953,47 @@ def test_flip_to_delaunay_matches_meshlib(device: str) -> None:
     )
     assert violations_before > 100  # non-vacuity: the input really is far from Delaunay
     assert violations_after == 0
+
+
+@pytest.mark.parity(
+    "flip_to_delaunay",
+    "igl",
+    benchmarked=False,
+    reason="igl.is_delaunay is a post-condition check, not a flip pass: libigl binds no extrinsic "
+    "edge-flip routine, so there is nothing of igl's to time beside flip_to_delaunay",
+)
+def test_flip_to_delaunay_satisfies_igl_is_delaunay(device: str) -> None:
+    """
+    Class A on the post-condition: after the flips ``igl.is_delaunay`` holds on every edge.
+
+    ``igl.is_delaunay`` reads only ``x`` and ``y`` (an in-circle determinant), so the input is
+    planar: a jittered 24 x 24 grid whose cells all take the same diagonal, which leaves **538**
+    face corners whose opposite edge igl calls non-Delaunay. ordito's pass must leave none,
+    judged by igl's own predicate and on the ``float32`` positions both sides read.
+    """
+    side = 24
+    rng = np.random.default_rng(3)
+    xs_np, ys_np = np.meshgrid(np.arange(side), np.arange(side), indexing="ij")
+    planar_np = np.column_stack((xs_np.ravel(), ys_np.ravel())).astype(np.float64)
+    planar_np += rng.uniform(-0.35, 0.35, size=planar_np.shape)
+    index_np = np.arange(side * side).reshape(side, side)
+    a, b = index_np[:-1, :-1].ravel(), index_np[1:, :-1].ravel()
+    c, d = index_np[1:, 1:].ravel(), index_np[:-1, 1:].ravel()
+    faces_np = np.concatenate([np.column_stack((a, b, c)), np.column_stack((a, c, d))])
+    vertices_wp, faces_wp = numpy_to_warp(
+        np.column_stack((planar_np, np.zeros(side * side))), faces_np, device
+    )
+    vertices_np = vertices_wp.numpy().astype(np.float64)
+
+    before_igl = np.asarray(igl.is_delaunay(vertices_np, faces_np.astype(np.int64)))
+    assert int((~before_igl).sum()) > 100  # non-vacuity: the input really is far from Delaunay
+
+    flipped_np = (
+        od.remesh.flip_to_delaunay(vertices_wp, faces_wp, max_iter=100).numpy().reshape(-1, 3)
+    )
+    after_igl = np.asarray(igl.is_delaunay(vertices_np, flipped_np.astype(np.int64)))
+    assert after_igl.shape == (faces_np.shape[0], 3)
+    assert after_igl.all()
 
 
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
@@ -3813,6 +3902,28 @@ def test_subdivide_matches_igl(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> 
     )
 
 
+@pytest.mark.parity("subdivide", "pyvista")
+def test_subdivide_matches_pyvista(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Class A (``od.equality.meshes_allclose``): ``subdivide(1, "linear")`` is the same 1:4 split.
+
+    ``vtkLinearSubdivisionFilter`` keeps the original points first and in place, so that prefix
+    compares by index; its midpoints follow VTK's own edge enumeration, so the whole mesh is then
+    compared up to numbering, faces and winding included. Measured: identical counts (1 994
+    vertices, 3 984 faces) and the meshes equal within ``1e-5``.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    subdivided_pv = trimesh_to_pyvista(mesh_tm).subdivide(1, "linear")
+    vertices_pv = np.asarray(subdivided_pv.points)
+    faces_pv = np.asarray(subdivided_pv.regular_faces)
+    vertices_wp, faces_wp = od.remesh.subdivide(mesh_wp.points, mesh_wp.indices)
+
+    n_original = mesh_tm.vertices.shape[0]
+    assert faces_pv.shape[0] == 4 * mesh_tm.faces.shape[0]
+    assert np.allclose(vertices_pv[:n_original], mesh_tm.vertices, rtol=1e-5, atol=1e-5)
+    _assert_same_mesh_under_vertex_match(vertices_wp, faces_wp, vertices_pv, faces_pv, 1e-5)
+
+
 @pytest.mark.parametrize("entry_point", ["subdivide", "subdivide_loop"])
 def test_subdivide_edges_change_no_answer(
     entry_point: Literal["subdivide", "subdivide_loop"],
@@ -3985,6 +4096,84 @@ def test_subdivide_loop_matches_open3d(mesh_name: str, request: pytest.FixtureRe
     _assert_same_mesh_under_vertex_match(
         vertices_wp, faces_wp, vertices_o3d, np.asarray(mesh_o3d.triangles), 1e-5
     )
+
+
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "torus_irregular", "saddle_graded"])
+@pytest.mark.parity("subdivide_loop", "pymeshlab", "pyvista")
+def test_subdivide_loop_matches_pymeshlab_and_pyvista(
+    mesh_name: str, request: pytest.FixtureRequest
+) -> None:
+    """
+    Class B (even vertices re-weighted to Loop's ``beta``): MeshLab's and VTK's Loop.
+
+    ``meshing_surface_subdivision_loop`` and ``vtkLoopSubdivisionFilter`` both use Loop's original
+    interior ``beta = (5/8 - (3/8 + cos(2 pi / n) / 4)^2) / n`` where ordito, igl and Open3D use
+    Warren's ``3 / (8 n)`` (``3/16`` at valence 3, where the two coincide; also equal at 6). The
+    odd (edge) stencil and both boundary rules are shared, and the even weight multiplies the
+    same ring sum, so the transform is exact: the ring sum is recovered from ordito's even vertex
+    and the input position, ``(v_new - (1 - n beta_W) v) / beta_W``, and re-weighted with
+    ``beta_L``. Interior valences come from the input. Measured: raw even vertices up to **0.041**
+    apart on ``sphere_irregular`` (valence 3-12) and 0.030 on ``torus_irregular``; after the
+    transform every vertex within **5.1e-7** of both references and the faces equal with their
+    winding. ``saddle_graded`` has a rim and interior valence 6 only, so it pins the boundary
+    rules and needs no re-weighting (raw agreement 9e-8).
+
+    MeshLab's ``threshold`` default (1 % of the diagonal) skips short edges, so ``PureValue(0)``
+    is passed. Both references keep the original vertices first, so the even prefix is compared
+    by index before the whole mesh goes through the vertex match.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    n_original = int(mesh_tm.vertices.shape[0])
+    vertices_wp, faces_wp = od.remesh.subdivide_loop(mesh_wp.points, mesh_wp.indices)
+    vertices_np = vertices_wp.numpy().astype(np.float64)
+    even_np = _loop_even_vertices(mesh_tm, vertices_np[:n_original])
+    vertices_np[:n_original] = even_np
+    vertices_reweighted_wp = points_to_warp(vertices_np, mesh_wp.points.device)
+
+    meshset_pml = trimesh_to_pymeshlab(mesh_tm)
+    meshset_pml.meshing_surface_subdivision_loop(iterations=1, threshold=ml.PureValue(0.0))
+    vertices_pml = np.asarray(meshset_pml.current_mesh().vertex_matrix(), dtype=np.float64)
+    faces_pml = np.asarray(meshset_pml.current_mesh().face_matrix())
+    subdivided_pv = trimesh_to_pyvista(mesh_tm).subdivide(1, "loop")
+    vertices_pv = np.asarray(subdivided_pv.points, dtype=np.float64)
+    faces_pv = np.asarray(subdivided_pv.regular_faces)
+
+    if mesh_tm.is_watertight:
+        # Non-vacuity: on these fixtures the two betas really place the even vertices apart.
+        assert np.abs(vertices_wp.numpy()[:n_original] - vertices_pml[:n_original]).max() > 1e-2
+    for vertices_ref, faces_ref in ((vertices_pml, faces_pml), (vertices_pv, faces_pv)):
+        assert vertices_ref.shape[0] == vertices_wp.size
+        assert faces_ref.shape[0] == faces_wp.size // 3
+        assert np.allclose(vertices_ref[:n_original], even_np, rtol=1e-5, atol=1e-5)
+        _assert_same_mesh_under_vertex_match(
+            vertices_reweighted_wp, faces_wp, vertices_ref, faces_ref, 1e-5
+        )
+
+
+def _loop_even_vertices(mesh_tm: tm.Trimesh, even_np: np.ndarray) -> np.ndarray:
+    """
+    Re-weight ordito's Loop even vertices from Warren's ``beta`` to Loop's original one.
+
+    Rim vertices keep their position: the boundary rule does not depend on ``beta``.
+    """
+    original_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
+    valence_np = np.bincount(mesh_tm.edges_unique.ravel(), minlength=original_np.shape[0])
+    valence_np = np.maximum(valence_np, 1).astype(np.float64)
+    rim_np = np.zeros(original_np.shape[0], dtype=bool)
+    rim_np[mesh_tm.edges_sorted[tm.grouping.group_rows(mesh_tm.edges_sorted, require_count=1)]] = (
+        True
+    )
+    beta_warren_np = np.where(valence_np == 3, 3.0 / 16.0, 3.0 / (8.0 * valence_np))
+    beta_loop_np = (
+        5.0 / 8.0 - (3.0 / 8.0 + np.cos(2.0 * np.pi / valence_np) / 4.0) ** 2
+    ) / valence_np
+    ring_sum_np = (
+        even_np - (1.0 - valence_np * beta_warren_np)[:, None] * original_np
+    ) / beta_warren_np[:, None]
+    reweighted_np = (1.0 - valence_np * beta_loop_np)[:, None] * original_np + beta_loop_np[
+        :, None
+    ] * ring_sum_np
+    return np.where(rim_np[:, None], even_np, reweighted_np)
 
 
 @pytest.mark.parametrize("mesh_name", ["saddle_graded"])
@@ -4349,6 +4538,38 @@ def _assert_matches_trimesh_subdivide_to_size(
     hist_wp = np.bincount(index_wp.numpy(), minlength=n_in_faces)
     hist_ref = np.bincount(ref_index, minlength=n_in_faces)
     assert np.array_equal(hist_wp, hist_ref)
+
+
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "torus_irregular_holes"])
+@pytest.mark.parametrize("split_fraction", [0.3, 0.1])
+@pytest.mark.parity("subdivide_to_size", "pyvista")
+def test_subdivide_to_size_matches_pyvista(
+    mesh_name: str, split_fraction: float, request: pytest.FixtureRequest
+) -> None:
+    """
+    Class A (``od.equality.meshes_allclose``): ``subdivide_adaptive`` splits to the same mesh.
+
+    ``vtkAdaptiveSubdivisionFilter`` splits every edge over ``max_edge_len`` at its midpoint and
+    tiles each face by how many of its edges split, repeating until none is over: the same rule
+    and, measured, the same mesh up to numbering on both fixtures at both fractions of the longest
+    edge (``sphere_irregular``: 2 788 and 20 454 faces). Its triangle-area cap is left at its
+    unbounded default, so only the edge length drives it.
+
+    Two inputs part the two, neither of them a disagreement on the rule: a threshold exactly half
+    an input edge (0.5 of the longest) is a tie that ``float32`` and ``float64`` lengths resolve
+    differently (1 356 against 1 358 faces), and on ``saddle_graded``'s needles the vertex sets are
+    equal but 24 of 6 414 faces take the other diagonal of a split quad.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    max_edge = split_fraction * float(mesh_tm.edges_unique_length.max())
+    subdivided_pv = trimesh_to_pyvista(mesh_tm).subdivide_adaptive(max_edge_len=max_edge)
+    vertices_pv = np.asarray(subdivided_pv.points)
+    faces_pv = np.asarray(subdivided_pv.regular_faces)
+    assert faces_pv.shape[0] > mesh_tm.faces.shape[0], "the reference refined the mesh"
+
+    vertices_wp, faces_wp = od.remesh.subdivide_to_size(mesh_wp.points, mesh_wp.indices, max_edge)
+    assert faces_wp.size // 3 == faces_pv.shape[0]
+    _assert_same_mesh_under_vertex_match(vertices_wp, faces_wp, vertices_pv, faces_pv, 1e-5)
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)

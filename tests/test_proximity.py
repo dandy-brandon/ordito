@@ -143,6 +143,65 @@ def test_query_mesh_aabb_with_offsets(device: str) -> None:
         assert np.array_equal(got_np, expected_np)
 
 
+@pytest.mark.parity(
+    "query_mesh_aabb_with_offsets",
+    "pyvista",
+    benchmarked=False,
+    reason="find_cells_within_bounds answers one box a call, so a row would time a Python loop "
+    "over the 10 000 query boxes rather than VTK's cell locator; the group stays ordito-only.",
+)
+def test_query_mesh_aabb_with_offsets_matches_pyvista(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Class A per query: VTK's ``find_cells_within_bounds`` returns the same face set.
+
+    VTK tests each cell's bounding box against the query box, which is the candidate rule
+    ``wp.mesh_query_aabb`` applies, so the two sets are equal; within a query the order is each
+    traversal's own, so each set is compared sorted. 200 boxes of half-width 0.02-0.15 about
+    jittered vertices of ``sphere_irregular``: measured equal on every box, with up to a few
+    dozen faces in a box. ``max_hits`` is raised past the largest reference count so no hit is
+    dropped. Non-vacuous: boxes with no face, one face and many faces all occur.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    rng = np.random.default_rng(3)
+    n = 200
+    vertices_np = np.asarray(mesh_tm.vertices)
+    centres_np = vertices_np[rng.integers(0, vertices_np.shape[0], n)] + rng.normal(
+        scale=0.1, size=(n, 3)
+    )
+    half_np = rng.uniform(0.02, 0.15, (n, 1))
+    lower_np, upper_np = centres_np - half_np, centres_np + half_np
+
+    mesh_pv = trimesh_to_pyvista(mesh_tm)
+    cells_pv = [
+        np.sort(
+            np.asarray(
+                mesh_pv.find_cells_within_bounds(
+                    pv.BoundsTuple(lo[0], hi[0], lo[1], hi[1], lo[2], hi[2])
+                )
+            )
+        )
+        for lo, hi in zip(lower_np.tolist(), upper_np.tolist(), strict=True)
+    ]
+    counts_pv = np.array([cells.size for cells in cells_pv])
+    assert (counts_pv == 0).any()
+    assert (counts_pv == 1).any() or (counts_pv == 2).any()
+    assert counts_pv.max() >= 10
+    max_hits = int(counts_pv.max()) + 1
+
+    candidates_wp, offsets_wp = od.proximity.query_mesh_aabb_with_offsets(
+        mesh_wp,
+        points_to_warp(lower_np, mesh_wp.device),
+        points_to_warp(upper_np, mesh_wp.device),
+        max_hits=max_hits,
+    )
+    candidates_np, offsets_np = candidates_wp.numpy(), offsets_wp.numpy()
+    for query, cells in enumerate(cells_pv):
+        ours_np = np.sort(candidates_np[offsets_np[query] : offsets_np[query + 1]])
+        assert np.array_equal(ours_np, cells)
+
+
 def test_query_mesh_aabb_with_offsets_guards_empty_and_miss(device: str) -> None:
     """
     Not a library comparison: the two ``ValueError`` guards, no query, and boxes that hit nothing.
@@ -173,12 +232,12 @@ def test_query_mesh_aabb_with_offsets_guards_empty_and_miss(device: str) -> None
 
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 @pytest.mark.parametrize("ordered", [False, True])
-@pytest.mark.parity("closest_point_on_mesh", "meshlib", "pyvista")
+@pytest.mark.parity("closest_point_on_mesh", "meshlib", "pyvista", "trimesh", "igl", "open3d")
 def test_closest_point_on_mesh_matches_references(
     request: pytest.FixtureRequest, mesh_name: str, ordered: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
-    200 random queries against trimesh, MeshLib and pyvista: distance, point and face index.
+    200 random queries against trimesh, libigl, open3d, MeshLib and pyvista: distance and point.
 
     **Class A on the distance and the point against all three.** Measured on both devices, the
     point agrees to at most **3.1e-07** with every reference on both fixtures (trimesh and pyvista
@@ -206,6 +265,13 @@ def test_closest_point_on_mesh_matches_references(
     radius. The index is therefore left to the MeshLib pair, whose ``findProjection`` reports the
     face on ordito's own soup numbering.
 
+    **libigl and open3d, Class A on the distance and the point.**
+    ``igl.point_mesh_squared_distance`` is float64-exact like trimesh (measured on CUDA: point
+    3.1e-07, distance 2.3e-07); open3d's ``RaycastingScene.compute_closest_points`` is Embree's
+    ``float32`` query (point 2.5e-07, distance 2.3e-07) and is compared on the point and the
+    distance alone, since its ``primitive_ids`` break equidistant-face ties their own
+    way (``reference/reference-libraries.md``).
+
     ``ordered`` drops the gates of ``_common.search_order``, so the queries (scattered by
     construction) are answered in Hilbert order and written back by index.
     """
@@ -224,6 +290,28 @@ def test_closest_point_on_mesh_matches_references(
     closest_tm, distance_tm, _triangle_id_tm = tm.proximity.closest_point(mesh_tm, points_np)
     assert np.allclose(closest_np, closest_tm, rtol=1e-5, atol=1e-5)
     assert np.allclose(distances_np, distance_tm, rtol=1e-5, atol=1e-5)
+
+    # libigl.
+    squared_igl, _faces_igl, closest_igl = igl.point_mesh_squared_distance(
+        np.ascontiguousarray(points_np), *mesh_igl(mesh_tm)
+    )
+    assert np.allclose(closest_np, closest_igl, rtol=1e-5, atol=1e-5)
+    assert np.allclose(distances_np, np.sqrt(squared_igl), rtol=1e-5, atol=1e-5)
+
+    # open3d (Embree).
+    scene_o3d = o3d.t.geometry.RaycastingScene()
+    scene_o3d.add_triangles(trimesh_to_open3d_t(mesh_tm))
+    closest_o3d = (
+        scene_o3d.compute_closest_points(
+            o3d.core.Tensor(np.ascontiguousarray(points_np, dtype=np.float32))  # pyright: ignore[reportCallIssue]  # the stub drops dtype/device defaults
+        )["points"]
+        .numpy()
+        .astype(np.float64)
+    )
+    assert np.allclose(closest_np, closest_o3d, rtol=1e-5, atol=1e-5)
+    assert np.allclose(
+        distances_np, np.linalg.norm(points_np - closest_o3d, axis=1), rtol=1e-5, atol=1e-5
+    )
 
     # MeshLib.
     mesh_part_ml = mm.MeshPart(trimesh_to_meshlib(mesh_tm))
@@ -1433,7 +1521,7 @@ def test_signed_distance_on_mesh_matches_pymeshlab_igl_and_open3d(
 
 
 @pytest.mark.parametrize("mesh_name", _SIGNED_DISTANCE_MESHES)
-@pytest.mark.parity("signed_distance_on_mesh", "meshlib")
+@pytest.mark.parity("signed_distance_on_mesh", "meshlib", "trimesh")
 def test_signed_distance_on_mesh_matches_meshlib(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -1822,6 +1910,60 @@ def test_signed_distance_grid_matches_open3d(
     # Non-vacuity in both signs: the lattice has to straddle the surface to be worth comparing.
     assert field_np.min() < -0.5 * voxel_size
     assert field_np.max() > 0.5 * voxel_size
+
+
+@pytest.mark.parity("signed_distance_grid", "meshlib")
+@pytest.mark.parametrize("mesh_name", _SIGNED_DISTANCE_MESHES_TORUS)
+@pytest.mark.parametrize(
+    ("sign_mode", "sign_mode_ml"), [("parity", "OddCrossings"), ("winding", "HoleWindingRule")]
+)
+def test_signed_distance_grid_matches_meshlib(
+    request: pytest.FixtureRequest,
+    mesh_name: str,
+    sign_mode: Literal["parity", "winding"],
+    sign_mode_ml: str,
+) -> None:
+    """
+    Class A: MeshLib's ``meshToDistanceVolume`` on the same lattice is the same field.
+
+    One named alignment, not a transform of the values: MeshLib's ``vol.origin`` addresses the
+    corner of voxel ``[0, 0, 0]``, whose sample sits at its centre, so the lattice ordito returns
+    is reproduced with ``origin = lower - voxel_size / 2``, ``dimensions`` the field's shape and
+    ``nullOutsideMinMax=False`` (otherwise samples outside the distance band come back null).
+    ``getNumpy3Darray`` reads it back ``(x, y, z)``, ordito's own axis order. Each of ordito's two
+    sign modes is paired with MeshLib's rule of the same family (``OddCrossings`` for ray parity,
+    ``HoleWindingRule`` for the winding number); both share ordito's sign convention, negative
+    inside. Measured on CUDA: every sign equal and at most 9.8e-07 apart over the lattice of
+    ``sphere_irregular_hollow`` (cavity) and ``torus_irregular`` (genus 1), against the 1e-5
+    asserted. **Mutation probe**: dropping the half-voxel alignment moves every sample by half a
+    cell and the difference to about ``voxel_size / 2`` (0.05), 5 000x the tolerance.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    voxel_size = 0.1
+    field_wp, (lower, _upper) = od.proximity.signed_distance_grid(
+        mesh_wp.points, mesh_wp.indices, voxel_size, sign_mode=sign_mode
+    )
+    field_np = field_wp.numpy()
+    lower_np = np.asarray(odt.vec3_floats(lower))
+
+    params_ml = mm.MeshToDistanceVolumeParams()
+    params_ml.vol.origin = mm.Vector3f(*(lower_np - 0.5 * voxel_size).tolist())
+    params_ml.vol.voxelSize = mm.Vector3f(voxel_size, voxel_size, voxel_size)
+    params_ml.vol.dimensions = mm.Vector3i(*field_np.shape)
+    params_ml.dist.signMode = getattr(mm.SignDetectionMode, sign_mode_ml)
+    params_ml.dist.nullOutsideMinMax = False
+    field_ml = np.asarray(
+        mn.getNumpy3Darray(
+            mm.meshToDistanceVolume(mm.MeshPart(trimesh_to_meshlib(mesh_tm)), params_ml)
+        )
+    )
+
+    # Non-vacuity in both signs: the lattice straddles the surface.
+    assert field_ml.min() < -0.5 * voxel_size
+    assert field_ml.max() > 0.5 * voxel_size
+    assert field_ml.shape == field_np.shape
+    assert np.array_equal(np.sign(field_np), np.sign(field_ml))
+    assert np.allclose(field_np, field_ml, rtol=1e-5, atol=1e-5)
 
 
 def test_signed_distance_grid_guards_and_conventions(

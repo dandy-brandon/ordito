@@ -39,7 +39,21 @@ Two caveats for reading the pymeshlab rows. ``compute_scalar_by_shape_diameter_f
 is the most expensive per-vertex filter MeshLab ships and its ``cone_amplitude`` parameter is a
 **no-op** in the 2025.07 build -- byte-identical output at 90 and
 120 degrees -- so its cone is whatever it is. Both filters write only the vertex scalar attribute,
-so the MeshSet is shared rather than rebuilt per call. Open3D has no equivalent for anything here.
+so the MeshSet is shared rather than rebuilt per call.
+
+**libigl** has both ray bundles through Embree, ``igl.embree.ambient_occlusion`` and
+``shape_diameter_function``: random directions over the hemisphere, redrawn every call, and
+multi-threaded. Its Embree scene (an ``EmbreeIntersector``) and the host normals are built once
+per mesh outside the timed callable, as ordito's ``wp.Mesh`` and normals are, and its
+``num_samples`` follows the ``rays`` axis. Its AO is ordito's ``weight="uniform"`` fraction
+(compared in ``tests/test_visibility.py`` as a Monte Carlo estimate, Class C); its SDF is an
+unweighted, untrimmed mean over the whole hemisphere where ordito's is a trimmed cosine-weighted
+cone, compared on the rank structure only. Both are timed against ordito's default weights, so
+read the rows as the same ray count rather than the same estimator.
+
+Open3D's only counterpart is ``t.geometry.TriangleMesh.compute_ambient_occlusion``, which bakes
+occlusion into a *texture* over a UV atlas from random rays, so it answers per texel rather than
+per vertex and has no row here; it has nothing for the other four functions.
 
 **trimesh is the oracle for two of these five functions and is now timed for both.**
 ``trimesh.proximity.thickness`` and ``max_tangent_sphere`` have been the correctness references in
@@ -55,6 +69,7 @@ from __future__ import annotations
 
 from typing import Literal
 
+import igl.embree as igl_embree
 import numpy as np
 import pytest
 import trimesh as tm
@@ -130,6 +145,41 @@ def _surface_points_np(bench_case: BenchCase) -> tuple[np.ndarray, np.ndarray]:
     return _surface_np_cache[bench_case.mesh_name]
 
 
+_embree_igl_cache: dict[str, tuple[igl_embree.EmbreeIntersector, np.ndarray, np.ndarray]] = {}
+
+
+def _embree_igl(
+    bench_case: BenchCase,
+) -> tuple[igl_embree.EmbreeIntersector, np.ndarray, np.ndarray]:
+    """
+    ``(scene, points, normals)`` for the igl rows: an Embree scene over the mesh, built once.
+
+    The points are the mesh's own vertices and the normals ordito's area-weighted ones read back,
+    so both sides trace the same bundles from the same frames; all three are inputs, cached per
+    mesh as the ``wp.Mesh`` is.
+    """
+    if bench_case.mesh_name not in _embree_igl_cache:
+        scene_igl = igl_embree.EmbreeIntersector()
+        scene_igl.init(
+            np.asfortranarray(bench_case.vertices_np, dtype=np.float32),
+            np.asfortranarray(bench_case.faces_np, dtype=np.int32),
+        )
+        points_np = np.ascontiguousarray(bench_case.vertices_np, dtype=np.float64)
+        normals_np = np.ascontiguousarray(
+            od.normals.vertex_normals(
+                wp.array(points_np, dtype=wp.vec3, device="cpu"),
+                wp.array(
+                    np.ascontiguousarray(bench_case.faces_np, dtype=np.int32).reshape(-1),
+                    dtype=wp.int32,
+                    device="cpu",
+                ),
+            ).numpy(),
+            dtype=np.float64,
+        )
+        _embree_igl_cache[bench_case.mesh_name] = (scene_igl, points_np, normals_np)
+    return _embree_igl_cache[bench_case.mesh_name]
+
+
 def _vertex_normals_wp(bench_case: BenchCase) -> wp.array[wp.vec3]:
     """Smooth outward normals over the mesh's own vertices -- an *input* of the bundle queries."""
     key = (bench_case.mesh_name, str(bench_case.device))
@@ -139,11 +189,19 @@ def _vertex_normals_wp(bench_case: BenchCase) -> wp.array[wp.vec3]:
 
 
 @pytest.mark.benchmark(group="ambient_occlusion")
-@pytest.mark.benchlibs("ordito", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "pymeshlab", "igl")
 @pytest.mark.parametrize("n_rays", _N_RAYS_SWEEP)
 def test_ambient_occlusion(bench_case: BenchCase, n_rays: int) -> None:
     """A hemisphere ray bundle per vertex: the embarrassingly parallel case, against one core."""
     n_vertices = bench_case.n_vertices
+    if bench_case.kind == "igl":
+        skip_larger_than(bench_case, "bunny", "the whole bundle on the CPU, every vertex")
+        scene_igl, points_np, normals_np = _embree_igl(bench_case)
+        occlusion_igl = bench_case.run(
+            lambda: igl_embree.ambient_occlusion(scene_igl, points_np, normals_np, n_rays), rounds=3
+        )
+        assert occlusion_igl.shape == (n_vertices,)
+        return
     if bench_case.kind == "pymeshlab":
         skip_larger_than(bench_case, "bunny", "MeshLab traces the whole bundle on one core")
         meshset_pml = bench_case.meshset_pml  # writes only the vertex scalar
@@ -188,7 +246,7 @@ def test_volumetric_obscurance(bench_case: BenchCase, n_rays: int) -> None:
 
 
 @pytest.mark.benchmark(group="shape_diameter")
-@pytest.mark.benchlibs("ordito", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "pymeshlab", "igl")
 @pytest.mark.parametrize("n_rays", _N_RAYS_SWEEP)
 def test_shape_diameter(bench_case: BenchCase, n_rays: int) -> None:
     """
@@ -199,6 +257,15 @@ def test_shape_diameter(bench_case: BenchCase, n_rays: int) -> None:
     dominate -- and if it ever is not, the scratch is the thing to attack.
     """
     n_vertices = bench_case.n_vertices
+    if bench_case.kind == "igl":
+        skip_larger_than(bench_case, "bunny", "the whole bundle on the CPU, every vertex")
+        scene_igl, points_np, normals_np = _embree_igl(bench_case)
+        diameter_igl = bench_case.run(
+            lambda: igl_embree.shape_diameter_function(scene_igl, points_np, normals_np, n_rays),
+            rounds=3,
+        )
+        assert diameter_igl.shape == (n_vertices,)
+        return
     if bench_case.kind == "pymeshlab":
         skip_larger_than(bench_case, "bunny", "674 ms a call on bunny at the default ray count")
         meshset_pml = bench_case.meshset_pml
