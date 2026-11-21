@@ -24,7 +24,7 @@ import heapq
 import math
 import struct
 from collections.abc import Callable, Sequence
-from typing import Literal, NamedTuple, cast
+from typing import Literal, NamedTuple, Protocol, cast
 
 import numpy as np
 import warp as wp
@@ -1897,35 +1897,22 @@ class _Operand(NamedTuple):
     first_halfedge: wp.array[wp.int32]
     bvh: wp.Bvh
 
-    @property
-    def positions(self) -> wp.array[wp.vec3d]:
-        """The solid's positions."""
-        return self.solid.positions
 
-    @property
-    def faces(self) -> wp.array[wp.int32]:
-        """The solid's faces."""
-        return self.solid.faces
+class _HalfedgeMesh(Protocol):
+    """
+    The fields of a ``kernel_boolean.HalfedgeMesh`` struct, for the type checker.
 
-    @property
-    def face_normals(self) -> wp.array[wp.vec3d]:
-        """The solid's face normals."""
-        return self.solid.face_normals
+    The result's halfedges, triangles and vertices as the topology passes edit them in place, and
+    their used ``sizes``.
+    """
 
-    @property
-    def vertex_normals(self) -> wp.array[wp.vec3d]:
-        """The solid's vertex normals."""
-        return self.solid.vertex_normals
-
-    @property
-    def n_vertices(self) -> int:
-        """The vertex count."""
-        return self.solid.n_vertices
-
-    @property
-    def n_faces(self) -> int:
-        """The face count."""
-        return self.solid.n_faces
+    start: wp.array[wp.int32]
+    pair: wp.array[wp.int32]
+    tri_mesh: wp.array[wp.int32]
+    tri_coplanar: wp.array[wp.int32]
+    tri_normal: wp.array[wp.vec3d]
+    pos: wp.array[wp.vec3d]
+    sizes: wp.array[wp.int32]
 
 
 class _Crossings(NamedTuple):
@@ -1949,19 +1936,6 @@ class _Crossings(NamedTuple):
     windings_p: wp.array[wp.int32]
     windings_q: wp.array[wp.int32]
     pad: float
-
-
-class _ResultMesh(NamedTuple):
-    """The result's ``HalfedgeMesh`` struct and the arrays it bundles, for host-side reads."""
-
-    struct: StructInstance
-    start: wp.array[wp.int32]
-    pair: wp.array[wp.int32]
-    tri_mesh: wp.array[wp.int32]
-    tri_coplanar: wp.array[wp.int32]
-    tri_normal: wp.array[wp.vec3d]
-    pos: wp.array[wp.vec3d]
-    sizes: wp.array[wp.int32]
 
 
 def _boolean(
@@ -2233,7 +2207,7 @@ def _regrouped_solid(solid: _Solid, tolerance: float) -> _Solid:
     )
 
 
-def _halfedge_mesh_from_solid(solid: _Solid) -> _ResultMesh:
+def _halfedge_mesh_from_solid(solid: _Solid) -> _HalfedgeMesh:
     """Return a solid's halfedges as the topology passes edit them."""
     device = solid.positions.device
     n_faces = solid.n_faces
@@ -2725,7 +2699,7 @@ def _operand(solid: _Solid) -> _Operand:
 
 def _boolean3(p: _Operand, q: _Operand, expand: int) -> _Crossings:
     """``Boolean3``: the edge-face crossings both ways and the vertices' winding numbers."""
-    device = p.positions.device
+    device = p.solid.positions.device
     scale = max(p.solid.scale, q.solid.scale)
     # The face trees' query boxes are padded by a few float32 ulps of the scene: a superset of the
     # candidates the exact predicates then decide.
@@ -2767,7 +2741,7 @@ def _boolean3(p: _Operand, q: _Operand, expand: int) -> _Crossings:
 def _result(crossings: _Crossings, operation: _Operation) -> _Solid:
     """``Boolean3::Result``: one operation's solid from the crossings and windings."""
     p, q = crossings.p, crossings.q
-    device = p.positions.device
+    device = p.solid.positions.device
     n12, n21 = crossings.n12, crossings.n21
     record_edge, record_face = crossings.record_edge, crossings.record_face
     c1 = 0 if operation == "intersection" else 1
@@ -2780,8 +2754,8 @@ def _result(crossings: _Crossings, operation: _Operation) -> _Solid:
     # Level 4: the inclusions and the result's vertices.
     n_records = n12 + n21
     size = max(n_records, 1)
-    n_vp = p.n_vertices
-    n_vq = q.n_vertices
+    n_vp = p.solid.n_vertices
+    n_vq = q.solid.n_vertices
     n_items = n_vp + n_vq + n_records
     vertex_offsets, abs_inclusion = offsets_buffer(n_items, device)
     inclusion = _launch.empty(n_items, dtype=wp.int32, device=device)
@@ -2791,16 +2765,16 @@ def _result(crossings: _Crossings, operation: _Operation) -> _Solid:
     ):
         _launch.launch(
             kernel_boolean.vertex_inclusions,
-            dim=operand.n_vertices,
+            dim=operand.solid.n_vertices,
             inputs=[
                 labels,
                 windings,
                 operand.first_halfedge,
-                operand.faces.size,
+                operand.solid.faces.size,
                 c_base,
                 c3,
-                _launch.view(inclusion, base, base + operand.n_vertices),
-                _launch.view(abs_inclusion, base, base + operand.n_vertices),
+                _launch.view(inclusion, base, base + operand.solid.n_vertices),
+                _launch.view(abs_inclusion, base, base + operand.solid.n_vertices),
             ],
             device=device,
         )
@@ -2827,8 +2801,8 @@ def _result(crossings: _Crossings, operation: _Operation) -> _Solid:
         kernel_boolean.place_result_vertices,
         dim=n_items,
         inputs=[
-            p.positions,
-            q.positions,
+            p.solid.positions,
+            q.solid.positions,
             crossings.record_point,
             inclusion,
             vertex_offsets,
@@ -2847,15 +2821,15 @@ def _result(crossings: _Crossings, operation: _Operation) -> _Solid:
     )
 
     # The polygon sides of every face of P and Q (``SizeOutput``).
-    n_fp = p.n_faces
-    n_fq = q.n_faces
+    n_fp = p.solid.n_faces
+    n_fq = q.solid.n_faces
     n_faces = n_fp + n_fq
     face_offsets, sides = offsets_buffer(n_faces, device)
     for operand, vertex_base, face_base in ((p, 0, 0), (q, n_vp, n_fp)):
         _launch.launch(
             kernel_boolean.count_face_sides,
-            dim=operand.n_faces,
-            inputs=[operand.faces, inclusion, vertex_base, face_base],
+            dim=operand.solid.n_faces,
+            inputs=[operand.solid.faces, inclusion, vertex_base, face_base],
             outputs=[sides],
             device=device,
         )
@@ -2893,11 +2867,11 @@ def _result(crossings: _Crossings, operation: _Operation) -> _Solid:
     ):
         _launch.launch(
             kernel_boolean.emit_partial_edges,
-            dim=operand.faces.size,
+            dim=operand.solid.faces.size,
             inputs=[
-                operand.faces,
+                operand.solid.faces,
                 operand.mates,
-                operand.positions,
+                operand.solid.positions,
                 run_offsets,
                 record_base,
                 record_inclusion,
@@ -2952,9 +2926,9 @@ def _result(crossings: _Crossings, operation: _Operation) -> _Solid:
     ):
         _launch.launch(
             kernel_boolean.emit_whole_edges,
-            dim=operand.faces.size,
+            dim=operand.solid.faces.size,
             inputs=[
-                operand.faces,
+                operand.solid.faces,
                 operand.mates,
                 broken,
                 inclusion,
@@ -2987,8 +2961,8 @@ def _result(crossings: _Crossings, operation: _Operation) -> _Solid:
         starts,
         ends,
         positions,
-        p.face_normals,
-        q.face_normals,
+        p.solid.face_normals,
+        q.solid.face_normals,
         n_fp,
         1 if invert_q else 0,
         epsilon,
@@ -3032,8 +3006,8 @@ def _result(crossings: _Crossings, operation: _Operation) -> _Solid:
         face_offsets,
         starts,
         ends,
-        p.face_normals,
-        q.face_normals,
+        p.solid.face_normals,
+        q.solid.face_normals,
         p.solid.face_coplanar,
         q.solid.face_coplanar,
         p.solid.face_mesh,
@@ -3101,9 +3075,9 @@ def _count_crossings(
     An ``a`` of few edges against many faces goes pair by pair, and the pairs' scanned offsets
     come third (``None`` for the walk of ``b``'s face tree).
     """
-    device = a.positions.device
-    n_h = a.faces.size
-    n_faces_b = b.n_faces
+    device = a.solid.positions.device
+    n_h = a.solid.faces.size
+    n_faces_b = b.solid.n_faces
     offsets, counts = offsets_buffer(n_h, device)
     if _crossings_by_pairs(n_h, n_faces_b):
         pair_offsets, flags = offsets_buffer(n_h * n_faces_b, device)
@@ -3150,15 +3124,15 @@ def _crossing_operands(
     """Return the crossing kernels' shared arguments: both operands, the search, the side."""
     search: list[object] = [b.bvh.lowers, b.bvh.uppers] if pairs else [b.bvh.id]
     return [
-        a.faces,
-        a.positions,
-        a.vertex_normals,
-        a.face_normals,
+        a.solid.faces,
+        a.solid.positions,
+        a.solid.vertex_normals,
+        a.solid.face_normals,
         a.mates,
-        b.faces,
-        b.positions,
-        b.vertex_normals,
-        b.face_normals,
+        b.solid.faces,
+        b.solid.positions,
+        b.solid.vertex_normals,
+        b.solid.face_normals,
         b.mates,
         *search,
         pad,
@@ -3179,12 +3153,12 @@ def _write_crossings(
     records: list[odt.ArrayNd],
 ) -> None:
     """Write the crossings ``_count_crossings`` counted from ``record_base`` on."""
-    device = a.positions.device
+    device = a.solid.positions.device
     if pair_offsets is not None:
-        n_faces_b = b.n_faces
+        n_faces_b = b.solid.n_faces
         _launch.launch(
             kernel_boolean.write_pair_crossings,
-            dim=a.faces.size * n_faces_b,
+            dim=a.solid.faces.size * n_faces_b,
             inputs=[
                 n_faces_b,
                 *_crossing_operands(a, b, pad, expand, forward, pairs=True),
@@ -3197,7 +3171,7 @@ def _write_crossings(
         return
     _launch.launch(
         kernel_boolean.write_edge_crossings,
-        dim=a.faces.size,
+        dim=a.solid.faces.size,
         inputs=[*_crossing_operands(a, b, pad, expand, forward, pairs=False), offsets, record_base],
         outputs=records,
         device=device,
@@ -3215,8 +3189,8 @@ def _windings(
     forward: bool,
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]:
     """Return ``a``'s broken-halfedge flags, vertex components and roots' windings in ``b``."""
-    device = a.positions.device
-    broken = _launch.zeros(a.faces.size, dtype=wp.int32, device=device)
+    device = a.solid.positions.device
+    broken = _launch.zeros(a.solid.faces.size, dtype=wp.int32, device=device)
     if count > 0:
         _launch.launch(
             kernel_boolean.mark_broken_edges,
@@ -3225,27 +3199,27 @@ def _windings(
             outputs=[broken],
             device=device,
         )
-    edges = odt.empty_2d((a.faces.size, 2), wp.int32, device=device)
+    edges = odt.empty_2d((a.solid.faces.size, 2), wp.int32, device=device)
     _launch.launch(
         kernel_boolean.unbroken_edge_rows,
-        dim=a.faces.size,
-        inputs=[a.faces, broken],
+        dim=a.solid.faces.size,
+        inputs=[a.solid.faces, broken],
         outputs=[edges],
         device=device,
     )
-    labels = connected_component_labels_from_edges(edges, a.n_vertices, validate=False)
-    windings = _launch.zeros(a.n_vertices, dtype=wp.int32, device=device)
+    labels = connected_component_labels_from_edges(edges, a.solid.n_vertices, validate=False)
+    windings = _launch.zeros(a.solid.n_vertices, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_boolean.component_windings,
-        dim=a.n_vertices,
+        dim=a.solid.n_vertices,
         inputs=[
             labels,
-            a.positions,
-            a.vertex_normals,
-            b.faces,
-            b.positions,
-            b.vertex_normals,
-            b.face_normals,
+            a.solid.positions,
+            a.solid.vertex_normals,
+            b.solid.faces,
+            b.solid.positions,
+            b.solid.vertex_normals,
+            b.solid.face_normals,
             b.mates,
             b.bvh.id,
             b.solid.lower[2] - 1.0,
@@ -3287,7 +3261,7 @@ def _ear_clip_state(
 
 def _halfedge_mesh(
     n_triangles: int, n_vertices: int, positions: wp.array[wp.vec3d], device: wp.DeviceLike
-) -> _ResultMesh:
+) -> _HalfedgeMesh:
     """Allocate the result's halfedges with room for the simplification to grow them."""
     n_halfedges = 3 * n_triangles
     capacity = 2 * n_halfedges + 64
@@ -3313,11 +3287,11 @@ def _halfedge_mesh(
     struct.tri_normal = tri_normal
     struct.pos = pos
     struct.sizes = sizes
-    return _ResultMesh(struct, start, pair, tri_mesh, tri_coplanar, tri_normal, pos, sizes)
+    return cast(_HalfedgeMesh, struct)
 
 
 def _simplify_topology(
-    result: _ResultMesh,
+    result: _HalfedgeMesh,
     first_new_vert: int,
     epsilon: float,
     tolerance: float,
@@ -3333,7 +3307,7 @@ def _simplify_topology(
     With ``cleanup_only``, ``CleanupTopology`` alone: pinched vertices split, duplicate edges
     removed.
     """
-    mesh = result.struct
+    mesh = result
     capacity = result.start.size
     flags_offsets, flags = offsets_buffer(capacity, device)
     flagged = _launch.empty(capacity, dtype=wp.int32, device=device)
@@ -3443,7 +3417,7 @@ def _simplify_topology(
 
 
 def _launch_serial(
-    result: _ResultMesh, kernel: odt.Kernel, inputs: list[object], outputs: list[object]
+    result: _HalfedgeMesh, kernel: odt.Kernel, inputs: list[object], outputs: list[object]
 ) -> None:
     """
     Launch a one-thread pass over the result's halfedges, on the CPU when they are on CUDA.
@@ -3457,9 +3431,7 @@ def _launch_serial(
     device = result.start.device
     if wp.get_device(device).is_cpu:
         plain = [_device_value(value) for value in inputs]
-        _launch.launch(
-            kernel, dim=1, inputs=[result.struct, *plain], outputs=outputs, device=device
-        )
+        _launch.launch(kernel, dim=1, inputs=[result, *plain], outputs=outputs, device=device)
         return
     host = wp.get_device("cpu")
     # Host readback: the prefixes to move.
@@ -3622,7 +3594,7 @@ def _launch_heavy_faces(
 
 
 def _finish_solid(
-    result: _ResultMesh,
+    result: _HalfedgeMesh,
     epsilon: float,
     tolerance: float,
     device: wp.DeviceLike,
@@ -3635,7 +3607,7 @@ def _finish_solid(
     ``RemoveUnreferencedVerts`` with the collapsed triangles, then ``SortGeometry`` in the kept
     vertices' box (``CalculateBBox``), or in ``box`` where the caller never recalculates it.
     """
-    mesh = result.struct
+    mesh = result
     # Host readback: the simplification grew the mesh, and the compaction's grid follows it.
     n_h, n_v = (int(x) for x in read_values(result.sizes, 0, 2))
     n_t = n_h // 3
@@ -3671,7 +3643,7 @@ def _finish_solid(
 
 
 def _compacted(
-    result: _ResultMesh, vertex_normals: wp.array[wp.vec3d], n_t: int, n_v: int
+    result: _HalfedgeMesh, vertex_normals: wp.array[wp.vec3d], n_t: int, n_v: int
 ) -> (
     tuple[
         wp.array[wp.vec3d],
@@ -3689,7 +3661,7 @@ def _compacted(
     Returns the kept positions, faces, vertex normals and each face's normal, mesh and coplanar
     group, or ``None`` when no triangle is left.
     """
-    mesh = result.struct
+    mesh = result
     device = result.start.device
     tri_offsets, tri_kept = offsets_buffer(n_t, device)
     vert_offsets, vert_used = offsets_buffer(n_v, device)
