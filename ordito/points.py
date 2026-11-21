@@ -1,5 +1,5 @@
 """
-Unstructured point-cloud geometry: fitting, second moments and normal estimation.
+Unstructured point-cloud geometry: fitting, second moments, normals, cleanup and visibility.
 
 No connectivity here -- everything takes a bare ``(n,)`` array of positions. Four groups:
 
@@ -14,6 +14,16 @@ No connectivity here -- everything takes a bare ``(n,)`` array of positions. Fou
   [`outlier_probability`][ordito.points.outlier_probability] and
   [`statistical_outlier_mask`][ordito.points.statistical_outlier_mask] score the same neighbourhood
   for isolation, which is how a scanned cloud loses its stragglers *before* the normals are fitted.
+  [`orient_normals`][ordito.points.orient_normals] then gives those normals one consistent side
+  by propagating along a minimum spanning tree, and
+  [`smooth_normals`][ordito.points.smooth_normals] and
+  [`smooth_points`][ordito.points.smooth_points] denoise normals and positions over the same
+  table, as do [`smooth_points_mls`][ordito.points.smooth_points_mls] (a projection onto each
+  neighbourhood's plane) and [`smooth_points_bilateral`][ordito.points.smooth_points_bilateral]
+  (an average that spares creases). [`point_covariances`][ordito.points.point_covariances] and
+  [`point_frames`][ordito.points.point_frames] return each neighbourhood's second moments and
+  principal frame, and [`point_boundary_mask`][ordito.points.point_boundary_mask] flags the rim of
+  a sampled open surface by its neighbours' angular gap.
   [`plane_basis`][ordito.points.plane_basis] and [`radial_sort`][ordito.points.radial_sort] then
   let a caller work in the tangent plane it defines.
   [`space_filling_order`][ordito.points.space_filling_order] orders a whole cloud along a Hilbert
@@ -24,7 +34,9 @@ No connectivity here -- everything takes a bare ``(n,)`` array of positions. Fou
   [`point_duplicate_mask`][ordito.points.point_duplicate_mask] are the two exact predicates,
   [`radius_outlier_mask`][ordito.points.radius_outlier_mask] and
   [`statistical_outlier_mask`][ordito.points.statistical_outlier_mask] the two density ones (an
-  absolute floor and a cloud-relative threshold), and
+  absolute floor and a cloud-relative threshold); [`cluster_labels`][ordito.points.cluster_labels]
+  is the DBSCAN labelling behind [`cluster_outlier_mask`][ordito.points.cluster_outlier_mask]'s
+  components, and
   [`farthest_point_sample`][ordito.points.farthest_point_sample] picks an exact count spread over
   the cloud's support. Run the exact predicates first: they are cheap and they remove the inputs the
   others are ill-defined on.
@@ -44,8 +56,11 @@ No connectivity here -- everything takes a bare ``(n,)`` array of positions. Fou
       interior. It keeps everything it cannot rule out, so the result is **never smaller** than the
       hull-vertex set.
 
+  [`point_visible_mask`][ordito.points.point_visible_mask] is hidden point removal: the hull of
+  the cloud flipped about a sphere on a viewpoint.
+
 Normals from [`estimate_normals`][ordito.points.estimate_normals] are *unoriented* -- a plane fit
-cannot pick a side. See [`ordito.repair`][ordito.repair] for orientation propagation.
+cannot pick a side -- until [`orient_normals`][ordito.points.orient_normals] propagates one.
 
 One member here takes no cloud at all: [`vector_angle`][ordito.points.vector_angle] is the unsigned
 angle between two ``wp.vec3`` arrays, geometry rather than array structure, so
@@ -53,6 +68,7 @@ angle between two ``wp.vec3`` arrays, geometry rather than array structure, so
 """
 
 import math
+from collections.abc import Sequence
 from typing import Literal, NamedTuple, cast
 
 import warp as wp
@@ -71,13 +87,14 @@ from ordito._common import (
     tiled_ball_walk,
 )
 from ordito.config import is_deterministic
-from ordito.constants import TILE_1D, TOLERANCE_ZERO
+from ordito.constants import INT32_MAX, TILE_1D, TOLERANCE_ZERO
 from ordito.kernels import array as kernel_array
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import neighbors as kernel_neighbors
 from ordito.kernels import points as kernel_points
 from ordito.kernels import predicates as kernel_predicates
 from ordito.kernels import reduce as kernel_reduce
+from ordito.kernels import validation as kernel_validation
 from ordito.kernels.algorithms import connected_components as kernel_connected_components
 from ordito.kernels.algorithms import convex_hull as kernel_hull
 
@@ -921,6 +938,782 @@ def _scatter_fit(
     return out_frame
 
 
+def orient_normals(
+    points: wp.array[wp.vec3], normals: wp.array[wp.vec3], neighbor_idx: odt.Array2dInt32
+) -> wp.array[wp.vec3]:
+    """
+    Orient normals consistently by propagating along a minimum spanning tree of the neighbourhood.
+
+    Hoppe et al.'s propagation, as Open3D's ``orient_normals_consistent_tangent_plane`` runs it:
+    the neighbour table is a graph whose edge ``(i, j)`` weighs ``1 - |n_i . n_j|``, so nearly
+    parallel normals are cheap to cross; each normal is flipped to agree with its parent's across
+    the edges of that graph's minimum spanning tree, and the tree's lowest point (smallest ``z``,
+    the first such point on a tie) is oriented toward ``-z``. On a closed surface sampled densely
+    enough for the table to connect it, the result faces one side everywhere -- the step
+    [`estimate_normals`][ordito.points.estimate_normals] cannot take before
+    [`screened_poisson`][ordito.reconstruction.screened_poisson] or
+    [`ball_pivoting`][ordito.reconstruction.ball_pivoting], whose sign rules are local or assume a
+    star-shaped cloud.
+
+    Each connected component of the table's graph is a tree of its own, oriented from its own
+    lowest point. Open3D adds the cloud's Euclidean minimum spanning tree to the graph, which
+    connects it; the two agree wherever the table already connects the cloud and contains that
+    tree's edges, as a k-nearest table of a surface sample does.
+
+    Parameters
+    ----------
+    points
+        ``(n,)`` point positions.
+    normals
+        ``(n,)`` unoriented normals, as [`estimate_normals`][ordito.points.estimate_normals] gives.
+    neighbor_idx
+        ``(n, k)`` neighbour table, as [`query_nearest`][ordito.neighbors.query_nearest] gives
+        (Open3D's ``k`` is this table's width, a self-query included); ``-1`` slots and the point
+        itself are not edges. A pair listed from either end is one edge.
+
+    Returns
+    -------
+    wp.array[wp.vec3]
+        ``(n,)`` normals on ``points.device``, each ``normals[i]`` or its negation.
+
+    Raises
+    ------
+    ValueError
+        If ``normals`` or ``neighbor_idx`` does not have one entry or row per point.
+    RuntimeError
+        If ``points``, ``normals`` and ``neighbor_idx`` are not all on one device.
+
+    See Also
+    --------
+    [`estimate_normals`][ordito.points.estimate_normals]
+    [`smooth_normals`][ordito.points.smooth_normals]
+
+    Examples
+    --------
+    Normals of a torus have no global rule a plane fit or a centroid can apply; propagated, they
+    all face one side (the outside, since the lowest point faces ``-z``):
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, _ = od.creation.torus(major_radius=1.0, minor_radius=0.4)
+    neighbor_idx, _ = od.neighbors.query_nearest(vertices, vertices, 10)
+    normals = od.points.estimate_normals(vertices, neighbor_idx)
+    oriented = od.points.orient_normals(vertices, normals, neighbor_idx)
+    v = vertices.numpy()
+    ring = v - 1.0 * np.c_[v[:, :2], np.zeros(len(v))] / np.linalg.norm(v[:, :2], axis=1)[:, None]
+    print(bool(((oriented.numpy() * ring).sum(axis=1) > 0).all()))  # True
+    ```
+    """
+    require_same_device(points=points, normals=normals, neighbor_idx=neighbor_idx)
+    odt.ensure_ndim(neighbor_idx, 2, dtype=wp.int32)
+    device = points.device
+    n = points.size
+    _require_point_rows(n, normals=normals, neighbor_idx=neighbor_idx)
+    if n == 0:
+        return _launch.empty(0, dtype=wp.vec3, device=device)
+    m = n * int(neighbor_idx.shape[1])
+    if m > 0:
+        # The graph's entries in ascending weight, so an edge's row is its Boruvka key: the
+        # minimum spanning forest under distinct keys is unique and is Kruskal's over the weights.
+        keys, order = _launch.sort_buffers(m, wp.float32, device)
+        _launch.launch(
+            kernel_points.normal_graph_keys,
+            dim=m,
+            inputs=[normals, neighbor_idx],
+            outputs=[keys, order],
+            device=device,
+        )
+        _, order = od.array.sort_and_argsort_in_place(keys, order)
+        edges = odt.empty_2d((m, 2), wp.int32, device=device)
+        signs = _launch.empty(m, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_points.sorted_normal_edges,
+            dim=m,
+            inputs=[normals, neighbor_idx, order],
+            outputs=[edges, signs],
+            device=device,
+        )
+        labels, parity = _row_keyed_forest_parity(edges, signs, n)
+    else:
+        labels = od.array.arange(n, device=device)
+        parity = _launch.zeros(n, dtype=wp.int32, device=device)
+    lowest_z = _launch.full(n, math.inf, dtype=wp.float32, device=device)
+    _launch.launch(
+        kernel_points.component_lowest_z,
+        dim=n,
+        inputs=[points, labels],
+        outputs=[lowest_z],
+        device=device,
+    )
+    lowest = _launch.full(n, INT32_MAX, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_points.component_lowest_point,
+        dim=n,
+        inputs=[points, labels, lowest_z],
+        outputs=[lowest],
+        device=device,
+    )
+    out_normals = _launch.empty(n, dtype=wp.vec3, device=device)
+    _launch.launch(
+        kernel_points.orient_from_forest,
+        dim=n,
+        inputs=[normals, labels, parity, lowest],
+        outputs=[out_normals],
+        device=device,
+    )
+    return out_normals
+
+
+def _row_keyed_forest_parity(
+    edges: odt.Array2dInt32, signs: wp.array[wp.int32], n: int
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    ``(roots, parity)`` over the minimum spanning forest of a signed edge list keyed by row.
+
+    ``kernels/validation``'s Boruvka rounds (one readback each to stop) over ``edges``, whose
+    self-loops they skip, then the parity union-find over the forest's edges alone: each node's
+    tree root, its smallest node, and the XOR of the signs on its tree path to it.
+    """
+    device = edges.device
+    m = int(edges.shape[0])
+    graph = [None, None, edges, signs]
+    parents = od.array.arange(n, device=device)
+    roots = _launch.empty(n, dtype=wp.int32, device=device)
+    best = _launch.empty(n, dtype=wp.int32, device=device)
+    in_forest = _launch.zeros(m, dtype=wp.int32, device=device)
+    hooked = _launch.zeros(1, dtype=wp.int32, device=device)
+    # Each round hooks every component with an outgoing edge, so at least halves their number:
+    # ``log2(n) + 1`` rounds bound it, and a round that hooks nothing ends it sooner.
+    for _ in range(n.bit_length() + 1):
+        _launch.launch(
+            kernel_validation.forest_flatten, dim=n, inputs=[parents, roots, best], device=device
+        )
+        _launch.launch(
+            kernel_validation.signed_forest_candidates,
+            dim=m,
+            inputs=[*graph, roots, best],
+            device=device,
+        )
+        _launch.zero_(hooked)
+        _launch.launch(
+            kernel_validation.signed_forest_hook,
+            dim=n,
+            inputs=[*graph, roots, best, parents, in_forest, hooked],
+            device=device,
+        )
+        # Unavoidable: the round count is the components' merge depth, known only on the device.
+        if int(read_scalar(hooked, 0)) == 0:
+            break
+    words = _launch.empty(n, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_connected_components.ecl_init_parent_parity, dim=n, inputs=[words], device=device
+    )
+    _launch.launch(
+        kernel_validation.signed_forest_hook_parity,
+        dim=m,
+        inputs=[*graph, in_forest, words],
+        device=device,
+    )
+    parity = _launch.empty(n, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_connected_components.ecl_flatten_parity,
+        dim=n,
+        inputs=[words, roots, parity],
+        device=device,
+    )
+    return roots, parity
+
+
+def smooth_normals(
+    normals: wp.array[wp.vec3], neighbor_idx: odt.Array2dInt32, iterations: int = 1
+) -> wp.array[wp.vec3]:
+    """
+    Smooth point normals by averaging each over its neighbourhood, sign-aligned to its own.
+
+    Each pass replaces a normal by the normalized sum of its row's normals, each first turned to
+    the side of the point's own (a neighbour whose dot with it is not positive is subtracted), so
+    unoriented normals smooth without cancelling and an oriented field keeps its side. That is
+    MeshLab's ``apply_normal_point_cloud_smoothing`` (``usedist=False``) on the same table. A row
+    whose sum vanishes keeps its normal.
+
+    Parameters
+    ----------
+    normals
+        ``(n,)`` normals.
+    neighbor_idx
+        ``(n, k)`` neighbour table, as [`query_nearest`][ordito.neighbors.query_nearest] gives; a
+        self-query holds each point itself, which counts (MeshLab's ``k`` is this table's width).
+        ``-1`` slots are skipped.
+    iterations
+        Number of passes over the fixed table. Must be ``>= 1``.
+
+    Returns
+    -------
+    wp.array[wp.vec3]
+        ``(n,)`` unit normals on ``normals.device``.
+
+    Raises
+    ------
+    ValueError
+        If ``iterations < 1``, or ``neighbor_idx`` does not have one row per normal.
+    RuntimeError
+        If ``normals`` and ``neighbor_idx`` are not all on one device.
+
+    See Also
+    --------
+    [`estimate_normals`][ordito.points.estimate_normals]
+    [`smooth_points`][ordito.points.smooth_points]
+
+    Examples
+    --------
+    Noisy normals on a plane come back closer to its normal:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    rng = np.random.default_rng(0)
+    points = wp.array(np.c_[rng.random((400, 2)), np.zeros(400)], dtype=wp.vec3)
+    noisy = np.array([0.0, 0.0, 1.0]) + 0.3 * rng.standard_normal((400, 3))
+    noisy /= np.linalg.norm(noisy, axis=1, keepdims=True)
+    neighbor_idx, _ = od.neighbors.query_nearest(points, points, 12)
+    smoothed = od.points.smooth_normals(wp.array(noisy, dtype=wp.vec3), neighbor_idx, 3)
+    print(bool(smoothed.numpy()[:, 2].min() > noisy[:, 2].min()))  # True
+    ```
+    """
+    require_same_device(normals=normals, neighbor_idx=neighbor_idx)
+    odt.ensure_ndim(neighbor_idx, 2, dtype=wp.int32)
+    if iterations < 1:
+        raise ValueError(f"iterations must be >= 1, got {iterations}")
+    _require_point_rows(normals.size, neighbor_idx=neighbor_idx)
+    return _ping_pong_passes(
+        normals, [(kernel_points.smooth_normals_pass, [neighbor_idx])] * iterations
+    )
+
+
+def smooth_points(
+    points: wp.array[wp.vec3],
+    neighbor_idx: odt.Array2dInt32,
+    iterations: int = 1,
+    factor: float = 0.5,
+    *,
+    mu: float | None = None,
+) -> wp.array[wp.vec3]:
+    """
+    Smooth a point cloud by Laplacian (or Taubin) steps over a fixed neighbour table.
+
+    Each step moves every point ``factor`` of the way to the mean of its row's other entries,
+    ``p + factor * (mean - p)``, all points at once. Given ``mu`` (negative, ``|mu|`` a little
+    above ``factor``), each iteration is a step at ``factor`` followed by one at ``mu``: Taubin's
+    filter, which smooths without the shrinkage plain steps accumulate. These are Open3D's
+    ``smooth_laplacian`` and ``smooth_taubin`` with ``use_fixed_neighborhoods=True``, the table
+    built once from the input cloud.
+
+    Parameters
+    ----------
+    points
+        ``(n,)`` point positions.
+    neighbor_idx
+        ``(n, k)`` neighbour table, as [`query_nearest`][ordito.neighbors.query_nearest] gives.
+        The point itself and ``-1`` slots are skipped, so a self-query of width ``k + 1`` gives
+        Open3D's ``knn=k``. A point with no other entry stays where it is.
+    iterations
+        Number of iterations. Must be ``>= 1``.
+    factor
+        Step size of each (first) step; Open3D's ``lambda_filter``.
+    mu
+        Step size of each iteration's second step, Taubin's ``mu``; ``None`` takes none.
+
+    Returns
+    -------
+    wp.array[wp.vec3]
+        ``(n,)`` smoothed positions on ``points.device``.
+
+    Raises
+    ------
+    ValueError
+        If ``iterations < 1``, or ``neighbor_idx`` does not have one row per point.
+    RuntimeError
+        If ``points`` and ``neighbor_idx`` are not all on one device.
+
+    See Also
+    --------
+    [`smooth_normals`][ordito.points.smooth_normals]
+    [`ordito.smoothing.filter_laplacian`][ordito.smoothing.filter_laplacian]
+        The same filters over a mesh's edges.
+
+    Examples
+    --------
+    Noise off a plane shrinks; Taubin steps keep the cloud's spread in the plane:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    rng = np.random.default_rng(0)
+    cloud = np.c_[rng.random((400, 2)), 0.01 * rng.standard_normal(400)]
+    points = wp.array(cloud, dtype=wp.vec3)
+    neighbor_idx, _ = od.neighbors.query_nearest(points, points, 11)
+    smoothed = od.points.smooth_points(points, neighbor_idx, 5, 0.5, mu=-0.53).numpy()
+    print(bool(np.abs(smoothed[:, 2]).mean() < 0.5 * np.abs(cloud[:, 2]).mean()))  # True
+    ```
+    """
+    require_same_device(points=points, neighbor_idx=neighbor_idx)
+    odt.ensure_ndim(neighbor_idx, 2, dtype=wp.int32)
+    if iterations < 1:
+        raise ValueError(f"iterations must be >= 1, got {iterations}")
+    _require_point_rows(points.size, neighbor_idx=neighbor_idx)
+    step = (kernel_points.laplacian_point_pass, [neighbor_idx, wp.float32(factor)])
+    steps = (
+        [step]
+        if mu is None
+        else [step, (kernel_points.laplacian_point_pass, [neighbor_idx, wp.float32(mu)])]
+    )
+    return _ping_pong_passes(points, steps * iterations)
+
+
+def _ping_pong_passes(
+    values: wp.array[wp.vec3], passes: Sequence[tuple[odt.Kernel, Sequence[object]]]
+) -> wp.array[wp.vec3]:
+    """
+    Run each ``(kernel, inputs)`` of ``passes`` over ``values`` in turn, between two buffers.
+
+    Every kernel reads ``(values, *inputs)`` and writes its result, one thread a value; the input
+    is never written. Returns the last pass's buffer.
+    """
+    device = values.device
+    n = values.size
+    if n == 0:
+        return _launch.empty(0, dtype=wp.vec3, device=device)
+    buffers = [_launch.empty(n, dtype=wp.vec3, device=device) for _ in range(min(2, len(passes)))]
+    source = values
+    for index, (kernel, inputs) in enumerate(passes):
+        target = buffers[index % 2]
+        _launch.launch(kernel, dim=n, inputs=[source, *inputs], outputs=[target], device=device)
+        source = target
+    return source
+
+
+def smooth_points_mls(
+    points: wp.array[wp.vec3], neighbor_idx: odt.Array2dInt32, radius: float | None = None
+) -> tuple[wp.array[wp.vec3], wp.array[wp.vec3]]:
+    """
+    Project each point onto the plane fitted to its neighbourhood, a moving-least-squares smoothing.
+
+    Each row of the neighbour table is weighted by ``exp(-d**2 / radius**2)`` for its distance
+    ``d`` from the point (every entry equally when ``radius`` is ``None``); the point moves onto
+    the plane through the weighted centroid, normal to the weighted scatter's weakest axis, and
+    that axis is its new normal. That is Open3D's ``smooth_mls``: give the table built with
+    ``max_radius=radius`` for its radius or hybrid search, or a plain ``k``-nearest table and no
+    ``radius`` for its ``KDTreeSearchParamKNN``. One pass, every point from the input positions.
+
+    Parameters
+    ----------
+    points
+        ``(n,)`` point positions.
+    neighbor_idx
+        ``(n, k)`` neighbour table, as [`query_nearest`][ordito.neighbors.query_nearest] gives; a
+        self-query holds the point itself, which counts. ``-1`` slots are skipped.
+    radius
+        Scale of the Gaussian weights; must be ``> 0``. ``None`` weighs every entry equally.
+
+    Returns
+    -------
+    points : wp.array[wp.vec3]
+        ``(n,)`` projected positions on ``points.device``. A point whose row holds fewer than three
+        entries stays where it is.
+    normals : wp.array[wp.vec3]
+        ``(n,)`` unit normals of the fitted planes, signed by the SHOT rule
+        ([`estimate_normals`][ordito.points.estimate_normals]' default), ``(0, 0, 1)`` where the
+        point did not move. Open3D orients its normals afterwards by
+        [`orient_normals`][ordito.points.orient_normals] over the projected cloud's 30 nearest.
+
+    Raises
+    ------
+    ValueError
+        If ``radius <= 0``, or ``neighbor_idx`` does not have one row per point.
+    RuntimeError
+        If ``points`` and ``neighbor_idx`` are not all on one device.
+
+    See Also
+    --------
+    [`smooth_points`][ordito.points.smooth_points]
+    [`smooth_points_bilateral`][ordito.points.smooth_points_bilateral]
+
+    Examples
+    --------
+    Noise off a plane is projected away; the normals come back as the plane's:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    rng = np.random.default_rng(0)
+    cloud = np.c_[rng.random((400, 2)), 0.01 * rng.standard_normal(400)]
+    points = wp.array(cloud, dtype=wp.vec3)
+    neighbor_idx, _ = od.neighbors.query_nearest(points, points, 16)
+    smoothed, normals = od.points.smooth_points_mls(points, neighbor_idx)
+    print(bool(np.abs(smoothed.numpy()[:, 2]).mean() < 0.5 * np.abs(cloud[:, 2]).mean()))  # True
+    print(bool(np.abs(normals.numpy()[:, 2]).min() > 0.9))  # True
+    ```
+    """
+    require_same_device(points=points, neighbor_idx=neighbor_idx)
+    odt.ensure_ndim(neighbor_idx, 2, dtype=wp.int32)
+    if radius is not None and radius <= 0.0:
+        raise ValueError(f"radius must be > 0, got {radius}")
+    device = points.device
+    n = points.size
+    _require_point_rows(n, neighbor_idx=neighbor_idx)
+    out_points = _launch.empty(n, dtype=wp.vec3, device=device)
+    out_normals = _launch.empty(n, dtype=wp.vec3, device=device)
+    if n > 0:
+        _launch.launch(
+            kernel_points.mls_projection,
+            dim=n,
+            inputs=[
+                points,
+                neighbor_idx,
+                wp.float32(0.0 if radius is None else 1.0 / (radius * radius)),
+            ],
+            outputs=[out_points, out_normals],
+            device=device,
+        )
+    return out_points, out_normals
+
+
+def smooth_points_bilateral(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    neighbor_idx: odt.Array2dInt32,
+    sigma_s: float,
+    sigma_r: float,
+) -> wp.array[wp.vec3]:
+    """
+    Smooth a point cloud by a bilateral filter: a neighbourhood average that spares sharp features.
+
+    Each point moves to the weighted centroid of its row, an entry at distance ``d`` and height
+    ``h`` above the point's tangent plane weighted by
+    ``exp(-d**2 / (2 sigma_s**2)) * exp(-h**2 / (2 sigma_r**2))``: noise along the normal is
+    averaged away while neighbours on the far side of a crease, high above the plane, barely
+    count. That is Open3D's ``smooth_bilateral``. One pass, every point from the input positions.
+
+    Parameters
+    ----------
+    points
+        ``(n,)`` point positions.
+    normals
+        ``(n,)`` normals; only their direction is read. A point with a zero normal stays put.
+    neighbor_idx
+        ``(n, k)`` neighbour table, as [`query_nearest`][ordito.neighbors.query_nearest] gives; a
+        self-query holds the point itself, which counts (Open3D's search holds it too). ``-1``
+        slots are skipped, and a point with at most one entry stays put.
+    sigma_s
+        Spatial scale. Must be ``> 0``.
+    sigma_r
+        Range scale, along the normal. Must be ``> 0``.
+
+    Returns
+    -------
+    wp.array[wp.vec3]
+        ``(n,)`` smoothed positions on ``points.device``.
+
+    Raises
+    ------
+    ValueError
+        If ``sigma_s`` or ``sigma_r`` is not ``> 0``, or ``normals`` or ``neighbor_idx`` does not
+        have one entry or row per point.
+    RuntimeError
+        If ``points``, ``normals`` and ``neighbor_idx`` are not all on one device.
+
+    See Also
+    --------
+    [`smooth_points`][ordito.points.smooth_points]
+    [`smooth_points_mls`][ordito.points.smooth_points_mls]
+
+    Examples
+    --------
+    Noise off a plane shrinks:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    rng = np.random.default_rng(0)
+    cloud = np.c_[rng.random((400, 2)), 0.01 * rng.standard_normal(400)]
+    points = wp.array(cloud, dtype=wp.vec3)
+    normals = wp.array(np.tile([0.0, 0.0, 1.0], (400, 1)), dtype=wp.vec3)
+    neighbor_idx, _ = od.neighbors.query_nearest(points, points, 16)
+    smoothed = od.points.smooth_points_bilateral(points, normals, neighbor_idx, 0.1, 0.05)
+    print(bool(np.abs(smoothed.numpy()[:, 2]).mean() < 0.7 * np.abs(cloud[:, 2]).mean()))  # True
+    ```
+    """
+    require_same_device(points=points, normals=normals, neighbor_idx=neighbor_idx)
+    odt.ensure_ndim(neighbor_idx, 2, dtype=wp.int32)
+    if sigma_s <= 0.0 or sigma_r <= 0.0:
+        raise ValueError(f"sigma_s and sigma_r must be > 0, got {sigma_s} and {sigma_r}")
+    device = points.device
+    n = points.size
+    _require_point_rows(n, normals=normals, neighbor_idx=neighbor_idx)
+    out_points = _launch.empty(n, dtype=wp.vec3, device=device)
+    if n > 0:
+        _launch.launch(
+            kernel_points.bilateral_point_pass,
+            dim=n,
+            inputs=[
+                points,
+                normals,
+                neighbor_idx,
+                wp.float32(1.0 / (2.0 * sigma_s * sigma_s)),
+                wp.float32(1.0 / (2.0 * sigma_r * sigma_r)),
+            ],
+            outputs=[out_points],
+            device=device,
+        )
+    return out_points
+
+
+def point_covariances(
+    points: wp.array[wp.vec3], neighbor_idx: odt.Array2dInt32
+) -> wp.array[wp.mat33]:
+    """
+    Covariance matrix of each point's neighbourhood.
+
+    The population covariance (divided by the count, not the count less one) of the positions in
+    each row of the neighbour table, the point itself counted where the table holds it -- Open3D's
+    ``estimate_covariances`` and pytorch3d's ``get_point_covariances`` on the same table. A row
+    with fewer than three valid entries spans no plane and gets the identity, as Open3D gives it.
+
+    Parameters
+    ----------
+    points
+        ``(n,)`` point positions.
+    neighbor_idx
+        ``(n, k)`` neighbour table, as [`query_nearest`][ordito.neighbors.query_nearest] gives;
+        ``-1`` slots are skipped.
+
+    Returns
+    -------
+    wp.array[wp.mat33]
+        ``(n,)`` symmetric positive semi-definite matrices on ``points.device``.
+
+    Raises
+    ------
+    ValueError
+        If ``neighbor_idx`` does not have one row per point.
+    RuntimeError
+        If ``points`` and ``neighbor_idx`` are not all on one device.
+
+    See Also
+    --------
+    [`point_frames`][ordito.points.point_frames]
+        The same matrices' eigen-decomposition.
+    [`covariance`][ordito.points.covariance]
+        The whole cloud's.
+
+    Examples
+    --------
+    On a plane, each covariance has no spread along the normal:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    rng = np.random.default_rng(0)
+    points = wp.array(np.c_[rng.random((200, 2)), np.zeros(200)], dtype=wp.vec3)
+    neighbor_idx, _ = od.neighbors.query_nearest(points, points, 8)
+    covariances = od.points.point_covariances(points, neighbor_idx).numpy()
+    print(covariances.shape, float(np.abs(covariances[:, 2, :]).max()))  # (200, 3, 3) 0.0
+    ```
+    """
+    require_same_device(points=points, neighbor_idx=neighbor_idx)
+    odt.ensure_ndim(neighbor_idx, 2, dtype=wp.int32)
+    device = points.device
+    n = points.size
+    _require_point_rows(n, neighbor_idx=neighbor_idx)
+    out_covariances = _launch.empty(n, dtype=wp.mat33, device=device)
+    if n > 0:
+        _launch.launch(
+            kernel_points.point_covariances,
+            dim=n,
+            inputs=[points, neighbor_idx],
+            outputs=[out_covariances],
+            device=device,
+        )
+    return out_covariances
+
+
+def point_frames(
+    points: wp.array[wp.vec3], neighbor_idx: odt.Array2dInt32
+) -> tuple[wp.array[wp.mat33], wp.array[wp.vec3]]:
+    """
+    Local principal frame of each point's neighbourhood, with its spreads.
+
+    The eigenvectors of [`point_covariances`][ordito.points.point_covariances], as the rows of a
+    proper rotation widest first -- [`principal_axes`][ordito.points.principal_axes]' layout, so
+    the last row is the PCA normal [`estimate_normals`][ordito.points.estimate_normals] fits --
+    and their eigenvalues descending. The first and last rows are signed by the SHOT rule
+    (toward the side at least half the row's offsets from the point project positively on), and
+    the middle row is ``last x first``. That is pytorch3d's
+    ``estimate_pointcloud_local_coord_frames(disambiguate_directions=True)``, whose columns
+    ``(normal, middle, major)`` are these rows in reverse.
+
+    Parameters
+    ----------
+    points
+        ``(n,)`` point positions.
+    neighbor_idx
+        ``(n, k)`` neighbour table, as [`query_nearest`][ordito.neighbors.query_nearest] gives;
+        ``-1`` slots are skipped.
+
+    Returns
+    -------
+    frames : wp.array[wp.mat33]
+        ``(n,)`` rotations on ``points.device``, the principal axes as rows. The identity where a
+        row has fewer than three valid entries.
+    eigenvalues : wp.array[wp.vec3]
+        ``(n,)`` covariance eigenvalues, descending; zero where the frame is the identity fallback.
+        The smallest over the sum is the surface variation, a curvature proxy.
+
+    Raises
+    ------
+    ValueError
+        If ``neighbor_idx`` does not have one row per point.
+    RuntimeError
+        If ``points`` and ``neighbor_idx`` are not all on one device.
+
+    See Also
+    --------
+    [`point_covariances`][ordito.points.point_covariances]
+    [`principal_axes`][ordito.points.principal_axes]
+        The whole cloud's frame.
+
+    Examples
+    --------
+    On a sphere, the last row of each frame is the radial direction:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, _ = od.creation.icosphere(subdivisions=3)
+    neighbor_idx, _ = od.neighbors.query_nearest(vertices, vertices, 10)
+    frames, eigenvalues = od.points.point_frames(vertices, neighbor_idx)
+    radial = np.abs((frames.numpy()[:, 2] * vertices.numpy()).sum(axis=1))
+    print(bool(radial.min() > 0.99), bool((np.diff(eigenvalues.numpy()) <= 0).all()))  # True True
+    ```
+    """
+    require_same_device(points=points, neighbor_idx=neighbor_idx)
+    odt.ensure_ndim(neighbor_idx, 2, dtype=wp.int32)
+    device = points.device
+    n = points.size
+    _require_point_rows(n, neighbor_idx=neighbor_idx)
+    out_frames = _launch.empty(n, dtype=wp.mat33, device=device)
+    out_eigenvalues = _launch.empty(n, dtype=wp.vec3, device=device)
+    if n > 0:
+        _launch.launch(
+            kernel_points.point_frames,
+            dim=n,
+            inputs=[points, neighbor_idx],
+            outputs=[out_frames, out_eigenvalues],
+            device=device,
+        )
+    return out_frames, out_eigenvalues
+
+
+def point_boundary_mask(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    neighbor_idx: odt.Array2dInt32,
+    max_gap: float = math.pi / 2.0,
+) -> wp.array[wp.bool]:
+    """
+    Flag points on the boundary of a sampled surface, by the angular gap among their neighbours.
+
+    Each point's neighbours are projected into the plane of its normal, and the point is on the
+    boundary when some angular gap between consecutive neighbours (the wrap-around included)
+    exceeds ``max_gap``: an interior point is surrounded, a rim point has an empty half-plane. That
+    is PCL's ``BoundaryEstimation`` as Open3D's ``compute_boundary_points`` runs it.
+
+    Parameters
+    ----------
+    points
+        ``(n,)`` point positions.
+    normals
+        ``(n,)`` normals; only their direction is read, so their sign does not matter.
+    neighbor_idx
+        ``(n, k)`` neighbour table, as [`query_nearest`][ordito.neighbors.query_nearest] gives
+        (Open3D's ``radius`` and ``max_nn`` are its ``max_radius`` and ``k``). The point itself and
+        ``-1`` slots are skipped; a point with no other entry is not flagged.
+    max_gap
+        Widest angular gap in radians an interior point may have; Open3D's ``angle_threshold``,
+        in degrees there.
+
+    Returns
+    -------
+    wp.array[wp.bool]
+        ``(n,)`` mask on ``points.device``; ``True`` marks a boundary point.
+
+    Raises
+    ------
+    ValueError
+        If ``normals`` or ``neighbor_idx`` does not have one entry or row per point.
+    RuntimeError
+        If ``points``, ``normals`` and ``neighbor_idx`` are not all on one device.
+
+    See Also
+    --------
+    [`ordito.boundary`][ordito.boundary]
+        A mesh's boundary, from its connectivity.
+
+    Examples
+    --------
+    On a square grid of points, the points of the rim are flagged:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    x, y = np.meshgrid(np.arange(10.0), np.arange(10.0))
+    points = wp.array(np.c_[x.ravel(), y.ravel(), np.zeros(100)], dtype=wp.vec3)
+    normals = wp.array(np.tile([0.0, 0.0, 1.0], (100, 1)), dtype=wp.vec3)
+    neighbor_idx, _ = od.neighbors.query_nearest(points, points, 9, max_radius=1.5)
+    mask = od.points.point_boundary_mask(points, normals, neighbor_idx)
+    print(int(mask.numpy().sum()))  # 36
+    ```
+    """
+    require_same_device(points=points, normals=normals, neighbor_idx=neighbor_idx)
+    odt.ensure_ndim(neighbor_idx, 2, dtype=wp.int32)
+    device = points.device
+    n = points.size
+    _require_point_rows(n, normals=normals, neighbor_idx=neighbor_idx)
+    out_mask = _launch.empty(n, dtype=wp.bool, device=device)
+    if n > 0:
+        _launch.launch(
+            kernel_points.point_boundary_flags,
+            dim=n,
+            inputs=[points, normals, neighbor_idx, wp.float32(max_gap)],
+            outputs=[out_mask],
+            device=device,
+        )
+    return out_mask
+
+
 def outlier_probability(
     neighbor_idx: odt.Array2dInt32, neighbor_distance: odt.Array2dFloat32, *, scale: float = 3.0
 ) -> wp.array[wp.float32]:
@@ -1384,7 +2177,7 @@ def cluster_outlier_mask(
     _launch.launch(
         kernel_points.ball_graph_hook,
         dim=n,
-        inputs=[points, accelerator.id, wp.float32(radius), parents],
+        inputs=[points, accelerator.id, wp.float32(radius), None, parents],
         device=device,
     )
     labels = _launch.empty(n, dtype=wp.int32, device=device)
@@ -1405,6 +2198,141 @@ def cluster_outlier_mask(
         device=device,
     )
     return out_mask
+
+
+def cluster_labels(
+    points: wp.array[wp.vec3],
+    radius: float,
+    min_points: int = 1,
+    *,
+    grid: wp.HashGrid | None = None,
+) -> wp.array[wp.int32]:
+    """
+    Label each point with its DBSCAN cluster under ``radius`` and ``min_points``, ``-1`` for noise.
+
+    A point is a *core* point when at least ``min_points`` points, itself included, lie within
+    ``radius`` of it. Core points within ``radius`` of each other share a cluster; a non-core point
+    within ``radius`` of a core point is a *border* point and joins a cluster of one of them; every
+    other point is noise. With the default ``min_points=1`` every point is core and the clusters
+    are the connected components of the radius graph: Euclidean cluster extraction, the labelling
+    behind [`cluster_outlier_mask`][ordito.points.cluster_outlier_mask].
+
+    Clusters are numbered ``0, 1, ...`` in ascending order of their smallest core point's index,
+    and a border point within reach of several clusters takes the lowest-numbered. That is the
+    order in which Open3D's sequential ``cluster_dbscan`` grows its clusters and the cluster it
+    leaves such a point in, so the labels are its labels, not only the same partition.
+
+    Parameters
+    ----------
+    points
+        ``(n,)`` point positions.
+    radius
+        Neighbourhood radius (DBSCAN's ``eps``), inclusive at exactly ``radius``. Must be ``> 0``.
+    min_points
+        Fewest points, the point itself included, within ``radius`` of a core point. Must be
+        ``>= 1``.
+    grid
+        Optional pre-built hash grid over ``points``, from
+        [`hashgrid_from_points`][ordito.neighbors.hashgrid_from_points].
+
+    Returns
+    -------
+    wp.array[wp.int32]
+        ``(n,)`` cluster labels on ``points.device``, ``-1`` for noise.
+
+    Raises
+    ------
+    ValueError
+        If ``radius <= 0`` or ``min_points < 1``.
+    RuntimeError
+        If ``points`` and ``grid`` are not all on one device.
+
+    See Also
+    --------
+    [`cluster_outlier_mask`][ordito.points.cluster_outlier_mask]
+    [`radius_outlier_mask`][ordito.points.radius_outlier_mask]
+
+    Examples
+    --------
+    Two clumps and a straggler; the straggler has no core point in reach and is noise:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    cloud = wp.array(
+        [[0.0, 0.0, 0.0], [0.1, 0.0, 0.0], [0.0, 0.1, 0.0], [5.0, 0.0, 0.0], [5.1, 0.0, 0.0],
+         [5.0, 0.1, 0.0], [9.0, 0.0, 0.0]],
+        dtype=wp.vec3,
+    )
+    labels = od.points.cluster_labels(cloud, 0.2, min_points=3)
+    print(labels.numpy().tolist())  # [0, 0, 0, 1, 1, 1, -1]
+    ```
+    """
+    require_same_device(points=points, grid=grid)
+    if radius <= 0.0:
+        raise ValueError(f"radius must be > 0, got {radius}")
+    if min_points < 1:
+        raise ValueError(f"min_points must be >= 1, got {min_points}")
+    device = points.device
+    n = points.size
+    if n == 0:
+        return _launch.empty(0, dtype=wp.int32, device=device)
+    accelerator = (
+        od.neighbors.hashgrid_from_points(
+            points,
+            ball_grid_cell_width(
+                radius,
+                n,
+                device,
+                kernel_neighbors.BALL_GRID_WIDE_CELL_QUERIES_CUDA,
+                kernel_neighbors.BALL_GRID_WIDE_CELL_QUERIES_CPU,
+            ),
+        )
+        if grid is None
+        else grid
+    )
+    # Every point is core at ``min_points == 1`` (a ball holds its own center), so the count walk
+    # and every core test are skipped there through a null ``core``.
+    core = None
+    if min_points > 1:
+        core = _launch.empty(n, dtype=wp.bool, device=device)
+        _launch.launch(
+            kernel_points.ball_core_flags,
+            dim=n,
+            inputs=[points, accelerator.id, wp.float32(radius), wp.int32(min_points)],
+            outputs=[core],
+            device=device,
+        )
+    # The core points' radius graph hooked in the walk that finds it, as ``cluster_outlier_mask``
+    # does over every point.
+    parents = od.array.arange(n, device=device)
+    _launch.launch(
+        kernel_points.ball_graph_hook,
+        dim=n,
+        inputs=[points, accelerator.id, wp.float32(radius), core, parents],
+        device=device,
+    )
+    roots = _launch.empty(n, dtype=wp.int32, device=device)
+    ranks = _launch.empty(n, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_points.core_root_flags,
+        dim=n,
+        inputs=[parents, core],
+        outputs=[roots, ranks],
+        device=device,
+    )
+    _launch.array_scan(ranks, ranks, inclusive=True)
+    out_labels = _launch.empty(n, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_points.dbscan_labels,
+        dim=n,
+        inputs=[points, accelerator.id, wp.float32(radius), core, roots, ranks],
+        outputs=[out_labels],
+        device=device,
+    )
+    return out_labels
 
 
 def plane_outlier_mask(
@@ -2895,6 +3823,81 @@ def _support_extremes(
     return best_max, best_neg_min, stride, slice_max, slice_min
 
 
+def point_visible_mask(
+    points: wp.array[wp.vec3], camera_location: wp.vec3, radius: float
+) -> wp.array[wp.bool]:
+    """
+    Flag the points visible from a camera location, by hidden point removal.
+
+    Katz, Tal and Basri's operator (*Direct Visibility of Point Sets*, 2007), as Open3D's
+    ``hidden_point_removal`` runs it: each point is flipped about a sphere of ``radius`` centred
+    on the camera (``d + 2 (radius - |d|) d / |d|`` for its offset ``d``), and a point is visible
+    when its flipped image is a vertex of the convex hull of the flipped cloud and the camera.
+    No surface is needed; the larger ``radius``, the more grazing points count as visible. Katz et
+    al. suggest about ``100`` times the cloud's diameter as seen from the camera.
+
+    The hull is [`convex_hull`][ordito.points.convex_hull]'s, exact on the flipped ``float32``
+    positions (formed in ``float64`` and rounded once).
+
+    Parameters
+    ----------
+    points
+        ``(n,)`` point positions, ``n >= 3``, none at the camera location.
+    camera_location
+        Viewpoint.
+    radius
+        Flip radius. Must be ``> 0``.
+
+    Returns
+    -------
+    wp.array[wp.bool]
+        ``(n,)`` mask on ``points.device``; ``True`` marks a visible point.
+
+    Raises
+    ------
+    ValueError
+        If ``radius <= 0``, or (from [`convex_hull`][ordito.points.convex_hull]) fewer than three
+        points are given or the flipped cloud and the camera are coplanar.
+
+    See Also
+    --------
+    [`convex_hull`][ordito.points.convex_hull]
+    [`ordito.visibility`][ordito.visibility]
+        Visibility of a mesh, by ray casting.
+
+    Examples
+    --------
+    Seen from far along ``+z``, about half of a sphere's points are visible, all on its upper
+    side:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, _ = od.creation.icosphere(subdivisions=3)
+    visible = od.points.point_visible_mask(vertices, wp.vec3(0.0, 0.0, 10.0), 1000.0).numpy()
+    print(bool(0.4 < visible.mean() < 0.6))  # True
+    print(bool(vertices.numpy()[visible, 2].min() > 0.0))  # True
+    ```
+    """
+    if radius <= 0.0:
+        raise ValueError(f"radius must be > 0, got {radius}")
+    device = points.device
+    n = points.size
+    flipped = _launch.empty(n + 1, dtype=wp.vec3, device=device)
+    _launch.launch(
+        kernel_points.spherical_flip_with_origin,
+        dim=n + 1,
+        inputs=[points, camera_location, wp.float64(radius)],
+        outputs=[flipped],
+        device=device,
+    )
+    # Slot ``n`` is the camera, a hull vertex Open3D drops from its mesh: the mask's tail is cut.
+    on_hull = od.array.indices_to_mask(convex_hull(flipped), n + 1)
+    return _launch.view(on_hull, 0, n)
+
+
 def vector_angle(a: wp.array[wp.vec3], b: wp.array[wp.vec3]) -> wp.array[wp.float32]:
     """
     Unsigned angle in radians between pairs of vectors.
@@ -3122,3 +4125,12 @@ def space_filling_order(
     if points.size == 0:
         return _launch.empty(0, dtype=wp.int32, device=points.device)
     return _common.space_filling_order(points, int(curves[curve]))
+
+
+def _require_point_rows(n: int, **named: odt.ArrayNd) -> None:
+    """Raise ``ValueError`` unless every array in ``named`` has ``n`` entries or rows."""
+    for name, array in named.items():
+        if int(array.shape[0]) != n:
+            raise ValueError(
+                f"{name} must have one entry or row per point, got {array.shape} for {n}"
+            )

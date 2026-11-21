@@ -2,7 +2,7 @@ from typing import Any
 
 import warp as wp
 
-from ordito.constants import FLOAT32_INF_CONSTANT, TILE_1D
+from ordito.constants import FLOAT32_INF_CONSTANT, INT32_MAX_CONSTANT, TILE_1D
 from ordito.kernels.algorithms.connected_components import ecl_hook_edge, find_representative
 from ordito.kernels.array import (
     LOOP_PROGRESS,
@@ -277,6 +277,57 @@ def centered_covariance(
 
 
 # Orientation modes for estimate_point_normals (mirror Open3D's orient methods).
+@wp.func
+def neighborhood_mean_and_scatter(
+    points: wp.array[wp.vec3], neighbor_idx: wp.array2d[wp.int32], v: wp.int32
+) -> tuple[wp.vec3, wp.mat33, wp.float32]:
+    # Mean, scatter ``sum (p - mean) (p - mean)^T`` and count of row ``v``'s valid entries (``-1``
+    # slots skipped), two passes so the scatter is centred before it is summed. A self-query row
+    # holds the point itself once, which counts like any neighbour. Shared by every per-point
+    # neighbourhood fit: ``estimate_point_normals``, ``point_covariances``, ``point_frames``.
+    k = neighbor_idx.shape[1]
+    mean = wp.vec3(0.0, 0.0, 0.0)
+    count = wp.float32(0.0)
+    for i in range(k):
+        nb = neighbor_idx[v, i]
+        if nb >= 0:
+            mean += points[nb]
+            count += 1.0
+    scatter = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    if count > 0.0:
+        mean = mean / count
+        for i in range(k):
+            nb = neighbor_idx[v, i]
+            if nb >= 0:
+                e = points[nb] - mean
+                scatter += wp.outer(e, e)
+    return mean, scatter, count
+
+
+@wp.func
+def shot_oriented(
+    points: wp.array[wp.vec3],
+    neighbor_idx: wp.array2d[wp.int32],
+    v: wp.int32,
+    direction: wp.vec3,
+    count: wp.float32,
+) -> wp.vec3:
+    # Tombari, Salti and Di Stefano's SHOT rule, as pytorch3d's ``disambiguate_directions``
+    # applies it: keep ``direction`` when at least half of row ``v``'s ``count`` valid offsets from
+    # the point project strictly positively onto it, flip it otherwise, so it points to the side the
+    # neighbours bulge toward. The point itself, in a self-query row, counts toward the half and
+    # never as positive. Shared by the normal (``estimate_point_normals``) and both signed axes of
+    # ``point_frames``.
+    k = neighbor_idx.shape[1]
+    positive = wp.float32(0.0)
+    for i in range(k):
+        nb = neighbor_idx[v, i]
+        if nb >= 0:
+            if wp.dot(direction, points[nb] - points[v]) > 0.0:
+                positive += 1.0
+    return wp.where(positive < 0.5 * count, -direction, direction)
+
+
 ORIENT_CENTROID = wp.int32(0)  # outward from the cloud centroid (the default)
 ORIENT_DIRECTION = wp.int32(1)  # align with a fixed direction
 ORIENT_CAMERA = wp.int32(2)  # point toward a camera location
@@ -308,29 +359,13 @@ def estimate_point_normals(
     # caller ever builds an asymmetric ``neighbor_idx`` (e.g. from
     # ``query_nearest(other_cloud, points, k)``) for this kernel.
     v = wp.int32(wp.tid())
-    k = neighbor_idx.shape[1]
 
     # Local neighbourhood mean over the valid entries of the table. A self-query table
     # contains the point itself once, so it is naturally included (matching Open3D KNN).
-    mean = wp.vec3(0.0, 0.0, 0.0)
-    count = wp.float32(0.0)
-    for i in range(k):
-        nb = neighbor_idx[v, i]
-        if nb >= 0:
-            mean += points[nb]
-            count += 1.0
-
+    _mean, cov, count = neighborhood_mean_and_scatter(points, neighbor_idx, v)
     if count < 2.0:
         out_normals[v] = wp.vec3(0.0, 0.0, 1.0)  # too few neighbours (Open3D fallback)
         return
-    mean = mean / count
-
-    cov = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    for i in range(k):
-        nb = neighbor_idx[v, i]
-        if nb >= 0:
-            e = points[nb] - mean
-            cov += wp.outer(e, e)
 
     if wp.ddot(cov, cov) <= 0.0:
         out_normals[v] = wp.vec3(0.0, 0.0, 1.0)  # coincident neighbours (zero covariance)
@@ -340,20 +375,7 @@ def estimate_point_normals(
     normal = wp.normalize(mat33_column(u, 2))
 
     if orient_mode == ORIENT_NEIGHBORS:
-        # Tombari, Salti and Di Stefano's SHOT rule, as pytorch3d's
-        # ``estimate_pointcloud_normals(disambiguate_directions=True)`` applies it: keep the normal
-        # when at least half the neighbourhood's offsets from the point project strictly positively
-        # onto it, so it points to the side the neighbours bulge toward. The point itself, in a
-        # self-query table, counts toward the half and never as positive.
-        positive = wp.float32(0.0)
-        for i in range(k):
-            nb = neighbor_idx[v, i]
-            if nb >= 0:
-                if wp.dot(normal, points[nb] - points[v]) > 0.0:
-                    positive += 1.0
-        if positive < 0.5 * count:
-            normal = -normal
-        out_normals[v] = normal
+        out_normals[v] = shot_oriented(points, neighbor_idx, v, normal, count)
         return
 
     # Orientation: flip so the normal points along a per-point reference vector.
@@ -369,6 +391,388 @@ def estimate_point_normals(
     if wp.dot(normal, ref) < 0.0:
         normal = -normal
     out_normals[v] = normal
+
+
+# Fewer valid entries than this and a row's covariance is the identity, as Open3D's
+# ``EstimatePerPointCovariances`` gives it: two points span no plane.
+MIN_COVARIANCE_NEIGHBORS = 3
+
+
+@wp.kernel
+def point_covariances(
+    points: wp.array[wp.vec3],
+    neighbor_idx: wp.array2d[wp.int32],
+    out_covariances: wp.array[wp.mat33],
+) -> None:
+    # Each row's population covariance (the scatter over the count, Open3D's ``ComputeCovariance``
+    # and pytorch3d's ``get_point_covariances``), or the identity below the floor.
+    v = wp.int32(wp.tid())
+    _mean, scatter, count = neighborhood_mean_and_scatter(points, neighbor_idx, v)
+    if count < wp.float32(MIN_COVARIANCE_NEIGHBORS):
+        out_covariances[v] = wp.identity(n=3, dtype=wp.float32)
+        return
+    out_covariances[v] = scatter / count
+
+
+@wp.kernel
+def point_frames(
+    points: wp.array[wp.vec3],
+    neighbor_idx: wp.array2d[wp.int32],
+    out_frames: wp.array[wp.mat33],
+    out_eigenvalues: wp.array[wp.vec3],
+) -> None:
+    # The covariance's eigenvectors as rows, widest first (``points.principal_axes``' layout), the
+    # first and last signed by the SHOT rule and the middle their cross product, so the frame is a
+    # proper rotation; the eigenvalues descending. pytorch3d's
+    # ``estimate_pointcloud_local_coord_frames(disambiguate_directions=True)`` signs the same two
+    # axes the same way and takes the middle as ``normal x major``, which is this middle row.
+    v = wp.int32(wp.tid())
+    _mean, scatter, count = neighborhood_mean_and_scatter(points, neighbor_idx, v)
+    if count < wp.float32(MIN_COVARIANCE_NEIGHBORS):
+        out_frames[v] = wp.identity(n=3, dtype=wp.float32)
+        out_eigenvalues[v] = wp.vec3(0.0, 0.0, 0.0)
+        return
+    # The decomposition in ``float64``: ``float32``'s ``svd3`` left ~6e-5 relative error on the
+    # middle eigenvalue of the sheet in ``tests/test_points.py``, against ~1e-7 from the ``float32``
+    # covariance it decomposes.
+    u, sigma, _vt = wp.svd3(wp.mat33d(scatter / count))
+    major = shot_oriented(
+        points, neighbor_idx, v, wp.normalize(to_vec3(wp.vec3d(u[0, 0], u[1, 0], u[2, 0]))), count
+    )
+    normal = shot_oriented(
+        points, neighbor_idx, v, wp.normalize(to_vec3(wp.vec3d(u[0, 2], u[1, 2], u[2, 2]))), count
+    )
+    out_frames[v] = wp.matrix_from_rows(major, wp.cross(normal, major), normal)
+    out_eigenvalues[v] = to_vec3(sigma)
+
+
+@wp.kernel
+def smooth_normals_pass(
+    normals: wp.array[wp.vec3], neighbor_idx: wp.array2d[wp.int32], out_normals: wp.array[wp.vec3]
+) -> None:
+    # One pass of MeshLab's point-cloud normal smoothing (``apply_normal_point_cloud_smoothing``):
+    # the row's normals summed, each turned to the side of the point's own (strictly positive dot
+    # adds, anything else subtracts), then normalized. A row whose sum vanishes keeps its normal.
+    v = wp.int32(wp.tid())
+    own = normals[v]
+    total = wp.vec3(0.0, 0.0, 0.0)
+    for i in range(neighbor_idx.shape[1]):
+        nb = neighbor_idx[v, i]
+        if nb >= 0:
+            other = normals[nb]
+            total += wp.where(wp.dot(other, own) > 0.0, other, -other)
+    length = wp.length(total)
+    out_normals[v] = wp.where(length > 0.0, total / length, own)
+
+
+@wp.kernel
+def laplacian_point_pass(
+    points: wp.array[wp.vec3],
+    neighbor_idx: wp.array2d[wp.int32],
+    factor: wp.float32,
+    out_points: wp.array[wp.vec3],
+) -> None:
+    # One umbrella step over the neighbour table, Open3D's ``ApplyIndexedLaplacianUpdate`` with
+    # uniform weights: ``p + factor * (mean - p)`` over the row's entries other than the point
+    # itself and the ``-1`` slots; a row with none keeps its point.
+    v = wp.int32(wp.tid())
+    p = points[v]
+    total = wp.vec3(0.0, 0.0, 0.0)
+    count = wp.float32(0.0)
+    for i in range(neighbor_idx.shape[1]):
+        nb = neighbor_idx[v, i]
+        if nb >= 0 and nb != v:
+            total += points[nb]
+            count += 1.0
+    if count > 0.0:
+        out_points[v] = p + factor * (total / count - p)
+    else:
+        out_points[v] = p
+
+
+@wp.func
+def weighted_mean_and_scatter(
+    points: wp.array[wp.vec3],
+    neighbor_idx: wp.array2d[wp.int32],
+    v: wp.int32,
+    inverse_squared_scale: wp.float32,
+) -> tuple[wp.vec3, wp.mat33, wp.float32]:
+    # ``neighborhood_mean_and_scatter`` with each entry weighted by
+    # ``exp(-|p_nb - p_v|^2 * inverse_squared_scale)``, Open3D's ``SmoothMLS`` Gaussian: the
+    # weighted mean, the weighted (unnormalized) scatter about it and the count of valid entries.
+    # A zero scale weighs every entry ``1``. Kept apart from the unweighted helper, which every
+    # other per-point fit calls, so those pay no ``exp`` per entry; that is all the two differ by.
+    k = neighbor_idx.shape[1]
+    p = points[v]
+    mean = wp.vec3(0.0, 0.0, 0.0)
+    total = wp.float32(0.0)
+    count = wp.float32(0.0)
+    for i in range(k):
+        nb = neighbor_idx[v, i]
+        if nb >= 0:
+            w = wp.exp(-wp.length_sq(points[nb] - p) * inverse_squared_scale)
+            mean += w * points[nb]
+            total += w
+            count += 1.0
+    scatter = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    if total > 0.0:
+        mean = mean / total
+        for i in range(k):
+            nb = neighbor_idx[v, i]
+            if nb >= 0:
+                w = wp.exp(-wp.length_sq(points[nb] - p) * inverse_squared_scale)
+                e = points[nb] - mean
+                scatter += w * wp.outer(e, e)
+    return mean, scatter, count
+
+
+@wp.kernel
+def mls_projection(
+    points: wp.array[wp.vec3],
+    neighbor_idx: wp.array2d[wp.int32],
+    inverse_squared_scale: wp.float32,
+    out_points: wp.array[wp.vec3],
+    out_normals: wp.array[wp.vec3],
+) -> None:
+    # Open3D's ``SmoothMLS``: the point projected onto the plane through its row's weighted
+    # centroid, normal to the weighted scatter's weakest axis, and that axis as its normal (signed
+    # by the SHOT rule). A row of fewer than three entries keeps its point, with the ``(0, 0, 1)``
+    # fallback normal ``estimate_point_normals`` gives. The decomposition is ``float64``, as in
+    # ``point_frames``.
+    v = wp.int32(wp.tid())
+    p = points[v]
+    mean, scatter, count = weighted_mean_and_scatter(points, neighbor_idx, v, inverse_squared_scale)
+    if count < wp.float32(MIN_COVARIANCE_NEIGHBORS):
+        out_points[v] = p
+        out_normals[v] = wp.vec3(0.0, 0.0, 1.0)
+        return
+    u, _sigma, _vt = wp.svd3(wp.mat33d(scatter))
+    normal = wp.normalize(to_vec3(wp.vec3d(u[0, 2], u[1, 2], u[2, 2])))
+    normal = shot_oriented(points, neighbor_idx, v, normal, count)
+    out_points[v] = p - normal * wp.dot(p - mean, normal)
+    out_normals[v] = normal
+
+
+@wp.kernel
+def bilateral_point_pass(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    neighbor_idx: wp.array2d[wp.int32],
+    inverse_spatial: wp.float32,
+    inverse_range: wp.float32,
+    out_points: wp.array[wp.vec3],
+) -> None:
+    # Open3D's ``SmoothBilateral``: the row's weighted centroid, each entry weighted by
+    # ``exp(-d^2 / (2 sigma_s^2)) * exp(-h^2 / (2 sigma_r^2))`` for its distance ``d`` and its
+    # height ``h`` above the point's tangent plane, so neighbours across a crease or sheet count
+    # little. A row of at most one entry, or a zero normal, keeps its point; so does a row whose
+    # weights all underflow (Open3D would return the origin there).
+    v = wp.int32(wp.tid())
+    p = points[v]
+    n = normals[v]
+    length = wp.length(n)
+    total = wp.float32(0.0)
+    count = wp.float32(0.0)
+    weighted = wp.vec3(0.0, 0.0, 0.0)
+    if length > 0.0:
+        n = n / length
+        for i in range(neighbor_idx.shape[1]):
+            nb = neighbor_idx[v, i]
+            if nb >= 0:
+                offset = p - points[nb]
+                height = wp.dot(offset, n)
+                w = wp.exp(-wp.length_sq(offset) * inverse_spatial) * wp.exp(
+                    -height * height * inverse_range
+                )
+                weighted += w * points[nb]
+                total += w
+                count += 1.0
+    if count > 1.0 and total > 0.0:
+        out_points[v] = weighted / total
+    else:
+        out_points[v] = p
+
+
+@wp.func
+def tangent_pseudo_angle(offset: wp.vec3, axis_u: wp.vec3, axis_v: wp.vec3) -> wp.float32:
+    # A value in ``(-2, 2]`` increasing with ``atan2(offset . v, offset . u)`` over ``(-pi, pi]``,
+    # with no transcendental: the angular order of a row's offsets in the tangent plane, read in
+    # ``point_boundary_flags``' quadratic next-angle search. A zero offset maps to ``0``, as
+    # ``atan2(0, 0)`` does.
+    x = wp.dot(offset, axis_u)
+    y = wp.dot(offset, axis_v)
+    l1 = wp.abs(x) + wp.abs(y)
+    if l1 <= 0.0:
+        return wp.float32(0.0)
+    t = wp.float32(1.0) - x / l1
+    return wp.where(y < 0.0, -t, t)
+
+
+@wp.func
+def tangent_angle(offset: wp.vec3, axis_u: wp.vec3, axis_v: wp.vec3) -> wp.float32:
+    # ``atan2(offset . v, offset . u)``: the true angle ``tangent_pseudo_angle`` orders.
+    return wp.atan2(wp.dot(offset, axis_v), wp.dot(offset, axis_u))
+
+
+@wp.kernel
+def point_boundary_flags(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    neighbor_idx: wp.array2d[wp.int32],
+    threshold: wp.float32,
+    out_mask: wp.array[wp.bool],
+) -> None:
+    # PCL's ``BoundaryEstimation`` as Open3D's ``compute_boundary_points`` runs it: the row's
+    # offsets, the point itself and ``-1`` slots left out, projected into the plane of the point's
+    # normal; the point is on the boundary when the widest angular gap between consecutive offsets,
+    # the wrap-around included, exceeds ``threshold``. Open3D heap-sorts each row's angles in a
+    # scratch tensor; here each offset finds its successor in a quadratic search over pseudo-angles
+    # (no storage, no transcendental), and only the gap it closes takes two ``atan2``s. A row with
+    # no other entry is not a boundary point, as Open3D leaves it.
+    v = wp.int32(wp.tid())
+    n = wp.normalize(normals[v])
+    # Any orthonormal basis of the tangent plane gives the same gaps: the cross product with the
+    # axis least aligned with the normal.
+    a = wp.abs(n)
+    helper = wp.vec3(1.0, 0.0, 0.0)
+    if a[1] <= a[0] and a[1] <= a[2]:
+        helper = wp.vec3(0.0, 1.0, 0.0)
+    elif a[2] < a[0]:
+        helper = wp.vec3(0.0, 0.0, 1.0)
+    axis_u = wp.normalize(wp.cross(n, helper))
+    axis_v = wp.cross(n, axis_u)
+    p = points[v]
+    k = neighbor_idx.shape[1]
+
+    # The smallest angle, which closes the wrap-around gap.
+    first = wp.int32(-1)
+    first_key = wp.float32(0.0)
+    for i in range(k):
+        nb = neighbor_idx[v, i]
+        if nb >= 0 and nb != v:
+            key = tangent_pseudo_angle(points[nb] - p, axis_u, axis_v)
+            if first < 0 or key < first_key:
+                first = nb
+                first_key = key
+    if first < 0:
+        out_mask[v] = False
+        return
+    first_angle = tangent_angle(points[first] - p, axis_u, axis_v)
+
+    widest = wp.float32(0.0)
+    for i in range(k):
+        nb = neighbor_idx[v, i]
+        if nb >= 0 and nb != v:
+            key = tangent_pseudo_angle(points[nb] - p, axis_u, axis_v)
+            successor = wp.int32(-1)
+            successor_key = wp.float32(0.0)
+            for j in range(k):
+                other = neighbor_idx[v, j]
+                if other >= 0 and other != v:
+                    other_key = tangent_pseudo_angle(points[other] - p, axis_u, axis_v)
+                    if other_key > key and (successor < 0 or other_key < successor_key):
+                        successor = other
+                        successor_key = other_key
+            angle = tangent_angle(points[nb] - p, axis_u, axis_v)
+            gap = wp.float32(0.0)
+            if successor >= 0:
+                gap = tangent_angle(points[successor] - p, axis_u, axis_v) - angle
+            else:
+                gap = wp.float32(2.0 * wp.pi) - angle + first_angle
+            widest = wp.max(widest, gap)
+    out_mask[v] = widest > threshold
+
+
+@wp.kernel
+def normal_graph_keys(
+    normals: wp.array[wp.vec3],
+    neighbor_idx: wp.array2d[wp.int32],
+    out_keys: wp.array[wp.float32],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # The Riemannian graph of Hoppe et al. over the neighbour table, one slot an entry: its weight
+    # ``1 - |n_i . n_j|`` (Open3D's ``NormalWeight``) as the sort key, ``+inf`` for a ``-1`` slot or
+    # the point itself so those sort last, and the identity payload, written straight into the
+    # radix sort's buffers.
+    slot = wp.int32(wp.tid())
+    k = neighbor_idx.shape[1]
+    v = slot // k
+    nb = neighbor_idx[v, slot - v * k]
+    weight = FLOAT32_INF_CONSTANT
+    if nb >= 0 and nb != v:
+        weight = wp.float32(1.0) - wp.abs(wp.dot(normals[v], normals[nb]))
+    out_keys[slot] = weight
+    out_order[slot] = slot
+
+
+@wp.kernel
+def sorted_normal_edges(
+    normals: wp.array[wp.vec3],
+    neighbor_idx: wp.array2d[wp.int32],
+    order: wp.array[wp.int32],
+    out_edges: wp.array2d[wp.int32],
+    out_signs: wp.array[wp.int32],
+) -> None:
+    # Row ``r`` of the Riemannian graph's edge list in ascending weight: the slot the sort put at
+    # rank ``r``, its sign ``1`` where the two normals disagree (a negative dot, the flip Open3D's
+    # ``TestAndOrientNormal`` applies across a tree edge). A ``-1`` slot or the point itself is a
+    # sign-``0`` self-loop, which the forest and the parity hook both skip.
+    r = wp.int32(wp.tid())
+    slot = order[r]
+    k = neighbor_idx.shape[1]
+    v = slot // k
+    nb = neighbor_idx[v, slot - v * k]
+    if nb < 0:
+        nb = v
+    out_edges[r, 0] = v
+    out_edges[r, 1] = nb
+    out_signs[r] = wp.where(wp.dot(normals[v], normals[nb]) < 0.0, wp.int32(1), wp.int32(0))
+
+
+@wp.kernel
+def component_lowest_z(
+    points: wp.array[wp.vec3], labels: wp.array[wp.int32], out_lowest_z: wp.array[wp.float32]
+) -> None:
+    # Each tree's smallest ``z``, Open3D's traversal start, into an ``+inf``-filled
+    # ``out_lowest_z``. A float ``atomic_min`` is reproducible as it stands.
+    v = wp.int32(wp.tid())
+    wp.atomic_min(out_lowest_z, labels[v], points[v][2])
+
+
+@wp.kernel
+def component_lowest_point(
+    points: wp.array[wp.vec3],
+    labels: wp.array[wp.int32],
+    lowest_z: wp.array[wp.float32],
+    out_lowest: wp.array[wp.int32],
+) -> None:
+    # The first point of each tree at its smallest ``z``, into an ``INT32_MAX``-filled
+    # ``out_lowest``: Open3D's strict ``<`` scan keeps the lowest index of a tie.
+    v = wp.int32(wp.tid())
+    label = labels[v]
+    if points[v][2] == lowest_z[label]:
+        wp.atomic_min(out_lowest, label, v)
+
+
+@wp.kernel
+def orient_from_forest(
+    normals: wp.array[wp.vec3],
+    labels: wp.array[wp.int32],
+    parity: wp.array[wp.int32],
+    lowest: wp.array[wp.int32],
+    out_normals: wp.array[wp.vec3],
+) -> None:
+    # Each normal flipped by its parity along the spanning tree, and the whole tree flipped once
+    # more if that leaves its lowest point's normal with a positive ``z``: Open3D orients the start
+    # of its traversal toward ``(0, 0, -1)`` and propagates across tree edges, which is this
+    # parity.
+    v = wp.int32(wp.tid())
+    start = lowest[labels[v]]
+    start_z = normals[start][2]
+    start_z = wp.where(parity[start] != 0, -start_z, start_z)
+    flip = (parity[v] != 0) != (start_z > 0.0)
+    n = normals[v]
+    out_normals[v] = wp.where(flip, -n, n)
 
 
 # Rows per block of ``neighbor_distance_moments``: four tiles, so a block of ``TILE_1D`` lanes walks
@@ -659,8 +1063,36 @@ def radius_outlier_flags_tiled(
 
 
 @wp.kernel
+def ball_core_flags(
+    points: wp.array[wp.vec3],
+    grid_id: wp.uint64,
+    radius: wp.float32,
+    min_points: wp.int32,
+    out_core: wp.array[wp.bool],
+) -> None:
+    # DBSCAN's core points: at least ``min_points`` points within ``radius``, the point itself
+    # counted (Open3D's ``ClusterDBSCAN`` counts its radius search, which holds it).
+    i = wp.int32(wp.tid())
+    count = ball_count_in_radius(points, ACCEL_HASHGRID, grid_id, points[i], radius)
+    out_core[i] = count >= min_points
+
+
+@wp.func
+def is_core(core: wp.array[wp.bool], i: wp.int32) -> wp.bool:
+    # Whether point ``i`` may link: every point when ``core`` is a null descriptor (the radius
+    # graph's components, ``cluster_outlier_mask``), else DBSCAN's core points alone.
+    if core.shape[0] == 0:
+        return True
+    return core[i]
+
+
+@wp.kernel
 def ball_graph_hook(
-    points: wp.array[wp.vec3], grid_id: wp.uint64, radius: wp.float32, parents: wp.array[wp.int32]
+    points: wp.array[wp.vec3],
+    grid_id: wp.uint64,
+    radius: wp.float32,
+    core: wp.array[wp.bool],
+    parents: wp.array[wp.int32],
 ) -> None:
     # The hook of every radius-graph edge, owned by its larger end, from the walk that finds it
     # (``ecl_hook``'s row carry over a ball instead of a CSR row), over an identity ``parents``.
@@ -670,7 +1102,13 @@ def ball_graph_hook(
     # query (a count walk, a scan, a readback and a collect walk), an edge list and its pre-hook
     # and hook passes: on ``lucy`` at two mean edges those held 228 M neighbour entries and twice
     # as many edge ends (call peak 4.2 -> 0.75 GB, 15.7 GB at four mean edges).
+    #
+    # With ``core`` given only edges between two core points hook (DBSCAN's density-connected
+    # components, ``cluster_labels``); a null ``core`` hooks every edge (``cluster_outlier_mask``).
+    # The test is warp-uniform for a null ``core``, which is all the two callers differ by.
     i = wp.int32(wp.tid())
+    if not is_core(core, i):
+        return
     q = points[i]
     rep = find_representative(parents, i)
     j = wp.int32(0)
@@ -678,7 +1116,8 @@ def ball_graph_hook(
     while wp.hash_grid_query_next(query, j):
         if j < i:
             if in_ball(points[j] - q, radius):
-                rep = ecl_hook_edge(parents, rep, j)
+                if is_core(core, j):
+                    rep = ecl_hook_edge(parents, rep, j)
 
 
 @wp.kernel
@@ -691,6 +1130,52 @@ def small_component_flags(
     # A point is a cluster outlier when its component holds at most ``max_cluster_size`` points.
     i = wp.int32(wp.tid())
     out_mask[i] = sizes[labels[i]] <= max_cluster_size
+
+
+@wp.kernel
+def core_root_flags(
+    parents: wp.array[wp.int32],
+    core: wp.array[wp.bool],
+    out_roots: wp.array[wp.int32],
+    out_flags: wp.array[wp.int32],
+) -> None:
+    # Each point's root, and a ``1`` on every cluster's root: a core point that is its own root,
+    # the cluster's smallest core index, since every union points the larger root at the smaller.
+    # An inclusive scan of the flags numbers the clusters in ascending smallest core index, the
+    # order in which Open3D's ``ClusterDBSCAN`` seeds them.
+    i = wp.int32(wp.tid())
+    root = find_representative(parents, i)
+    out_roots[i] = root
+    out_flags[i] = wp.where(root == i and is_core(core, i), wp.int32(1), wp.int32(0))
+
+
+@wp.kernel
+def dbscan_labels(
+    points: wp.array[wp.vec3],
+    grid_id: wp.uint64,
+    radius: wp.float32,
+    core: wp.array[wp.bool],
+    roots: wp.array[wp.int32],
+    cluster_ranks: wp.array[wp.int32],
+    out_labels: wp.array[wp.int32],
+) -> None:
+    # A core point takes its cluster's number. A border point takes the cluster of the core point
+    # within ``radius`` whose cluster has the smallest root: Open3D grows its clusters in seed order
+    # and a border point keeps the first that reaches it, which is that one. A point with no core
+    # point in reach is noise, ``-1``.
+    i = wp.int32(wp.tid())
+    if is_core(core, i):
+        out_labels[i] = cluster_ranks[roots[i]] - 1
+        return
+    q = points[i]
+    best = INT32_MAX_CONSTANT
+    j = wp.int32(0)
+    query = wp.hash_grid_query(grid_id, q, radius)
+    while wp.hash_grid_query_next(query, j):
+        if core[j]:
+            if in_ball(points[j] - q, radius):
+                best = wp.min(best, roots[j])
+    out_labels[i] = wp.where(best < INT32_MAX_CONSTANT, cluster_ranks[best] - 1, wp.int32(-1))
 
 
 @wp.func
@@ -1484,6 +1969,26 @@ def mark_hull_superset(
         out_mask[i] = keep != 0
     elif keep == 0:
         out_mask[i] = False
+
+
+@wp.kernel
+def spherical_flip_with_origin(
+    points: wp.array[wp.vec3],
+    camera_location: wp.vec3,
+    radius: wp.float64,
+    out_flipped: wp.array[wp.vec3],
+) -> None:
+    # Katz, Tal and Basri's spherical flip about the camera, Open3D's ``HiddenPointRemoval``:
+    # ``d + 2 (radius - |d|) d / |d|`` for ``d = p - camera``, formed in ``float64`` and rounded
+    # once, and the camera itself (the origin of the flipped frame) in the trailing slot, launched
+    # over ``n + 1`` threads. The visible points are the flipped cloud's hull vertices.
+    i = wp.int32(wp.tid())
+    if i == points.shape[0]:
+        out_flipped[i] = wp.vec3(0.0, 0.0, 0.0)
+        return
+    d = to_vec3d(points[i]) - to_vec3d(camera_location)
+    norm = wp.length(d)
+    out_flipped[i] = to_vec3(d + wp.float64(2.0) * (radius - norm) * d / norm)
 
 
 @wp.func

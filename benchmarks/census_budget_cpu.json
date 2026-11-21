@@ -5332,6 +5332,13 @@
    "alloc": 1
   }
  },
+ "benchmarks/test_points.py::test_cluster_labels[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 5,
+   "scan": 1
+  }
+ },
  "benchmarks/test_points.py::test_cluster_outlier_mask[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 4,
@@ -5454,6 +5461,14 @@
    "alloc": 1
   }
  },
+ "benchmarks/test_points.py::test_orient_normals[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 29,
+   "alloc": 16,
+   "readback": 7,
+   "sort": 1
+  }
+ },
  "benchmarks/test_points.py::test_outlier_probability[sphere_med-ordito-cpu]": {
   "counts": {
    "launch": 5,
@@ -5477,6 +5492,20 @@
    "alloc": 1
   }
  },
+ "benchmarks/test_points.py::test_point_boundary_mask[saddle_small-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 4,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_points.py::test_point_covariances[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 4,
+   "readback": 1
+  }
+ },
  "benchmarks/test_points.py::test_point_duplicate_mask[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 2,
@@ -5489,10 +5518,25 @@
    "alloc": 1
   }
  },
+ "benchmarks/test_points.py::test_point_frames[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 5,
+   "readback": 1
+  }
+ },
  "benchmarks/test_points.py::test_point_plane_distance[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 1,
    "alloc": 1
+  }
+ },
+ "benchmarks/test_points.py::test_point_visible_mask[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 27,
+   "alloc": 10,
+   "readback": 9,
+   "scan": 1
   }
  },
  "benchmarks/test_points.py::test_principal_axes[sphere_small-ordito-cpu]": {
@@ -5519,6 +5563,34 @@
   "counts": {
    "launch": 1,
    "alloc": 1
+  }
+ },
+ "benchmarks/test_points.py::test_smooth_normals[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 4,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_points.py::test_smooth_points[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 22,
+   "alloc": 5,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_points.py::test_smooth_points_bilateral[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 4,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_points.py::test_smooth_points_mls[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 5,
+   "readback": 1
   }
  },
  "benchmarks/test_points.py::test_space_filling_order[sphere_small-ordito-cpu-hilbert]": {

@@ -29,6 +29,7 @@ import ordito.repair as od_repair
 import ordito.typing as odt
 from ordito.kernels import points as kernel_points
 from tests.comparisons import assert_same_up_to_sign, lexsort_rows
+from tests.conftest import CLOSED_MESHES, MESHES
 from tests.conversions import (
     meshlib_bitset_to_numpy,
     meshlib_indices_to_numpy,
@@ -1038,6 +1039,348 @@ def test_estimate_normals_orientation(device: str) -> None:
     assert np.all(np.einsum("ij,ij->i", normals_default, points_np - centroid_np) <= tol)
 
 
+@pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parity("orient_normals", "open3d")
+def test_orient_normals_matches_open3d(request: pytest.FixtureRequest, mesh_name: str) -> None:
+    """
+    Class A: Open3D's ``orient_normals_consistent_tangent_plane`` on the same normals, signed.
+
+    Both propagate across the minimum spanning tree of the ``k``-nearest graph weighted by
+    ``1 - |n_i . n_j|`` from the lowest point turned toward ``-z``. Open3D also adds the cloud's
+    Euclidean minimum spanning tree, which on these fixtures lies inside the ``k``-nearest graph,
+    so the two trees and every sign agree. The input normals are flipped at random first, so the
+    answer is not the input: about half the normals change, and the result is not constant.
+    """
+    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    points_wp = mesh_wp.points
+    knn = 10
+    neighbor_idx_wp, _ = od_neighbors.query_nearest(points_wp, points_wp, k=knn)
+    normals_np = od.estimate_normals(points_wp, neighbor_idx_wp).numpy()
+    signs_np = np.where(np.random.default_rng(7).random(len(normals_np)) < 0.5, -1.0, 1.0)
+    scrambled_np = (normals_np * signs_np[:, None]).astype(np.float32)
+
+    pcd = points_to_open3d(points_wp.numpy().astype(np.float64), scrambled_np.astype(np.float64))
+    pcd.orient_normals_consistent_tangent_plane(knn)
+    oriented_o3d = np.asarray(pcd.normals)
+
+    oriented_wp = od.orient_normals(
+        points_wp, wp.array(scrambled_np, dtype=wp.vec3, device=mesh_wp.device), neighbor_idx_wp
+    )
+    flipped_np = (oriented_o3d * scrambled_np).sum(axis=1) < 0.0
+    assert 0.3 < flipped_np.mean() < 0.7  # non-vacuity: the propagation undid the scrambling
+    assert np.allclose(oriented_wp.numpy(), oriented_o3d, rtol=1e-5, atol=1e-5)
+
+
+def test_orient_normals_orients_each_component_from_its_lowest_point(device: str) -> None:
+    """
+    Not a library comparison: two far-apart spheres are two trees, each facing out.
+
+    Open3D joins every point into one tree through the Euclidean minimum spanning tree, so it has
+    no per-component answer to compare; ordito orients each component of the table's graph from
+    its own lowest point. Each sphere's lowest normal faces ``-z``, so each sphere faces outward,
+    which a single tree rooted on the first sphere would not guarantee for the second (excluded:
+    a root shared across components, or a component left in the input's random signs).
+    """
+    sphere_np = _fibonacci_sphere(600)
+    points_np = np.vstack([sphere_np, 0.5 * sphere_np + [10.0, 0.0, 0.0]]).astype(np.float32)
+    centers_np = np.repeat([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], 600, axis=0)
+    outward_np = (points_np - centers_np) / np.linalg.norm(points_np - centers_np, axis=1)[:, None]
+    signs_np = np.where(np.random.default_rng(3).random(1200) < 0.5, -1.0, 1.0)
+    points_wp = points_to_warp(points_np, device)
+    neighbor_idx_wp, _ = od_neighbors.query_nearest(points_wp, points_wp, k=8)
+    oriented_wp = od.orient_normals(
+        points_wp,
+        wp.array((outward_np * signs_np[:, None]).astype(np.float32), dtype=wp.vec3, device=device),
+        neighbor_idx_wp,
+    )
+    assert np.allclose(oriented_wp.numpy(), outward_np, atol=1e-6)
+
+
+@pytest.mark.parametrize("iterations", [1, 2])
+@pytest.mark.parity("smooth_normals", "pymeshlab")
+def test_smooth_normals_matches_pymeshlab(device: str, iterations: int) -> None:
+    """
+    Class A: MeshLab's ``apply_normal_point_cloud_smoothing(k, usedist=False)`` on the same normals.
+
+    MeshLab searches its own ``k`` nearest (self included) and sums each neighbour's normal turned
+    to the side of the point's own; the cloud has no exact ``k``-nearest ties, which the identical
+    tables below confirm. Its filter runs one pass, so two iterations are compared against the
+    filter applied twice. The noise is large enough that one pass moves every normal (non-vacuity).
+    """
+    knn = 10
+    points_np = _fibonacci_sphere(1500)
+    rng = np.random.default_rng(11)
+    noisy_np = points_np + 0.4 * rng.standard_normal(points_np.shape)
+    noisy_np *= np.where(rng.random(1500) < 0.5, -1.0, 1.0)[:, None]
+    noisy_np /= np.linalg.norm(noisy_np, axis=1, keepdims=True)
+    meshset_pml = points_to_pymeshlab(points_np, noisy_np)
+    for _ in range(iterations):
+        meshset_pml.apply_normal_point_cloud_smoothing(k=knn, usedist=False)
+    smoothed_pml = np.asarray(meshset_pml.current_mesh().vertex_normal_matrix())
+    assert np.abs(smoothed_pml - noisy_np).max(axis=1).min() > 1e-3
+
+    points_wp = points_to_warp(points_np, device)
+    neighbor_idx_wp, _ = od_neighbors.query_nearest(points_wp, points_wp, k=knn)
+    neighbor_idx_np = neighbor_idx_wp.numpy()
+    tree_np = scipy.spatial.cKDTree(points_np)
+    assert np.array_equal(np.sort(neighbor_idx_np, 1), np.sort(tree_np.query(points_np, knn)[1], 1))
+    smoothed_wp = od.smooth_normals(
+        wp.array(noisy_np, dtype=wp.vec3, device=device), neighbor_idx_wp, iterations
+    )
+    assert np.allclose(smoothed_wp.numpy(), smoothed_pml, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("mu", [None, -0.53], ids=["laplacian", "taubin"])
+@pytest.mark.parity("smooth_points", "open3d")
+def test_smooth_points_matches_open3d(device: str, mu: float | None) -> None:
+    """
+    Class A: Open3D's ``smooth_laplacian`` / ``smooth_taubin`` with fixed neighbourhoods.
+
+    Open3D searches ``knn + 1`` nearest and drops the point itself; ordito's table is the
+    self-query of width ``knn + 1``, whose own entry the step skips. The cloud is a noisy sphere
+    with no exact ties, so the two tables agree, and three iterations move every point by far more
+    than the tolerance (non-vacuity).
+    """
+    knn = 10
+    rng = np.random.default_rng(5)
+    points_np = (_fibonacci_sphere(2000) + 0.02 * rng.standard_normal((2000, 3))).astype(np.float32)
+    pcd = points_to_open3d(points_np.astype(np.float64))
+    if mu is None:
+        smoothed_o3d = np.asarray(pcd.smooth_laplacian(3, 0.5, knn, True).points)
+    else:
+        smoothed_o3d = np.asarray(pcd.smooth_taubin(3, 0.5, mu, knn, True).points)
+    assert np.linalg.norm(smoothed_o3d - points_np, axis=1).min() > 1e-4
+
+    points_wp = points_to_warp(points_np, device)
+    neighbor_idx_wp, _ = od_neighbors.query_nearest(points_wp, points_wp, k=knn + 1)
+    smoothed_wp = od.smooth_points(points_wp, neighbor_idx_wp, 3, 0.5, mu=mu)
+    assert np.allclose(smoothed_wp.numpy(), smoothed_o3d, rtol=1e-5, atol=1e-5)
+
+
+def _noisy_fibonacci_sphere(n: int = 3000, noise: float = 0.02, seed: int = 0) -> np.ndarray:
+    """``_fibonacci_sphere(n)`` displaced by Gaussian noise, rounded to ``float32``."""
+    rng = np.random.default_rng(seed)
+    return (_fibonacci_sphere(n) + noise * rng.standard_normal((n, 3))).astype(np.float32)
+
+
+@pytest.mark.parametrize("radius", [None, 0.12], ids=["knn", "hybrid"])
+@pytest.mark.parity("smooth_points_mls", "open3d")
+def test_smooth_points_mls_matches_open3d(device: str, radius: float | None) -> None:
+    """
+    Class A: Open3D's ``smooth_mls`` positions, and its normals once oriented as it orients them.
+
+    Without ``radius`` Open3D searches ``KDTreeSearchParamKNN`` and weighs every entry equally;
+    with one it searches by radius with a ``max_nn`` cap (``query_nearest(max_radius=)``) and
+    weighs by ``exp(-d**2 / radius**2)``. Open3D then orients the plane normals by
+    ``orient_normals_consistent_tangent_plane(30)`` over the projected cloud, which
+    ``orient_normals`` over that cloud's 30 nearest reproduces. The median point moves a hundred
+    times the tolerance (non-vacuity); the noisy sphere has no exact ``k``-nearest ties.
+    """
+    points_np = _noisy_fibonacci_sphere()
+    radial_np = points_np / np.linalg.norm(points_np, axis=1, keepdims=True)
+    pcd = points_to_open3d(points_np.astype(np.float64), radial_np.astype(np.float64))
+    if radius is None:
+        search = o3d.geometry.KDTreeSearchParamKNN(knn=20)
+    else:
+        search = o3d.geometry.KDTreeSearchParamHybrid(radius=radius, max_nn=30)
+    smoothed_o3d = pcd.smooth_mls(search)
+    points_o3d = np.asarray(smoothed_o3d.points)
+    assert np.median(np.linalg.norm(points_o3d - points_np, axis=1)) > 1e-3
+
+    points_wp = points_to_warp(points_np, device)
+    if radius is None:
+        neighbor_idx_wp, _ = od_neighbors.query_nearest(points_wp, points_wp, k=20)
+    else:
+        neighbor_idx_wp, _ = od_neighbors.query_nearest(
+            points_wp, points_wp, k=30, max_radius=radius
+        )
+    smoothed_wp, normals_wp = od.smooth_points_mls(points_wp, neighbor_idx_wp, radius)
+    assert np.allclose(smoothed_wp.numpy(), points_o3d, rtol=1e-5, atol=1e-5)
+    orient_idx_wp, _ = od_neighbors.query_nearest(smoothed_wp, smoothed_wp, k=30)
+    oriented_wp = od.orient_normals(smoothed_wp, normals_wp, orient_idx_wp)
+    assert np.allclose(oriented_wp.numpy(), np.asarray(smoothed_o3d.normals), atol=1e-5)
+
+
+@pytest.mark.parity("smooth_points_bilateral", "open3d")
+def test_smooth_points_bilateral_matches_open3d(device: str) -> None:
+    """
+    Class A: Open3D's ``smooth_bilateral`` on the same ``k``-nearest rows and normals.
+
+    The range scale is below the noise, so the range weight matters: the same call with an
+    enormous ``sigma_r`` (the spatial weight alone) moves the points differently by far more than
+    the tolerance, which a filter dropping the range term would not tell apart otherwise.
+    """
+    points_np = _noisy_fibonacci_sphere()
+    radial_np = points_np / np.linalg.norm(points_np, axis=1, keepdims=True)
+    pcd = points_to_open3d(points_np.astype(np.float64), radial_np.astype(np.float64))
+    search = o3d.geometry.KDTreeSearchParamKNN(knn=20)
+    points_o3d = np.asarray(pcd.smooth_bilateral(search, 0.05, 0.02).points)
+    spatial_o3d = np.asarray(pcd.smooth_bilateral(search, 0.05, 1e3).points)
+    assert np.abs(points_o3d - spatial_o3d).max() > 1e-3
+
+    points_wp = points_to_warp(points_np, device)
+    neighbor_idx_wp, _ = od_neighbors.query_nearest(points_wp, points_wp, k=20)
+    smoothed_wp = od.smooth_points_bilateral(
+        points_wp, points_to_warp(radial_np, device), neighbor_idx_wp, 0.05, 0.02
+    )
+    assert np.allclose(smoothed_wp.numpy(), points_o3d, rtol=1e-5, atol=1e-5)
+
+
+def _anisotropic_sheet(n_side: int = 40, seed: int = 4) -> np.ndarray:
+    """
+    Build a jittered ``n_side x n_side`` grid on a bent sheet, spaced 1 by 0.45 before bending.
+
+    Every k-nearest neighbourhood spreads about twice as far along ``x`` as along ``y`` and bends
+    out of plane, so its covariance has three well-separated eigenvalues and each principal axis is
+    well conditioned; the jitter breaks the grid's distance ties.
+    """
+    x, y = np.meshgrid(np.arange(n_side, dtype=np.float64), 0.45 * np.arange(n_side))
+    jitter = 0.05 * np.random.default_rng(seed).standard_normal((2, n_side, n_side))
+    x, y = x + jitter[0], y + jitter[1]
+    return np.c_[x.ravel(), y.ravel(), 0.02 * (x.ravel() - n_side / 2) ** 2].astype(np.float32)
+
+
+@pytest.mark.parity("point_covariances", "open3d")
+def test_point_covariances_matches_open3d(device: str) -> None:
+    """
+    Class A: Open3D's ``estimate_covariances`` over the same ``k``-nearest neighbourhoods.
+
+    Both divide the scatter by the count, the point itself included. A planted pair far off the
+    sheet has a two-point neighbourhood when ``k`` is capped by ``max_radius``, which both give
+    the identity (Open3D below three points): the fallback is compared too.
+    """
+    knn = 12
+    points_np = _anisotropic_sheet()
+    pcd = points_to_open3d(points_np.astype(np.float64))
+    pcd.estimate_covariances(o3d.geometry.KDTreeSearchParamKNN(knn=knn))
+    covariances_o3d = np.asarray(pcd.covariances)
+    assert np.ptp(covariances_o3d[:, 0, 0]) > 1e-2  # non-vacuity: the neighbourhoods differ
+
+    points_wp = points_to_warp(points_np, device)
+    neighbor_idx_wp, _ = od_neighbors.query_nearest(points_wp, points_wp, k=knn)
+    covariances_wp = od.point_covariances(points_wp, neighbor_idx_wp)
+    assert np.allclose(covariances_wp.numpy(), covariances_o3d, rtol=1e-5, atol=1e-5)
+
+    pair_np = np.vstack([points_np, [[100.0, 0.0, 0.0], [100.5, 0.0, 0.0]]]).astype(np.float32)
+    pair_o3d = points_to_open3d(pair_np.astype(np.float64))
+    pair_o3d.estimate_covariances(o3d.geometry.KDTreeSearchParamHybrid(radius=2.0, max_nn=knn))
+    pair_wp = points_to_warp(pair_np, device)
+    pair_idx_wp, _ = od_neighbors.query_nearest(pair_wp, pair_wp, k=knn, max_radius=2.0)
+    pair_covariances_wp = od.point_covariances(pair_wp, pair_idx_wp).numpy()
+    assert np.allclose(pair_covariances_wp[-2:], np.eye(3))
+    assert np.allclose(pair_covariances_wp, np.asarray(pair_o3d.covariances), atol=1e-5)
+
+
+@pytest.mark.parity("point_frames", "pytorch3d")
+def test_point_frames_matches_pytorch3d(device: str) -> None:
+    """
+    Class B (column order): pytorch3d's ``estimate_pointcloud_local_coord_frames``, signs included.
+
+    pytorch3d returns the eigenvalues ascending and the frame's columns as
+    ``(normal, normal x major, major)``, the normal and major axes signed by the SHOT rule; ordito's
+    rows are the same three vectors widest first, so the named transform reverses the column order.
+    On the anisotropic sheet every eigenvalue gap is wide, so each axis is well conditioned, and
+    both signed axes take both signs over the cloud (non-vacuity of the sign rule).
+    """
+    knn = 12
+    points_np = _anisotropic_sheet()
+    curvatures_p3d, frames_p3d = p3d_ops.estimate_pointcloud_local_coord_frames(
+        points_to_torch(points_np, "cpu"), neighborhood_size=knn
+    )
+    columns_np = frames_p3d[0].numpy()[:, :, ::-1]
+    assert np.unique(np.sign(columns_np[:, 2, 2])).shape[0] == 2
+
+    points_wp = points_to_warp(points_np, device)
+    neighbor_idx_wp, _ = od_neighbors.query_nearest(points_wp, points_wp, k=knn)
+    frames_wp, eigenvalues_wp = od.point_frames(points_wp, neighbor_idx_wp)
+    assert np.allclose(frames_wp.numpy(), columns_np.transpose(0, 2, 1), rtol=1e-5, atol=1e-5)
+    assert np.allclose(
+        eigenvalues_wp.numpy(), curvatures_p3d[0].numpy()[:, ::-1], rtol=1e-5, atol=1e-5
+    )
+    assert np.allclose(np.linalg.det(frames_wp.numpy()), 1.0, atol=1e-5)
+
+
+@pytest.mark.parametrize("max_gap", [math.pi / 2.0, 0.75 * math.pi])
+@pytest.mark.parity("point_boundary_mask", "open3d")
+def test_point_boundary_mask_matches_open3d(device: str, max_gap: float) -> None:
+    """
+    Class A: Open3D's tensor ``compute_boundary_points`` on the same hybrid neighbourhoods.
+
+    A spherical cap, its normals radial: Open3D's ``radius`` and ``max_nn`` are the table's
+    ``max_radius`` and ``k``. The threshold is swept across two values that flag different rims,
+    and both answers are mixed (non-vacuity). Open3D's ``float32`` tensors sort true ``atan2``
+    angles where ordito searches pseudo-angles; no gap here lies within rounding of either
+    threshold.
+    """
+    knn, radius = 30, 0.12
+    sphere_np = _fibonacci_sphere(4000)
+    cap_np = sphere_np[sphere_np[:, 2] > 0.2].astype(np.float32)
+    normals_np = cap_np / np.linalg.norm(cap_np, axis=1, keepdims=True)
+    # The stub drops the dtype and device defaults.
+    cloud_o3d = o3d.t.geometry.PointCloud(o3d.core.Tensor(cap_np))  # pyright: ignore[reportCallIssue]
+    cloud_o3d.point.normals = o3d.core.Tensor(normals_np)  # pyright: ignore[reportCallIssue]
+    _boundary_o3d, mask_o3d = cloud_o3d.compute_boundary_points(radius, knn, math.degrees(max_gap))
+    boundary_o3d = mask_o3d.numpy()
+    assert 0 < boundary_o3d.sum() < boundary_o3d.shape[0] // 4
+
+    points_wp = points_to_warp(cap_np, device)
+    neighbor_idx_wp, _ = od_neighbors.query_nearest(points_wp, points_wp, k=knn, max_radius=radius)
+    boundary_wp = od.point_boundary_mask(
+        points_wp, wp.array(normals_np, dtype=wp.vec3, device=device), neighbor_idx_wp, max_gap
+    )
+    assert np.array_equal(boundary_wp.numpy(), boundary_o3d)
+
+
+@pytest.mark.parametrize(
+    ("case", "match"),
+    [
+        ("orient_rows", "neighbor_idx"),
+        ("orient_normals", "normals"),
+        ("smooth_normals_iterations", "iterations"),
+        ("smooth_points_iterations", "iterations"),
+        ("mls_radius", "radius"),
+        ("bilateral_sigma", "sigma"),
+        ("bilateral_normals", "normals"),
+        ("covariance_rows", "neighbor_idx"),
+        ("frame_rows", "neighbor_idx"),
+        ("boundary_normals", "normals"),
+    ],
+)
+def test_neighborhood_functions_reject_invalid_arguments(
+    device: str, case: str, match: str
+) -> None:
+    """Not a parity assert: each documented ``ValueError`` is raised."""
+    points_np = _fibonacci_sphere(50).astype(np.float32)
+    points_wp = points_to_warp(points_np, device)
+    normals_wp = points_to_warp(points_np, device)
+    neighbor_idx_wp, _ = od_neighbors.query_nearest(points_wp, points_wp, k=6)
+    short_idx_wp, _ = od_neighbors.query_nearest(
+        points_wp, points_to_warp(points_np[:10], device), k=6
+    )
+    calls = {
+        "orient_rows": lambda: od.orient_normals(points_wp, normals_wp, short_idx_wp),
+        "orient_normals": lambda: od.orient_normals(
+            points_wp, points_to_warp(points_np[:10], device), neighbor_idx_wp
+        ),
+        "smooth_normals_iterations": lambda: od.smooth_normals(normals_wp, neighbor_idx_wp, 0),
+        "smooth_points_iterations": lambda: od.smooth_points(points_wp, neighbor_idx_wp, 0),
+        "mls_radius": lambda: od.smooth_points_mls(points_wp, neighbor_idx_wp, 0.0),
+        "bilateral_sigma": lambda: od.smooth_points_bilateral(
+            points_wp, normals_wp, neighbor_idx_wp, 0.1, 0.0
+        ),
+        "bilateral_normals": lambda: od.smooth_points_bilateral(
+            points_wp, points_to_warp(points_np[:10], device), neighbor_idx_wp, 0.1, 0.1
+        ),
+        "covariance_rows": lambda: od.point_covariances(points_wp, short_idx_wp),
+        "frame_rows": lambda: od.point_frames(points_wp, short_idx_wp),
+        "boundary_normals": lambda: od.point_boundary_mask(
+            points_wp, points_to_warp(points_np[:10], device), neighbor_idx_wp
+        ),
+    }
+    with pytest.raises(ValueError, match=match):
+        calls[case]()
+
+
 def _cloud_with_outliers(seed: int = 3, n_inliers: int = 400, n_outliers: int = 15) -> np.ndarray:
     """Build a tight Gaussian blob plus far stragglers, which land last in the array."""
     rng = np.random.default_rng(seed)
@@ -1402,6 +1745,79 @@ def test_cluster_outlier_mask_matches_open3d(device: str, max_cluster_size: int)
     assert np.unique(pair_labels_o3d).shape[0] == 3
     pair_wp = od.cluster_outlier_mask(points_to_warp(pair_np, device), 1.0, 1)
     assert pair_wp.numpy().tolist() == [False, False, True]
+
+
+@pytest.mark.parametrize("min_points", [1, 5, 12])
+@pytest.mark.parity("cluster_labels", "open3d")
+def test_cluster_labels_matches_open3d(device: str, min_points: int) -> None:
+    """
+    Class A: Open3D's ``cluster_dbscan`` labels, numbering and border assignment included.
+
+    Open3D seeds clusters in index order and a border point keeps the first cluster to reach it;
+    ordito numbers clusters by their smallest core index and gives a border point the
+    lowest-numbered cluster in reach, which is the same assignment. Two clumps of different density
+    plus uniform noise: ``min_points`` from 1 (every point core, no noise) to 12 (the sparse clump
+    dissolves into noise and border points appear), each answer checked to have several clusters,
+    and above 1 noise and border points (non-vacuity). Open3D's radius search is exclusive at
+    ``eps``; no pair here lies within ``1e-5`` of it.
+    """
+    rng = np.random.default_rng(21)
+    dense_np = 0.3 * rng.standard_normal((600, 3))
+    sparse_np = 0.6 * rng.standard_normal((300, 3)) + [3.0, 0.0, 0.0]
+    noise_np = rng.uniform(-3.0, 6.0, (200, 3))
+    points_np = rng.permutation(np.vstack([dense_np, sparse_np, noise_np])).astype(np.float32)
+    eps = 0.26
+    distances_np = scipy.spatial.distance.pdist(points_np.astype(np.float64))
+    assert np.abs(distances_np - eps).min() > 1e-5
+    pcd = points_to_open3d(points_np.astype(np.float64))
+    labels_o3d = np.asarray(pcd.cluster_dbscan(eps=eps, min_points=min_points))
+    assert labels_o3d.max() >= 1
+    if min_points > 1:
+        counts_np = (scipy.spatial.distance.squareform(distances_np) <= eps).sum(axis=1)
+        border_np = (counts_np < min_points) & (labels_o3d >= 0)
+        assert (labels_o3d == -1).any()
+        assert border_np.any()
+
+    labels_wp = od.cluster_labels(points_to_warp(points_np, device), eps, min_points)
+    assert np.array_equal(labels_wp.numpy(), labels_o3d)
+
+
+def test_cluster_labels_border_point_takes_the_first_cluster(device: str) -> None:
+    """
+    Ordito against ordito: a border point between two clusters joins the lower-numbered one.
+
+    Open3D has the same rule (the parity test above meets it only where borders happen to touch
+    two clusters). Here a lone point sits within ``radius`` of a core point of each of two
+    four-point clusters and is not core itself: it must take cluster ``0``,
+    the one whose smallest core index is lower, whatever order the device visits it in.
+    """
+    points_np = np.array(
+        [
+            [1.45, 0.0, 0.0],  # cluster 0, listed first
+            [1.6, 0.0, 0.0],
+            [1.6, 0.1, 0.0],
+            [1.6, -0.1, 0.0],
+            [1.0, 0.0, 0.0],  # the border point: two core points and itself in reach
+            [0.55, 0.0, 0.0],  # cluster 1
+            [0.4, 0.0, 0.0],
+            [0.4, 0.1, 0.0],
+            [0.4, -0.1, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    labels_wp = od.cluster_labels(points_to_warp(points_np, device), 0.5, 4)
+    labels_o3d = np.asarray(points_to_open3d(points_np.astype(np.float64)).cluster_dbscan(0.5, 4))
+    assert labels_wp.numpy().tolist() == [0, 0, 0, 0, 0, 1, 1, 1, 1]
+    assert labels_wp.numpy().tolist() == labels_o3d.tolist()
+
+
+def test_cluster_labels_rejects_invalid_arguments(device: str) -> None:
+    """Not a parity assert: each documented ``ValueError`` is raised."""
+    points_wp = points_to_warp(_fibonacci_sphere(20), device)
+    with pytest.raises(ValueError, match="radius"):
+        od.cluster_labels(points_wp, 0.0)
+    with pytest.raises(ValueError, match="min_points"):
+        od.cluster_labels(points_wp, 0.1, 0)
 
 
 @pytest.mark.parametrize("min_height", [0.1, 0.3])
@@ -2444,6 +2860,45 @@ def test_support_sweep_agrees_across_devices(mask_device: str) -> None:
     assert hull_scipy <= set(np.flatnonzero(superset_np).tolist())
     # The tile bug's signature was a wildly less selective filter, not a wrong-shaped one.
     assert superset_np.mean() < 0.05
+
+
+@pytest.mark.parametrize("mesh_name", CLOSED_MESHES)
+@pytest.mark.parametrize("camera", [(0.3, -0.2, 3.0), (-4.0, 1.0, 0.5)], ids=["above", "side"])
+@pytest.mark.parity("point_visible_mask", "open3d")
+def test_point_visible_mask_matches_open3d(
+    request: pytest.FixtureRequest, mesh_name: str, camera: tuple[float, float, float]
+) -> None:
+    """
+    Class A: Open3D's ``hidden_point_removal`` visible set, from two viewpoints.
+
+    Both flip the cloud about a sphere on the camera and keep the hull vertices of the flipped
+    cloud and the camera; Open3D runs qhull in ``float64``, ordito the exact hull of the flipped
+    points rounded once to ``float32``. At the radius Katz et al. recommend (about 100 times the
+    cloud's extent) the two sets are identical, and each holds a fraction of the cloud, not all of
+    it or none (non-vacuity).
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    radius = 100.0 * float(np.ptp(mesh_tm.vertices, axis=0).max())
+    camera_np = np.asarray(mesh_tm.vertices).mean(axis=0) + np.asarray(camera)
+    pcd = points_to_open3d(mesh_wp.points.numpy().astype(np.float64))
+    _mesh_o3d, visible_o3d = pcd.hidden_point_removal(camera_np, radius)
+    visible_np = np.zeros(len(mesh_tm.vertices), dtype=bool)
+    visible_np[np.asarray(visible_o3d)] = True
+    assert 0.2 < visible_np.mean() < 0.8
+
+    visible_wp = od.point_visible_mask(mesh_wp.points, wp.vec3(*camera_np.tolist()), radius)
+    assert np.array_equal(visible_wp.numpy(), visible_np)
+
+
+def test_point_visible_mask_rejects_invalid_arguments(device: str) -> None:
+    """Not a parity assert: each documented ``ValueError`` is raised."""
+    points_wp = points_to_warp(_fibonacci_sphere(20), device)
+    with pytest.raises(ValueError, match="radius"):
+        od.point_visible_mask(points_wp, wp.vec3(0.0, 0.0, 5.0), 0.0)
+    with pytest.raises(ValueError, match="at least 4"):
+        od.point_visible_mask(
+            points_to_warp(_fibonacci_sphere(2), device), wp.vec3(0.0, 0.0, 5.0), 10.0
+        )
 
 
 def _sphere_knn(device: str, k: int) -> tuple[odt.Array2dInt32, odt.Array2dFloat32]:

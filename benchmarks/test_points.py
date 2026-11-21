@@ -711,6 +711,244 @@ def test_estimate_normals_knn(bench_case: BenchCase) -> None:
         assert np.asarray(cloud.normals).shape == (bench_case.n_vertices, 3)
 
 
+def _vertex_normals_np(bench_case: BenchCase) -> np.ndarray:
+    """
+    Area-weighted unit vertex normals on the host, for the references' clouds (setup, not timed).
+
+    The same normals as ``_unit_normals_wp`` up to rounding; a reference case has no device to
+    build those on.
+    """
+    vertices, faces = bench_case.vertices_np.astype(np.float64), bench_case.faces_np
+    corners = vertices[faces]
+    face_normals = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
+    normals = np.zeros_like(vertices)
+    for corner in range(3):
+        np.add.at(normals, faces[:, corner], face_normals)
+    return normals / np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-30)
+
+
+@pytest.mark.benchmark(group="orient_normals")
+@pytest.mark.benchlibs("ordito", "open3d")
+def test_orient_normals(bench_case: BenchCase) -> None:
+    """
+    Minimum-spanning-tree propagation, neighbour search included, on the vertex normals.
+
+    open3d's ``orient_normals_consistent_tangent_plane`` builds its own k-d tree and a Delaunay
+    tetrahedralization (for the Euclidean spanning tree it adds) every call, then runs Kruskal and
+    a breadth-first walk on one thread; ordito sorts the graph's weights, runs Boruvka rounds and a
+    parity union-find. The open3d call orients the cloud's normals in place, so later rounds start
+    from oriented normals, which changes no work. The tetrahedralization caps it at ``bunny``.
+    """
+    knn = 10
+    if bench_case.kind == "open3d":
+        skip_larger_than(bench_case, "bunny", "open3d tetrahedralizes the cloud on one thread")
+        pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(bench_case.vertices_np))
+        pcd.normals = o3d.utility.Vector3dVector(_vertex_normals_np(bench_case))
+        bench_case.run(lambda: pcd.orient_normals_consistent_tangent_plane(knn))
+        return
+    points = bench_case.vertices_wp
+    normals = _unit_normals_wp(bench_case)
+    oriented = bench_case.run(
+        lambda: od.points.orient_normals(
+            points, normals, od.neighbors.query_nearest(points, points, k=knn)[0]
+        )
+    )
+    assert oriented.shape == (bench_case.n_vertices,)
+
+
+@pytest.mark.benchmark(group="smooth_normals")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
+def test_smooth_normals(bench_case: BenchCase) -> None:
+    """
+    One pass of sign-aligned normal averaging, neighbour search included.
+
+    pymeshlab's ``apply_normal_point_cloud_smoothing`` builds its k-d tree and searches every call;
+    its MeshSet's normals are overwritten in place, which changes no work. ``k = 10``.
+    """
+    knn = 10
+    if bench_case.kind == "pymeshlab":
+        meshset_pml = ml.MeshSet()
+        meshset_pml.add_mesh(
+            ml.Mesh(
+                vertex_matrix=np.ascontiguousarray(bench_case.vertices_np, dtype=np.float64),
+                v_normals_matrix=_vertex_normals_np(bench_case),
+            )
+        )
+        bench_case.run(lambda: meshset_pml.apply_normal_point_cloud_smoothing(k=knn))
+        return
+    points = bench_case.vertices_wp
+    normals = _unit_normals_wp(bench_case)
+    smoothed = bench_case.run(
+        lambda: od.points.smooth_normals(
+            normals, od.neighbors.query_nearest(points, points, k=knn)[0]
+        )
+    )
+    assert smoothed.shape == (bench_case.n_vertices,)
+
+
+@pytest.mark.benchmark(group="smooth_points")
+@pytest.mark.benchlibs("ordito", "open3d")
+def test_smooth_points(bench_case: BenchCase) -> None:
+    """
+    Ten Taubin iterations over a fixed ``k = 10`` table, the table's search included.
+
+    open3d's ``smooth_taubin(use_fixed_neighborhoods=True)`` searches once and steps twenty times,
+    as ordito does; it returns a new cloud.
+    """
+    knn, iterations = 10, 10
+    if bench_case.kind == "open3d":
+        pcd = _pcd(bench_case)
+        smoothed_o3d = bench_case.run(lambda: pcd.smooth_taubin(iterations, 0.5, -0.53, knn, True))
+        assert np.asarray(smoothed_o3d.points).shape == (bench_case.n_vertices, 3)
+        return
+    points = bench_case.vertices_wp
+    smoothed = bench_case.run(
+        lambda: od.points.smooth_points(
+            points,
+            od.neighbors.query_nearest(points, points, k=knn + 1)[0],
+            iterations,
+            0.5,
+            mu=-0.53,
+        )
+    )
+    assert smoothed.shape == (bench_case.n_vertices,)
+
+
+@pytest.mark.benchmark(group="smooth_points_mls")
+@pytest.mark.benchlibs("ordito", "open3d")
+def test_smooth_points_mls(bench_case: BenchCase) -> None:
+    """
+    One moving-least-squares projection over a hybrid search, the search included.
+
+    Three mean edges, at most 30 neighbours, Gaussian weights at that radius. open3d's
+    ``smooth_mls`` returns a new cloud; this cloud has no normals, so it skips its orientation
+    pass, and ordito's normals are its PCA normals, unoriented, as open3d's would be before it.
+    """
+    radius = 3.0 * bench_case.mean_edge
+    if bench_case.kind == "open3d":
+        pcd = _pcd(bench_case)
+        search = o3d.geometry.KDTreeSearchParamHybrid(radius=radius, max_nn=_KNN)
+        smoothed_o3d = bench_case.run(lambda: pcd.smooth_mls(search))
+        assert np.asarray(smoothed_o3d.points).shape == (bench_case.n_vertices, 3)
+        return
+    points = bench_case.vertices_wp
+    smoothed, _normals = bench_case.run(
+        lambda: od.points.smooth_points_mls(
+            points, od.neighbors.query_nearest(points, points, k=_KNN, max_radius=radius)[0], radius
+        )
+    )
+    assert smoothed.shape == (bench_case.n_vertices,)
+
+
+@pytest.mark.benchmark(group="smooth_points_bilateral")
+@pytest.mark.benchlibs("ordito", "open3d")
+def test_smooth_points_bilateral(bench_case: BenchCase) -> None:
+    """
+    One bilateral pass over ``k = 30`` nearest on the vertex normals, the search included.
+
+    Spatial scale two mean edges, range scale half a mean edge.
+    """
+    sigma_s, sigma_r = 2.0 * bench_case.mean_edge, 0.5 * bench_case.mean_edge
+    if bench_case.kind == "open3d":
+        pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(bench_case.vertices_np))
+        pcd.normals = o3d.utility.Vector3dVector(_vertex_normals_np(bench_case))
+        search = o3d.geometry.KDTreeSearchParamKNN(knn=_KNN)
+        smoothed_o3d = bench_case.run(lambda: pcd.smooth_bilateral(search, sigma_s, sigma_r))
+        assert np.asarray(smoothed_o3d.points).shape == (bench_case.n_vertices, 3)
+        return
+    points = bench_case.vertices_wp
+    normals = _unit_normals_wp(bench_case)
+    smoothed = bench_case.run(
+        lambda: od.points.smooth_points_bilateral(
+            points, normals, od.neighbors.query_nearest(points, points, k=_KNN)[0], sigma_s, sigma_r
+        )
+    )
+    assert smoothed.shape == (bench_case.n_vertices,)
+
+
+@pytest.mark.benchmark(group="point_covariances")
+@pytest.mark.benchlibs("ordito", "open3d")
+def test_point_covariances(bench_case: BenchCase) -> None:
+    """Per-point covariances over ``k = 30`` nearest, search included (open3d's default ``knn``)."""
+    if bench_case.kind == "open3d":
+        pcd = _pcd(bench_case)
+        search = o3d.geometry.KDTreeSearchParamKNN(knn=_KNN)
+        bench_case.run(lambda: pcd.estimate_covariances(search))
+        assert np.asarray(pcd.covariances).shape == (bench_case.n_vertices, 3, 3)
+        return
+    points = bench_case.vertices_wp
+    covariances = bench_case.run(
+        lambda: od.points.point_covariances(
+            points, od.neighbors.query_nearest(points, points, k=_KNN)[0]
+        )
+    )
+    assert covariances.shape == (bench_case.n_vertices,)
+
+
+@pytest.mark.benchmark(group="point_frames")
+@pytest.mark.benchlibs("ordito", "pytorch3d")
+def test_point_frames(bench_case: BenchCase) -> None:
+    """
+    Per-point principal frames over ``k = 30`` nearest, search included.
+
+    pytorch3d's ``estimate_pointcloud_local_coord_frames`` runs its brute-force k-nearest search
+    and a batched ``eigh``, so it prices the search, as in ``estimate_normals_knn``.
+    """
+    if bench_case.kind == "pytorch3d":
+        if bench_case.mesh_name == "sphere_large":
+            pytest.skip("pytorch3d's brute-force search; capped at sphere_med")
+        points_p3d = points_torch_from_numpy(bench_case.vertices_np, bench_case.torch_device)
+        _curvatures, frames_p3d = bench_case.run(
+            lambda: p3d_ops.estimate_pointcloud_local_coord_frames(
+                points_p3d, neighborhood_size=_KNN
+            )
+        )
+        assert frames_p3d.shape == (1, bench_case.n_vertices, 3, 3)
+        return
+    points = bench_case.vertices_wp
+    frames, _eigenvalues = bench_case.run(
+        lambda: od.points.point_frames(
+            points, od.neighbors.query_nearest(points, points, k=_KNN)[0]
+        )
+    )
+    assert frames.shape == (bench_case.n_vertices,)
+
+
+@pytest.mark.benchmark(group="point_boundary_mask")
+@pytest.mark.benchlibs("ordito", "open3d")
+@pytest.mark.censusmesh("saddle_small")
+def test_point_boundary_mask(bench_case: BenchCase) -> None:
+    """
+    Angular-gap boundary test on the vertex normals, the hybrid search included.
+
+    open3d's tensor ``compute_boundary_points`` searches by radius with a ``max_nn`` cap and
+    heap-sorts each row's angles; ordito's table is the same search
+    (``query_nearest(max_radius=)``). Three mean edges, at most 30 neighbours.
+    """
+    radius = 3.0 * bench_case.mean_edge
+    if bench_case.kind == "open3d":
+        # The stub drops the dtype and device defaults.
+        positions_np = np.ascontiguousarray(bench_case.vertices_np, dtype=np.float32)
+        cloud_o3d = o3d.t.geometry.PointCloud(o3d.core.Tensor(positions_np))  # pyright: ignore[reportCallIssue]
+        normals_np = _vertex_normals_np(bench_case).astype(np.float32)
+        cloud_o3d.point.normals = o3d.core.Tensor(normals_np)  # pyright: ignore[reportCallIssue]
+        _boundary_o3d, mask_o3d = bench_case.run(
+            lambda: cloud_o3d.compute_boundary_points(radius, _KNN)
+        )
+        assert mask_o3d.shape[0] == bench_case.n_vertices
+        return
+    points = bench_case.vertices_wp
+    normals = _unit_normals_wp(bench_case)
+    mask = bench_case.run(
+        lambda: od.points.point_boundary_mask(
+            points,
+            normals,
+            od.neighbors.query_nearest(points, points, k=_KNN, max_radius=radius)[0],
+        )
+    )
+    assert mask.shape == (bench_case.n_vertices,)
+
+
 @pytest.mark.benchmark(group="outlier_probability")
 @pytest.mark.benchaxis("scale")
 @pytest.mark.censuskeep(
@@ -849,6 +1087,26 @@ def test_cluster_outlier_mask(bench_case: BenchCase) -> None:
     points = bench_case.vertices_wp
     mask = bench_case.run(lambda: od.points.cluster_outlier_mask(points, radius))
     assert mask.shape == (bench_case.n_vertices,)
+
+
+@pytest.mark.benchmark(group="cluster_labels")
+@pytest.mark.benchlibs("ordito", "open3d")
+def test_cluster_labels(bench_case: BenchCase) -> None:
+    """
+    DBSCAN at two mean edges and ``min_points = 6``: a count walk, a hook walk, a label walk.
+
+    open3d's ``cluster_dbscan`` stores every point's radius search and grows its clusters on one
+    thread; the labels are equal (``tests/test_points.py``).
+    """
+    radius = 2.0 * bench_case.mean_edge
+    if bench_case.kind == "open3d":
+        pcd = _pcd(bench_case)
+        labels_o3d = bench_case.run(lambda: pcd.cluster_dbscan(eps=radius, min_points=6))
+        assert len(labels_o3d) == bench_case.n_vertices
+        return
+    points = bench_case.vertices_wp
+    labels = bench_case.run(lambda: od.points.cluster_labels(points, radius, 6))
+    assert labels.shape == (bench_case.n_vertices,)
 
 
 @pytest.mark.benchmark(group="plane_outlier_mask")
@@ -1173,3 +1431,31 @@ def test_convex_superset_mask(bench_case: BenchCase, subdivisions: int) -> None:
         points_np = bench_case.vertices_np
         hull_np = bench_case.run(lambda: scipy.spatial.ConvexHull(points_np))
         assert hull_np.vertices.shape[0] >= 4
+
+
+@pytest.mark.benchmark(group="point_visible_mask")
+@pytest.mark.benchlibs("ordito", "open3d")
+def test_point_visible_mask(bench_case: BenchCase) -> None:
+    """
+    Hidden point removal from a viewpoint two extents above the centre, radius 100 extents.
+
+    Both are a spherical flip plus a convex hull: open3d's through qhull on the host, which also
+    builds the hull's mesh, ordito's through ``convex_hull`` on the flipped cloud. About half of a
+    closed scan is visible, so the hull holds far more of the cloud than a plain hull does.
+    """
+    vertices_np = bench_case.vertices_np
+    extent = float(np.ptp(vertices_np, axis=0).max())
+    camera_np = vertices_np.mean(axis=0) + np.array([0.0, 0.0, 2.0 * extent])
+    radius = 100.0 * extent
+    if bench_case.kind == "open3d":
+        skip_larger_than(bench_case, "dragon", "qhull is single-threaded on the host")
+        pcd = _pcd(bench_case)
+        _mesh_o3d, visible_o3d = bench_case.run(
+            lambda: pcd.hidden_point_removal(camera_np.astype(np.float64), radius)
+        )
+        assert 0 < len(visible_o3d) < bench_case.n_vertices
+        return
+    points = bench_case.vertices_wp
+    camera = wp.vec3(*camera_np.tolist())
+    visible = bench_case.run(lambda: od.points.point_visible_mask(points, camera, radius))
+    assert visible.shape == (bench_case.n_vertices,)

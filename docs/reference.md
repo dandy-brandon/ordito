@@ -90,6 +90,12 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | sample points on a surface | [`sample.sample_surface`][ordito.sample.sample_surface], [`sample_surface_poisson_disk`][ordito.sample.sample_surface_poisson_disk] |
 | sample the surface inside a ball | [`sample.sample_surface_in_ball`][ordito.sample.sample_surface_in_ball] |
 | estimate normals | [`points.estimate_normals`][ordito.points.estimate_normals] |
+| orient or smooth normals | [`points.orient_normals`][ordito.points.orient_normals] (spanning-tree propagation), [`smooth_normals`][ordito.points.smooth_normals] |
+| smooth a point cloud | [`points.smooth_points`][ordito.points.smooth_points] (Laplacian or Taubin), [`smooth_points_mls`][ordito.points.smooth_points_mls] (moving least squares), [`smooth_points_bilateral`][ordito.points.smooth_points_bilateral] |
+| per-point covariances and frames | [`points.point_covariances`][ordito.points.point_covariances], [`point_frames`][ordito.points.point_frames] |
+| cluster a point cloud | [`points.cluster_labels`][ordito.points.cluster_labels] (DBSCAN, Euclidean clusters) |
+| boundary points of a cloud | [`points.point_boundary_mask`][ordito.points.point_boundary_mask] |
+| points visible from a viewpoint | [`points.point_visible_mask`][ordito.points.point_visible_mask] (hidden point removal) |
 | down-sample | [`voxels.voxel_down_sample`][ordito.voxels.voxel_down_sample], [`points.farthest_point_sample`][ordito.points.farthest_point_sample] |
 | order points or cells along a Hilbert or Morton curve | [`points.space_filling_order`][ordito.points.space_filling_order], [`voxels.space_filling_codes`][ordito.voxels.space_filling_codes] |
 | remove outliers | [`points.statistical_outlier_mask`][ordito.points.statistical_outlier_mask], [`radius_outlier_mask`][ordito.points.radius_outlier_mask], [`cluster_outlier_mask`][ordito.points.cluster_outlier_mask], [`plane_outlier_mask`][ordito.points.plane_outlier_mask], [`normal_outlier_mask`][ordito.points.normal_outlier_mask] |
@@ -175,7 +181,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 
 | Module | Contents |
 |---|---|
-| [points](api/ordito/points.md) | Point-cloud geometry: plane and line fits, covariance, normals, outliers, down-sampling, convex hull. |
+| [points](api/ordito/points.md) | Point-cloud geometry: plane and line fits, covariance, normals and their orientation, smoothing, clustering, outliers, down-sampling, convex hull, visibility. |
 | [sample](api/ordito/sample.md) | New points on a mesh surface, inside its volume, or over a sphere. |
 | [voxels](api/ordito/voxels.md) | Sparse voxel grids: voxelize, test membership, morphology, booleans, and mesh the result. |
 | [reconstruction](api/ordito/reconstruction.md) | Surfaces from points: Delaunay, screened Poisson, ball pivoting, uniform resampling. |
