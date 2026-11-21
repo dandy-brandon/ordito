@@ -564,12 +564,13 @@ def operand_boxes(
     positions: wp.array[wp.vec3d],
     faces: wp.array[wp.int32],
     twins: wp.array[wp.int32],
+    pad: wp.float32,
     out_lowers: wp.array[wp.vec3],
     out_uppers: wp.array[wp.vec3],
     out_first_halfedge: wp.array[wp.int32],
     out_boundary: wp.array[wp.int32],
 ) -> None:
-    # Each face's box for the broad phase (``float32``, which the queries' padding covers), its
+    # Each face's box for the broad phase (``float32``, widened by ``pad``), its
     # corners' bids for the least halfedge leaving each vertex, and a count of unpaired halfedges.
     f = wp.int32(wp.tid())
     a = wp.vec3(positions[faces[3 * f]])
@@ -579,8 +580,9 @@ def operand_boxes(
         wp.atomic_min(out_first_halfedge, faces[3 * f + i], 3 * f + i)
         if twins[3 * f + i] < 0:
             wp.atomic_add(out_boundary, 0, 1)
-    out_lowers[f] = wp.min(wp.min(a, b), c)
-    out_uppers[f] = wp.max(wp.max(a, b), c)
+    padding = wp.vec3(pad, pad, pad)
+    out_lowers[f] = wp.min(wp.min(a, b), c) - padding
+    out_uppers[f] = wp.max(wp.max(a, b), c) + padding
 
 
 @wp.kernel
@@ -3200,3 +3202,373 @@ def hm_vertex_normals(
     else:
         normal = wp.vec3d()
     out_normals[v] = normal
+
+
+# -- segment casts (``Impl::RayCast``) -------------------------------------------------------------
+
+
+@wp.kernel
+def segment_edge_mesh(
+    origins: wp.array[wp.vec3],
+    endpoints: wp.array[wp.vec3],
+    out_positions: wp.array[wp.vec3d],
+    out_faces: wp.array[wp.int32],
+    out_mates: wp.array[wp.int32],
+    out_normals: wp.array[wp.vec3d],
+) -> None:
+    # ``RayCast``'s one-edge mesh a segment: halfedge ``3 s`` runs origin -> endpoint, ``3 s + 1``
+    # back, the third closes the storage; every normal zero, so the segment perturbs nothing.
+    s = wp.int32(wp.tid())
+    out_positions[2 * s] = wp.vec3d(origins[s])
+    out_positions[2 * s + 1] = wp.vec3d(endpoints[s])
+    out_faces[3 * s] = 2 * s
+    out_faces[3 * s + 1] = 2 * s + 1
+    out_faces[3 * s + 2] = 2 * s
+    out_mates[3 * s] = 3 * s + 1
+    out_mates[3 * s + 1] = 3 * s
+    out_mates[3 * s + 2] = -1
+    out_normals[2 * s] = wp.vec3d()
+    out_normals[2 * s + 1] = wp.vec3d()
+
+
+@wp.func
+def segment_hit(
+    s: wp.int32,
+    face: wp.int32,
+    ray_faces: wp.array[wp.int32],
+    ray_pos: wp.array[wp.vec3d],
+    ray_normals: wp.array[wp.vec3d],
+    ray_mates: wp.array[wp.int32],
+    faces_b: wp.array[wp.int32],
+    pos_b: wp.array[wp.vec3d],
+    vnormal_b: wp.array[wp.vec3d],
+    fnormal_b: wp.array[wp.vec3d],
+    mates_b: wp.array[wp.int32],
+) -> tuple[wp.bool, wp.float64, wp.vec3d]:
+    # Whether segment ``s`` crosses ``face``, its parameter there in [0, 1] along the segment's
+    # dominant axis, and the crossing: ``Kernel12`` of the segment's forward halfedge.
+    x12, v12 = kernel12(
+        3 * s,
+        face,
+        ray_faces,
+        ray_pos,
+        ray_normals,
+        ray_normals,
+        ray_mates,
+        faces_b,
+        pos_b,
+        vnormal_b,
+        fnormal_b,
+        mates_b,
+        0,
+        1,
+    )
+    if x12 == 0 or not wp.isfinite(v12[0]):
+        return False, wp.float64(0.0), v12
+    origin = ray_pos[2 * s]
+    direction = ray_pos[2 * s + 1] - origin
+    a = wp.vec3d(wp.abs(direction[0]), wp.abs(direction[1]), wp.abs(direction[2]))
+    axis = wp.int32(2)
+    if a[0] > a[1] and a[0] > a[2]:
+        axis = wp.int32(0)
+    elif a[1] > a[2]:
+        axis = wp.int32(1)
+    t = (v12[axis] - origin[axis]) / direction[axis]
+    return t >= wp.float64(0.0) and t <= wp.float64(1.0), t, v12
+
+
+@wp.func
+def segment_direction(ray_pos: wp.array[wp.vec3d], s: wp.int32) -> wp.vec3:
+    return wp.vec3(ray_pos[2 * s + 1]) - wp.vec3(ray_pos[2 * s])
+
+
+# The ray walks' reach, in segment lengths: a little past the endpoint, so the walk's ``float32``
+# rounding never drops a face the exact predicate would keep.
+SEGMENT_REACH = wp.float32(1.0001)
+
+
+@wp.kernel
+def count_segment_hits(
+    ray_faces: wp.array[wp.int32],
+    ray_pos: wp.array[wp.vec3d],
+    ray_normals: wp.array[wp.vec3d],
+    ray_mates: wp.array[wp.int32],
+    faces_b: wp.array[wp.int32],
+    pos_b: wp.array[wp.vec3d],
+    vnormal_b: wp.array[wp.vec3d],
+    fnormal_b: wp.array[wp.vec3d],
+    mates_b: wp.array[wp.int32],
+    bvh_b: wp.uint64,
+    pad: wp.float32,
+    out_counts: wp.array[wp.int32],
+) -> None:
+    # How many faces each segment crosses within its length.
+    s = wp.int32(wp.tid())
+    # The faces whose boxes (padded past ``float32`` rounding) the segment passes through; the
+    # exact predicate decides.
+    query = wp.bvh_query_ray(bvh_b, wp.vec3(ray_pos[2 * s]), segment_direction(ray_pos, s))
+    face = wp.int32(0)
+    count = wp.int32(0)
+    while wp.bvh_query_next(query, face, SEGMENT_REACH + wp.float32(0.0)):
+        hit, _t, _point = segment_hit(
+            s,
+            face,
+            ray_faces,
+            ray_pos,
+            ray_normals,
+            ray_mates,
+            faces_b,
+            pos_b,
+            vnormal_b,
+            fnormal_b,
+            mates_b,
+        )
+        if hit:
+            count += 1
+    out_counts[s] = count
+
+
+@wp.kernel
+def write_segment_hits(
+    ray_faces: wp.array[wp.int32],
+    ray_pos: wp.array[wp.vec3d],
+    ray_normals: wp.array[wp.vec3d],
+    ray_mates: wp.array[wp.int32],
+    faces_b: wp.array[wp.int32],
+    pos_b: wp.array[wp.vec3d],
+    vnormal_b: wp.array[wp.vec3d],
+    fnormal_b: wp.array[wp.vec3d],
+    mates_b: wp.array[wp.int32],
+    bvh_b: wp.uint64,
+    pad: wp.float32,
+    offsets: wp.array[wp.int32],
+    face_to_input: wp.array[wp.int32],
+    out_faces: wp.array[wp.int32],
+    out_parameters: wp.array[wp.float64],
+    out_points: wp.array[wp.vec3],
+    out_normals: wp.array[wp.vec3],
+) -> None:
+    # Each segment's hits in order along it, ties by the face's input index: the face (as the
+    # caller numbered it), the parameter, the crossing and the face's normal.
+    s = wp.int32(wp.tid())
+    first = offsets[s]
+    stop = offsets[s + 1]
+    if first == stop:
+        return
+    query = wp.bvh_query_ray(bvh_b, wp.vec3(ray_pos[2 * s]), segment_direction(ray_pos, s))
+    face = wp.int32(0)
+    slot = first
+    while wp.bvh_query_next(query, face, SEGMENT_REACH + wp.float32(0.0)):
+        if slot >= stop:
+            continue
+        hit, t, point = segment_hit(
+            s,
+            face,
+            ray_faces,
+            ray_pos,
+            ray_normals,
+            ray_mates,
+            faces_b,
+            pos_b,
+            vnormal_b,
+            fnormal_b,
+            mates_b,
+        )
+        if not hit:
+            continue
+        index = face_to_input[face]
+        at = slot
+        while at > first and (
+            out_parameters[at - 1] > t
+            or (out_parameters[at - 1] == t and out_faces[at - 1] > index)
+        ):
+            out_faces[at] = out_faces[at - 1]
+            out_parameters[at] = out_parameters[at - 1]
+            out_points[at] = out_points[at - 1]
+            out_normals[at] = out_normals[at - 1]
+            at -= 1
+        out_faces[at] = index
+        out_parameters[at] = t
+        out_points[at] = wp.vec3(point)
+        out_normals[at] = wp.vec3(fnormal_b[face])
+        slot += 1
+
+
+# -- the gap between two solids (``Impl::MinGap``, ``tri_dist.h``) --------------------------------
+
+
+@wp.func
+def clamp01(x: wp.float64) -> wp.float64:
+    return wp.min(wp.max(x, wp.float64(0.0)), wp.float64(1.0))
+
+
+@wp.func
+def edge_edge_closest(
+    p: wp.vec3d, a: wp.vec3d, q: wp.vec3d, b: wp.vec3d
+) -> tuple[wp.vec3d, wp.vec3d]:
+    # ``EdgeEdgeDist``: the closest points of segments p + t a and q + u b.
+    big_t = q - p
+    a_dot_a = wp.dot(a, a)
+    b_dot_b = wp.dot(b, b)
+    a_dot_b = wp.dot(a, b)
+    a_dot_t = wp.dot(a, big_t)
+    b_dot_t = wp.dot(b, big_t)
+    denominator = a_dot_a * b_dot_b - a_dot_b * a_dot_b
+    t = wp.float64(0.0)
+    if denominator != wp.float64(0.0):
+        t = clamp01((a_dot_t * b_dot_b - b_dot_t * a_dot_b) / denominator)
+    u = wp.float64(0.0)
+    if b_dot_b != wp.float64(0.0):
+        u = (t * a_dot_b - b_dot_t) / b_dot_b
+        if u < wp.float64(0.0):
+            u = wp.float64(0.0)
+            t = wp.float64(0.0)
+            if a_dot_a != wp.float64(0.0):
+                t = clamp01(a_dot_t / a_dot_a)
+        elif u > wp.float64(1.0):
+            u = wp.float64(1.0)
+            t = wp.float64(0.0)
+            if a_dot_a != wp.float64(0.0):
+                t = clamp01((a_dot_b + a_dot_t) / a_dot_a)
+    else:
+        u = wp.float64(0.0)
+        t = wp.float64(0.0)
+        if a_dot_a != wp.float64(0.0):
+            t = clamp01(a_dot_t / a_dot_a)
+    return p + a * t, q + b * u
+
+
+@wp.func
+def triangle_vertex(t: wp.mat33d, i: wp.int32) -> wp.vec3d:
+    return wp.vec3d(t[i, 0], t[i, 1], t[i, 2])
+
+
+@wp.func
+def projected_vertex_distance(p: wp.mat33d, q: wp.mat33d) -> tuple[wp.bool, wp.bool, wp.float64]:
+    # ``DistanceTriangleTriangleSquared``'s face test: whether q lies wholly on one side of p's
+    # plane (``shown_disjoint``), and whether its nearest vertex projects inside p, with that
+    # squared distance.
+    p0 = triangle_vertex(p, 0)
+    p1 = triangle_vertex(p, 1)
+    p2 = triangle_vertex(p, 2)
+    s0 = p1 - p0
+    s1 = p2 - p1
+    s2 = p0 - p2
+    sn = wp.cross(s0, s1)
+    snl = wp.dot(sn, sn)
+    if not (snl > wp.float64(1e-15)):
+        return False, False, wp.float64(0.0)
+    tp = wp.vec3d(
+        wp.dot(p0 - triangle_vertex(q, 0), sn),
+        wp.dot(p0 - triangle_vertex(q, 1), sn),
+        wp.dot(p0 - triangle_vertex(q, 2), sn),
+    )
+    index = wp.int32(-1)
+    if tp[0] > wp.float64(0.0) and tp[1] > wp.float64(0.0) and tp[2] > wp.float64(0.0):
+        index = wp.where(tp[0] < tp[1], wp.int32(0), wp.int32(1))
+        if tp[2] < tp[index]:
+            index = wp.int32(2)
+    elif tp[0] < wp.float64(0.0) and tp[1] < wp.float64(0.0) and tp[2] < wp.float64(0.0):
+        index = wp.where(tp[0] > tp[1], wp.int32(0), wp.int32(1))
+        if tp[2] > tp[index]:
+            index = wp.int32(2)
+    if index < 0:
+        return False, False, wp.float64(0.0)
+    vertex = triangle_vertex(q, index)
+    if wp.dot(vertex - p0, wp.cross(sn, s0)) > wp.float64(0.0):
+        if wp.dot(vertex - p1, wp.cross(sn, s1)) > wp.float64(0.0):
+            if wp.dot(vertex - p2, wp.cross(sn, s2)) > wp.float64(0.0):
+                cp = vertex + sn * tp[index] / snl
+                d = cp - vertex
+                return True, True, wp.dot(d, d)
+    return True, False, wp.float64(0.0)
+
+
+@wp.func
+def triangle_distance_squared(p: wp.mat33d, q: wp.mat33d) -> wp.float64:
+    # ``DistanceTriangleTriangleSquared``: the squared distance between two triangles.
+    shown_disjoint = wp.bool(False)
+    mindd = wp.float64(1.7976931348623157e308)
+    for i in range(3):
+        pi = triangle_vertex(p, i)
+        si = triangle_vertex(p, (i + 1) % 3) - pi
+        for j in range(3):
+            qj = triangle_vertex(q, j)
+            tj = triangle_vertex(q, (j + 1) % 3) - qj
+            cp, cq = edge_edge_closest(pi, si, qj, tj)
+            v = cq - cp
+            dd = wp.dot(v, v)
+            if dd <= mindd:
+                mindd = dd
+                a = wp.dot(triangle_vertex(p, (i + 2) % 3) - cp, v)
+                b = wp.dot(triangle_vertex(q, (j + 2) % 3) - cq, v)
+                if a <= wp.float64(0.0) and b >= wp.float64(0.0):
+                    return wp.dot(v, v)
+                if a <= wp.float64(0.0):
+                    a = wp.float64(0.0)
+                elif b > wp.float64(0.0):
+                    b = wp.float64(0.0)
+                if (mindd - a + b) > wp.float64(0.0):
+                    shown_disjoint = True
+    disjoint, inside, dd = projected_vertex_distance(p, q)
+    if disjoint:
+        shown_disjoint = True
+    if inside:
+        return dd
+    disjoint, inside, dd = projected_vertex_distance(q, p)
+    if disjoint:
+        shown_disjoint = True
+    if inside:
+        return dd
+    if shown_disjoint:
+        return mindd
+    return wp.float64(0.0)
+
+
+@wp.func
+def face_triangle(
+    faces: wp.array[wp.int32], positions: wp.array[wp.vec3d], f: wp.int32
+) -> wp.mat33d:
+    a = positions[faces[3 * f]]
+    b = positions[faces[3 * f + 1]]
+    c = positions[faces[3 * f + 2]]
+    return wp.mat33d(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2])
+
+
+@wp.kernel
+def min_face_distance(
+    faces_self: wp.array[wp.int32],
+    pos_self: wp.array[wp.vec3d],
+    faces_other: wp.array[wp.int32],
+    pos_other: wp.array[wp.vec3d],
+    bvh_self: wp.uint64,
+    search_length: wp.float64,
+    pad: wp.float32,
+    out_min: wp.array[wp.float64],
+) -> None:
+    # ``MinDistanceRecorder``: each face of the other solid against the faces of this one within
+    # ``search_length`` of its box; the least squared distance (a minimum, so in any order).
+    f = wp.int32(wp.tid())
+    q = face_triangle(faces_other, pos_other, f)
+    lower = wp.vec3d(
+        wp.min(wp.min(q[0, 0], q[1, 0]), q[2, 0]),
+        wp.min(wp.min(q[0, 1], q[1, 1]), q[2, 1]),
+        wp.min(wp.min(q[0, 2], q[1, 2]), q[2, 2]),
+    )
+    upper = wp.vec3d(
+        wp.max(wp.max(q[0, 0], q[1, 0]), q[2, 0]),
+        wp.max(wp.max(q[0, 1], q[1, 1]), q[2, 1]),
+        wp.max(wp.max(q[0, 2], q[1, 2]), q[2, 2]),
+    )
+    reach = wp.vec3d(search_length, search_length, search_length)
+    padding = wp.vec3(pad, pad, pad)
+    query = wp.bvh_query_aabb(
+        bvh_self, wp.vec3(lower - reach) - padding, wp.vec3(upper + reach) + padding
+    )
+    face = wp.int32(0)
+    best = wp.float64(1.7976931348623157e308) * wp.float64(10.0)
+    while wp.bvh_query_next(query, face):
+        p = face_triangle(faces_self, pos_self, face)
+        best = wp.min(best, triangle_distance_squared(p, q))
+    if best < out_min[0]:
+        wp.atomic_min(out_min, 0, best)

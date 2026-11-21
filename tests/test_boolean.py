@@ -285,6 +285,123 @@ def test_batch_booleans_reject_an_empty_list() -> None:
         od.boolean.union_all([])
 
 
+@pytest.mark.parity("segment_hits", "manifold3d")
+@pytest.mark.parametrize("shape", ["box", "sphere_irregular", "torus"])
+def test_segment_hits_match_manifold3d(
+    request: pytest.FixtureRequest, device: str, shape: str
+) -> None:
+    """
+    Each segment's crossings are Manifold's ``ray_cast``: faces, parameters and points.
+
+    Class A, after one named transform: Manifold numbers faces in its internal order, ordito in
+    the caller's, so each hit's face is compared as the triangle it names. Segments through the
+    box's vertices, edges and face centres are the ties; the rest are random, crossing and
+    missing. The reference is non-vacuous: some segments cross, some miss.
+    """
+    if shape == "sphere_irregular":
+        mesh_tm = _float32_mesh(request.getfixturevalue("sphere_irregular")[0])
+    elif shape == "box":
+        mesh_tm = _box([0, 0, 0], [1, 1, 1])
+    else:
+        mesh_tm = _float32_mesh(tm.creation.torus(1.0, 0.3, 24, 12))
+    rng = np.random.default_rng(13)
+    centre = mesh_tm.vertices.mean(axis=0)
+    span = float(np.max(mesh_tm.extents))
+    origins_np = (centre + rng.uniform(-span, span, (64, 3))).astype(np.float32)
+    endpoints_np = (centre + rng.uniform(-span, span, (64, 3))).astype(np.float32)
+    origins_np[:4] = [[0.5, 0.5, -1.0], [0.0, 0.0, -1.0], [0.5, 0.0, -1.0], [1.0, 1.0, 2.0]]
+    endpoints_np[:4] = [[0.5, 0.5, 2.0], [0.0, 0.0, 2.0], [0.5, 0.0, 2.0], [1.0, 1.0, -1.0]]
+    mesh_m3 = _manifold_m3(mesh_tm)
+    mesh_out_m3 = mesh_m3.to_mesh()
+    vertices_m3 = np.asarray(mesh_out_m3.vert_properties)[:, :3]
+    faces_m3 = np.asarray(mesh_out_m3.tri_verts)
+    hit_faces, parameters, points, _, offsets = od.boolean.segment_hits(
+        *_upload(mesh_tm, device),
+        wp.array(origins_np, dtype=wp.vec3, device=device),
+        wp.array(endpoints_np, dtype=wp.vec3, device=device),
+    )
+    offsets_np = offsets.numpy()
+    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float32)
+    faces_np = np.asarray(mesh_tm.faces)
+    n_crossing = 0
+    for s in range(len(origins_np)):
+        hits_m3 = mesh_m3.ray_cast(tuple(origins_np[s].tolist()), tuple(endpoints_np[s].tolist()))
+        hits_m3 = sorted(hits_m3, key=lambda hit: hit.distance)
+        ours = range(int(offsets_np[s]), int(offsets_np[s + 1]))
+        assert len(ours) == len(hits_m3)
+        n_crossing += len(hits_m3) > 0
+        for hit_m3, k in zip(hits_m3, ours, strict=True):
+            triangle_m3 = sorted(map(tuple, vertices_m3[faces_m3[hit_m3.face_id]].tolist()))
+            triangle_np = sorted(map(tuple, vertices_np[faces_np[hit_faces.numpy()[k]]].tolist()))
+            assert triangle_np == triangle_m3
+            assert parameters.numpy()[k] == hit_m3.distance
+            assert np.array_equal(points.numpy()[k], np.asarray(hit_m3.position, dtype=np.float32))
+    assert 0 < n_crossing < len(origins_np)
+
+
+# Offsets along z for the second sphere: overlapping, near, nearer the search length, out of reach.
+_GAP_OFFSETS = [0.0, 2.0, 2.5, 4.0]
+
+
+@pytest.mark.parity("min_gap", "manifold3d")
+@pytest.mark.parametrize("seed", range(len(_GAP_OFFSETS)))
+def test_min_gap_matches_manifold3d(device: str, seed: int) -> None:
+    """
+    The gap between two closed meshes is Manifold's ``min_gap``, to the last bit.
+
+    Class A on the scalar. Seeds place the second sphere overlapping (gap 0), near (inside the
+    search length) and far (the search length itself), so every branch is compared.
+    """
+    a_tm = _float32_mesh(tm.creation.icosphere(subdivisions=2))
+    b_tm = _moved_copy(a_tm, seed=seed)
+    b_tm.apply_translation([0.0, 0.0, _GAP_OFFSETS[seed]])
+    b_tm = _float32_mesh(b_tm)
+    search = 1.0
+    gap_m3 = _manifold_m3(a_tm).min_gap(_manifold_m3(b_tm), search)
+    gap = od.boolean.min_gap(*_upload(a_tm, device), *_upload(b_tm, device), search)
+    assert gap == gap_m3
+
+
+def test_min_gap_spans_its_branches() -> None:
+    """The seeds above reach all three answers. Not a library comparison: their coverage."""
+    a_tm = _float32_mesh(tm.creation.icosphere(subdivisions=2))
+    gaps_m3 = []
+    for seed, offset in enumerate(_GAP_OFFSETS):
+        b_tm = _moved_copy(a_tm, seed=seed)
+        b_tm.apply_translation([0.0, 0.0, offset])
+        gaps_m3.append(_manifold_m3(a_tm).min_gap(_manifold_m3(_float32_mesh(b_tm)), 1.0))
+    assert 0.0 in gaps_m3
+    assert 1.0 in gaps_m3
+    assert any(0.0 < gap < 1.0 for gap in gaps_m3)
+
+
+@pytest.mark.parity("simplify", "manifold3d")
+@pytest.mark.parametrize(
+    ("shape", "tolerance"),
+    [("subdivided_box", 0.0), ("sphere", 0.01), ("sphere", 0.05), ("sphere_irregular", 0.0)],
+)
+def test_simplify_matches_manifold3d(
+    request: pytest.FixtureRequest, device: str, shape: str, tolerance: float
+) -> None:
+    """
+    ``simplify`` is Manifold's ``Manifold.simplify``, array for array.
+
+    Class A. A subdivided box collapses to its twelve triangles at the mesh's own precision;
+    an icosphere loses the vertices within the tolerance of a plane through their neighbours;
+    ``sphere_irregular``'s needles stay where nothing is collinear.
+    """
+    if shape == "subdivided_box":
+        mesh_tm = _box([0, 0, 0], [1, 1, 1]).subdivide().subdivide()
+    elif shape == "sphere":
+        mesh_tm = _float32_mesh(tm.creation.icosphere(subdivisions=3))
+    else:
+        mesh_tm = _float32_mesh(request.getfixturevalue("sphere_irregular")[0])
+    result_m3 = _manifold_m3(mesh_tm).simplify(tolerance)
+    if shape != "sphere_irregular":
+        assert result_m3.num_vert() < len(mesh_tm.vertices)
+    _assert_same_as_m3(od.boolean.simplify(*_upload(mesh_tm, device), tolerance), result_m3)
+
+
 @pytest.mark.parametrize(("name", "operation"), OPERATIONS, ids=_OPERATION_IDS)
 def test_boolean_with_an_empty_operand(device: str, name: str, operation: Operation) -> None:
     """

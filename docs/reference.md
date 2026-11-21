@@ -60,6 +60,9 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | union, intersection or difference of two solids | [`boolean`][ordito.boolean]: [`union`][ordito.boolean.union], [`intersection`][ordito.boolean.intersection], [`difference`][ordito.boolean.difference] |
 | the same for many solids at once | [`union_all`][ordito.boolean.union_all], [`intersection_all`][ordito.boolean.intersection_all], [`difference_all`][ordito.boolean.difference_all] |
 | cut a solid by another solid or a plane, capped | [`split_by_mesh`][ordito.boolean.split_by_mesh], [`split_by_plane`][ordito.boolean.split_by_plane], [`trim_by_plane`][ordito.boolean.trim_by_plane] |
+| every crossing of segments with a closed surface, exact at edges and vertices | [`boolean.segment_hits`][ordito.boolean.segment_hits] |
+| the gap between two solids | [`boolean.min_gap`][ordito.boolean.min_gap] |
+| drop a closed mesh's redundant vertices within a tolerance | [`boolean.simplify`][ordito.boolean.simplify] |
 | keep a subset of faces | [`selection.submesh_from_face_mask`][ordito.selection.submesh_from_face_mask] |
 | grow a selection, or measure hops from it | [`selection.expand_vertex_mask`][ordito.selection.expand_vertex_mask], [`vertex_hop_distance`][ordito.selection.vertex_hop_distance] |
 | carry colours, UVs, labels or any per-vertex or per-face field through an edit | ``return_provenance=True`` and [`interpolation.Provenance`][ordito.interpolation.Provenance] |

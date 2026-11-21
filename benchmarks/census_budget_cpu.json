@@ -447,6 +447,36 @@
    "sort": 32
   }
  },
+ "benchmarks/test_boolean.py::test_min_gap[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 56,
+   "alloc": 90,
+   "h2h": 5,
+   "readback": 10,
+   "scan": 5,
+   "sort": 11
+  }
+ },
+ "benchmarks/test_boolean.py::test_segment_hits[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 21,
+   "alloc": 42,
+   "h2h": 3,
+   "readback": 5,
+   "scan": 2,
+   "sort": 5
+  }
+ },
+ "benchmarks/test_boolean.py::test_simplify[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 44,
+   "alloc": 79,
+   "h2h": 10,
+   "readback": 17,
+   "scan": 9,
+   "sort": 10
+  }
+ },
  "benchmarks/test_boolean.py::test_split_by_mesh[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 126,

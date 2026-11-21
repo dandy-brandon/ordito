@@ -277,3 +277,86 @@ def test_intersection_all(bench_case: BenchCase) -> None:
 def test_difference_all(bench_case: BenchCase) -> None:
     """``od.boolean.difference_all``: the sphere less three copies around it."""
     _run_batch(bench_case, od.boolean.difference_all, m3.OpType.Subtract)
+
+
+# Segments across the sphere's box, random, half of them crossing.
+_N_SEGMENTS = 4096
+
+
+def _segments(bench_case: BenchCase) -> tuple[np.ndarray, np.ndarray]:
+    """Return random segments across the mesh's box as ``float32`` ends."""
+    vertices = np.asarray(bench_case.vertices_np, dtype=np.float64)
+    lower, upper = vertices.min(axis=0), vertices.max(axis=0)
+    rng = np.random.default_rng(_ROTATION_SEED)
+    origins = rng.uniform(lower, upper, (_N_SEGMENTS, 3)).astype(np.float32)
+    endpoints = rng.uniform(lower, upper, (_N_SEGMENTS, 3)).astype(np.float32)
+    return origins, endpoints
+
+
+@pytest.mark.benchmark(group="segment_hits")
+@pytest.mark.benchlibs("ordito", "manifold3d")
+@pytest.mark.benchaxis("scale")
+def test_segment_hits(bench_case: BenchCase) -> None:
+    """
+    ``od.boolean.segment_hits`` of 4 096 random segments: one launch walks them all.
+
+    The manifold3d row casts them one ``ray_cast`` at a time, as its API takes them.
+    """
+    origins, endpoints = _segments(bench_case)
+    if bench_case.kind == "manifold3d":
+        a_m3, _ = _manifolds_m3(bench_case)
+        pairs = [
+            (tuple(o.tolist()), tuple(e.tolist())) for o, e in zip(origins, endpoints, strict=True)
+        ]
+        hits_m3 = bench_case.run(lambda: [a_m3.ray_cast(o, e) for o, e in pairs])
+        assert len(hits_m3) == _N_SEGMENTS
+        return
+    device = bench_case.device
+    origins_wp = wp.array(origins, dtype=wp.vec3, device=device)
+    endpoints_wp = wp.array(endpoints, dtype=wp.vec3, device=device)
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    *_, offsets = bench_case.run(
+        lambda: od.boolean.segment_hits(vertices, faces, origins_wp, endpoints_wp)
+    )
+    assert offsets.size == _N_SEGMENTS + 1
+
+
+@pytest.mark.benchmark(group="min_gap")
+@pytest.mark.benchlibs("ordito", "manifold3d")
+@pytest.mark.benchaxis("scale")
+def test_min_gap(bench_case: BenchCase) -> None:
+    """``od.boolean.min_gap`` of the sphere and a copy moved clear of it."""
+    vertices = np.asarray(bench_case.vertices_np, dtype=np.float64)
+    extent = float(np.max(vertices.max(axis=0) - vertices.min(axis=0)))
+    moved = (vertices + np.array([1.1 * extent, 0.0, 0.0])).astype(np.float32)
+    faces = np.asarray(bench_case.faces_np)
+    search = 0.5 * extent
+    if bench_case.kind == "manifold3d":
+        a_m3, _ = _manifolds_m3(bench_case)
+        b_m3 = m3.Manifold(m3.Mesh(vert_properties=moved, tri_verts=faces.astype(np.uint32)))
+        gap_m3 = bench_case.run(lambda: a_m3.min_gap(b_m3, search))
+        assert gap_m3 > 0.0
+        return
+    moved_wp = wp.array(moved, dtype=wp.vec3, device=bench_case.device)
+    vertices_wp, faces_wp = bench_case.vertices_wp, bench_case.faces_wp
+    gap = bench_case.run(
+        lambda: od.boolean.min_gap(vertices_wp, faces_wp, moved_wp, faces_wp, search)
+    )
+    assert gap > 0.0
+
+
+@pytest.mark.benchmark(group="simplify")
+@pytest.mark.benchlibs("ordito", "manifold3d")
+@pytest.mark.benchaxis("scale")
+def test_simplify(bench_case: BenchCase) -> None:
+    """``od.boolean.simplify`` at a tolerance of a thousandth of the sphere's size."""
+    vertices = np.asarray(bench_case.vertices_np, dtype=np.float64)
+    tolerance = 1e-3 * float(np.max(vertices.max(axis=0) - vertices.min(axis=0)))
+    if bench_case.kind == "manifold3d":
+        a_m3, _ = _manifolds_m3(bench_case)
+        result_m3 = bench_case.run(lambda: _forced(a_m3.simplify(tolerance)))
+        assert result_m3.num_tri() > 0
+        return
+    vertices_wp, faces_wp = bench_case.vertices_wp, bench_case.faces_wp
+    _, faces = bench_case.run(lambda: od.boolean.simplify(vertices_wp, faces_wp, tolerance))
+    assert faces.size > 0
