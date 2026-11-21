@@ -233,6 +233,12 @@ def pseudo_normal(
     # ``CalculateVertNormals``: the angle-weighted pseudo-normal around the vertex from its least
     # outgoing halfedge in ``ForVert``'s order; zero for an unreferenced vertex. A halfedge with no
     # pair (removed by the topology passes) ends the walk.
+    # Declined (2026-11-21): each corner's angle formed a corner a thread into a table the walk
+    # reads (in ``mesh_face_normals`` and ``least_outgoing_halfedges``, no extra launch). The
+    # ``acos`` chain is the walk's latency, and the two pseudo-normal launches of a union went from
+    # 156 + 118 us to the table's 83 us on 5 k-face icospheres (device 1.69 -> 1.53 ms a call,
+    # byte-identical), but union, simplify and smoothing calls stayed at par (0.99-1.02x at 5 k to
+    # 328 k faces): the host issue of the calls hides these launches.
     normal = wp.vec3d()
     if first >= n_halfedges:
         return normal
