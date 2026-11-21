@@ -898,3 +898,87 @@ def assert_same_as_manifold3d(
     vertices_wp, faces_wp = result_wp
     assert np.array_equal(vertices_wp.numpy(), np.asarray(mesh_m3.vert_properties)[:, :3])
     assert np.array_equal(faces_wp.numpy().reshape(-1, 3), np.asarray(mesh_m3.tri_verts))
+
+
+def assert_same_cut_faces(
+    result_wp: tuple[wp.array[wp.vec3], wp.array[wp.int32]],
+    vertices_ref: np.ndarray,
+    faces_ref: np.ndarray,
+    operands: list[tm.Trimesh],
+    atol: float = 1e-6,
+) -> None:
+    """
+    Assert two Boolean results are the same mesh up to how each cut face is triangulated.
+
+    Class B. A Boolean's answer is the arrangement of its operands' surfaces: every operand face
+    the result keeps, cut into polygons along the other surface, each polygon triangulated. The
+    polygons are the answer; the triangulation of each is the library's choice (Manifold ear-clips,
+    libigl's CGAL Boolean and MeshLib split each face their own ways), and no two agree. The
+    transform forgets it and keeps everything else:
+
+    1. the vertices match one to one within ``atol`` (``atol`` must stay under half the closest
+       vertex pair's distance, or the match is ambiguous);
+    2. the triangle counts are equal (a polygon of ``s`` sides with ``h`` holes always takes
+       ``s + 2h - 2``);
+    3. each triangle is assigned the operand plane its centroid lies on (coplanar adjacent operand
+       faces, ``trimesh``'s facets, are one plane), within ``atol`` of it;
+    4. per plane, the two results use the same vertices and have the same vector area (sum of the
+       triangles' area vectors), so a polygon that is missing, extra, cut elsewhere or wound the
+       other way fails.
+
+    Defined only for operands in general position: where the operands overlap in a plane, a
+    triangle lies on two operand planes at once and its assignment is arbitrary.
+    """
+    vertices_wp, faces_wp = result_wp
+    vertices_np = vertices_wp.numpy().astype(np.float64)
+    faces_np = faces_wp.numpy().reshape(-1, 3)
+    reference_np = np.asarray(vertices_ref, dtype=np.float64)
+    reference_faces_np = np.asarray(faces_ref, dtype=np.int64).reshape(-1, 3)
+    assert faces_np.shape == reference_faces_np.shape
+    assert vertices_np.shape == reference_np.shape
+    distance, match = cKDTree(vertices_np).query(reference_np)
+    distance, match = np.asarray(distance), np.asarray(match)
+    assert distance.max(initial=0.0) <= atol
+    assert np.unique(match).size == len(vertices_np)
+    mapped_faces_np = match[reference_faces_np]
+
+    plane_labels = []
+    offset = 0
+    for operand in operands:
+        labels = np.arange(offset, offset + len(operand.faces))
+        for facet in operand.facets:
+            labels[facet] = labels[facet].min()
+        plane_labels.append(labels)
+        offset += len(operand.faces)
+    plane_of_face = np.concatenate(plane_labels)
+    soup = tm.Trimesh(
+        np.concatenate([operand.vertices for operand in operands]),
+        np.concatenate(
+            [
+                operand.faces + start
+                for operand, start in zip(
+                    operands,
+                    np.cumsum([0] + [len(operand.vertices) for operand in operands[:-1]]),
+                    strict=True,
+                )
+            ]
+        ),
+        process=False,
+    )
+
+    def planes_and_areas(faces: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        corners = vertices_np[faces]
+        _, to_plane, source = tm.proximity.closest_point(soup, corners.mean(axis=1))
+        assert to_plane.max(initial=0.0) <= atol
+        planes = plane_of_face[source]
+        area_vectors = 0.5 * np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
+        sums = np.stack(
+            [np.bincount(planes, area_vectors[:, k], minlength=offset) for k in range(3)], axis=1
+        )
+        pairs = np.unique(np.stack([np.repeat(planes, 3), faces.ravel()], axis=1), axis=0)
+        return pairs, sums
+
+    pairs, sums = planes_and_areas(faces_np)
+    pairs_ref, sums_ref = planes_and_areas(mapped_faces_np)
+    assert np.array_equal(pairs, pairs_ref)
+    assert np.allclose(sums, sums_ref, rtol=1e-5, atol=1e-5 * float(np.abs(sums_ref).max()))

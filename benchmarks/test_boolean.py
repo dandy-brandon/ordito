@@ -17,6 +17,15 @@ is Manifold itself (``manifold3d``, TBB-parallel), the library whose Boolean ord
 row passes ``check_volume=False`` so its per-call watertightness check is not timed. Its answers
 equal ordito's (``tests/test_boolean.py``, Class A).
 
+**pymeshlab**'s ``generate_boolean_*`` is libigl's exact CGAL Boolean (single-threaded), and
+**meshlib**'s ``boolean`` is MeshLib's (multi-threaded). Neither simplifies its result, so their
+answers equal ordito's ``collapse_collinear=False`` up to the triangulation of each cut face
+(``tests/test_boolean.py``, Class B); on these curved operands that is the default's answer too.
+The pymeshlab row deletes the result layer it adds inside the timed call, so the set does not grow
+across rounds. The meshlib row builds its two operands inside the timed call: MeshLib caches each
+mesh's AABB tree on the mesh, so shared operands would skip on every round after the first the
+tree builds ordito pays on each call (3-6x faster rows, 5 k to 328 k faces).
+
 Measured (2026-11-21, CUDA, two icospheres rotated and shifted, union): ordito 1.4x faster than
 Manifold at 5 k faces and 3.8x at 328 k. The serial parts -- the inputs' coplanar groups and the
 result's edge collapses, both serial in Manifold too -- run as one GPU thread, so a mesh made of
@@ -30,12 +39,14 @@ from collections.abc import Callable
 
 import manifold3d as m3
 import numpy as np
+import pymeshlab as ml
 import pytest
 import trimesh as tm
 import warp as wp
+from meshlib import mrmeshpy as mm
 
 import ordito as od
-from conftest import BenchCase
+from conftest import BenchCase, mesh_ml_from_numpy
 
 # The second operand: the sphere rotated about its centre and shifted by a fraction of its size.
 _ROTATION_SEED = 3
@@ -103,13 +114,51 @@ def _run(bench_case: BenchCase, name: str, operation: Operation) -> None:
         result_m3 = bench_case.run(lambda: _forced(operations_m3[name]()))
         assert result_m3.num_tri() > 0
         return
+    if bench_case.kind == "pymeshlab":
+        meshset = ml.MeshSet()
+        for vertices_np in (bench_case.vertices_np, moved_np):
+            meshset.add_mesh(
+                ml.Mesh(
+                    np.asarray(vertices_np, dtype=np.float64),
+                    np.asarray(bench_case.faces_np, dtype=np.int32),
+                )
+            )
+        filter_pml = getattr(meshset, f"generate_boolean_{name}")
+
+        def run_pml() -> int:
+            filter_pml(first_mesh=0, second_mesh=1)
+            n_faces = meshset.current_mesh().face_number()
+            meshset.delete_current_mesh()
+            return n_faces
+
+        assert bench_case.run(run_pml) > 0
+        return
+    if bench_case.kind == "meshlib":
+        faces_np = bench_case.faces_np
+        operation_ml = {
+            "union": mm.BooleanOperation.Union,
+            "intersection": mm.BooleanOperation.Intersection,
+            "difference": mm.BooleanOperation.DifferenceAB,
+        }[name]
+
+        def run_ml() -> mm.BooleanResult:
+            # Fresh operands each call: MeshLib caches a mesh's AABB tree on the mesh, which a
+            # shared operand would build once and then skip, where ordito builds its trees per call.
+            a_ml = mesh_ml_from_numpy(bench_case.vertices_np, faces_np)
+            b_ml = mesh_ml_from_numpy(moved_np, faces_np)
+            return mm.boolean(a_ml, b_ml, operation_ml)
+
+        result_ml = bench_case.run(run_ml)
+        assert result_ml.valid()
+        assert result_ml.mesh.topology.numValidFaces() > 0
+        return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     _vertices, result_faces = bench_case.run(lambda: operation(vertices, faces, moved_wp, faces))
     assert result_faces.size > 0
 
 
 @pytest.mark.benchmark(group="boolean_union")
-@pytest.mark.benchlibs("ordito", "trimesh", "manifold3d")
+@pytest.mark.benchlibs("ordito", "trimesh", "manifold3d", "pymeshlab", "meshlib")
 @pytest.mark.benchaxis("scale")
 def test_union(bench_case: BenchCase) -> None:
     """``od.boolean.union`` of a sphere and its rotated, shifted copy."""
@@ -117,7 +166,7 @@ def test_union(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="boolean_intersection")
-@pytest.mark.benchlibs("ordito", "trimesh", "manifold3d")
+@pytest.mark.benchlibs("ordito", "trimesh", "manifold3d", "pymeshlab", "meshlib")
 @pytest.mark.benchaxis("scale")
 def test_intersection(bench_case: BenchCase) -> None:
     """``od.boolean.intersection`` of a sphere and its rotated, shifted copy."""
@@ -125,7 +174,7 @@ def test_intersection(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="boolean_difference")
-@pytest.mark.benchlibs("ordito", "trimesh", "manifold3d")
+@pytest.mark.benchlibs("ordito", "trimesh", "manifold3d", "pymeshlab", "meshlib")
 @pytest.mark.benchaxis("scale")
 def test_difference(bench_case: BenchCase) -> None:
     """``od.boolean.difference`` of a sphere and its rotated, shifted copy."""

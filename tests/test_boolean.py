@@ -3,23 +3,47 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from typing import Protocol
 
 import manifold3d as m3
 import numpy as np
 import pytest
 import trimesh as tm
 import warp as wp
+from meshlib import mrmeshpy as mm
 
 import ordito as od
-from tests.comparisons import assert_same_as_manifold3d
+from tests.comparisons import assert_same_as_manifold3d, assert_same_cut_faces
 from tests.conftest import CLOSED_MESHES
-from tests.conversions import float32_trimesh, numpy_to_warp, trimesh_to_manifold3d, warp_empty
+from tests.conversions import (
+    float32_trimesh,
+    meshlib_to_trimesh,
+    numpy_to_warp,
+    trimesh_to_manifold3d,
+    trimesh_to_meshlib,
+    trimesh_to_pymeshlab,
+    warp_empty,
+)
 
 MeshPair = tuple[tm.Trimesh, wp.Mesh]
 WarpMesh = tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-Operation = Callable[
-    [wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.vec3], wp.array[wp.int32]], WarpMesh
-]
+
+
+class Operation(Protocol):
+    """``union``, ``intersection`` or ``difference``."""
+
+    def __call__(
+        self,
+        vertices_a: wp.array[wp.vec3],
+        faces_a: wp.array[wp.int32],
+        vertices_b: wp.array[wp.vec3],
+        faces_b: wp.array[wp.int32],
+        *,
+        collapse_collinear: bool = True,
+    ) -> WarpMesh:
+        """Return the Boolean of the two meshes."""
+        ...
+
 
 OPERATIONS: list[tuple[str, Operation]] = [
     ("union", od.boolean.union),
@@ -149,6 +173,142 @@ def test_boolean_matches_trimesh(device: str, name: str, operation: Operation) -
     )
     reference_wp = numpy_to_warp(reference_tm.vertices, reference_tm.faces, device)
     assert od.equality.meshes_allclose(vertices_wp, faces_wp, *reference_wp, atol=1e-6)
+
+
+# Operands with flat faces crossed along straight lines, where Manifold's collinear collapse
+# removes vertices the exact-arithmetic Booleans keep, beside the curved generic fixtures.
+_FLAT_SHAPES = {
+    "cylinder": lambda: tm.creation.cylinder(radius=0.5, height=2.0, sections=32),
+    "box": lambda: tm.creation.box(),
+}
+_EXACT_SHAPES = [*_GENERIC_MESHES, *_FLAT_SHAPES]
+
+
+@pytest.mark.parity("boolean_union", "pymeshlab")
+@pytest.mark.parity("boolean_intersection", "pymeshlab")
+@pytest.mark.parity("boolean_difference", "pymeshlab")
+@pytest.mark.parametrize("shape", _EXACT_SHAPES)
+@pytest.mark.parametrize(("name", "operation"), OPERATIONS, ids=_OPERATION_IDS)
+def test_boolean_matches_pymeshlab(
+    request: pytest.FixtureRequest, device: str, shape: str, name: str, operation: Operation
+) -> None:
+    """
+    Without the collinear collapse, the Boolean is pymeshlab's (libigl's CGAL Boolean).
+
+    Class B, through [`assert_same_cut_faces`][tests.comparisons.assert_same_cut_faces]: the same
+    vertices (within ``1e-6``), the same triangle count, and on each operand plane the same
+    vertices and vector area, so every polygon of the arrangement is cut, kept and wound alike. The
+    transform forgets the triangulation of each polygon, each library's own choice: Manifold
+    ear-clips, libigl's CGAL Boolean and MeshLib split each face their own ways, and those two
+    disagree with each other as well.
+
+    ``collapse_collinear=False`` is the variant that reaches it: Manifold's cleanup collapses
+    crossing vertices on straight lines through flat regions, which CGAL keeps (114 of the
+    cylinder's 402 vertices; the curved fixtures have none and match at either setting,
+    ``test_collapse_collinear_only_changes_flat_crossings``). Operands in general position only:
+    where surfaces touch or overlap in a plane each library breaks the tie its own way, and
+    pymeshlab raises on an empty result.
+    """
+    a_tm, b_tm = _exact_operands(request, shape)
+    meshset_pml = trimesh_to_pymeshlab(a_tm)
+    # A mesh read off a temporary ``MeshSet`` dangles once that set is collected: keep it bound.
+    second_pml = trimesh_to_pymeshlab(b_tm)
+    meshset_pml.add_mesh(second_pml.current_mesh())
+    getattr(meshset_pml, f"generate_boolean_{name}")(first_mesh=0, second_mesh=1)
+    result_pml = meshset_pml.current_mesh()
+    _assert_same_exact_boolean(
+        device, operation, a_tm, b_tm, result_pml.vertex_matrix(), result_pml.face_matrix()
+    )
+
+
+@pytest.mark.parity("boolean_union", "meshlib")
+@pytest.mark.parity("boolean_intersection", "meshlib")
+@pytest.mark.parity("boolean_difference", "meshlib")
+@pytest.mark.parametrize("shape", _EXACT_SHAPES)
+@pytest.mark.parametrize(("name", "operation"), OPERATIONS, ids=_OPERATION_IDS)
+def test_boolean_matches_meshlib(
+    request: pytest.FixtureRequest, device: str, shape: str, name: str, operation: Operation
+) -> None:
+    """
+    Without the collinear collapse, the Boolean is MeshLib's ``boolean``.
+
+    Class B, the transform of ``test_boolean_matches_pymeshlab``, whose answer MeshLib's equals
+    on these operands but for its own triangulation. Where operands touch or overlap in a plane,
+    MeshLib keeps zero-volume sheets and duplicate vertices that Manifold's cleanup removes.
+    """
+    a_tm, b_tm = _exact_operands(request, shape)
+    operation_ml = {
+        "union": mm.BooleanOperation.Union,
+        "intersection": mm.BooleanOperation.Intersection,
+        "difference": mm.BooleanOperation.DifferenceAB,
+    }[name]
+    result_ml = mm.boolean(trimesh_to_meshlib(a_tm), trimesh_to_meshlib(b_tm), operation_ml)
+    assert result_ml.valid()
+    mesh_ml = meshlib_to_trimesh(result_ml.mesh)
+    _assert_same_exact_boolean(device, operation, a_tm, b_tm, mesh_ml.vertices, mesh_ml.faces)
+
+
+def _exact_operands(request: pytest.FixtureRequest, shape: str) -> tuple[tm.Trimesh, tm.Trimesh]:
+    """Return a fixture's mesh, or a flat shape, and its rotated, shifted copy, in ``float32``."""
+    if shape in _FLAT_SHAPES:
+        a_tm = float32_trimesh(_FLAT_SHAPES[shape]())
+    else:
+        mesh_tm, _ = request.getfixturevalue(shape)
+        a_tm = float32_trimesh(mesh_tm)
+    return a_tm, _moved_copy(a_tm, seed=7)
+
+
+def _assert_same_exact_boolean(
+    device: str,
+    operation: Operation,
+    a_tm: tm.Trimesh,
+    b_tm: tm.Trimesh,
+    vertices_ref: np.ndarray,
+    faces_ref: np.ndarray,
+) -> None:
+    """Assert ``operation(..., collapse_collinear=False)`` is the reference up to triangulation."""
+    reference_tm = tm.Trimesh(vertices_ref, faces_ref, process=False)
+    assert len(reference_tm.faces) > 0
+    assert not np.isclose(reference_tm.volume, a_tm.volume, rtol=1e-3)
+    result_wp = operation(
+        *numpy_to_warp(a_tm.vertices, a_tm.faces, device),
+        *numpy_to_warp(b_tm.vertices, b_tm.faces, device),
+        collapse_collinear=False,
+    )
+    assert_same_cut_faces(result_wp, reference_tm.vertices, reference_tm.faces, [a_tm, b_tm])
+
+
+@pytest.mark.parametrize(
+    "operation", [pytest.param(operation, id=name) for name, operation in OPERATIONS]
+)
+def test_collapse_collinear_only_changes_flat_crossings(
+    request: pytest.FixtureRequest, device: str, operation: Operation
+) -> None:
+    """
+    The collinear collapse removes crossing vertices on flat faces, and nothing on curved ones.
+
+    Ordito against ordito: the two settings of one function, whose ``False`` side
+    ``test_boolean_matches_pymeshlab`` and ``test_boolean_matches_meshlib`` compare with the
+    exact Booleans and whose default
+    ``test_boolean_matches_manifold3d`` compares with Manifold. On the curved fixture the meshes
+    are equal array for array; on the cylinder the collapse removes vertices and leaves the solid.
+    """
+    results = {}
+    for shape in ("sphere_irregular", "cylinder"):
+        a_tm, b_tm = _exact_operands(request, shape)
+        operands = (
+            *numpy_to_warp(a_tm.vertices, a_tm.faces, device),
+            *numpy_to_warp(b_tm.vertices, b_tm.faces, device),
+        )
+        results[shape] = [
+            operation(*operands, collapse_collinear=collapse) for collapse in (True, False)
+        ]
+    (curved_vertices, curved_faces), (kept_vertices, kept_faces) = results["sphere_irregular"]
+    assert np.array_equal(curved_vertices.numpy(), kept_vertices.numpy())
+    assert np.array_equal(curved_faces.numpy(), kept_faces.numpy())
+    collapsed, kept = results["cylinder"]
+    assert kept[0].size > collapsed[0].size
+    assert np.isclose(od.measures.volume(*collapsed), od.measures.volume(*kept), rtol=1e-5)
 
 
 @pytest.mark.parity("split_by_mesh", "manifold3d")

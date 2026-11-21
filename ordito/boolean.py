@@ -76,6 +76,8 @@ def union(
     faces_a: wp.array[wp.int32],
     vertices_b: wp.array[wp.vec3],
     faces_b: wp.array[wp.int32],
+    *,
+    collapse_collinear: bool = True,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Return the solid both closed meshes enclose together, as a closed mesh.
@@ -86,6 +88,13 @@ def union(
         ``(n_vertices_a,)`` and ``(3 * n_faces_a,)`` first closed, consistently wound mesh.
     vertices_b, faces_b
         ``(n_vertices_b,)`` and ``(3 * n_faces_b,)`` second closed, consistently wound mesh.
+    collapse_collinear
+        Whether a crossing vertex whose surrounding triangles lie in at most two planes -- one
+        on a straight crease or inside a flat face -- is collapsed into a neighbour, as Manifold
+        does. ``False`` keeps every vertex of the two surfaces' arrangement but those closer than
+        the solids' tolerance: the vertices an exact-arithmetic Boolean such as libigl's CGAL
+        one returns. Only flat regions crossed along straight lines have such vertices; on
+        curved inputs both settings give the same mesh.
 
     Returns
     -------
@@ -128,7 +137,9 @@ def union(
     print(f"{od.measures.volume(vertices, faces):.4f}")  # 1.7200
     ```
     """
-    return _boolean(vertices_a, faces_a, vertices_b, faces_b, "union")
+    return _boolean(
+        vertices_a, faces_a, vertices_b, faces_b, "union", collapse_collinear=collapse_collinear
+    )
 
 
 def intersection(
@@ -136,6 +147,8 @@ def intersection(
     faces_a: wp.array[wp.int32],
     vertices_b: wp.array[wp.vec3],
     faces_b: wp.array[wp.int32],
+    *,
+    collapse_collinear: bool = True,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Return the solid both closed meshes enclose in common, as a closed mesh.
@@ -146,6 +159,13 @@ def intersection(
         ``(n_vertices_a,)`` and ``(3 * n_faces_a,)`` first closed, consistently wound mesh.
     vertices_b, faces_b
         ``(n_vertices_b,)`` and ``(3 * n_faces_b,)`` second closed, consistently wound mesh.
+    collapse_collinear
+        Whether a crossing vertex whose surrounding triangles lie in at most two planes -- one
+        on a straight crease or inside a flat face -- is collapsed into a neighbour, as Manifold
+        does. ``False`` keeps every vertex of the two surfaces' arrangement but those closer than
+        the solids' tolerance: the vertices an exact-arithmetic Boolean such as libigl's CGAL
+        one returns. Only flat regions crossed along straight lines have such vertices; on
+        curved inputs both settings give the same mesh.
 
     Returns
     -------
@@ -182,7 +202,14 @@ def intersection(
     print(f"{od.measures.volume(vertices, faces):.4f}")  # 0.2800
     ```
     """
-    return _boolean(vertices_a, faces_a, vertices_b, faces_b, "intersection")
+    return _boolean(
+        vertices_a,
+        faces_a,
+        vertices_b,
+        faces_b,
+        "intersection",
+        collapse_collinear=collapse_collinear,
+    )
 
 
 def difference(
@@ -190,6 +217,8 @@ def difference(
     faces_a: wp.array[wp.int32],
     vertices_b: wp.array[wp.vec3],
     faces_b: wp.array[wp.int32],
+    *,
+    collapse_collinear: bool = True,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Return the solid the first closed mesh encloses outside the second, as a closed mesh.
@@ -200,6 +229,13 @@ def difference(
         ``(n_vertices_a,)`` and ``(3 * n_faces_a,)`` closed, consistently wound mesh to cut.
     vertices_b, faces_b
         ``(n_vertices_b,)`` and ``(3 * n_faces_b,)`` closed, consistently wound mesh to remove.
+    collapse_collinear
+        Whether a crossing vertex whose surrounding triangles lie in at most two planes -- one
+        on a straight crease or inside a flat face -- is collapsed into a neighbour, as Manifold
+        does. ``False`` keeps every vertex of the two surfaces' arrangement but those closer than
+        the solids' tolerance: the vertices an exact-arithmetic Boolean such as libigl's CGAL
+        one returns. Only flat regions crossed along straight lines have such vertices; on
+        curved inputs both settings give the same mesh.
 
     Returns
     -------
@@ -236,7 +272,14 @@ def difference(
     print(f"{od.measures.volume(vertices, faces):.4f}")  # 0.7200
     ```
     """
-    return _boolean(vertices_a, faces_a, vertices_b, faces_b, "difference")
+    return _boolean(
+        vertices_a,
+        faces_a,
+        vertices_b,
+        faces_b,
+        "difference",
+        collapse_collinear=collapse_collinear,
+    )
 
 
 def split_by_mesh(
@@ -650,6 +693,8 @@ def _boolean(
     vertices_b: wp.array[wp.vec3],
     faces_b: wp.array[wp.int32],
     operation: _Operation,
+    *,
+    collapse_collinear: bool = True,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Run the Boolean ``operation`` on two closed meshes.
@@ -666,17 +711,23 @@ def _boolean(
     q = solid_from_mesh(vertices_b, faces_b, 1, "b")
     if operation == "union":
         # ``a + b`` is a two-child ``BatchUnion``: meshes whose boxes are apart are composed.
-        return mesh_from_solid(_batch_union([p, q]), vertices_a.device)
-    return mesh_from_solid(_solid_boolean(p, q, operation), vertices_a.device)
+        return mesh_from_solid(
+            _batch_union([p, q], collapse_collinear=collapse_collinear), vertices_a.device
+        )
+    return mesh_from_solid(
+        _solid_boolean(p, q, operation, collapse_collinear=collapse_collinear), vertices_a.device
+    )
 
 
-def _solid_boolean(p: Solid, q: Solid, operation: _Operation) -> Solid:
+def _solid_boolean(
+    p: Solid, q: Solid, operation: _Operation, *, collapse_collinear: bool = True
+) -> Solid:
     """``SimpleBoolean``: one Boolean of two solids, as a solid."""
     early = _empty_operand_result(p, q, operation)
     if early is not None:
         return early
     crossings = _boolean3(_operand(p), _operand(q), 1 if operation == "union" else 0)
-    return _result(crossings, operation)
+    return _result(crossings, operation, collapse_collinear=collapse_collinear)
 
 
 def _batch_solids(
@@ -701,7 +752,7 @@ def _batch_solids(
     return solids, device
 
 
-def _batch_union(children: list[Solid]) -> Solid:
+def _batch_union(children: list[Solid], *, collapse_collinear: bool = True) -> Solid:
     """
     ``BatchUnion``: compose the meshes whose boxes are pairwise apart, then unite the groups.
 
@@ -727,7 +778,10 @@ def _batch_union(children: list[Solid]) -> Solid:
             else _compose([children[start + j] for j in group])
             for group in groups
         ]
-        children = [*children[:start], _batch_boolean(composed, "union")]
+        children = [
+            *children[:start],
+            _batch_boolean(composed, "union", collapse_collinear=collapse_collinear),
+        ]
         children[0], children[-1] = children[-1], children[0]
     return children[0]
 
@@ -740,7 +794,9 @@ def _boxes_overlap(
     return all(a[0][i] <= b[1][i] and a[1][i] >= b[0][i] for i in range(3))
 
 
-def _batch_boolean(results: list[Solid], operation: _Operation) -> Solid:
+def _batch_boolean(
+    results: list[Solid], operation: _Operation, *, collapse_collinear: bool = True
+) -> Solid:
     """
     ``BatchBoolean``: combine pairwise, the two with the most vertices first, four pairs a round.
 
@@ -750,7 +806,9 @@ def _batch_boolean(results: list[Solid], operation: _Operation) -> Solid:
     if len(results) == 1:
         return results[0]
     if len(results) == 2:
-        return _solid_boolean(results[0], results[1], operation)
+        return _solid_boolean(
+            results[0], results[1], operation, collapse_collinear=collapse_collinear
+        )
     heap = [(-solid.n_vertices, -serial, serial, solid) for serial, solid in enumerate(results)]
     heapq.heapify(heap)
     next_serial = len(results)
@@ -761,7 +819,7 @@ def _batch_boolean(results: list[Solid], operation: _Operation) -> Solid:
                 break
             a = heapq.heappop(heap)[3]
             b = heapq.heappop(heap)[3]
-            result = _solid_boolean(a, b, operation)
+            result = _solid_boolean(a, b, operation, collapse_collinear=collapse_collinear)
             done.append((-result.n_vertices, -next_serial, next_serial, result))
             next_serial += 1
         for item in done:
@@ -919,8 +977,14 @@ def _boolean3(p: _Operand, q: _Operand, expand: int) -> _Crossings:
     )
 
 
-def _result(crossings: _Crossings, operation: _Operation) -> Solid:
-    """``Boolean3::Result``: one operation's solid from the crossings and windings."""
+def _result(
+    crossings: _Crossings, operation: _Operation, *, collapse_collinear: bool = True
+) -> Solid:
+    """
+    ``Boolean3::Result``: one operation's solid from the crossings and windings.
+
+    Without ``collapse_collinear``, the cleanup skips ``CollapseColinearEdges``.
+    """
     p, q = crossings.p, crossings.q
     device = p.solid.positions.device
     n12, n21 = crossings.n12, crossings.n21
@@ -1243,7 +1307,7 @@ def _result(crossings: _Crossings, operation: _Operation) -> Solid:
         outputs=[mesh.pair],
         device=device,
     )
-    simplify_topology(mesh, first_new_vert, epsilon, tolerance, device)
+    simplify_topology(mesh, first_new_vert, epsilon, tolerance, device, colinear=collapse_collinear)
     return finish_solid(mesh, epsilon, tolerance, device)
 
 
