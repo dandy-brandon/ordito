@@ -29,8 +29,8 @@ A point cloud has no faces to diffuse over, so
 [`PointCloudHeatSolver`][ordito.heat.PointCloudHeatSolver] builds some: each point's star in a
 Delaunay triangulation of its neighbours
 ([`local_triangulation`][ordito.points.local_triangulation]), whose union's intrinsic tufted
-cover carries the distance, the scalar extension, transport and the log map
-(``potpourri3d.PointCloudHeatSolver``).
+cover carries the distance, the signed distance to curves, the scalar extension, transport and the
+log map (``potpourri3d.PointCloudHeatSolver``).
 
 The three are one module because two of them cannot be separated: the vector solvers import
 [`heat_operators`][ordito.heat.heat_operators] and [`heat_geodesic`][ordito.heat.heat_geodesic],
@@ -2649,7 +2649,7 @@ def transport_tangent_vectors(
         owned,
         cast("wp.array[wp.int32]", arguments[0]),
         cast("wp.array[wp.vec2]", arguments[1]),
-        cast("float | None", arguments[2]),
+        lambda: bound.heat_solver(cast("float | None", arguments[2])),
     )
 
 
@@ -2658,9 +2658,14 @@ def _transport_tangent_vectors(
     owned: bool,
     sources: wp.array[wp.int32],
     vectors: wp.array[wp.vec2],
-    t: float | None,
+    solver_of: Callable[[], HeatSolver],
 ) -> tuple[wp.array[wp.vec2], wp.array[wp.bool]]:
-    """``transport_tangent_vectors`` on a `Trimesh`; ``owned`` is whether the caller passed it."""
+    """
+    ``transport_tangent_vectors`` on a `Trimesh`; ``owned`` is whether the caller passed it.
+
+    ``solver_of`` returns the solver whose vector and heat systems diffuse the field, as in
+    `_extend_scalar`: the mesh's, or a point cloud's cover solver holding its connection.
+    """
     vertices, faces = mesh.vertices, mesh.faces
     require_same_device(vertices=vertices, faces=faces, sources=sources, vectors=vectors)
     device = vertices.device
@@ -2673,7 +2678,7 @@ def _transport_tangent_vectors(
         )
     _require_same_length(vectors, n_sources, "transport_tangent_vectors", "vectors")
 
-    solver = mesh.heat_solver(t)
+    solver = solver_of()
 
     # The vector field and the magnitudes' two-column extension do not interact and settle at the
     # same round, so they diffuse as one solve over the block-diagonal stack
@@ -3635,6 +3640,10 @@ class HeatSolver:
         # A Poisson-type system's multigrid hierarchy, by role: built for an ill-conditioned mesh
         # whose factorization was refused, and kept like the factorization it stands in for.
         self._multigrid: dict[str, wpl.LinearOperator] = {}
+        # A vector heat system and its preconditioner set by the owner of the operators rather
+        # than built from the mesh: ``PointCloudHeatSolver``'s connection over the cover, which
+        # the tangent diffusions then solve as they solve the mesh's own (``_vector_system``).
+        self._connection: tuple[odt.BsrMatrix[wp.mat22d], wpl.LinearOperator] | None = None
 
     @property
     def operators(self) -> HeatOperators:
@@ -3924,8 +3933,21 @@ class HeatSolver:
             If ``rhs``, ``solution`` and the mesh are not all on one device.
         """
         self._require_fields("HeatSolver.diffuse_tangent", rhs, solution, rhs.size, 1)
-        vector_system, _, _, preconditioner = self.vector_operators
+        vector_system, preconditioner = self._vector_system()
         self._settle("vector", vector_system, rhs, solution, preconditioner=preconditioner)
+
+    def _vector_system(self) -> tuple[odt.BsrMatrix[wp.mat22d], wpl.LinearOperator]:
+        """
+        Return the vector heat system the tangent diffusions solve, and its preconditioner.
+
+        The one set in ``_connection`` (a point cloud's), else the mesh's
+        [`vector_operators`][ordito.heat.HeatSolver.vector_operators]', which also makes
+        [`operators`][ordito.heat.HeatSolver.operators] their scalar bundle.
+        """
+        if self._connection is not None:
+            return self._connection
+        vector_system, _, _, preconditioner = self.vector_operators
+        return vector_system, preconditioner
 
     def diffuse_stacked(
         self, rhs: wp.array[wp.float64], solution: wp.array[wp.float64], n_scalars: int
@@ -3962,14 +3984,15 @@ class HeatSolver:
             # Iterated as one system; factored, when the settle fails or on the second solve, as
             # its distinct blocks -- the vector and heat systems' own factorization slots, so a
             # factorization either already holds is reused and one built here serves their solves.
-            vector_system, scalar, _, _ = self.vector_operators
-            stack = od.array.block_diag((vector_system, *(scalar[0],) * n_scalars))
+            vector_system = self._vector_system()[0]
+            heat_system = self.operators[0]
+            stack = od.array.block_diag((vector_system, *(heat_system,) * n_scalars))
             kept = self._systems[role] = _KeptSystem(
                 _StackedFactorization(
                     stack,
                     self._bound_mesh().vertices,
                     self._slot("vector", vector_system).factorization,
-                    self._slot("heat", scalar[0]).factorization,
+                    self._slot("heat", heat_system).factorization,
                     n_scalars,
                 )
             )
@@ -4026,12 +4049,12 @@ class HeatSolver:
         role = "vector_pair"
         kept = self._systems.get(role)
         if kept is None:
-            vector_system, scalar, _, _ = self.vector_operators
+            vector_system = self._vector_system()[0]
             kept = self._systems[role] = _KeptSystem(
                 _PairedFactorization(
                     od.array.block_diag((vector_system, vector_system)),
                     self._slot("vector", vector_system).factorization,
-                    self._slot("heat", scalar[0]).factorization,
+                    self._slot("heat", self.operators[0]).factorization,
                 )
             )
         self._settle(role, kept.factorization.matrix, rhs, solution)
@@ -4434,7 +4457,7 @@ class HeatSolver:
 
 class PointCloudHeatSolver:
     """
-    The heat method on a point cloud: distance, scalar extension, transport and log map.
+    The heat method on a point cloud: distance, signed distance, extension, transport, log map.
 
     geometry-central's point-cloud heat solver (``potpourri3d.PointCloudHeatSolver``). Each point
     takes its ``k`` nearest others and a tangent frame from its normal, and its star in the
@@ -4449,7 +4472,9 @@ class PointCloudHeatSolver:
     diffuses through a connection Laplacian made of the cover's weights and the rotations carrying
     each point's frame into its neighbours', and
     [`log_map`][ordito.heat.PointCloudHeatSolver.log_map] reads its direction off the diffusion of
-    the source's neighbours' tangent coordinates and its radius off the distance.
+    the source's neighbours' tangent coordinates and its radius off the distance, and
+    [`signed_distance`][ordito.heat.PointCloudHeatSolver.signed_distance] integrates the diffused
+    normals of oriented curves through the cloud.
 
     The neighbourhoods, frames and stars are built on construction; the cover, its operators and
     their factorizations on first use, kept for the solver's lifetime as a
@@ -4553,6 +4578,7 @@ class PointCloudHeatSolver:
         self.k = k
         self.t = None if t is None else float(t)
         neighbor_idx, _ = od.neighbors.query_nearest(points, points, k + 1)
+        frames = odt.empty_2d((n, 3), wp.vec3d, device=device)
         basis_x, basis_y, frame_normals = (
             _launch.empty(n, dtype=wp.vec3, device=device) for _ in range(3)
         )
@@ -4564,17 +4590,17 @@ class PointCloudHeatSolver:
                 neighbor_idx,
                 _launch.empty(0, dtype=wp.vec3, device=device) if normals is None else normals,
             ],
-            outputs=[basis_x, basis_y, frame_normals],
+            outputs=[frames, basis_x, basis_y, frame_normals],
             device=device,
         )
         self._frames = (basis_x, basis_y, frame_normals)
+        # The frames every solve reads, ``float64`` rows ``(basis_x, basis_y, normal)``.
+        self._frames64 = frames
         faces = od.points.local_triangulation(points, neighbor_idx, normals)
         # The stars as a mesh, so the cover, its operators and their factorizations are a
         # ``HeatSolver``'s, kept with it.
         self._mesh = Trimesh(points, faces)
         self._solver = self._mesh.heat_solver(self.t, use_robust=True, method="potpourri3d")
-        # The vector heat system over the cover's pattern and its preconditioner, once built.
-        self._vector: tuple[odt.BsrMatrix[wp.mat22d], wpl.LinearOperator] | None = None
 
     @property
     def tangent_frames(self) -> tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.vec3]]:
@@ -4639,6 +4665,180 @@ class PointCloudHeatSolver:
         ```
         """
         return _heat_geodesic(self._mesh, True, sources, self.t, True, "potpourri3d")
+
+    def signed_distance(
+        self,
+        curve_points: wp.array[wp.int32],
+        curve_offsets: wp.array[wp.int32] | None = None,
+        *,
+        closed: bool = True,
+        normals: wp.array[wp.vec3] | None = None,
+        level_set_constraint: str = "zero_set",
+    ) -> wp.array[wp.float64]:
+        """
+        Signed distance from every point to a set of oriented curves through the cloud.
+
+        ``potpourri3d.PointCloudHeatSolver.compute_signed_distance``: the signed heat method
+        (see [`heat_signed_distance`][ordito.heat.heat_signed_distance]) on the cloud. Each curve
+        segment's normal in the tangent plane -- half the segment turned a quarter about the
+        surface normal -- is set at its two endpoints (where segments share a point, the later
+        one's), diffused through the cloud's vector heat system, and the diffused field, summed
+        over each cover face's corners and normalized, is integrated back by a Poisson solve on
+        the cover. Positive inside the region a counter-clockwise curve encloses (seen from the
+        side ``normals`` point to) and negative outside, as
+        [`heat_signed_distance`][ordito.heat.heat_signed_distance] signs it on a mesh.
+        ``potpourri3d``'s point-cloud solver signs it the other way (its mesh solver as here):
+        its field is this one negated.
+
+        Parameters
+        ----------
+        curve_points
+            ``(n_curve_points,)`` point indices along the curves, packed one curve after another.
+            Consecutive points should be neighbours in the cloud.
+        curve_offsets
+            ``(n_curves + 1,)`` CSR bounds into ``curve_points``. When ``None`` the whole buffer
+            is one curve.
+        closed
+            Whether each curve closes back on its first point (adding one more segment), as
+            potpourri3d's curve whose last point repeats its first does.
+        normals
+            ``(n,)`` oriented normals that turn each segment into its normal, and so decide which
+            side is inside. When ``None``, the solver's own frame normals: the ones it was given,
+            else its estimates, whose signs need not agree across the cloud.
+        level_set_constraint
+            ``"zero_set"`` pins the curve points to zero; ``"none"`` solves unconstrained, with
+            geometry-central's ``1e-6`` regularization, and shifts the field so its mean along the
+            curve's segments, weighted by length, is zero. potpourri3d's modes of the same names.
+
+        Returns
+        -------
+        wp.array[wp.float64]
+            ``(n,)`` signed distance to the curves.
+
+        Raises
+        ------
+        ValueError
+            If ``level_set_constraint`` is not ``"zero_set"`` or ``"none"``, ``normals`` does not
+            hold one normal per point, or an entry of ``curve_points`` is not a point index.
+        RuntimeError
+            If ``curve_points``, ``curve_offsets`` and ``normals`` are not on the points' device.
+
+        Examples
+        --------
+        A latitude circle around the north pole of a sphere's vertices, counter-clockwise seen
+        from outside: the pole lies inside it, the south pole outside.
+
+        ```python
+        import numpy as np
+        import warp as wp
+
+        import ordito as od
+
+        vertices, _ = od.creation.icosphere(subdivisions=3)
+        positions = vertices.numpy()
+        ring = np.flatnonzero(np.abs(positions[:, 2] - 0.5) < 0.05)
+        ring = ring[np.argsort(np.arctan2(positions[ring, 1], positions[ring, 0]))]
+        solver = od.heat.PointCloudHeatSolver(vertices, normals=vertices)
+        field = solver.signed_distance(wp.array(ring, dtype=wp.int32)).numpy()
+        north, south = np.argmax(positions[:, 2]), np.argmin(positions[:, 2])
+        print(bool(field[north] > 0.0), bool(field[south] < 0.0))  # True True
+        ```
+        """
+        points = self.points
+        require_same_device(
+            points=points, curve_points=curve_points, curve_offsets=curve_offsets, normals=normals
+        )
+        if level_set_constraint not in ("zero_set", "none"):
+            raise ValueError(
+                f'level_set_constraint must be "zero_set" or "none", got {level_set_constraint!r}'
+            )
+        device = points.device
+        n = points.size
+        caller = "PointCloudHeatSolver.signed_distance"
+        if normals is not None:
+            _require_same_length(normals, n, caller, "normals")
+        n_entries = curve_points.size
+        if self._mesh.faces.size == 0 or n_entries == 0:
+            return _launch.zeros(n, dtype=wp.float64, device=device)
+        mesh = self._mesh
+        solver = self._connected_solver()
+        frames = self._frames64
+        zero_set = level_set_constraint == "zero_set"
+        single_curve = wp.int32(1 if curve_offsets is None else 0)
+        closed_flag = wp.int32(1 if closed else 0)
+
+        # The field, its diffusion and the divergence's sums: scratch dropped together.
+        (source_rows, diffused_rows, scratch), invalid = _zeroed_fields_and_flag(
+            device, 2 * n, 2 * n, n
+        )
+        owners = _launch.full(n, -1, dtype=wp.int32, device=device)
+        fixed_mask = _launch.zeros(n if zero_set else 0, dtype=wp.bool, device=device)
+        lengths = _launch.zeros(0 if zero_set else n_entries, dtype=wp.float64, device=device)
+        _launch.launch(
+            kernel_heat.cloud_curve_owners,
+            dim=n_entries,
+            inputs=[points, curve_points, curve_offsets, single_curve, closed_flag],
+            outputs=[owners, fixed_mask, lengths, invalid],
+            device=device,
+        )
+        _require_indices_in_range(invalid, n, caller, "curve_points")
+        source = _pairs(source_rows, n)
+        _launch.launch(
+            kernel_heat.splat_cloud_curve_normals,
+            dim=n_entries,
+            inputs=[
+                points,
+                curve_points,
+                curve_offsets,
+                single_curve,
+                closed_flag,
+                owners,
+                odt.as_dense(frames[:, 2])
+                if normals is None
+                else od.array.astype(normals, wp.vec3d),
+                frames,
+            ],
+            outputs=[source],
+            device=device,
+        )
+        diffused = _pairs(diffused_rows, n)
+        solver.diffuse_tangent(source, diffused)
+
+        cover = solver._cover  # pyright: ignore[reportPrivateUsage]
+        assert cover is not None
+        cover_faces, _, cot = cover
+        n_cover = cover_faces.size // 3
+        order = _corner_order(mesh, solver)
+        divergence, corner_divergence = _corner_outputs(
+            order, n, n_cover, wp.float64, device, sums=scratch
+        )
+        _launch.launch(
+            kernel_heat.cloud_field_divergence,
+            dim=n_cover,
+            inputs=[cover_faces, cot, points, diffused, frames],
+            outputs=[divergence, corner_divergence],
+            device=device,
+        )
+        _sum_corner_outputs(order, corner_divergence, divergence)
+
+        if zero_set:
+            return _solve_poisson_zero_set(
+                solver.operators[3], divergence, fixed_mask, points, solver.ill_conditioned
+            )
+        field = _launch.zeros(n, dtype=wp.float64, device=device)
+        solver._solve_regularized_poisson(divergence, field)  # pyright: ignore[reportPrivateUsage]
+        blocks = kernel_reduce.blocks_1d(n_entries)
+        sums, stride = _launch.block_partials(blocks, 2, wp.float64, device)
+        _launch.launch_tiled(
+            kernel_heat.curve_midpoint_sums,
+            dim=[blocks],
+            inputs=[field, curve_points, curve_offsets, single_curve, closed_flag, lengths, stride],
+            outputs=[sums],
+            block_dim=TILE_1D,
+            device=device,
+        )
+        _launch.launch(kernel_heat.shift_by_mean, dim=n, inputs=[sums, field], device=device)
+        return field
 
     def extend_scalar(
         self, sources: wp.array[wp.int32], values: wp.array[wp.float64]
@@ -4746,54 +4946,9 @@ class PointCloudHeatSolver:
         print(f"{lengths.min():.3f}", f"{lengths.max():.3f}")  # 1.000 1.000
         ```
         """
-        points = self.points
-        require_same_device(points=points, sources=sources, vectors=vectors)
-        device = points.device
-        n = points.size
-        n_sources = sources.size
-        if self._mesh.faces.size == 0 or n_sources == 0:
-            return (
-                _launch.zeros(n, dtype=wp.vec2, device=device),
-                _launch.zeros(n, dtype=wp.bool, device=device),
-            )
-        caller = "PointCloudHeatSolver.transport_tangent_vectors"
-        _require_same_length(vectors, n_sources, caller, "vectors")
-        # The vector field's right-hand side and solution, then the indicator's and the
-        # magnitudes' as two scalar columns: one buffer.
-        (field_rhs, field, scalar_rhs, scalars), invalid = _zeroed_fields_and_flag(
-            device, 2 * n, 2 * n, 2 * n, 2 * n
+        return _transport_tangent_vectors(
+            self._mesh, True, sources, vectors, self._connected_solver
         )
-        _launch.launch(
-            kernel_heat.seed_transport_sources,
-            dim=n_sources,
-            inputs=[sources, vectors],
-            outputs=[
-                _pairs(field_rhs, n),
-                _launch.view(scalar_rhs, 0, n),
-                _launch.view(scalar_rhs, n, 2 * n),
-                invalid,
-            ],
-            device=device,
-        )
-        _require_indices_in_range(invalid, n, caller, "sources")
-        system, preconditioner = self._vector_system()
-        # Settled and factored as the solver's own vector role: stored over the cover's pattern,
-        # its factorization derives its analysis from the heat system's.
-        self._solver._settle(  # pyright: ignore[reportPrivateUsage]
-            "vector", system, _pairs(field_rhs, n), _pairs(field, n), preconditioner=preconditioner
-        )
-        self._solver.diffuse(scalar_rhs.reshape((2, n)), scalars.reshape((2, n)))
-        transported = _launch.empty(n, dtype=wp.vec2, device=device)
-        resolved = _launch.empty(n, dtype=wp.bool, device=device)
-        _launch.map(
-            kernel_heat.transported_and_resolved,
-            _pairs(field, n),
-            _launch.view(scalars, n, 2 * n),
-            _launch.view(scalars, 0, n),
-            wp.float64(_RESOLVED_FRACTION),
-            out=[transported, resolved],
-        )
-        return transported, resolved
 
     def log_map(self, source: int) -> wp.array[wp.vec2]:
         """
@@ -4859,11 +5014,10 @@ class PointCloudHeatSolver:
             device, 3 * n, 3 * n, n, n, _source_means_size(n, 1), 1
         )
         sources = _launch.alias(source_word, wp.int32, 0, 1)
-        basis_x, basis_y, normals = self._frames
         _launch.launch(
             kernel_heat.seed_cloud_log_map,
             dim=1,
-            inputs=[source, neighbor_row, points, basis_x, basis_y, normals],
+            inputs=[source, neighbor_row, points, self._frames64],
             outputs=[
                 sources,
                 _launch.view(rhs, 0, n),
@@ -4894,21 +5048,22 @@ class PointCloudHeatSolver:
         )
         return logarithm
 
-    def _vector_system(self) -> tuple[odt.BsrMatrix[wp.mat22d], wpl.LinearOperator]:
+    def _connected_solver(self) -> HeatSolver:
         """
-        Build the vector heat system ``M + t L_connection`` and its Jacobi preconditioner, once.
+        Return the cover solver, its vector heat system ``M + t L_connection`` set on first use.
 
         Over the cover heat system's pattern, from its values and the frames
         (``kernels/heat.cloud_vector_system_rows``): geometry-central's connection Laplacian, its
-        diagonal the heat system's own.
+        diagonal the heat system's own. Set as the solver's connection, its tangent diffusions
+        (the stacked transport, the signed distance's) solve it as a mesh's solve its own, and its
+        factorization derives its analysis from the heat system's.
         """
-        if self._vector is None:
-            heat_system = self._solver.operators[0]
+        solver = self._solver
+        if solver._connection is None:  # pyright: ignore[reportPrivateUsage]
+            heat_system = solver.operators[0]
             n = heat_system.nrow
-            values = _launch.empty(
-                heat_system.columns.size, dtype=wp.mat22d, device=heat_system.device
-            )
-            basis_x, basis_y, normals = self._frames
+            device = heat_system.device
+            values = _launch.empty(heat_system.columns.size, dtype=wp.mat22d, device=device)
             _launch.launch(
                 kernel_heat.cloud_vector_system_rows,
                 dim=n,
@@ -4916,16 +5071,14 @@ class PointCloudHeatSolver:
                     heat_system.offsets,
                     heat_system.columns,
                     heat_system.values,
-                    normals,
-                    basis_x,
-                    basis_y,
+                    self._frames64,
                 ],
                 outputs=[values],
-                device=heat_system.device,
+                device=device,
             )
             system = od.array.bsr_from_csr(n, n, heat_system.offsets, heat_system.columns, values)
-            self._vector = (system, twl.jacobi_preconditioner(system))
-        return self._vector
+            solver._connection = (system, twl.jacobi_preconditioner(system))  # pyright: ignore[reportPrivateUsage]
+        return solver
 
 
 def _tufted_intrinsic_delaunay(

@@ -4259,13 +4259,20 @@ def point_cloud_frames(
     points: wp.array[wp.vec3],
     neighbor_idx: wp.array2d[wp.int32],
     normals: wp.array[wp.vec3],
+    out_frames: wp.array2d[wp.vec3d],
     out_basis_x: wp.array[wp.vec3],
     out_basis_y: wp.array[wp.vec3],
     out_normals: wp.array[wp.vec3],
 ) -> None:
-    # Each point's tangent frame, the one its star was built in (``points.cloud_frame``).
+    # Each point's tangent frame, the one its star was built in (``points.cloud_frame``): in
+    # ``float64`` as rows ``(basis_x, basis_y, normal)`` of ``out_frames``, which every solve
+    # reads (as geometry-central keeps them; a needle-laden cloud's signed distance moved by
+    # 5e-5 of its range on ``float32`` frames), and narrowed for the solver's ``tangent_frames``.
     p = wp.int32(wp.tid())
     basis_x, basis_y, normal = cloud_frame(points, neighbor_idx, normals, p)
+    out_frames[p, 0] = basis_x
+    out_frames[p, 1] = basis_y
+    out_frames[p, 2] = normal
     out_basis_x[p] = to_vec3(basis_x)
     out_basis_y[p] = to_vec3(basis_y)
     out_normals[p] = to_vec3(normal)
@@ -4325,9 +4332,7 @@ def cloud_vector_system_rows(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     heat_values: wp.array[wp.float64],
-    normals: wp.array[wp.vec3],
-    basis_x: wp.array[wp.vec3],
-    basis_y: wp.array[wp.vec3],
+    frames: wp.array2d[wp.vec3d],
     out_values: wp.array[wp.mat22d],
 ) -> None:
     # Row ``i`` of the vector heat system ``M + t L_connection`` over the scalar heat system's
@@ -4337,18 +4342,16 @@ def cloud_vector_system_rows(
     # ``[[x, y], [y, -x]]``, its conjugate, where the frames' orientations disagree; the diagonal
     # is the heat system's, the mass plus ``t`` times the row's weights, on both components.
     i = wp.int32(wp.tid())
-    normal_i = to_vec3d(normals[i])
-    x_i = to_vec3d(basis_x[i])
-    y_i = to_vec3d(basis_y[i])
+    x_i = frames[i, 0]
+    y_i = frames[i, 1]
+    normal_i = frames[i, 2]
     for s in range(offsets[i], offsets[i + 1]):
         j = columns[s]
         h = heat_values[s]
         if j == i:
             out_values[s] = wp.mat22d(h, wp.float64(0.0), wp.float64(0.0), h)
             continue
-        r, inverted = cloud_transport(
-            to_vec3d(normals[j]), to_vec3d(basis_x[j]), normal_i, x_i, y_i
-        )
+        r, inverted = cloud_transport(frames[j, 2], frames[j, 0], normal_i, x_i, y_i)
         c = wp.where(inverted, wp.float64(-1.0), wp.float64(1.0))
         out_values[s] = h * wp.mat22d(r[0], -r[1] * c, r[1], r[0] * c)
 
@@ -4358,9 +4361,7 @@ def seed_cloud_log_map(
     source: wp.int32,
     neighbor_row: wp.array2d[wp.int32],
     points: wp.array[wp.vec3],
-    basis_x: wp.array[wp.vec3],
-    basis_y: wp.array[wp.vec3],
-    normals: wp.array[wp.vec3],
+    frames: wp.array2d[wp.vec3d],
     out_sources: wp.array[wp.int32],
     out_indicator: wp.array[wp.float64],
     out_x: wp.array[wp.float64],
@@ -4373,9 +4374,9 @@ def seed_cloud_log_map(
     out_sources[0] = source
     out_indicator[source] = wp.float64(1.0)
     center = wp.vec3d(points[source])
-    normal = to_vec3d(normals[source])
-    x = to_vec3d(basis_x[source])
-    y = to_vec3d(basis_y[source])
+    x = frames[source, 0]
+    y = frames[source, 1]
+    normal = frames[source, 2]
     kept = wp.int32(0)
     for j in range(neighbor_row.shape[1]):
         q = cloud_neighbor(neighbor_row, wp.int32(0), source, j, kept)
@@ -4385,6 +4386,126 @@ def seed_cloud_log_map(
             offset = offset - wp.dot(offset, normal) * normal
             out_x[q] = wp.dot(x, offset)
             out_y[q] = wp.dot(y, offset)
+
+
+@wp.kernel
+def cloud_curve_owners(
+    points: wp.array[wp.vec3],
+    curve_vertices: wp.array[wp.int32],
+    curve_offsets: wp.array[wp.int32],
+    single_curve: wp.int32,
+    closed: wp.int32,
+    out_owners: wp.array[wp.int32],
+    out_fixed: wp.array[wp.bool],
+    out_lengths: wp.array[wp.float64],
+    out_invalid: wp.array[wp.int32],
+) -> None:
+    # The point-cloud signed distance's first pass over the curve segments (``curve_segment_end``,
+    # one thread per entry): each segment claims both its endpoints with its entry index, so the
+    # last segment to touch a point owns it (``out_owners``, seeded ``-1``). geometry-central
+    # *assigns* each segment's normal to its endpoints in segment order rather than summing them,
+    # so the last writer is the answer (``splat_cloud_curve_normals``). Range-checks, marks the
+    # zero set into a non-empty ``out_fixed`` and stores each segment's length at its first entry
+    # into a non-empty ``out_lengths`` (``curve_midpoint_sums``' weights), as
+    # ``splat_curve_edges`` does.
+    k = wp.int32(wp.tid())
+    n = points.shape[0]
+    if flag_out_of_range(curve_vertices[k], n, out_invalid):
+        return
+    if out_fixed.shape[0] > 0:
+        out_fixed[curve_vertices[k]] = True
+    far = curve_segment_end(curve_vertices, curve_offsets, single_curve, closed, k)
+    if far < 0:
+        return
+    a = curve_vertices[k]
+    b = curve_vertices[far]
+    if flag_out_of_range(b, n, out_invalid):
+        return
+    if out_lengths.shape[0] > 0:
+        out_lengths[k] = wp.length(to_vec3d(points[b]) - to_vec3d(points[a]))
+    wp.atomic_max(out_owners, a, k)
+    wp.atomic_max(out_owners, b, k)
+
+
+@wp.func
+def cloud_curve_normal(
+    segment: wp.vec3d, normal: wp.vec3d, basis_x: wp.vec3d, basis_y: wp.vec3d
+) -> wp.vec2d:
+    # A curve segment's in-plane normal at one endpoint, in that point's frame: the half segment
+    # projected onto the tangent plane, turned a quarter about the oriented surface normal. The
+    # right normal (``tangent x normal``), where geometry-central's point-cloud solver takes the
+    # left: every later stage is linear or odd in the field, so this negates its answer exactly,
+    # to ``heat_signed_distance``'s convention (positive inside a counter-clockwise curve).
+    tangent = wp.dot(basis_x, segment) * basis_x + wp.dot(basis_y, segment) * basis_y
+    in_plane = wp.cross(tangent, normal)
+    return wp.vec2d(wp.dot(basis_x, in_plane), wp.dot(basis_y, in_plane))
+
+
+@wp.kernel
+def splat_cloud_curve_normals(
+    points: wp.array[wp.vec3],
+    curve_vertices: wp.array[wp.int32],
+    curve_offsets: wp.array[wp.int32],
+    single_curve: wp.int32,
+    closed: wp.int32,
+    owners: wp.array[wp.int32],
+    surface_normals: wp.array[wp.vec3d],
+    frames: wp.array2d[wp.vec3d],
+    out_field: wp.array[wp.vec2d],
+) -> None:
+    # The second pass: each segment writes its in-plane normal (``cloud_curve_normal``, from half
+    # the segment, geometry-central's weight) onto the endpoints it owns. The orientation is the
+    # caller's ``surface_normals``; the frames the point's own.
+    k = wp.int32(wp.tid())
+    n = points.shape[0]
+    a = curve_vertices[k]
+    if a < 0 or a >= n:
+        return
+    far = curve_segment_end(curve_vertices, curve_offsets, single_curve, closed, k)
+    if far < 0:
+        return
+    b = curve_vertices[far]
+    if b < 0 or b >= n:
+        return
+    segment = wp.float64(0.5) * (to_vec3d(points[b]) - to_vec3d(points[a]))
+    for side in range(2):
+        v = wp.where(side == 0, a, b)
+        if owners[v] == k:
+            out_field[v] = cloud_curve_normal(
+                segment, wp.normalize(surface_normals[v]), frames[v, 0], frames[v, 1]
+            )
+
+
+@wp.kernel
+def cloud_field_divergence(
+    faces: wp.array[wp.int32],
+    cot: wp.array2d[wp.float64],
+    points: wp.array[wp.vec3],
+    field: wp.array[wp.vec2d],
+    frames: wp.array2d[wp.vec3d],
+    out_div: wp.array[wp.float64],
+    out_corner_div: wp.array2d[wp.float64],
+) -> None:
+    # The point-cloud signed distance's divergence on a cover face: the diffused field's three
+    # corner vectors expanded from their frames into space and summed, normalized (zero only where
+    # it is exactly zero, ``stable_normalize``), and each halfedge's term ``cot * dot(edge, x)``
+    # added to its tail and taken from its tip, with the cover's intrinsic half-cotangents and the
+    # points' own edge vectors, as geometry-central takes them. Positive divergence, the
+    # right-hand side of ``L phi = div x`` with the positive-semi-definite ``L``.
+    f = wp.int32(wp.tid())
+    total = wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
+    for c in range(3):
+        v = faces[3 * f + c]
+        value = field[v]
+        total += value[0] * frames[v, 0] + value[1] * frames[v, 1]
+    x = stable_normalize(total)
+    p0 = to_vec3d(points[faces[3 * f]])
+    p1 = to_vec3d(points[faces[3 * f + 1]])
+    p2 = to_vec3d(points[faces[3 * f + 2]])
+    t0 = cot[f, 0] * wp.dot(p2 - p1, x)
+    t1 = cot[f, 1] * wp.dot(p0 - p2, x)
+    t2 = cot[f, 2] * wp.dot(p1 - p0, x)
+    add_or_store_corner_triple(out_div, out_corner_div, faces, f, t2 - t1, t0 - t2, t1 - t0)
 
 
 @wp.func

@@ -3365,6 +3365,117 @@ def test_point_cloud_heat_solver_matches_potpourri3d(
     assert np.allclose(solver.log_map(0).numpy(), logarithm_pp, rtol=1e-5, atol=1e-5)
 
 
+def _cloud_ring(points_np: np.ndarray, *, flat: bool) -> np.ndarray:
+    """
+    Points of a cloud near a circle about its centre, in angular order: a closed curve.
+
+    On a closed cloud (``flat=False``) the band nearest the plane through the centre
+    perpendicular to the widest axis, a great circle; on an open, roughly flat one the band at
+    half the extent from the centre in the plane of its two widest axes. Sorted by angle in that
+    plane, so consecutive entries are neighbours, as a curve through a cloud is.
+    """
+    centered = points_np - points_np.mean(axis=0)
+    _, _, axes = np.linalg.svd(centered, full_matrices=False)
+    if flat:
+        planar = centered @ axes[:2].T
+        radius = np.linalg.norm(planar, axis=1)
+        band = np.flatnonzero(np.abs(radius - 0.5 * radius.max()) < 0.03 * radius.max())
+    else:
+        height = centered @ axes[0]
+        band = np.flatnonzero(np.abs(height) < 0.03 * np.ptp(height))
+        planar = centered @ axes[1:].T
+    angle = np.arctan2(planar[band, 1], planar[band, 0])
+    return band[np.argsort(angle)].astype(np.int32)
+
+
+# ``MESHES``, each with the curve its topology admits (``_cloud_ring``'s ``flat``).
+_CLOUD_RING_MESHES = [("sphere_irregular", False), ("saddle_graded", True)]
+
+
+@pytest.mark.parametrize("level_set_constraint", ["zero_set", "none"])
+@pytest.mark.parametrize(("mesh_name", "flat"), _CLOUD_RING_MESHES)
+@pytest.mark.parity("point_cloud_heat_signed_distance", "potpourri3d")
+def test_point_cloud_signed_distance_matches_potpourri3d(
+    request: pytest.FixtureRequest, mesh_name: str, flat: bool, level_set_constraint: str
+) -> None:
+    """
+    Class B (sign): ``potpourri3d.PointCloudHeatSolver.compute_signed_distance``, negated.
+
+    ordito signs the field as ``heat_signed_distance`` does on a mesh, positive inside a
+    counter-clockwise curve; the reference's point-cloud solver takes the other sign (its mesh
+    solver ordito's), so the named transform negates the reference, given its normals.
+
+    A closed ring through the cloud (``_cloud_ring``), as ``closed=True`` on ordito's side and
+    with its first point repeated at the end on the reference's, both sides oriented by the
+    reference's frame normals. Each mode against its reference name (``ZeroSet``, ``None``) at
+    ``1e-5``: measured worst gap 2e-7 of a range of 1.3 on a jittered icosphere and 4.2e-6 of
+    1.1 on ``saddle_graded``, whose graded far field amplifies the diffusion's rounding: a curve
+    there with a long chord across the disk parted by 7e-5 far from it.
+
+    Non-vacuity: the field takes both signs over the cloud, and the two modes' answers differ
+    past the tolerance (the zero set pins the ring, the shift only centres it).
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    device = mesh_wp.device
+    points_np, _, normals_wp = _cloud_and_reference(mesh_wp)
+    ring_np = _cloud_ring(points_np, flat=flat)
+    assert ring_np.shape[0] > 8
+    _, _, normals_pp = pp3d.PointCloudHeatSolver(points_np).get_tangent_frames()
+    reference_names = {"zero_set": "ZeroSet", "none": "None"}
+
+    def reference(name: str) -> np.ndarray:
+        return np.asarray(
+            pp3d.PointCloudHeatSolver(points_np).compute_signed_distance(
+                [[*ring_np.tolist(), int(ring_np[0])]],
+                normals_pp,
+                level_set_constraint=reference_names[name],
+            )
+        )
+
+    field_pp = reference(level_set_constraint)
+    assert field_pp.min() < 0.0 < field_pp.max()
+    other = "none" if level_set_constraint == "zero_set" else "zero_set"
+    assert not np.allclose(reference(other), field_pp, rtol=1e-5, atol=1e-5)
+    solver = od.heat.PointCloudHeatSolver(mesh_wp.points, normals=normals_wp)
+    field_wp = solver.signed_distance(
+        wp.array(ring_np, dtype=wp.int32, device=device), level_set_constraint=level_set_constraint
+    ).numpy()
+    assert np.allclose(field_wp, -field_pp, rtol=1e-5, atol=1e-5)
+    # The same normals passed to the call orient it as the solver's own frames do; this second
+    # solve runs factored (the first iterated), so the two agree to the solves' accuracy.
+    explicit_wp = solver.signed_distance(
+        wp.array(ring_np, dtype=wp.int32, device=device),
+        normals=normals_wp,
+        level_set_constraint=level_set_constraint,
+    ).numpy()
+    assert np.allclose(explicit_wp, field_wp, rtol=1e-6, atol=1e-6)
+
+
+def test_point_cloud_signed_distance_signs_as_the_mesh_does(device: str) -> None:
+    """
+    Ordito against ordito: the cloud's signed distance has ``heat_signed_distance``'s sign.
+
+    A latitude ring around a sphere's north pole, counter-clockwise seen from outside, on the
+    icosphere as a mesh and on its vertices as a cloud with outward normals. The two are
+    different discretizations, so only their sign and shape are compared: both positive at the
+    pole inside the ring and negative at the far pole, and the fields correlate. Pins the
+    convention the cloud takes against the reference (see the potpourri3d comparison above),
+    which a dropped negation flips: the correlation then reads -1.
+    """
+    vertices, faces = od.creation.icosphere(subdivisions=3, device=device)
+    positions = vertices.numpy()
+    ring_np = np.flatnonzero(np.abs(positions[:, 2] - 0.5) < 0.05)
+    ring_np = ring_np[np.argsort(np.arctan2(positions[ring_np, 1], positions[ring_np, 0]))]
+    ring = wp.array(ring_np.astype(np.int32), dtype=wp.int32, device=device)
+    mesh_field = od.heat.heat_signed_distance(vertices, faces, ring).numpy()
+    solver = od.heat.PointCloudHeatSolver(vertices, normals=vertices)
+    cloud_field = solver.signed_distance(ring).numpy()
+    north, south = int(np.argmax(positions[:, 2])), int(np.argmin(positions[:, 2]))
+    assert mesh_field[north] > 0.0 > mesh_field[south]
+    assert cloud_field[north] > 0.0 > cloud_field[south]
+    assert np.corrcoef(mesh_field, cloud_field)[0, 1] > 0.99
+
+
 @pytest.mark.parametrize("mesh_name", MESHES)
 def test_point_cloud_frames_match_potpourri3d_up_to_the_normals_sign(
     request: pytest.FixtureRequest, mesh_name: str
@@ -3418,8 +3529,8 @@ def test_point_cloud_heat_solver_guards_its_arguments(device: str) -> None:
     Not a library comparison: the constructor and the solves refuse what they cannot answer.
 
     A ``k`` outside ``[1, 64]``, a cloud with no ``k`` neighbours per point and a normal table of
-    the wrong length are refused on construction; a source outside the cloud, or a vector table
-    not matching the sources, at the solve.
+    the wrong length are refused on construction; a source or curve point outside the cloud, a
+    vector or normal table not matching, or an unknown level-set constraint, at the solve.
     """
     vertices, _ = od.creation.icosphere(subdivisions=1, device=device)
     for k in (0, 65, int(vertices.shape[0])):
@@ -3436,6 +3547,17 @@ def test_point_cloud_heat_solver_guards_its_arguments(device: str) -> None:
     with pytest.raises(ValueError, match="vectors"):
         solver.transport_tangent_vectors(
             wp.array([0], dtype=wp.int32, device=device), wp.zeros(2, dtype=wp.vec2, device=device)
+        )
+    with pytest.raises(ValueError, match="level_set_constraint"):
+        solver.signed_distance(
+            wp.array([0, 1, 2], dtype=wp.int32, device=device), level_set_constraint="multiple"
+        )
+    with pytest.raises(ValueError, match="curve_points"):
+        solver.signed_distance(outside)
+    with pytest.raises(ValueError, match="normals"):
+        solver.signed_distance(
+            wp.array([0, 1, 2], dtype=wp.int32, device=device),
+            normals=wp.zeros(3, dtype=wp.vec3, device=device),
         )
 
 

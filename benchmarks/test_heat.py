@@ -1132,6 +1132,39 @@ def test_point_cloud_heat_distance(bench_case: BenchCase, setup: str) -> None:
         ).shape == (n_vertices,)
 
 
+def _cloud_ring_np(vertices_np: np.ndarray) -> np.ndarray:
+    """Return the cloud's points nearest its mid-height plane, by angle: a ring through it."""
+    centered = vertices_np - vertices_np.mean(axis=0)
+    band = np.flatnonzero(np.abs(centered[:, 2]) < 0.03 * np.ptp(centered[:, 2]))
+    return band[np.argsort(np.arctan2(centered[band, 1], centered[band, 0]))].astype(np.int32)
+
+
+@pytest.mark.benchmark(group="point_cloud_heat_signed_distance")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito", "potpourri3d")
+def test_point_cloud_heat_signed_distance(bench_case: BenchCase) -> None:
+    """A mid-height ring: one vector diffusion and the Poisson solve pinned on the ring."""
+    n_vertices = bench_case.n_vertices
+    ring_np = _cloud_ring_np(bench_case.vertices_np)
+    if bench_case.kind == "ordito":
+        points = bench_case.vertices_wp
+        ring = wp.array(ring_np, dtype=wp.int32, device=bench_case.device)
+        field = bench_case.run(
+            lambda: od.heat.PointCloudHeatSolver(points, normals=points).signed_distance(ring),
+            rounds=_VECTOR_HEAT_ROUNDS,
+        )
+        assert field.shape == (n_vertices,)
+    else:
+        positions_np = np.ascontiguousarray(bench_case.vertices_np, dtype=np.float64)
+        curve = [[*ring_np.tolist(), int(ring_np[0])]]
+        assert np.asarray(
+            bench_case.run(
+                lambda: _cloud_solver_pp(bench_case).compute_signed_distance(curve, positions_np),
+                rounds=_VECTOR_HEAT_ROUNDS,
+            )
+        ).shape == (n_vertices,)
+
+
 @pytest.mark.benchmark(group="point_cloud_extend_scalar")
 @pytest.mark.benchaxis("scale")
 @pytest.mark.benchlibs("ordito", "potpourri3d")
