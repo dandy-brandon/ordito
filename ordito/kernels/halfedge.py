@@ -14,12 +14,17 @@ adding information. What *is* worth reaching for is anything with a branch in it
 ``halfedge_next`` and ``halfedge_prev`` below -- because those get re-derived by hand instead:
 ``kernels/repair.py`` carried ``(forward // 3) * 3 + (forward + 1) % 3`` twice, in a file that
 already imported from here.
+
+The one stored structure is ``HalfEdges`` at the end of the module, the serial edge-record
+topology two ports edit splice by splice (``algorithms/mesh_builder``'s candidate triangulation and
+``holes``' serial refinement): half-edge ``2 e`` and ``2 e + 1`` are the two sides of edge
+``e``, ``next`` / ``prev`` rotate around the origin, ``-1`` is an invalid vertex, face or edge.
 """
 
 import warp as wp
 
 from ordito.constants import INT32_MAX_CONSTANT
-from ordito.kernels.array import device_is_cpu
+from ordito.kernels.array import device_is_cpu, edge_twin
 from ordito.kernels.reduce import block_barrier, block_sum
 
 wp.set_module_options({"enable_backward": False})
@@ -118,31 +123,6 @@ def halfedge_endpoints(faces: wp.array[wp.int32], h: wp.int32) -> tuple[wp.int32
     # endpoint through ``halfedge_destination`` and the other by indexing ``faces`` directly is
     # spelling half of it out by hand.
     return faces[h], halfedge_destination(faces, h)
-
-
-@wp.kernel
-def halfedge_vertex_pairs(
-    faces: wp.array[wp.int32],
-    halfedges: wp.array[wp.int32],
-    indirect: wp.bool,
-    halfedge_rows: wp.array[wp.int32],
-    out_edges: wp.array2d[wp.int32],
-) -> None:
-    # Selected halfedges read as directed vertex pairs, which puts each one's own face on the left.
-    # Row ``i`` is halfedge ``halfedges[halfedge_rows[i]]`` when ``indirect``; otherwise
-    # ``halfedges`` is ``None`` and never read, and ``halfedge_rows`` holds the halfedge indices
-    # themselves. Those are the two forms a caller holds them in -- a per-edge halfedge table
-    # indexed by selected rows, or a list of halfedges -- served without materialising the gather
-    # first. Row ``h`` of ``edges.faces_to_edges`` is halfedge ``h``, so this is also that
-    # table's rows at ``halfedge_rows``, without building the table.
-    i = wp.int32(wp.tid())
-    h = halfedge_rows[i]
-    if indirect:
-        h = halfedges[h]
-    # Bound to locals first: Warp cannot assign a multi-return straight into array elements.
-    tail, tip = halfedge_endpoints(faces, h)
-    out_edges[i, 0] = tail
-    out_edges[i, 1] = tip
 
 
 @wp.func
@@ -453,6 +433,24 @@ def next_boundary_halfedge_from_mates(
 
 
 @wp.func
+def store_mate_twin(
+    faces: wp.array[wp.int32],
+    mate: wp.int32,
+    h: wp.int32,
+    out_twins: wp.array[wp.int32],
+    out_defect_counts: wp.array[wp.int32],
+) -> wp.int32:
+    # Halfedge ``h``'s twin from its mate code under ``mate_twin_defect``, written to
+    # ``out_twins[h]`` and returned, its defect counted into the two-slot buffer: the one rule the
+    # bucketed, sorted and mate-table pairings apply.
+    twin, defect = mate_twin_defect(faces, mate, h)
+    if defect != HALFEDGE_DEFECT_NONE:
+        wp.atomic_add(out_defect_counts, defect, 1)
+    out_twins[h] = twin
+    return twin
+
+
+@wp.func
 def pair_bucketed_halfedge(
     faces: wp.array[wp.int32],
     degrees: wp.array[wp.int32],
@@ -462,40 +460,14 @@ def pair_bucketed_halfedge(
     out_twins: wp.array[wp.int32],
     out_defect_counts: wp.array[wp.int32],
 ) -> wp.int32:
-    # Halfedge ``h``'s twin from the per-vertex edge buckets under ``mate_twin_defect``, written to
-    # ``out_twins[h]`` and returned, its defect counted into the two-slot buffer.
-    twin, defect = mate_twin_defect(
-        faces, bucketed_halfedge_mate(faces, degrees, ends, buckets, h), h
+    # Halfedge ``h``'s twin from the per-vertex edge buckets (``store_mate_twin``).
+    return store_mate_twin(
+        faces,
+        bucketed_halfedge_mate(faces, degrees, ends, buckets, h),
+        h,
+        out_twins,
+        out_defect_counts,
     )
-    if defect != HALFEDGE_DEFECT_NONE:
-        wp.atomic_add(out_defect_counts, defect, 1)
-    out_twins[h] = twin
-    return twin
-
-
-@wp.kernel
-def pair_bucketed_halfedges(
-    faces: wp.array[wp.int32],
-    degrees: wp.array[wp.int32],
-    ends: wp.array[wp.int32],
-    buckets: wp.array[wp.vec2i],
-    out_twins: wp.array[wp.int32],
-    out_defect_counts: wp.array[wp.int32],
-) -> None:
-    # The twin table from per-vertex edge buckets, the sibling of ``twins_from_mates`` under
-    # the same rule (``mate_twin_defect``): a boundary edge stays ``-1``, an edge of three
-    # or more halfedges is non-manifold, a pair is twins unless both halfedges share an origin.
-    # Each defect is counted once, by the edge's lowest halfedge, into the same two slots, and
-    # every entry is written, so ``out_twins`` needs no fill.
-    #
-    # Against the radix sort on CUDA, identical tables and defect counts: 1.04-1.07x up to 82 k
-    # faces, 1.24x at 0.33 M, 2.2-2.6x from 0.87 M to 28 M, 1.26x on a 400 000-spoke hub; with the
-    # validating readback 1.02-1.35x below 0.33 M and 2.1x at 0.87-1.1 M. It also beats Warp's
-    # ``tri_tri_adjacency`` (which cannot validate) by 1.5x at 0.87 M. On the CPU it loses at every
-    # size (0.29-0.57x: the sort's passes are cheap serial loops there, the bucket scans are not),
-    # so the CPU keeps the sort (``halfedge._BUCKETED_PAIRING_ON_CPU``).
-    h = wp.int32(wp.tid())
-    pair_bucketed_halfedge(faces, degrees, ends, buckets, h, out_twins, out_defect_counts)
 
 
 @wp.func
@@ -517,7 +489,7 @@ def record_ring_start(
 
 
 @wp.kernel
-def pair_bucketed_halfedges_and_ring_starts(
+def pair_bucketed_halfedges(
     faces: wp.array[wp.int32],
     degrees: wp.array[wp.int32],
     ends: wp.array[wp.int32],
@@ -526,13 +498,27 @@ def pair_bucketed_halfedges_and_ring_starts(
     out_defect_counts: wp.array[wp.int32],
     out_ring_starts: wp.array[wp.int32],
 ) -> None:
-    # ``pair_bucketed_halfedges`` for ``halfedge.vertex_one_rings``, which bids each halfedge for
-    # its origin's walk start as soon as its twin is known: the ``ring_degrees_and_starts`` pass the
-    # walk would otherwise take, whose ring degrees are the buckets' own ``degrees``. Differs from
-    # ``pair_bucketed_halfedges`` only in the ``record_ring_start`` call.
+    # The twin table from per-vertex edge buckets, the sibling of ``twins_from_mates`` under
+    # the same rule (``mate_twin_defect``): a boundary edge stays ``-1``, an edge of three
+    # or more halfedges is non-manifold, a pair is twins unless both halfedges share an origin.
+    # Each defect is counted once, by the edge's lowest halfedge, into the same two slots, and
+    # every entry is written, so ``out_twins`` needs no fill.
+    #
+    # Against the radix sort on CUDA, identical tables and defect counts: 1.04-1.07x up to 82 k
+    # faces, 1.24x at 0.33 M, 2.2-2.6x from 0.87 M to 28 M, 1.26x on a 400 000-spoke hub; with the
+    # validating readback 1.02-1.35x below 0.33 M and 2.1x at 0.87-1.1 M. It also beats Warp's
+    # ``tri_tri_adjacency`` (which cannot validate) by 1.5x at 0.87 M. On the CPU it loses at every
+    # size (0.29-0.57x: the sort's passes are cheap serial loops there, the bucket scans are not),
+    # so the CPU keeps the sort (``halfedge._BUCKETED_PAIRING_ON_CPU``).
+    #
+    # ``out_ring_starts``, a null descriptor or not, takes each halfedge's bid for its origin's
+    # walk start as soon as its twin is known (``record_ring_start``, for
+    # ``halfedge.vertex_one_rings``): the ``ring_degrees_and_starts`` pass the walk would otherwise
+    # take, whose ring degrees are the buckets' own ``degrees``.
     h = wp.int32(wp.tid())
     twin = pair_bucketed_halfedge(faces, degrees, ends, buckets, h, out_twins, out_defect_counts)
-    record_ring_start(faces, h, twin, out_ring_starts)
+    if out_ring_starts.shape[0] > 0:
+        record_ring_start(faces, h, twin, out_ring_starts)
 
 
 @wp.func
@@ -549,26 +535,10 @@ def pair_sorted_halfedge(
     # would write, turned into the twin by the same thread, so no mate table is stored and read
     # back. Returns ``(h, twin)``; the twin is written to ``out_twins[h]``, its defect counted.
     h = order[i]
-    twin, defect = mate_twin_defect(faces, sorted_run_mate(sorted_keys, order, i), h)
-    if defect != HALFEDGE_DEFECT_NONE:
-        wp.atomic_add(out_defect_counts, defect, 1)
-    out_twins[h] = twin
+    twin = store_mate_twin(
+        faces, sorted_run_mate(sorted_keys, order, i), h, out_twins, out_defect_counts
+    )
     return h, twin
-
-
-@wp.kernel
-def pair_sorted_halfedges(
-    sorted_keys: wp.array[wp.uint64],
-    order: wp.array[wp.int32],
-    faces: wp.array[wp.int32],
-    out_twins: wp.array[wp.int32],
-    out_defect_counts: wp.array[wp.int32],
-) -> None:
-    # The twin table and its two defect counts from the edge-key sort, one thread per sorted
-    # position; ``twins_from_mates`` over ``sorted_halfedge_mates``' table gives the same, in two
-    # launches and a mate buffer. Every halfedge is one sorted position, so every entry is written.
-    i = wp.int32(wp.tid())
-    pair_sorted_halfedge(sorted_keys, order, faces, i, out_twins, out_defect_counts)
 
 
 @wp.func
@@ -589,7 +559,7 @@ def record_ring_degree_and_start(
 
 
 @wp.kernel
-def pair_sorted_halfedges_and_ring_starts(
+def pair_sorted_halfedges(
     sorted_keys: wp.array[wp.uint64],
     order: wp.array[wp.int32],
     faces: wp.array[wp.int32],
@@ -598,13 +568,18 @@ def pair_sorted_halfedges_and_ring_starts(
     out_degrees: wp.array[wp.int32],
     out_ring_starts: wp.array[wp.int32],
 ) -> None:
-    # ``pair_sorted_halfedges`` for ``halfedge.vertex_one_rings``, which takes each halfedge's ring
-    # degree and walk-start bid as soon as its twin is known: the ``ring_degrees_and_starts`` pass
-    # the walk would otherwise take over the finished table. Differs from ``pair_sorted_halfedges``
-    # only in the ``record_ring_degree_and_start`` call.
+    # The twin table and its two defect counts from the edge-key sort, one thread per sorted
+    # position; ``twins_from_mates`` over ``sorted_halfedge_mates``' table gives the same, in two
+    # launches and a mate buffer. Every halfedge is one sorted position, so every entry is written.
+    #
+    # ``out_degrees`` and ``out_ring_starts``, both null descriptors or neither, take each
+    # halfedge's ring degree and walk-start bid as soon as its twin is known
+    # (``record_ring_degree_and_start``, for ``halfedge.vertex_one_rings``): the
+    # ``ring_degrees_and_starts`` pass the walk would otherwise take over the finished table.
     i = wp.int32(wp.tid())
     h, twin = pair_sorted_halfedge(sorted_keys, order, faces, i, out_twins, out_defect_counts)
-    record_ring_degree_and_start(faces, h, twin, out_degrees, out_ring_starts)
+    if out_ring_starts.shape[0] > 0:
+        record_ring_degree_and_start(faces, h, twin, out_degrees, out_ring_starts)
 
 
 @wp.kernel
@@ -617,10 +592,7 @@ def twins_from_mates(
     # The twin table and its two defect counts from a mate table (the sort path's), under
     # ``mate_twin_defect``, the rule ``pair_bucketed_halfedges`` applies to the mates it forms.
     h = wp.int32(wp.tid())
-    twin, defect = mate_twin_defect(faces, mates[h], h)
-    if defect != HALFEDGE_DEFECT_NONE:
-        wp.atomic_add(out_defect_counts, defect, 1)
-    out_twins[h] = twin
+    store_mate_twin(faces, mates[h], h, out_twins, out_defect_counts)
 
 
 @wp.kernel
@@ -1078,3 +1050,164 @@ def rank_long_rings(
             if lane == 0:
                 wp.atomic_add(out_ring_counts, RING_INCOMPLETE, 1)
             close_one_ring(begin, count, degree, lane, lanes, out_halfedges)
+
+
+@wp.struct
+class HalfEdges:
+    """The half-edge records and the per-vertex and per-face entry edges, plus the record count."""
+
+    next: wp.array[wp.int32]
+    prev: wp.array[wp.int32]
+    org: wp.array[wp.int32]
+    left: wp.array[wp.int32]
+    edge_per_vertex: wp.array[wp.int32]
+    edge_per_face: wp.array[wp.int32]
+    count: wp.array[wp.int32]
+
+
+@wp.func
+def set_org_ring(t: HalfEdges, a: wp.int32, v: wp.int32) -> None:
+    # Every edge of ``a``'s origin ring.
+    t.org[a] = v
+    i = t.next[a]
+    while i != a:
+        t.org[i] = v
+        i = t.next[i]
+
+
+@wp.func
+def set_left_ring(t: HalfEdges, a: wp.int32, f: wp.int32) -> None:
+    # Every edge of ``a``'s left ring.
+    t.left[a] = f
+    i = t.prev[edge_twin(a)]
+    while i != a:
+        t.left[i] = f
+        i = t.prev[edge_twin(i)]
+
+
+@wp.func
+def from_same_origin_ring(t: HalfEdges, a: wp.int32, b: wp.int32) -> wp.bool:
+    ia = a
+    ib = b
+    while True:
+        if ia == ib:
+            return True
+        ia = t.next[ia]
+        if ia == a:
+            return False
+        if ia == ib:
+            return True
+        ib = t.prev[ib]
+        if ib == b:
+            return False
+    return False
+
+
+@wp.func
+def from_same_left_ring(t: HalfEdges, a: wp.int32, b: wp.int32) -> wp.bool:
+    ia = a
+    ib = b
+    while True:
+        if ia == ib:
+            return True
+        ia = t.prev[edge_twin(ia)]
+        if ia == a:
+            return False
+        if ia == ib:
+            return True
+        ib = edge_twin(t.next[ib])
+        if ib == b:
+            return False
+    return False
+
+
+@wp.func
+def splice(t: HalfEdges, a: wp.int32, b: wp.int32) -> None:
+    # Merge the origin rings of ``a`` and ``b``, or split them if they
+    # are one, carrying the origin and left ids across.
+    if a == b:
+        return
+    an = t.next[a]
+    bn = t.next[b]
+    ao = t.org[a]
+    bo = t.org[b]
+    al = t.left[a]
+    bl = t.left[b]
+    same_org = ao == bo
+    same_left = al == bl
+    if not same_org:
+        if ao >= 0:
+            set_org_ring(t, b, ao)
+        elif bo >= 0:
+            set_org_ring(t, a, bo)
+    if not same_left:
+        if al >= 0:
+            set_left_ring(t, b, al)
+        elif bl >= 0:
+            set_left_ring(t, a, bl)
+    t.next[a] = bn
+    t.next[b] = an
+    an_prev = t.prev[an]
+    t.prev[an] = t.prev[bn]
+    t.prev[bn] = an_prev
+    if same_org and t.org[b] >= 0:
+        set_org_ring(t, b, -1)
+        v = t.org[a]
+        if not from_same_origin_ring(t, t.edge_per_vertex[v], a):
+            t.edge_per_vertex[v] = a
+    if same_left and t.left[b] >= 0:
+        set_left_ring(t, b, -1)
+        f = t.left[a]
+        if not from_same_left_ring(t, t.edge_per_face[f], a):
+            t.edge_per_face[f] = a
+
+
+@wp.func
+def set_org(t: HalfEdges, a: wp.int32, v: wp.int32) -> None:
+    old = t.org[a]
+    if v == old:
+        return
+    set_org_ring(t, a, v)
+    if old >= 0:
+        t.edge_per_vertex[old] = -1
+    if v >= 0:
+        t.edge_per_vertex[v] = a
+
+
+@wp.func
+def set_left(t: HalfEdges, a: wp.int32, f: wp.int32) -> None:
+    old = t.left[a]
+    if f == old:
+        return
+    set_left_ring(t, a, f)
+    if old >= 0:
+        t.edge_per_face[old] = -1
+    if f >= 0:
+        t.edge_per_face[f] = a
+
+
+@wp.func
+def make_edge(t: HalfEdges) -> wp.int32:
+    h = t.count[0]
+    t.count[0] = h + 2
+    for side in range(2):
+        t.next[h + side] = h + side
+        t.prev[h + side] = h + side
+        t.org[h + side] = -1
+        t.left[h + side] = -1
+    return h
+
+
+@wp.func
+def find_edge(t: HalfEdges, o: wp.int32, d: wp.int32) -> wp.int32:
+    e0 = t.edge_per_vertex[o]
+    if e0 < 0:
+        return -1
+    e = e0
+    while True:
+        if t.org[edge_twin(e)] == d:
+            return e
+        e = t.next[e]
+        if e == e0:
+            return -1
+    return -1

@@ -306,11 +306,9 @@ def chamfer_surface_term_sliced(
     with ``face_id[i] < 0`` (no face within the search radius) contribute nothing. Same lane-free
     sliced reduction as
     [`chamfer_nn_term_sliced`][ordito.kernels.metrics.chamfer_nn_term_sliced], for the same
-    reason, and guarding an empty slice for the same reason too.
+    reason; a slice that owns no element commits zero there too.
     """
     j = wp.int32(wp.tid())
-    if j >= points.shape[0]:
-        return
     total = wp.float32(0.0)
     for idx in range(j, points.shape[0], n_slices):
         f = face_id[idx]

@@ -41,6 +41,17 @@ wp.set_module_options({"enable_backward": False, "fuse_fp": False})
 RETAINED_COLLISION = wp.int32(2147483647)
 
 
+@wp.struct
+class CrossingOperand:
+    """One operand of the edge-face crossing kernels: its faces, positions, normals and mates."""
+
+    faces: wp.array[wp.int32]
+    positions: wp.array[wp.vec3d]
+    vertex_normals: wp.array[wp.vec3d]
+    face_normals: wp.array[wp.vec3d]
+    mates: wp.array[wp.int32]
+
+
 # -- edge-face crossings (``Intersect12``) ---------------------------------------------------------
 
 
@@ -57,16 +68,8 @@ def edge_query_box(
 
 @wp.kernel
 def count_edge_crossings(
-    faces_a: wp.array[wp.int32],
-    pos_a: wp.array[wp.vec3d],
-    vnormal_a: wp.array[wp.vec3d],
-    fnormal_a: wp.array[wp.vec3d],
-    mates_a: wp.array[wp.int32],
-    faces_b: wp.array[wp.int32],
-    pos_b: wp.array[wp.vec3d],
-    vnormal_b: wp.array[wp.vec3d],
-    fnormal_b: wp.array[wp.vec3d],
-    mates_b: wp.array[wp.int32],
+    a: CrossingOperand,
+    b: CrossingOperand,
     bvh_b: wp.uint64,
     pad: wp.float32,
     expand: wp.int32,
@@ -77,27 +80,27 @@ def count_edge_crossings(
     # B's face tree, ``shadow_edge_face`` on each candidate. The box is a superset;
     # ``shadow_edge_face`` decides.
     h = wp.int32(wp.tid())
-    start = faces_a[h]
-    end = faces_a[halfedge_next(h)]
+    start = a.faces[h]
+    end = a.faces[halfedge_next(h)]
     count = wp.int32(0)
     if start < end:
-        lower, upper = edge_query_box(pos_a, start, end, pad)
+        lower, upper = edge_query_box(a.positions, start, end, pad)
         query = wp.bvh_query_aabb(bvh_b, lower, upper)
         face = wp.int32(0)
         while wp.bvh_query_next(query, face):
             x12, _v12 = shadow_edge_face(
                 h,
                 face,
-                faces_a,
-                pos_a,
-                vnormal_a,
-                fnormal_a,
-                mates_a,
-                faces_b,
-                pos_b,
-                vnormal_b,
-                fnormal_b,
-                mates_b,
+                a.faces,
+                a.positions,
+                a.vertex_normals,
+                a.face_normals,
+                a.mates,
+                b.faces,
+                b.positions,
+                b.vertex_normals,
+                b.face_normals,
+                b.mates,
                 expand,
                 forward,
             )
@@ -108,16 +111,8 @@ def count_edge_crossings(
 
 @wp.kernel
 def write_edge_crossings(
-    faces_a: wp.array[wp.int32],
-    pos_a: wp.array[wp.vec3d],
-    vnormal_a: wp.array[wp.vec3d],
-    fnormal_a: wp.array[wp.vec3d],
-    mates_a: wp.array[wp.int32],
-    faces_b: wp.array[wp.int32],
-    pos_b: wp.array[wp.vec3d],
-    vnormal_b: wp.array[wp.vec3d],
-    fnormal_b: wp.array[wp.vec3d],
-    mates_b: wp.array[wp.int32],
+    a: CrossingOperand,
+    b: CrossingOperand,
     bvh_b: wp.uint64,
     pad: wp.float32,
     expand: wp.int32,
@@ -136,9 +131,9 @@ def write_edge_crossings(
     last = offsets[h + 1]
     if first == last:
         return
-    start = faces_a[h]
-    end = faces_a[halfedge_next(h)]
-    lower, upper = edge_query_box(pos_a, start, end, pad)
+    start = a.faces[h]
+    end = a.faces[halfedge_next(h)]
+    lower, upper = edge_query_box(a.positions, start, end, pad)
     query = wp.bvh_query_aabb(bvh_b, lower, upper)
     face = wp.int32(0)
     slot = record_base + first
@@ -148,16 +143,16 @@ def write_edge_crossings(
             x12, v12 = shadow_edge_face(
                 h,
                 face,
-                faces_a,
-                pos_a,
-                vnormal_a,
-                fnormal_a,
-                mates_a,
-                faces_b,
-                pos_b,
-                vnormal_b,
-                fnormal_b,
-                mates_b,
+                a.faces,
+                a.positions,
+                a.vertex_normals,
+                a.face_normals,
+                a.mates,
+                b.faces,
+                b.positions,
+                b.vertex_normals,
+                b.face_normals,
+                b.mates,
                 expand,
                 forward,
             )
@@ -295,16 +290,8 @@ def vertex_inclusions(
 def pair_crossing(
     p: wp.int32,
     n_faces_b: wp.int32,
-    faces_a: wp.array[wp.int32],
-    pos_a: wp.array[wp.vec3d],
-    vnormal_a: wp.array[wp.vec3d],
-    fnormal_a: wp.array[wp.vec3d],
-    mates_a: wp.array[wp.int32],
-    faces_b: wp.array[wp.int32],
-    pos_b: wp.array[wp.vec3d],
-    vnormal_b: wp.array[wp.vec3d],
-    fnormal_b: wp.array[wp.vec3d],
-    mates_b: wp.array[wp.int32],
+    a: CrossingOperand,
+    b: CrossingOperand,
     lowers_b: wp.array[wp.vec3],
     uppers_b: wp.array[wp.vec3],
     pad: wp.float32,
@@ -313,11 +300,11 @@ def pair_crossing(
 ) -> tuple[wp.int32, wp.vec3d]:
     h = p // n_faces_b
     face = p - h * n_faces_b
-    start = faces_a[h]
-    end = faces_a[halfedge_next(h)]
+    start = a.faces[h]
+    end = a.faces[halfedge_next(h)]
     if start >= end:
         return 0, wp.vec3d()
-    lower, upper = edge_query_box(pos_a, start, end, pad)
+    lower, upper = edge_query_box(a.positions, start, end, pad)
     lo = lowers_b[face]
     hi = uppers_b[face]
     if (
@@ -332,16 +319,16 @@ def pair_crossing(
     return shadow_edge_face(
         h,
         face,
-        faces_a,
-        pos_a,
-        vnormal_a,
-        fnormal_a,
-        mates_a,
-        faces_b,
-        pos_b,
-        vnormal_b,
-        fnormal_b,
-        mates_b,
+        a.faces,
+        a.positions,
+        a.vertex_normals,
+        a.face_normals,
+        a.mates,
+        b.faces,
+        b.positions,
+        b.vertex_normals,
+        b.face_normals,
+        b.mates,
         expand,
         forward,
     )
@@ -350,16 +337,8 @@ def pair_crossing(
 @wp.kernel
 def count_pair_crossings(
     n_faces_b: wp.int32,
-    faces_a: wp.array[wp.int32],
-    pos_a: wp.array[wp.vec3d],
-    vnormal_a: wp.array[wp.vec3d],
-    fnormal_a: wp.array[wp.vec3d],
-    mates_a: wp.array[wp.int32],
-    faces_b: wp.array[wp.int32],
-    pos_b: wp.array[wp.vec3d],
-    vnormal_b: wp.array[wp.vec3d],
-    fnormal_b: wp.array[wp.vec3d],
-    mates_b: wp.array[wp.int32],
+    a: CrossingOperand,
+    b: CrossingOperand,
     lowers_b: wp.array[wp.vec3],
     uppers_b: wp.array[wp.vec3],
     pad: wp.float32,
@@ -368,25 +347,7 @@ def count_pair_crossings(
     out_flags: wp.array[wp.int32],
 ) -> None:
     p = wp.int32(wp.tid())
-    x12, _v12 = pair_crossing(
-        p,
-        n_faces_b,
-        faces_a,
-        pos_a,
-        vnormal_a,
-        fnormal_a,
-        mates_a,
-        faces_b,
-        pos_b,
-        vnormal_b,
-        fnormal_b,
-        mates_b,
-        lowers_b,
-        uppers_b,
-        pad,
-        expand,
-        forward,
-    )
+    x12, _v12 = pair_crossing(p, n_faces_b, a, b, lowers_b, uppers_b, pad, expand, forward)
     out_flags[p] = wp.where(x12 != 0, 1, 0)
 
 
@@ -402,16 +363,8 @@ def edge_offsets_from_pairs(
 @wp.kernel
 def write_pair_crossings(
     n_faces_b: wp.int32,
-    faces_a: wp.array[wp.int32],
-    pos_a: wp.array[wp.vec3d],
-    vnormal_a: wp.array[wp.vec3d],
-    fnormal_a: wp.array[wp.vec3d],
-    mates_a: wp.array[wp.int32],
-    faces_b: wp.array[wp.int32],
-    pos_b: wp.array[wp.vec3d],
-    vnormal_b: wp.array[wp.vec3d],
-    fnormal_b: wp.array[wp.vec3d],
-    mates_b: wp.array[wp.int32],
+    a: CrossingOperand,
+    b: CrossingOperand,
     lowers_b: wp.array[wp.vec3],
     uppers_b: wp.array[wp.vec3],
     pad: wp.float32,
@@ -427,25 +380,7 @@ def write_pair_crossings(
     p = wp.int32(wp.tid())
     if pair_offsets[p + 1] == pair_offsets[p]:
         return
-    x12, v12 = pair_crossing(
-        p,
-        n_faces_b,
-        faces_a,
-        pos_a,
-        vnormal_a,
-        fnormal_a,
-        mates_a,
-        faces_b,
-        pos_b,
-        vnormal_b,
-        fnormal_b,
-        mates_b,
-        lowers_b,
-        uppers_b,
-        pad,
-        expand,
-        forward,
-    )
+    x12, v12 = pair_crossing(p, n_faces_b, a, b, lowers_b, uppers_b, pad, expand, forward)
     r = record_base + pair_offsets[p]
     h = p // n_faces_b
     out_edge[r] = h

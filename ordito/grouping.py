@@ -900,15 +900,10 @@ def _unique_sorted_runs(
     # Each run's first position stores its length in the emit pass itself, so the counts take no
     # fill.
     counts = _launch.empty(n_unique, dtype=wp.int32, device=device) if return_counts else None
-    emit = (
-        kernel_grouping.EMIT_SORTED_UNIQUE_COUNTS[dtype]
-        if return_counts
-        else kernel_grouping.EMIT_SORTED_UNIQUE[dtype]
-    )
     _launch.launch(
-        emit,
+        kernel_grouping.EMIT_SORTED_UNIQUE[dtype],
         dim=n,
-        inputs=[keys, order, ranks, unique_values, inverse, counts, first],
+        inputs=[keys, order, ranks, unique_values, inverse, None, counts, first],
         device=device,
     )
     return unique_values, inverse, counts, first

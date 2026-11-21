@@ -1475,9 +1475,9 @@ def _without_boundary_vertices(
         else _launch.clone(region)
     )
     _launch.launch(
-        kernel_boundary.clear_boundary_vertices,
+        kernel_boundary.write_boundary_vertices,
         dim=mates.size,
-        inputs=[mates, faces],
+        inputs=[mates, faces, False],
         outputs=[movable],
         device=vertices.device,
     )
@@ -3213,9 +3213,9 @@ def _dirichlet_state(faces: wp.array[wp.int32], n: int, device: wp.DeviceLike) -
     mates = od.halfedge.halfedge_mates(faces, n)
     fixed_mask = _launch.zeros(n, dtype=wp.bool, device=device)
     _launch.launch(
-        kernel_boundary.set_boundary_vertices,
+        kernel_boundary.write_boundary_vertices,
         dim=mates.size,
-        inputs=[mates, faces],
+        inputs=[mates, faces, True],
         outputs=[fixed_mask],
         device=device,
     )

@@ -18,7 +18,6 @@ from ordito.kernels.halfedge import (
     halfedge_next,
     mate_twin_defect,
 )
-from ordito.kernels.predicates import vector_angle
 from ordito.kernels.reduce import (
     block_chunk,
     block_chunk_1d,
@@ -32,6 +31,7 @@ from ordito.kernels.triangles import (
     face_signed_volume,
     face_vertices,
     known_local_corner,
+    ordered_normal_angle,
     triangle_radius_ratio,
 )
 
@@ -845,7 +845,7 @@ def neighbor_normals(
             g = mates[3 * f + slots[k]] // 3
             other = stored_or_face_normal(vertices, faces, face_normals, g)
             total = total + other
-            angle = wp.where(f < g, vector_angle(normal, other), vector_angle(other, normal))
+            angle = ordered_normal_angle(f, normal, g, other)
             max_angle = wp.max(max_angle, angle)
     return normal, total, max_angle
 

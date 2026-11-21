@@ -1304,22 +1304,18 @@ def _crossing_operands(
 ) -> list[object]:
     """Return the crossing kernels' shared arguments: both operands, the search, the side."""
     search: list[object] = [b.bvh.lowers, b.bvh.uppers] if pairs else [b.bvh.id]
-    return [
-        a.solid.faces,
-        a.solid.positions,
-        a.solid.vertex_normals,
-        a.solid.face_normals,
-        a.mates,
-        b.solid.faces,
-        b.solid.positions,
-        b.solid.vertex_normals,
-        b.solid.face_normals,
-        b.mates,
-        *search,
-        pad,
-        expand,
-        1 if forward else 0,
-    ]
+    return [_crossing_operand(a), _crossing_operand(b), *search, pad, expand, 1 if forward else 0]
+
+
+def _crossing_operand(operand: _Operand) -> StructInstance:
+    """Bundle one operand's arrays the crossing kernels read into their struct argument."""
+    bundle = kernel_boolean.CrossingOperand()
+    bundle.faces = operand.solid.faces
+    bundle.positions = operand.solid.positions
+    bundle.vertex_normals = operand.solid.vertex_normals
+    bundle.face_normals = operand.solid.face_normals
+    bundle.mates = operand.mates
+    return bundle
 
 
 def _write_crossings(

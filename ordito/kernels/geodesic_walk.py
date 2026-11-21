@@ -13,7 +13,12 @@ from ordito.kernels.array import (
     wrap_index,
 )
 from ordito.kernels.halfedge import halfedge_destination
-from ordito.kernels.predicates import project_out_normal, unit_tangent, world_to_tangent
+from ordito.kernels.predicates import (
+    project_out_normal,
+    unit_tangent,
+    vector_angle,
+    world_to_tangent,
+)
 from ordito.kernels.tangent_space import fan_anchor, ring_angle_total
 from ordito.kernels.triangles import (
     face_gradient_given,
@@ -171,7 +176,7 @@ def corner_angle_at(
     apex = vertices[faces[f * 3 + c]]
     near = vertices[faces[f * 3 + (c + 1) % 3]] - apex
     far = vertices[faces[f * 3 + (c + 2) % 3]] - apex
-    return wp.atan2(wp.length(wp.cross(near, far)), wp.dot(near, far))
+    return vector_angle(near, far)
 
 
 @wp.func

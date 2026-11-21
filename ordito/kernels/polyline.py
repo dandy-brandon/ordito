@@ -25,7 +25,6 @@ from ordito.kernels.array import (
     to_vec3d,
 )
 from ordito.kernels.predicates import (
-    closest_point_on_segment,
     newell_term,
     orient2d,
     plane_basis,
@@ -1396,7 +1395,7 @@ def radius_segment_distances(
     unit_normal = wp.normalize(normal)
     a = project_point_to_plane(start, center, unit_normal)
     b = project_point_to_plane(end, center, unit_normal)
-    return wp.length(closest_point_on_segment(a, b, center) - center)
+    return point_to_segment_distance(a, b, center)
 
 
 # Slot layout of ``accumulate_radius_frame``'s buffer: the length-weighted midpoint sums

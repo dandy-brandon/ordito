@@ -26,12 +26,7 @@ from typing import Any
 
 import warp as wp
 
-from ordito.constants import (
-    FLOAT64_INF_CONSTANT,
-    TOLERANCE_MERGE_CONSTANT,
-    TOLERANCE_ZERO_CONSTANT,
-    TOLERANCE_ZERO_F64,
-)
+from ordito.constants import FLOAT64_INF_CONSTANT, TOLERANCE_ZERO_CONSTANT, TOLERANCE_ZERO_F64
 from ordito.kernels import array as kernel_array
 from ordito.kernels.array import (
     cross2,
@@ -70,6 +65,12 @@ def ordered_dot(a: Any, b: Any):
     # ``0 + a[0] * b[0]``, which turns a first term of ``-0.0`` into ``+0.0`` where the port keeps
     # it.
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+@wp.func
+def ordered_length_sq(v: Any):
+    # ``ordered_dot(v, v)``: a squared length in the ports' component order.
+    return ordered_dot(v, v)
 
 
 @wp.func
@@ -895,21 +896,37 @@ def triangles_intersect(
 
 
 @wp.func
-def segment_coordinate(a: wp.vec3, b: wp.vec3, p: wp.vec3) -> wp.float32:
-    """Clamped projection parameter of ``p`` onto segment ``a -> b`` in ``[0, 1]``."""
-    ab = b - a
-    length_sq = wp.max(wp.length_sq(ab), TOLERANCE_MERGE_CONSTANT)
-    return wp.clamp(wp.dot(p - a, ab) / length_sq, 0.0, 1.0)
+def segment_parameter(ap: Any, ab: Any) -> wp.Float:
+    """
+    Clamped projection parameter in ``[0, 1]`` of ``p`` onto segment ``a -> b``.
+
+    Given ``p - a`` and ``b - a``, at the vectors' precision; ``0`` for a segment of zero length.
+    The one parameter every closest-point-on-segment form shares. The guard is an exact zero, not
+    a floor: a floor on the squared length is a length^2 in the caller's units, so a segment
+    shorter than its square root had its parameter pulled toward ``a``.
+    """
+    length_sq = wp.length_sq(ab)
+    zero = type(length_sq)(0.0)
+    t = zero
+    if length_sq > zero:
+        t = wp.clamp(wp.dot(ab, ap) / length_sq, zero, type(length_sq)(1.0))
+    return t
 
 
 @wp.func
-def closest_point_on_segment(a: wp.vec3, b: wp.vec3, p: wp.vec3) -> wp.vec3:
+def segment_coordinate(a: Any, b: Any, p: Any) -> wp.Float:
+    """Clamped projection parameter of ``p`` onto segment ``a -> b`` in ``[0, 1]``."""
+    return segment_parameter(p - a, b - a)
+
+
+@wp.func
+def closest_point_on_segment(a: Any, b: Any, p: Any) -> Any:
     """Point on segment ``a -> b`` closest to ``p``."""
     return wp.lerp(a, b, segment_coordinate(a, b, p))
 
 
 @wp.func
-def point_to_segment_distance(a: wp.vec3, b: wp.vec3, p: wp.vec3) -> wp.float32:
+def point_to_segment_distance(a: Any, b: Any, p: Any) -> wp.Float:
     """Euclidean distance from ``p`` to the closest point on segment ``a -> b``."""
     return wp.length(p - closest_point_on_segment(a, b, p))
 
@@ -921,8 +938,14 @@ def segment_segment_distance_sq(
     # Squared distance between two closed segments (Ericson, *Real-Time Collision Detection*). The
     # clamped two-parameter solve rather than the closest-point pair, because every caller here
     # wants the magnitude and the pair costs two more lerps.
+    #
+    # The tolerances are scale-free: a segment is a point only below ``1e-30`` squared length, and
+    # the segments are parallel only when ``|d0|^2 |d1|^2 sin^2`` is exactly zero (Ericson's own
+    # test). An absolute ``1e-12`` on that length^4 treated every skew pair of millimetre edges as
+    # parallel and returned the distance from ``p0``, an overestimate.
     zero = wp.float64(0.0)
     one = wp.float64(1.0)
+    eps = wp.float64(1e-30)
     d0 = p1 - p0
     d1 = q1 - q0
     r = p0 - q0
@@ -931,18 +954,18 @@ def segment_segment_distance_sq(
     f = wp.dot(d1, r)
     s = zero
     t = zero
-    if a <= TOLERANCE_ZERO_F64 and e <= TOLERANCE_ZERO_F64:
+    if a <= eps and e <= eps:
         return wp.length_sq(r)  # both degenerate to points
-    if a <= TOLERANCE_ZERO_F64:
+    if a <= eps:
         t = wp.clamp(f / e, zero, one)
     else:
         c = wp.dot(d0, r)
-        if e <= TOLERANCE_ZERO_F64:
+        if e <= eps:
             s = wp.clamp(-c / a, zero, one)
         else:
             b = wp.dot(d0, d1)
             denominator = a * e - b * b
-            if denominator > TOLERANCE_ZERO_F64:
+            if denominator != zero:
                 s = wp.clamp((b * f - c * e) / denominator, zero, one)
             t = (b * s + f) / e
             # Clamping ``t`` moves the optimum, so ``s`` is re-solved against the clamped value --
@@ -959,12 +982,8 @@ def segment_segment_distance_sq(
 @wp.func
 def point_segment_offset_d(ap: wp.vec3d, ab: wp.vec3d) -> wp.vec3d:
     # ``p`` minus its closest point on the segment from ``a`` to ``b``, given ``p - a`` and
-    # ``b - a``; a zero-length segment is its point.
-    length_sq = wp.length_sq(ab)
-    t = wp.float64(0.0)
-    if length_sq > wp.float64(0.0):
-        t = wp.clamp(wp.dot(ab, ap) / length_sq, wp.float64(0.0), wp.float64(1.0))
-    return ap - ab * t
+    # ``b - a`` (``segment_parameter``); a zero-length segment is its point.
+    return ap - ab * segment_parameter(ap, ab)
 
 
 @wp.func

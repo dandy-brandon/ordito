@@ -1,5 +1,7 @@
 """Kernels for closing boundary holes and stitching two rims (``ordito.holes``)."""
 
+from typing import Any
+
 import warp as wp
 
 from ordito.constants import FLOAT32_INF_CONSTANT, INT32_MAX_CONSTANT, INT64_MAX
@@ -15,12 +17,24 @@ from ordito.kernels.array import (
 )
 from ordito.kernels.array import wrap_index as _wrap
 from ordito.kernels.boundary import add_rim_edge_length, loop_newell_lanes, loop_perimeter_lanes
-from ordito.kernels.halfedge import halfedge_endpoints, halfedge_next, halfedge_prev
+from ordito.kernels.halfedge import (
+    HalfEdges,
+    find_edge,
+    halfedge_endpoints,
+    halfedge_next,
+    halfedge_prev,
+    make_edge,
+    set_left,
+    set_left_ring,
+    set_org,
+    splice,
+)
 from ordito.kernels.predicates import (
     circumcircle_diameter,
     dihedral_angle,
     newell_term,
     ordered_dot,
+    ordered_length_sq,
     project_out_normal,
     side_lengths,
     triangle_aspect_ratio,
@@ -2829,12 +2843,8 @@ def join_rounds(
 class SerialMesh:
     """The half-edge arrays, positions, region flags, split queue and split log of a refinement."""
 
-    nxt: wp.array[wp.int32]
-    prv: wp.array[wp.int32]
-    org: wp.array[wp.int32]
-    lft: wp.array[wp.int32]
-    edge_per_vertex: wp.array[wp.int32]
-    edge_per_face: wp.array[wp.int32]
+    # The edge records, ``topo.count`` the same buffer as ``counts`` (its slot 0 the half-edges).
+    topo: HalfEdges
     region: wp.array[wp.int32]
     points: wp.array[wp.vec3]
     # counts[0..3]: half-edges, vertices, faces, queued keys; counts[4]: splits done;
@@ -2847,124 +2857,9 @@ class SerialMesh:
 
 
 @wp.func
-def serial_set_org_ring(m: SerialMesh, a: wp.int32, v: wp.int32):
-    i = a
-    while True:
-        m.org[i] = v
-        i = m.nxt[i]
-        if i == a:
-            break
-
-
-@wp.func
-def serial_set_left_ring(m: SerialMesh, a: wp.int32, f: wp.int32):
-    i = a
-    while True:
-        m.lft[i] = f
-        i = m.prv[i ^ 1]
-        if i == a:
-            break
-
-
-@wp.func
-def serial_same_org_ring(m: SerialMesh, a: wp.int32, b: wp.int32) -> wp.bool:
-    i = a
-    while True:
-        if i == b:
-            return True
-        i = m.nxt[i]
-        if i == a:
-            return False
-    return False
-
-
-@wp.func
-def serial_same_left_ring(m: SerialMesh, a: wp.int32, b: wp.int32) -> wp.bool:
-    i = a
-    while True:
-        if i == b:
-            return True
-        i = m.prv[i ^ 1]
-        if i == a:
-            return False
-    return False
-
-
-@wp.func
-def serial_set_org(m: SerialMesh, a: wp.int32, v: wp.int32):
-    old = m.org[a]
-    if v != old:
-        serial_set_org_ring(m, a, v)
-        if old >= 0:
-            m.edge_per_vertex[old] = -1
-        if v >= 0:
-            m.edge_per_vertex[v] = a
-
-
-@wp.func
-def serial_set_left(m: SerialMesh, a: wp.int32, f: wp.int32):
-    old = m.lft[a]
-    if f != old:
-        serial_set_left_ring(m, a, f)
-        if old >= 0:
-            m.edge_per_face[old] = -1
-        if f >= 0:
-            m.edge_per_face[f] = a
-
-
-@wp.func
-def serial_splice(m: SerialMesh, a: wp.int32, b: wp.int32):
-    if a != b:
-        a_next = m.nxt[a]
-        b_next = m.nxt[b]
-        same_org = m.org[a] == m.org[b]
-        same_left = m.lft[a] == m.lft[b]
-        if not same_org:
-            if m.org[a] >= 0:
-                serial_set_org_ring(m, b, m.org[a])
-            elif m.org[b] >= 0:
-                serial_set_org_ring(m, a, m.org[b])
-        if not same_left:
-            if m.lft[a] >= 0:
-                serial_set_left_ring(m, b, m.lft[a])
-            elif m.lft[b] >= 0:
-                serial_set_left_ring(m, a, m.lft[b])
-        m.nxt[a] = b_next
-        m.nxt[b] = a_next
-        pa = m.prv[b_next]
-        m.prv[b_next] = m.prv[a_next]
-        m.prv[a_next] = pa
-        if same_org and m.org[b] >= 0:
-            serial_set_org_ring(m, b, -1)
-            v = m.org[a]
-            if not serial_same_org_ring(m, m.edge_per_vertex[v], a):
-                m.edge_per_vertex[v] = a
-        if same_left and m.lft[b] >= 0:
-            serial_set_left_ring(m, b, -1)
-            f = m.lft[a]
-            if not serial_same_left_ring(m, m.edge_per_face[f], a):
-                m.edge_per_face[f] = a
-
-
-@wp.func
-def serial_make_edge(m: SerialMesh) -> wp.int32:
-    e = m.counts[0]
-    m.nxt[e] = e
-    m.nxt[e + 1] = e + 1
-    m.prv[e] = e
-    m.prv[e + 1] = e + 1
-    m.org[e] = -1
-    m.org[e + 1] = -1
-    m.lft[e] = -1
-    m.lft[e + 1] = -1
-    m.counts[0] = e + 2
-    return e
-
-
-@wp.func
 def serial_add_face(m: SerialMesh) -> wp.int32:
     f = m.counts[2]
-    m.edge_per_face[f] = -1
+    m.topo.edge_per_face[f] = -1
     m.region[f] = 0
     m.counts[2] = f + 1
     return f
@@ -2972,106 +2867,91 @@ def serial_add_face(m: SerialMesh) -> wp.int32:
 
 @wp.func
 def serial_flip_edge(m: SerialMesh, e: wp.int32):
-    lf = m.lft[e]
-    rf = m.lft[e ^ 1]
-    serial_set_left_ring(m, e, -1)
-    serial_set_left_ring(m, e ^ 1, -1)
-    a = m.nxt[e ^ 1] ^ 1
-    b = m.nxt[e] ^ 1
-    serial_splice(m, m.prv[e], e)
-    serial_splice(m, m.prv[e ^ 1], e ^ 1)
-    serial_splice(m, a, e)
-    serial_splice(m, b, e ^ 1)
-    serial_set_left_ring(m, e, lf)
-    serial_set_left_ring(m, e ^ 1, rf)
+    lf = m.topo.left[e]
+    rf = m.topo.left[e ^ 1]
+    set_left_ring(m.topo, e, -1)
+    set_left_ring(m.topo, e ^ 1, -1)
+    a = m.topo.next[e ^ 1] ^ 1
+    b = m.topo.next[e] ^ 1
+    splice(m.topo, m.topo.prev[e], e)
+    splice(m.topo, m.topo.prev[e ^ 1], e ^ 1)
+    splice(m.topo, a, e)
+    splice(m.topo, b, e ^ 1)
+    set_left_ring(m.topo, e, lf)
+    set_left_ring(m.topo, e ^ 1, rf)
     if lf >= 0:
-        m.edge_per_face[lf] = e
+        m.topo.edge_per_face[lf] = e
     if rf >= 0:
-        m.edge_per_face[rf] = e ^ 1
+        m.topo.edge_per_face[rf] = e ^ 1
 
 
 @wp.func
 def serial_split_edge(m: SerialMesh, e: wp.int32, split: wp.int32):
     """Split ``e`` as ``Topology.split_edge`` does, logging the split as row ``split``."""
-    lf = m.lft[e]
+    lf = m.topo.left[e]
     if lf >= 0:
-        serial_set_left_ring(m, e, -1)
-    rf = m.lft[e ^ 1]
+        set_left_ring(m.topo, e, -1)
+    rf = m.topo.left[e ^ 1]
     if rf >= 0:
-        serial_set_left_ring(m, e ^ 1, -1)
-    m.log[split, 0] = m.org[e]
-    m.log[split, 1] = m.org[e ^ 1]
+        set_left_ring(m.topo, e ^ 1, -1)
+    m.log[split, 0] = m.topo.org[e]
+    m.log[split, 1] = m.topo.org[e ^ 1]
     m.log[split, 3] = -1
     m.log[split, 4] = lf
     m.log[split, 5] = -1
     m.log[split, 6] = rf
-    e_prev = m.prv[e]
-    e_next = m.nxt[e]
+    e_prev = m.topo.prev[e]
+    e_next = m.topo.next[e]
     v0 = wp.int32(-1)
     if e_prev != e:
-        serial_splice(m, e_prev, e)
+        splice(m.topo, e_prev, e)
     else:
-        v0 = m.org[e]
-        serial_set_org(m, e, -1)
-    e0 = serial_make_edge(m)
-    serial_splice(m, e, e0 ^ 1)
+        v0 = m.topo.org[e]
+        set_org(m.topo, e, -1)
+    e0 = make_edge(m.topo)
+    splice(m.topo, e, e0 ^ 1)
     if e_prev != e:
-        serial_splice(m, e_prev, e0)
+        splice(m.topo, e_prev, e0)
     else:
-        serial_set_org(m, e0, v0)
+        set_org(m.topo, e0, v0)
     if lf >= 0 and e_next != e:
-        el = serial_make_edge(m)
-        serial_splice(m, e, el)
-        serial_splice(m, e_next ^ 1, el ^ 1)
+        el = make_edge(m.topo)
+        splice(m.topo, e, el)
+        splice(m.topo, e_next ^ 1, el ^ 1)
         face = serial_add_face(m)
-        serial_set_left(m, el, face)
+        set_left(m.topo, el, face)
         m.region[face] = m.region[lf]
         m.log[split, 3] = face
     if rf >= 0 and e_prev != e:
-        er = serial_make_edge(m)
-        serial_splice(m, e0 ^ 1, er)
-        serial_splice(m, m.prv[e_prev ^ 1], er ^ 1)
+        er = make_edge(m.topo)
+        splice(m.topo, e0 ^ 1, er)
+        splice(m.topo, m.topo.prev[e_prev ^ 1], er ^ 1)
         face = serial_add_face(m)
-        serial_set_left(m, er ^ 1, face)
+        set_left(m.topo, er ^ 1, face)
         m.region[face] = m.region[rf]
         m.log[split, 5] = face
-    serial_set_left_ring(m, e, lf)
-    serial_set_left_ring(m, e ^ 1, rf)
+    set_left_ring(m.topo, e, lf)
+    set_left_ring(m.topo, e ^ 1, rf)
     if lf >= 0:
-        m.edge_per_face[lf] = e
+        m.topo.edge_per_face[lf] = e
     if rf >= 0:
-        m.edge_per_face[rf] = e ^ 1
+        m.topo.edge_per_face[rf] = e ^ 1
     vert = m.counts[1]
-    m.edge_per_vertex[vert] = -1
+    m.topo.edge_per_vertex[vert] = -1
     m.counts[1] = vert + 1
-    serial_set_org(m, e, vert)
+    set_org(m.topo, e, vert)
     m.log[split, 2] = vert
 
 
 @wp.func
-def serial_find_edge(m: SerialMesh, o: wp.int32, d: wp.int32) -> wp.int32:
-    e0 = m.edge_per_vertex[o]
-    if e0 < 0:
-        return -1
-    e = e0
-    while True:
-        if m.org[e ^ 1] == d:
-            return e
-        e = m.nxt[e]
-        if e == e0:
-            return -1
-    return -1
-
-
-@wp.func
 def serial_in_region(m: SerialMesh, e: wp.int32) -> wp.bool:
-    f = m.lft[e]
+    f = m.topo.left[e]
     return f >= 0 and m.region[f] != 0
 
 
 @wp.func
 def serial_len_sq(m: SerialMesh, ue: wp.int32) -> wp.float32:
-    d = m.points[m.org[2 * ue]] - m.points[m.org[2 * ue + 1]]
+    d = m.points[m.topo.org[2 * ue]] - m.points[m.topo.org[2 * ue + 1]]
     return d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
 
 
@@ -3142,31 +3022,33 @@ def serial_queue_edge(m: SerialMesh, ue: wp.int32, max_sq: wp.float32):
             serial_heap_push(m, length, ue)
 
 
+# The largest finite ``float32`` and ``float64``: ``serial_aspect_ratio``'s degenerate value at
+# each precision, as the host form returns its dtype's ``finfo.max``.
+_SERIAL_FLT_MAX = 3.4028234663852886e38
+_SERIAL_DBL_MAX = 1.7976931348623157e308
+
+
 @wp.func
-def serial_aspect_ratio(a: wp.vec3, b: wp.vec3, c: wp.vec3) -> wp.float32:
-    """Circumradius over twice the inradius in ``float32``, the host form's order."""
-    u = c - b
-    v = a - c
-    w = b - a
-    bc = wp.sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2])
-    ca = wp.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
-    ab = wp.sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2])
-    half = (bc + ca + ab) / wp.float32(2.0)
-    den = wp.float32(8.0) * (half - bc) * (half - ca) * (half - ab)
-    if den <= wp.float32(0.0):
-        return wp.float32(3.4028234663852886e38)
+def serial_aspect_ratio(a: Any, b: Any, c: Any, degenerate: wp.Float) -> wp.Float:
+    """
+    Circumradius over twice the inradius at the corners' precision, the host form's order.
+
+    ``degenerate`` (the dtype's largest finite value) is returned for a triangle of no area.
+    """
+    bc = wp.sqrt(ordered_length_sq(c - b))
+    ca = wp.sqrt(ordered_length_sq(a - c))
+    ab = wp.sqrt(ordered_length_sq(b - a))
+    half = (bc + ca + ab) / type(bc)(2.0)
+    den = type(bc)(8.0) * (half - bc) * (half - ca) * (half - ab)
+    if den <= type(bc)(0.0):
+        return degenerate
     return bc * ca * ab / den
-
-
-@wp.func
-def serial_cross_f(a: wp.vec3, b: wp.vec3) -> wp.vec3:
-    return wp.vec3(a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
 
 
 @wp.func
 def serial_unfold(b: wp.vec3, c: wp.vec3, d: wp.vec2) -> wp.vec2:
     dot_bc = ordered_dot(b, c)
-    x = serial_cross_f(b, c)
+    x = wp.cross(b, c)
     crs_bc = wp.sqrt(ordered_dot(x, x))
     dd = d[0] * d[0] + d[1] * d[1]
     if dd <= wp.float32(0.0):
@@ -3253,48 +3135,45 @@ def serial_segments_dist_sq(a0: wp.vec3, a1: wp.vec3, b0: wp.vec3, b1: wp.vec3) 
 
 
 @wp.func
-def serial_cross_d(a: wp.vec3d, b: wp.vec3d) -> wp.vec3d:
-    return wp.vec3d(a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+def serial_normalized(v: Any):
+    # ``v`` times the reciprocal of its length, zero when the length is not positive: the host
+    # form's ``_normalized``, at the vector's precision.
+    length = wp.sqrt(ordered_length_sq(v))
+    if length > type(length)(0.0):
+        inv = type(length)(1.0) / length
+        return type(v)(v[0] * inv, v[1] * inv, v[2] * inv)
+    return type(v)()
 
 
 @wp.func
 def serial_normal_d(p: wp.vec3d, q: wp.vec3d, r: wp.vec3d) -> wp.vec3d:
-    v = serial_cross_d(q - p, r - p)
-    length = wp.sqrt(ordered_dot(v, v))
-    if length <= wp.float64(0.0):
-        return wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
-    inv = wp.float64(1.0) / length
-    return wp.vec3d(inv * v[0], inv * v[1], inv * v[2])
+    return serial_normalized(wp.cross(q - p, r - p))
 
 
 @wp.func
 def serial_dihedral_d(left: wp.vec3d, right: wp.vec3d, edge: wp.vec3d) -> wp.float64:
-    length = wp.sqrt(ordered_dot(edge, edge))
-    direction = wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
-    if length > wp.float64(0.0):
-        inv = wp.float64(1.0) / length
-        direction = wp.vec3d(inv * edge[0], inv * edge[1], inv * edge[2])
-    return wp.atan2(ordered_dot(direction, serial_cross_d(left, right)), ordered_dot(left, right))
+    direction = serial_normalized(edge)
+    return wp.atan2(ordered_dot(direction, wp.cross(left, right)), ordered_dot(left, right))
 
 
 @wp.func
-def serial_circum_sq_d(a: wp.vec3d, b: wp.vec3d, c: wp.vec3d) -> wp.float64:
+def serial_circum_sq(a: Any, b: Any, c: Any) -> wp.Float:
+    # The squared circumdiameter at the corners' precision, in the host form's order: a repeated
+    # corner reads the other side's squared length, collinear distinct corners infinity.
     ba = b - a
-    ac = a - c
-    cb = c - b
-    ab_sq = ordered_dot(ba, ba)
-    ca_sq = ordered_dot(ac, ac)
-    bc_sq = ordered_dot(cb, cb)
-    if ab_sq <= wp.float64(0.0):
+    ab_sq = ordered_length_sq(ba)
+    ca_sq = ordered_length_sq(a - c)
+    bc_sq = ordered_length_sq(c - b)
+    zero = type(ab_sq)(0.0)
+    if ab_sq <= zero:
         return ca_sq
-    if ca_sq <= wp.float64(0.0):
+    if ca_sq <= zero:
         return bc_sq
-    if bc_sq <= wp.float64(0.0):
+    if bc_sq <= zero:
         return ab_sq
-    f = serial_cross_d(ba, c - a)
-    f_sq = ordered_dot(f, f)
-    if f_sq <= wp.float64(0.0):
-        return wp.float64(wp.inf)
+    f_sq = ordered_length_sq(wp.cross(ba, c - a))
+    if f_sq <= zero:
+        return type(ab_sq)(wp.inf)
     return ab_sq * ca_sq * bc_sq / f_sq
 
 
@@ -3312,7 +3191,7 @@ def serial_min_circle_sq_d(a: wp.vec3d, b: wp.vec3d, c: wp.vec3d) -> wp.float64:
         return bc_sq
     if ab_sq >= ca_sq + bc_sq:
         return ab_sq
-    f = serial_cross_d(ba, c - a)
+    f = wp.cross(ba, c - a)
     return ab_sq * ca_sq * bc_sq / ordered_dot(f, f)
 
 
@@ -3340,8 +3219,8 @@ def serial_delaunay_quad(
         new_angle = serial_dihedral_d(n_abc, n_acd, a - c)
         if wp.abs(old_angle - new_angle) > max_angle:
             return True
-    m_ac = wp.max(serial_circum_sq_d(a, c, d), serial_circum_sq_d(c, a, b))
-    m_bd = wp.max(serial_circum_sq_d(b, d, a), serial_circum_sq_d(d, b, c))
+    m_ac = wp.max(serial_circum_sq(a, c, d), serial_circum_sq(c, a, b))
+    m_bd = wp.max(serial_circum_sq(b, d, a), serial_circum_sq(d, b, c))
     if not wp.isfinite(m_ac):
         if not wp.isfinite(m_bd):
             ac = a - c
@@ -3356,20 +3235,20 @@ def serial_keeps(m: SerialMesh, edge: wp.int32, max_angle: wp.float32) -> wp.boo
     """Report whether ``edge`` should stay rather than flip (``_serial_mesh._keeps_delaunay``)."""
     if not (serial_in_region(m, edge) and serial_in_region(m, edge ^ 1)):
         return True
-    a = m.org[edge]
-    c = m.org[edge ^ 1]
-    d = m.org[m.prv[edge ^ 1] ^ 1]
-    b = m.org[m.prv[edge] ^ 1]
+    a = m.topo.org[edge]
+    c = m.topo.org[edge ^ 1]
+    d = m.topo.org[m.topo.prev[edge ^ 1] ^ 1]
+    b = m.topo.org[m.topo.prev[edge] ^ 1]
     if b == d:
         return True
     multiple = wp.bool(False)
-    i = m.nxt[edge]
+    i = m.topo.next[edge]
     while i != edge:
-        if m.org[i ^ 1] == c:
+        if m.topo.org[i ^ 1] == c:
             multiple = True
             break
-        i = m.nxt[i]
-    will_be_multiple = serial_find_edge(m, b, d) >= 0
+        i = m.topo.next[i]
+    will_be_multiple = find_edge(m.topo, b, d) >= 0
     if multiple and not will_be_multiple:
         return False
     if (not multiple) and will_be_multiple:
@@ -3385,7 +3264,10 @@ def serial_keeps(m: SerialMesh, edge: wp.int32, max_angle: wp.float32) -> wp.boo
     angle = max_angle
     no_limit = wp.float32(2.0) * wp.float32(3.1415927410125732)
     if angle < no_limit:
-        ratio = wp.max(serial_aspect_ratio(ap, cp, dp), serial_aspect_ratio(cp, ap, bp))
+        ratio = wp.max(
+            serial_aspect_ratio(ap, cp, dp, wp.float32(_SERIAL_FLT_MAX)),
+            serial_aspect_ratio(cp, ap, bp, wp.float32(_SERIAL_FLT_MAX)),
+        )
         if ratio > wp.float32(1000.0):
             angle = no_limit
     return serial_delaunay_quad(
@@ -3401,18 +3283,18 @@ def serial_keeps(m: SerialMesh, edge: wp.int32, max_angle: wp.float32) -> wp.boo
 @wp.func
 def rim_flip_wanted(mesh: SerialMesh, free: wp.array[wp.int32], e: wp.int32) -> wp.bool:
     """Report whether the band flips ``e``: same side both faces, between band vertices, convex."""
-    if mesh.region[mesh.lft[e]] != mesh.region[mesh.lft[e ^ 1]]:
+    if mesh.region[mesh.topo.left[e]] != mesh.region[mesh.topo.left[e ^ 1]]:
         return False
-    c = mesh.org[e ^ 1]
+    c = mesh.topo.org[e ^ 1]
     if free[c] == 0:
         return False
-    b = mesh.org[mesh.prv[e] ^ 1]
-    d = mesh.org[mesh.nxt[e] ^ 1]
+    b = mesh.topo.org[mesh.topo.prev[e] ^ 1]
+    d = mesh.topo.org[mesh.topo.next[e] ^ 1]
     if free[b] != 0 and free[c] != 0:
         return False
-    if serial_find_edge(mesh, d, b) >= 0:
+    if find_edge(mesh.topo, d, b) >= 0:
         return False
-    v = mesh.org[e]
+    v = mesh.topo.org[e]
     return serial_unfold_convex(mesh.points[v], mesh.points[b], mesh.points[c], mesh.points[d])
 
 
@@ -3423,15 +3305,19 @@ def serial_rim_flips(
     """Flip each band vertex's outgoing edges in turn, as the rim smoothing does."""
     for k in range(free_list.shape[0]):
         v = free_list[k]
-        e0 = mesh.edge_per_vertex[v]
+        e0 = mesh.topo.edge_per_vertex[v]
         e = e0
         while True:
-            if mesh.lft[e] >= 0 and mesh.lft[e ^ 1] >= 0 and rim_flip_wanted(mesh, free, e):
-                e0 = mesh.nxt[e]
+            if (
+                mesh.topo.left[e] >= 0
+                and mesh.topo.left[e ^ 1] >= 0
+                and rim_flip_wanted(mesh, free, e)
+            ):
+                e0 = mesh.topo.next[e]
                 serial_flip_edge(mesh, e)
                 e = e0
             else:
-                e = mesh.nxt[e]
+                e = mesh.topo.next[e]
                 if e == e0:
                     break
 
@@ -3462,13 +3348,13 @@ def rim_slide(
     pt = mesh.points[v]
     best = pt
     best_d = wp.float32(3.4028234663852886e38) + wp.float32(0.0)
-    e0 = mesh.edge_per_vertex[v]
+    e0 = mesh.topo.edge_per_vertex[v]
     e = e0
     while True:
-        if mesh.lft[e] >= 0:
+        if mesh.topo.left[e] >= 0:
             v0 = v
-            v1 = mesh.org[e ^ 1]
-            v2 = mesh.org[mesh.nxt[e] ^ 1]
+            v1 = mesh.topo.org[e ^ 1]
+            v2 = mesh.topo.org[mesh.topo.next[e] ^ 1]
             for _i in range(3):
                 val = field[v0]
                 val1 = field[v1]
@@ -3488,7 +3374,7 @@ def rim_slide(
                     v0 = v1
                     v1 = v2
                     v2 = rotated
-        e = mesh.nxt[e]
+        e = mesh.topo.next[e]
         if e == e0:
             break
     out_moved[t] = best
@@ -3501,29 +3387,29 @@ def serial_delete_faces(
     """Delete ``faces`` in order as ``Topology.delete_face`` does, ``keep_edges`` left linked."""
     for k in range(faces.shape[0]):
         f = faces[k]
-        e = mesh.edge_per_face[f]
+        e = mesh.topo.edge_per_face[f]
         if e >= 0:
-            serial_set_left(mesh, e, -1)
+            set_left(mesh.topo, e, -1)
             degree = wp.int32(0)
             i = e
             while True:
                 degree += 1
-                i = mesh.prv[i ^ 1]
+                i = mesh.topo.prev[i ^ 1]
                 if i == e:
                     break
             for _step in range(degree):
                 e1 = e
-                e = mesh.prv[e ^ 1]
-                if mesh.lft[e1 ^ 1] < 0 and keep_edges[e1 >> 1] == 0:
+                e = mesh.topo.prev[e ^ 1]
+                if mesh.topo.left[e1 ^ 1] < 0 and keep_edges[e1 >> 1] == 0:
                     for side in range(2):
                         x = e1 ^ side
-                        if mesh.prv[x] == x:
-                            serial_set_org(mesh, x, -1)
+                        if mesh.topo.prev[x] == x:
+                            set_org(mesh.topo, x, -1)
                         else:
-                            v = mesh.org[x]
-                            if v >= 0 and mesh.edge_per_vertex[v] == x:
-                                mesh.edge_per_vertex[v] = mesh.nxt[x]
-                            serial_splice(mesh, mesh.prv[x], x)
+                            v = mesh.topo.org[x]
+                            if v >= 0 and mesh.topo.edge_per_vertex[v] == x:
+                                mesh.topo.edge_per_vertex[v] = mesh.topo.next[x]
+                            splice(mesh.topo, mesh.topo.prev[x], x)
 
 
 @wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
@@ -3534,7 +3420,7 @@ def serial_subdivide(
     n_undirected = mesh.counts[0] // 2
     for ue in range(n_undirected):
         e = 2 * ue
-        lone = mesh.org[e] < 0 and mesh.org[e + 1] < 0 and mesh.nxt[e] == e
+        lone = mesh.topo.org[e] < 0 and mesh.topo.org[e + 1] < 0 and mesh.topo.next[e] == e
         if not lone:
             serial_queue_edge(mesh, ue, max_sq)
     splits = wp.int32(0)
@@ -3545,31 +3431,31 @@ def serial_subdivide(
         if length != serial_len_sq(mesh, ue):
             continue
         e = 2 * ue
-        o = mesh.points[mesh.org[e]]
-        d = mesh.points[mesh.org[e + 1]]
+        o = mesh.points[mesh.topo.org[e]]
+        d = mesh.points[mesh.topo.org[e + 1]]
         center = wp.float32(0.5) * d + wp.float32(0.5) * o
         serial_split_edge(mesh, e, splits)
-        mesh.points[mesh.org[e]] = center
+        mesh.points[mesh.topo.org[e]] = center
         splits += 1
         # The flip fan around the new vertex.
         e0 = e
         f = e
         while True:
-            test = mesh.prv[f ^ 1]
+            test = mesh.topo.prev[f ^ 1]
             if (
-                mesh.lft[test] >= 0
-                and mesh.lft[test ^ 1] >= 0
+                mesh.topo.left[test] >= 0
+                and mesh.topo.left[test ^ 1] >= 0
                 and not serial_keeps(mesh, test, max_angle)
             ):
                 serial_flip_edge(mesh, test)
             else:
-                f = mesh.nxt[f]
+                f = mesh.topo.next[f]
                 if f == e0:
                     break
         ei = e
         while True:
             serial_queue_edge(mesh, ei >> 1, max_sq)
-            ei = mesh.nxt[ei]
+            ei = mesh.topo.next[ei]
             if ei == e:
                 break
     mesh.counts[4] = splits
@@ -3585,44 +3471,6 @@ SERIAL_METRIC_MIN_AREA = 3
 SERIAL_METRIC_EDGE_LENGTH = 4
 SERIAL_METRIC_COMPLEX_FILL = 5
 _SERIAL_BAD = 1e10
-_SERIAL_DBL_MAX = 1.7976931348623157e308
-
-
-@wp.func
-def serial_lsq_f(v: wp.vec3) -> wp.float32:
-    return v[0] * v[0] + v[1] * v[1] + v[2] * v[2]
-
-
-@wp.func
-def serial_circum_sq_f(a: wp.vec3, b: wp.vec3, c: wp.vec3) -> wp.float32:
-    ab = serial_lsq_f(b - a)
-    ca = serial_lsq_f(a - c)
-    bc = serial_lsq_f(c - b)
-    if ab <= wp.float32(0.0):
-        return ca
-    if ca <= wp.float32(0.0):
-        return bc
-    if bc <= wp.float32(0.0):
-        return ab
-    f = serial_lsq_f(serial_cross_f(b - a, c - a))
-    if f <= wp.float32(0.0):
-        return wp.float32(wp.inf)
-    return ab * ca * bc / f
-
-
-@wp.func
-def serial_aspect_ratio_d(a: wp.vec3d, b: wp.vec3d, c: wp.vec3d) -> wp.float64:
-    u = c - b
-    v = a - c
-    w = b - a
-    bc = wp.sqrt(ordered_dot(u, u))
-    ca = wp.sqrt(ordered_dot(v, v))
-    ab = wp.sqrt(ordered_dot(w, w))
-    half = (bc + ca + ab) / wp.float64(2.0)
-    den = wp.float64(8.0) * (half - bc) * (half - ca) * (half - ab)
-    if den <= wp.float64(0.0):
-        return wp.float64(_SERIAL_DBL_MAX)
-    return bc * ca * ab / den
 
 
 @wp.func
@@ -3640,27 +3488,27 @@ def serial_fill_triangle(
     pb = points[b]
     pc = points[c]
     if metric == SERIAL_METRIC_CIRCUMSCRIBED:
-        return wp.float64(wp.sqrt(serial_circum_sq_f(pa, pb, pc)))
+        return wp.float64(wp.sqrt(serial_circum_sq(pa, pb, pc)))
     if metric == SERIAL_METRIC_COMPLEX_FILL:
-        ratio = wp.float64(serial_aspect_ratio(pa, pb, pc))
-        area = wp.float64(wp.sqrt(serial_lsq_f(serial_cross_f(pb - pa, pc - pa))))
+        ratio = wp.float64(serial_aspect_ratio(pa, pb, pc, wp.float32(_SERIAL_FLT_MAX)))
+        area = wp.float64(wp.sqrt(ordered_length_sq(wp.cross(pb - pa, pc - pa))))
         if ratio > wp.float64(_SERIAL_BAD):
             return wp.float64(_SERIAL_BAD)
         return ratio + wp.float64(1e2) * area * inverse_area
     ad = wp.vec3d(pa)
     bd = wp.vec3d(pb)
     cd = wp.vec3d(pc)
-    face = serial_cross_d(bd - ad, cd - ad)
+    face = wp.cross(bd - ad, cd - ad)
     if metric == SERIAL_METRIC_MIN_AREA:
         return wp.sqrt(ordered_dot(face, face))
-    diameter = wp.sqrt(serial_circum_sq_d(ad, bd, cd))
+    diameter = wp.sqrt(serial_circum_sq(ad, bd, cd))
     dot = normal[0] * face[0] + normal[1] * face[1] + normal[2] * face[2]
     if metric == SERIAL_METRIC_PLANE:
         if dot < wp.float64(0.0):
             return wp.float64(_SERIAL_BAD)
         return diameter
     area_sq = ordered_dot(face, face)
-    ratio = serial_aspect_ratio_d(ad, bd, cd)
+    ratio = serial_aspect_ratio(ad, bd, cd, wp.float64(_SERIAL_DBL_MAX))
     if (
         area_sq == wp.float64(0.0)
         or dot < wp.float64(0.0)
@@ -3684,12 +3532,12 @@ def serial_fill_edge(
     pa = points[a]
     pb = points[b]
     if metric == SERIAL_METRIC_EDGE_LENGTH:
-        return wp.float64(wp.sqrt(serial_lsq_f(pb - pa)))
+        return wp.float64(wp.sqrt(ordered_length_sq(pb - pa)))
     ab = pb - pa
-    norm_a = serial_cross_f(points[rgt] - pb, -ab)
-    norm_c = serial_cross_f(points[lft] - pa, ab)
-    sa = wp.sqrt(serial_lsq_f(norm_a))
-    sc = wp.sqrt(serial_lsq_f(norm_c))
+    norm_a = wp.cross(points[rgt] - pb, -ab)
+    norm_c = wp.cross(points[lft] - pa, ab)
+    sa = wp.sqrt(ordered_length_sq(norm_a))
+    sc = wp.sqrt(ordered_length_sq(norm_c))
     den = sa * sc
     cos = ordered_dot(norm_a, norm_c) / (sa * sc)
     if den == wp.float32(0.0) or cos <= wp.float32(-1.0):
@@ -4009,29 +3857,23 @@ class BandSearch:
 
 
 @wp.func
-def serial_normalized_f(v: wp.vec3) -> wp.vec3:
-    length = wp.sqrt(ordered_dot(v, v))
-    if length > wp.float32(0.0):
-        inv = wp.float32(1.0) / length
-        return wp.vec3(v[0] * inv, v[1] * inv, v[2] * inv)
-    return wp.vec3(wp.float32(0.0), wp.float32(0.0), wp.float32(0.0))
-
-
-@wp.func
 def band_triangle(q: BandSearch, a: wp.int32, b: wp.int32, c: wp.int32) -> wp.float64:
     """Evaluate the band metric's triangle term of ``(a, b, c)`` as ``_serial_mesh`` does."""
     pa = q.points[a]
     pb = q.points[b]
     pc = q.points[c]
     if q.metric == SERIAL_BAND_COMPLEX:
-        return wp.float64((serial_aspect_ratio(pa, pb, pc) - wp.float32(1.0)) * wp.float32(1e-2))
+        return wp.float64(
+            (serial_aspect_ratio(pa, pb, pc, wp.float32(_SERIAL_FLT_MAX)) - wp.float32(1.0))
+            * wp.float32(1e-2)
+        )
     if q.metric == SERIAL_BAND_EDGE_LENGTH:
-        return wp.float64(wp.sqrt(serial_lsq_f(pc - pa)))
+        return wp.float64(wp.sqrt(ordered_length_sq(pc - pa)))
     ad = wp.vec3d(pa)
     ab = wp.vec3d(pb) - ad
     ac = wp.vec3d(pc) - ad
     bc = wp.vec3d(pc) - wp.vec3d(pb)
-    norm = serial_cross_d(ab, ac)
+    norm = wp.cross(ab, ac)
     parallel = wp.abs(q.up[0] * norm[0] + q.up[1] * norm[1] + q.up[2] * norm[2])
     sides = ordered_dot(ab, ab) + ordered_dot(ac, ac) + ordered_dot(bc, bc)
     return (
@@ -4046,8 +3888,8 @@ def band_edge(q: BandSearch, a: wp.int32, b: wp.int32, lft: wp.int32, rgt: wp.in
     """Evaluate the complex band metric's term of edge ``a b`` between ``lft``, ``rgt``."""
     pa = q.points[a]
     ab = q.points[b] - pa
-    norm_l = serial_normalized_f(serial_cross_f(q.points[lft] - pa, ab))
-    norm_r = serial_normalized_f(serial_cross_f(ab, q.points[rgt] - pa))
+    norm_l = serial_normalized(wp.cross(q.points[lft] - pa, ab))
+    norm_r = serial_normalized(wp.cross(ab, q.points[rgt] - pa))
     return (wp.float64(1.0) - wp.float64(ordered_dot(norm_l, norm_r))) * wp.float64(1e4)
 
 

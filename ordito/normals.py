@@ -297,18 +297,14 @@ def vertex_normals(
         # the weight depends on which, because the sine it divides out is already in the cross
         # product's magnitude. Either way one kernel forms the weights in registers and scatters
         # their products, so no normal or weight table is written.
-        if face_normals is None:
-            return accumulate_and_normalize(
-                n_vertices,
-                faces,
-                kernel_normals.SCATTER_MAX_WEIGHTED_NORMALS[_ACCUMULATOR_DTYPE],
-                [vertices, faces],
-            )
-        _require_face_rows(n_faces, face_normals=face_normals)
+        if face_normals is not None:
+            _require_face_rows(n_faces, face_normals=face_normals)
         return accumulate_and_normalize(
             n_vertices,
             faces,
-            kernel_normals.SCATTER_MAX_WEIGHTED_UNIT_NORMALS[_ACCUMULATOR_DTYPE],
+            kernel_normals.SCATTER_MAX_WEIGHTED_NORMALS[face_normals is not None][
+                _ACCUMULATOR_DTYPE
+            ],
             [vertices, faces, face_normals],
         )
 
@@ -318,27 +314,18 @@ def vertex_normals(
     # rest in the thread (a missing table launches as ``None``), bit for bit the table it would
     # otherwise have written first. "area" weights per *face* rather than per corner, so it is
     # the cheaper of the two.
-    if face_normals is None and face_weights is None:
-        derived = (
-            kernel_normals.SCATTER_ANGLE_WEIGHTED_NORMALS
-            if weighting == "angle"
-            else kernel_normals.SCATTER_AREA_WEIGHTED_NORMALS
-        )
-        return accumulate_and_normalize(
-            n_vertices, faces, derived[_ACCUMULATOR_DTYPE], [vertices, faces]
-        )
     key = (face_normals is not None, face_weights is not None)
     if weighting == "angle":
-        supplied = kernel_normals.SCATTER_SUPPLIED_ANGLE_WEIGHTED_NORMALS[key]
+        kernels = kernel_normals.SCATTER_ANGLE_WEIGHTED_NORMALS[key]
         if face_weights is not None:
             face_weights = odt.as_array2d(face_weights, wp.float32)
     else:
-        supplied = kernel_normals.SCATTER_SUPPLIED_AREA_WEIGHTED_NORMALS[key]
+        kernels = kernel_normals.SCATTER_AREA_WEIGHTED_NORMALS[key]
     _require_face_rows(n_faces, face_normals=face_normals, face_weights=face_weights)
     return accumulate_and_normalize(
         n_vertices,
         faces,
-        supplied[_ACCUMULATOR_DTYPE],
+        kernels[_ACCUMULATOR_DTYPE],
         [vertices, faces, face_normals, face_weights],
     )
 

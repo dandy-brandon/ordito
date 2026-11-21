@@ -8,6 +8,7 @@ from ordito.kernels.triangles import (
     face_area,
     face_corner_angles,
     face_normals_and_area,
+    halfedge_corner_angle,
     local_corner,
     triangle_cross,
 )
@@ -99,6 +100,19 @@ def gathered_area_weighted_normal(
 
 
 @wp.func
+def halfedge_angle_weighted_term(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], h: wp.int32
+) -> tuple[wp.vec3d, wp.float32]:
+    # One ring entry of ``gathered_angle_weighted_sums``: the ``float32`` product of face
+    # ``h // 3``'s unit normal and its corner angle at the origin of ``h`` (corner ``h % 3``),
+    # widened, and that angle. Shared with ``tangent_space.long_ring_frame``, which sums the same
+    # terms a hub's ring at a time by the whole block.
+    normal, _area = face_normals_and_area(vertices, faces, h // wp.int32(3))
+    angle = halfedge_corner_angle(vertices, faces, h)
+    return wp.vec3d(normal * angle), angle
+
+
+@wp.func
 def gathered_angle_weighted_normal(
     positions: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -120,26 +134,11 @@ def gathered_angle_weighted_normal(
     total = wp.vec3d()
     for slot in range(offsets[vertex], offsets[vertex + 1]):
         f = vertex_faces[slot]
-        normal, _area = face_normals_and_area(positions, faces, f)
-        a0, a1, a2 = face_corner_angles(positions, faces, f)
-        angle = wp.vec3(a0, a1, a2)[local_corner(faces, f, vertex)]
-        total += wp.vec3d(normal * angle)
+        term, _angle = halfedge_angle_weighted_term(
+            positions, faces, wp.int32(3) * f + local_corner(faces, f, vertex)
+        )
+        total += term
     return normalized_narrowed(total[0], total[1], total[2])
-
-
-@wp.func
-def halfedge_angle_weighted_term(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], h: wp.int32
-) -> tuple[wp.vec3d, wp.float32]:
-    # One ring entry of ``gathered_angle_weighted_sums``: the ``float32`` product of face
-    # ``h // 3``'s unit normal and its corner angle at the origin of ``h`` (corner ``h % 3``),
-    # widened, and that angle. Shared with ``tangent_space.long_ring_frame``, which sums the same
-    # terms a hub's ring at a time by the whole block.
-    f = h // wp.int32(3)
-    normal, _area = face_normals_and_area(vertices, faces, f)
-    a0, a1, a2 = face_corner_angles(vertices, faces, f)
-    angle = wp.vec3(a0, a1, a2)[h % wp.int32(3)]
-    return wp.vec3d(normal * angle), angle
 
 
 @wp.func
@@ -249,23 +248,6 @@ def add_to_face_corners(
 
 
 @wp.kernel
-def scatter_area_weighted_normals(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    sums: GroupSumPass,
-    out_sums: wp.array2d[wp.Float],
-) -> None:
-    # ``vertex_normals(weighting="area")`` with nothing precomputed: the face normal scaled by its
-    # area, scattered onto the corners, with no ``(n_faces,)`` normal, area or product buffer in
-    # between -- the composition ``face_normals_and_areas``, ``wp.map(wp.mul)``, ``scatter_sum_vec``
-    # in one launch, since each of those reads only its own face.
-    f = wp.int32(wp.tid())
-    normal, area = face_normals_and_area(vertices, faces, f)
-    value = normal * area
-    add_to_face_corners(out_sums, sums, faces, f, value, value, value)
-
-
-@wp.kernel
 def scatter_unit_normals(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -274,18 +256,20 @@ def scatter_unit_normals(
 ) -> None:
     # ``normals.mean_vertex_normals`` of the derived face normals: the unit normal
     # ``face_normals_and_areas`` writes, scattered onto the corners as ``scatter_sum_vec`` adds it,
-    # with no ``(n_faces,)`` normal or area table in between. Differs from
-    # ``scatter_area_weighted_normals`` only in not scaling by the area.
+    # with no ``(n_faces,)`` normal or area table in between. Differs from the area-weighted
+    # scatter (``_area_weighted_scatter``) only in not scaling by the area.
     f = wp.int32(wp.tid())
     normal, _area = face_normals_and_area(vertices, faces, f)
     add_to_face_corners(out_sums, sums, faces, f, normal, normal, normal)
 
 
-def _supplied_area_weighted_scatter(normals_supplied: bool, areas_supplied: bool) -> wp.Kernel:
-    # ``scatter_area_weighted_normals`` when the caller supplied one table or both: a supplied table
-    # is read and a missing one (launched as ``None``) formed in the thread, bit for bit the table
-    # the wrapper used to write for it first, and the product formed here rather than by a
-    # ``wp.map(wp.mul)``. The kernels differ only in which quantities they read; ``wp.static``
+def _area_weighted_scatter(normals_supplied: bool, areas_supplied: bool) -> wp.Kernel:
+    # ``vertex_normals(weighting="area")``: each face's unit normal scaled by its area, scattered
+    # onto the corners. A supplied table is read and a missing one (launched as ``None``) formed in
+    # the thread, bit for bit the table ``face_normals_and_areas`` would have written for it, and
+    # the product formed here rather than by a ``wp.map(wp.mul)``; with nothing supplied this is
+    # ``face_normals_and_areas``, ``wp.map(wp.mul)``, ``scatter_sum_vec`` in one launch and no
+    # ``(n_faces,)`` table. The kernels differ only in which quantities they read; ``wp.static``
     # drops the other branch, because a runtime test on an empty table made a kernel the CPU device
     # ran 1.06-1.16x slower (no longer inlined into its per-thread loop), where these run the
     # areas-only case 0.89-0.92x the two launches it replaced.
@@ -300,40 +284,31 @@ def _supplied_area_weighted_scatter(normals_supplied: bool, areas_supplied: bool
         f = wp.int32(wp.tid())
         if wp.static(normals_supplied):
             normal = face_normals[f]
+            if wp.static(areas_supplied):
+                area = face_areas[f]
+            else:
+                area = face_area(vertices, faces, f)
         else:
-            normal, _area = face_normals_and_area(vertices, faces, f)
-        if wp.static(areas_supplied):
-            area = face_areas[f]
-        else:
-            area = face_area(vertices, faces, f)
+            # The derived normal's own area, from the same cross product.
+            normal, derived_area = face_normals_and_area(vertices, faces, f)
+            if wp.static(areas_supplied):
+                area = face_areas[f]
+            else:
+                area = derived_area
         value = normal * area
         add_to_face_corners(out_sums, sums, faces, f, value, value, value)
 
-    name = f"scatter_supplied_area_weighted_normals_{int(normals_supplied)}{int(areas_supplied)}"
+    name = f"scatter_area_weighted_normals_{int(normals_supplied)}{int(areas_supplied)}"
     return wp.kernel(_kernel, name=name)
 
 
-@wp.kernel
-def scatter_angle_weighted_normals(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    sums: GroupSumPass,
-    out_sums: wp.array2d[wp.Float],
-) -> None:
-    # ``vertex_normals(weighting="angle")`` with nothing precomputed: the unit face normal times
-    # each corner's interior angle -- the composition ``face_normals_and_areas``,
-    # ``triangles.angles``, ``scatter_weighted_sum_vec`` in one launch and no per-face table. The
-    # corner angles are ``triangles.face_corner_angles``, the ``angles`` kernel's own body, so the
-    # two cannot drift.
-    f = wp.int32(wp.tid())
-    normal, _area = face_normals_and_area(vertices, faces, f)
-    a0, a1, a2 = face_corner_angles(vertices, faces, f)
-    add_to_face_corners(out_sums, sums, faces, f, normal * a0, normal * a1, normal * a2)
-
-
-def _supplied_angle_weighted_scatter(normals_supplied: bool, angles_supplied: bool) -> wp.Kernel:
-    # ``scatter_angle_weighted_normals`` when the caller supplied one table or both, as
-    # ``_supplied_area_weighted_scatter`` is the area kernel's. With both supplied this is
+def _angle_weighted_scatter(normals_supplied: bool, angles_supplied: bool) -> wp.Kernel:
+    # ``vertex_normals(weighting="angle")``: the unit face normal times each corner's interior
+    # angle, a supplied table read and a missing one formed in the thread, as
+    # ``_area_weighted_scatter`` is the area weighting's. With nothing supplied this is
+    # ``face_normals_and_areas``, ``triangles.angles``, ``scatter_weighted_sum_vec`` in one launch
+    # and no per-face table; the corner angles are ``triangles.face_corner_angles``, the ``angles``
+    # kernel's own body, so the two cannot drift. With both supplied this is
     # ``scatter.scatter_weighted_sum_vec`` over them, product for product.
     def _kernel(
         vertices: wp.array[wp.vec3],
@@ -356,7 +331,7 @@ def _supplied_angle_weighted_scatter(normals_supplied: bool, angles_supplied: bo
             a0, a1, a2 = face_corner_angles(vertices, faces, f)
         add_to_face_corners(out_sums, sums, faces, f, normal * a0, normal * a1, normal * a2)
 
-    name = f"scatter_supplied_angle_weighted_normals_{int(normals_supplied)}{int(angles_supplied)}"
+    name = f"scatter_angle_weighted_normals_{int(normals_supplied)}{int(angles_supplied)}"
     return wp.kernel(_kernel, name=name)
 
 
@@ -383,41 +358,29 @@ def add_max_corner_normals(
     add_to_face_corners(out_sums, sums, faces, f, normal * w0, normal * w1, normal * w2)
 
 
-@wp.kernel
-def scatter_max_weighted_normals(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    sums: GroupSumPass,
-    out_sums: wp.array2d[wp.Float],
-) -> None:
-    # Nothing supplied: the raw cross product is the normal, so no scale is needed and neither a
-    # normal nor a weight table is written.
-    f = wp.int32(wp.tid())
-    add_max_corner_normals(
-        vertices, faces, f, triangle_cross(vertices, faces, f), wp.float32(1.0), sums, out_sums
-    )
+def _max_weighted_scatter(normals_supplied: bool) -> wp.Kernel:
+    # ``vertex_normals(weighting="mwselr")``. With nothing supplied the raw cross product is the
+    # normal, so no scale is needed and neither a normal nor a weight table is written; with
+    # caller-supplied unit normals (``face_normals``, else launched as ``None``) the normal comes
+    # from the table and the cross-product magnitude is restored as the scale. The two differ only
+    # in that, a ``wp.static`` choice.
+    def _kernel(
+        vertices: wp.array[wp.vec3],
+        faces: wp.array[wp.int32],
+        face_normals: wp.array[wp.vec3],
+        sums: GroupSumPass,
+        out_sums: wp.array2d[wp.Float],
+    ) -> None:
+        f = wp.int32(wp.tid())
+        if wp.static(normals_supplied):
+            normal = face_normals[f]
+            scale = wp.length(triangle_cross(vertices, faces, f))
+        else:
+            normal = triangle_cross(vertices, faces, f)
+            scale = wp.float32(1.0)
+        add_max_corner_normals(vertices, faces, f, normal, scale, sums, out_sums)
 
-
-@wp.kernel
-def scatter_max_weighted_unit_normals(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    face_normals: wp.array[wp.vec3],
-    sums: GroupSumPass,
-    out_sums: wp.array2d[wp.Float],
-) -> None:
-    # Caller-supplied unit normals; differs from ``scatter_max_weighted_normals`` only in taking
-    # the normal from the table and restoring the cross-product magnitude as the scale.
-    f = wp.int32(wp.tid())
-    add_max_corner_normals(
-        vertices,
-        faces,
-        f,
-        face_normals[f],
-        wp.length(triangle_cross(vertices, faces, f)),
-        sums,
-        out_sums,
-    )
+    return wp.kernel(_kernel, name=f"scatter_max_weighted_normals_{int(normals_supplied)}")
 
 
 # The accumulator precision ``normals._accumulate_and_normalize`` allocates, and the only one
@@ -428,64 +391,52 @@ def scatter_max_weighted_unit_normals(
 _ACCUMULATOR_DTYPES = (wp.float64,)
 
 NORMALIZE_ACCUMULATED_ROWS: OverloadTable
-SCATTER_AREA_WEIGHTED_NORMALS: OverloadTable
 SCATTER_UNIT_NORMALS: OverloadTable
-SCATTER_ANGLE_WEIGHTED_NORMALS: OverloadTable
-# Keyed by ``(normals supplied, weights supplied)``; ``(False, False)`` is the derived kernel above.
-SCATTER_SUPPLIED_AREA_WEIGHTED_NORMALS: dict[tuple[bool, bool], OverloadTable]
-SCATTER_SUPPLIED_ANGLE_WEIGHTED_NORMALS: dict[tuple[bool, bool], OverloadTable]
-SCATTER_MAX_WEIGHTED_NORMALS: OverloadTable
-SCATTER_MAX_WEIGHTED_UNIT_NORMALS: OverloadTable
+# Keyed by ``(normals supplied, weights supplied)``; ``(False, False)`` derives both.
+SCATTER_AREA_WEIGHTED_NORMALS: dict[tuple[bool, bool], OverloadTable]
+SCATTER_ANGLE_WEIGHTED_NORMALS: dict[tuple[bool, bool], OverloadTable]
+# Keyed by whether unit normals are supplied.
+SCATTER_MAX_WEIGHTED_NORMALS: dict[bool, OverloadTable]
 
 
 def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
-    global NORMALIZE_ACCUMULATED_ROWS, SCATTER_AREA_WEIGHTED_NORMALS, SCATTER_UNIT_NORMALS
-    global SCATTER_ANGLE_WEIGHTED_NORMALS
-    global SCATTER_SUPPLIED_AREA_WEIGHTED_NORMALS, SCATTER_SUPPLIED_ANGLE_WEIGHTED_NORMALS
-    global SCATTER_MAX_WEIGHTED_NORMALS, SCATTER_MAX_WEIGHTED_UNIT_NORMALS
+    global NORMALIZE_ACCUMULATED_ROWS, SCATTER_UNIT_NORMALS
+    global SCATTER_AREA_WEIGHTED_NORMALS, SCATTER_ANGLE_WEIGHTED_NORMALS
+    global SCATTER_MAX_WEIGHTED_NORMALS
     NORMALIZE_ACCUMULATED_ROWS = OverloadTable(
         normalize_accumulated_rows,
         {d: [wp.array2d[d], wp.array[wp.vec3]] for d in _ACCUMULATOR_DTYPES},
     )
     geometry = [wp.array[wp.vec3], wp.array[wp.int32]]
-    SCATTER_AREA_WEIGHTED_NORMALS = OverloadTable(
-        scatter_area_weighted_normals,
-        {d: [*geometry, GroupSumPass, wp.array2d[d]] for d in _ACCUMULATOR_DTYPES},
-    )
     SCATTER_UNIT_NORMALS = OverloadTable(
         scatter_unit_normals,
         {d: [*geometry, GroupSumPass, wp.array2d[d]] for d in _ACCUMULATOR_DTYPES},
     )
-    SCATTER_ANGLE_WEIGHTED_NORMALS = OverloadTable(
-        scatter_angle_weighted_normals,
-        {d: [*geometry, GroupSumPass, wp.array2d[d]] for d in _ACCUMULATOR_DTYPES},
-    )
-    SCATTER_MAX_WEIGHTED_NORMALS = OverloadTable(
-        scatter_max_weighted_normals,
-        {d: [*geometry, GroupSumPass, wp.array2d[d]] for d in _ACCUMULATOR_DTYPES},
-    )
-    SCATTER_MAX_WEIGHTED_UNIT_NORMALS = OverloadTable(
-        scatter_max_weighted_unit_normals,
-        {
-            d: [*geometry, wp.array[wp.vec3], GroupSumPass, wp.array2d[d]]
-            for d in _ACCUMULATOR_DTYPES
-        },
-    )
-    supplied = ((True, False), (False, True), (True, True))
-    SCATTER_SUPPLIED_AREA_WEIGHTED_NORMALS = {
+    SCATTER_MAX_WEIGHTED_NORMALS = {
+        supplied: OverloadTable(
+            _max_weighted_scatter(supplied),
+            {
+                d: [*geometry, wp.array[wp.vec3], GroupSumPass, wp.array2d[d]]
+                for d in _ACCUMULATOR_DTYPES
+            },
+        )
+        for supplied in (False, True)
+    }
+    keys = ((False, False), (True, False), (False, True), (True, True))
+    SCATTER_AREA_WEIGHTED_NORMALS = {
         key: OverloadTable(
-            _supplied_area_weighted_scatter(*key),
+            _area_weighted_scatter(*key),
             {
                 d: [*geometry, wp.array[wp.vec3], wp.array[wp.float32], GroupSumPass, wp.array2d[d]]
                 for d in _ACCUMULATOR_DTYPES
             },
         )
-        for key in supplied
+        for key in keys
     }
-    SCATTER_SUPPLIED_ANGLE_WEIGHTED_NORMALS = {
+    SCATTER_ANGLE_WEIGHTED_NORMALS = {
         key: OverloadTable(
-            _supplied_angle_weighted_scatter(*key),
+            _angle_weighted_scatter(*key),
             {
                 d: [
                     *geometry,
@@ -497,7 +448,7 @@ def _register_overloads() -> None:
                 for d in _ACCUMULATOR_DTYPES
             },
         )
-        for key in supplied
+        for key in keys
     }
 
 

@@ -1040,10 +1040,7 @@ def growth_round_serial(
     # and each launch's threads in turn, as the CPU device runs them. The integer scan is exact,
     # so a running sum is the launched scan. ``lists`` holds the two point lists back to back,
     # the first pass reading the one from ``live_first`` and each pass writing the other.
-    running = wp.int32(0)
-    for f in range(split_count):
-        running += split_flags[f]
-        offsets[f] = running
+    kernel_array.inclusive_scan_serial(split_flags, split_count, offsets)
     for f in range(split_count):
         split_face_at(
             f, split_count, split_flags, offsets, tri, adj, best, child, counters, dirty, flags,

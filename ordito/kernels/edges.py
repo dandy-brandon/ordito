@@ -168,39 +168,26 @@ def emit_sorted_unique_edges(
     ranks: wp.array[wp.int32],
     out_unique_edges: wp.array2d[wp.int32],
     out_inverse: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
 ) -> None:
-    # ``edges.edges_unique``'s two returns from a sort of every corner's edge key: ``ranks`` is the
+    # ``edges.edges_unique``'s returns from a sort of every corner's edge key: ``ranks`` is the
     # inclusive scan of ``grouping.mark_sorted_run_starts``, so ``ranks[i] - 1`` is the
     # ascending-key unique index ``grouping.unique_1d`` assigns the key at sorted position ``i``,
     # and a run's first position writes its row from the corner that sorted there. The run start
     # is re-derived from the keys rather than read from the marks, so the marks may be scanned in
-    # place.
+    # place. ``out_counts``, a null descriptor or not, takes each unique edge's corner count, its
+    # run length (``grouping.store_sorted_run_length``): ``edges_unique``'s ``return_counts``,
+    # where a histogram of the inverse would be a second launch.
     # ``remesh._FlipTopology.edges_unique`` launches it over the flip loop's own sort;
     # ``kernels/remesh.emit_pass_edges`` is the decimation pass's form: live corners and a capacity
     # bound, a chunked exclusive scan in place of the inclusive one, and the incidence and
     # adjacency slots in the same launch.
     i = wp.int32(wp.tid())
-    emit_sorted_unique_edge(faces, sorted_keys, order, ranks, i, out_unique_edges, out_inverse)
-
-
-@wp.kernel
-def emit_sorted_unique_edges_counts(
-    faces: wp.array[wp.int32],
-    sorted_keys: wp.array[wp.uint64],
-    order: wp.array[wp.int32],
-    ranks: wp.array[wp.int32],
-    out_unique_edges: wp.array2d[wp.int32],
-    out_inverse: wp.array[wp.int32],
-    out_counts: wp.array[wp.int32],
-) -> None:
-    # ``emit_sorted_unique_edges`` plus each unique edge's corner count, its run length, into
-    # ``out_counts`` (``grouping.store_sorted_run_length``): ``edges.edges_unique``'s
-    # ``return_counts``, where a histogram of the inverse would be a second launch.
-    i = wp.int32(wp.tid())
     _corner, e, start = emit_sorted_unique_edge(
         faces, sorted_keys, order, ranks, i, out_unique_edges, out_inverse
     )
-    store_sorted_run_length(i, e, start, ranks, out_counts)
+    if out_counts.shape[0] > 0:
+        store_sorted_run_length(i, e, start, ranks, out_counts)
 
 
 @wp.func

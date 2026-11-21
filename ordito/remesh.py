@@ -2307,7 +2307,7 @@ class _FlipTopology:
         _launch.launch(
             kernel_edges.emit_sorted_unique_edges,
             dim=n,
-            inputs=[self._faces, self._keys, self._order, self._ranks, unique_edges, inverse],
+            inputs=[self._faces, self._keys, self._order, self._ranks, unique_edges, inverse, None],
             device=self._device,
         )
         return unique_edges, inverse
@@ -5500,7 +5500,7 @@ def _edges_unique(
     _launch.launch(
         kernel_edges.emit_sorted_unique_edges,
         dim=n,
-        inputs=[faces, key_buffer, order, ranks, unique_edges, inverse],
+        inputs=[faces, key_buffer, order, ranks, unique_edges, inverse, None],
         device=device,
     )
     return unique_edges, inverse

@@ -133,8 +133,7 @@ def draw_surface_sample(
     # prefix sum: the same single ``randf`` draw, scaled to ``total`` rather than the cdf divided
     # by it -- no normalizing pass. The two place a bin edge differently only by float32 rounding,
     # below the prefix scan's own. ``state`` is this function's copy, advanced in place by the
-    # draws. Shared by ``sample_surface`` and ``sample_surface_in_ball``, which differ only in
-    # where the stream starts and in the latter's in-ball flag.
+    # draws.
     fi = wp.lower_bound(cdf, wp.randf(state) * total)
     v0, v1, v2 = face_vertices(vertices, faces, fi)
     uv = wp.sample_triangle(state)
@@ -149,46 +148,30 @@ def sample_surface(
     cdf: wp.array[wp.float32],
     total: wp.float32,
     seed: wp.int32,
-    out_points: wp.array[wp.vec3],
-    out_face_indices: wp.array[wp.int32],
-    out_barycentric: wp.array[wp.vec3],
-) -> None:
-    # A non-empty ``out_barycentric`` receives each point's coordinates in its face, corner order.
-    tid = wp.int32(wp.tid())
-    fi, point, barycentric = draw_surface_sample(
-        vertices, faces, cdf, total, wp.rand_init(seed, tid)
-    )
-    out_face_indices[tid] = fi
-    out_points[tid] = point
-    if out_barycentric.shape[0] > 0:
-        out_barycentric[tid] = barycentric
-
-
-@wp.kernel
-def sample_surface_in_ball(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    cdf: wp.array[wp.float32],
-    total: wp.float32,
-    seed: wp.int32,
     first: wp.int32,
     center: wp.vec3,
     radius_sq: wp.float32,
     out_points: wp.array[wp.vec3],
     out_face_indices: wp.array[wp.int32],
+    out_barycentric: wp.array[wp.vec3],
     out_flags: wp.array[wp.int32],
 ) -> None:
-    # Sample ``first + tid`` of the seeded stream, drawn from the CDF of the faces meeting the ball
-    # (``face_areas_and_vertex_box``), and a 0/1 flag for whether it lies in the closed ball: the
-    # flagged samples are uniform over the surface inside it. Thread ``tid`` of a later round
-    # continues the stream where the earlier rounds stopped, so the rounds are one longer draw.
+    # Sample ``first + tid`` of the seeded stream: thread ``tid`` of a later round continues the
+    # stream where the earlier rounds stopped, so the rounds are one longer draw. A non-empty
+    # ``out_barycentric`` receives each point's coordinates in its face, corner order. A non-empty
+    # ``out_flags`` receives a 0/1 flag for whether the point lies in the closed ball of
+    # ``radius_sq`` about ``center``: drawn from the CDF of the faces meeting the ball
+    # (``face_areas_and_vertex_box``), the flagged samples are uniform over the surface inside it.
     tid = wp.int32(wp.tid())
-    fi, point, _barycentric = draw_surface_sample(
+    fi, point, barycentric = draw_surface_sample(
         vertices, faces, cdf, total, wp.rand_init(seed, first + tid)
     )
     out_face_indices[tid] = fi
     out_points[tid] = point
-    out_flags[tid] = wp.where(wp.length_sq(point - center) <= radius_sq, 1, 0)
+    if out_barycentric.shape[0] > 0:
+        out_barycentric[tid] = barycentric
+    if out_flags.shape[0] > 0:
+        out_flags[tid] = wp.where(wp.length_sq(point - center) <= radius_sq, 1, 0)
 
 
 @wp.kernel(module="unique")

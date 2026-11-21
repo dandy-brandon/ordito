@@ -171,28 +171,24 @@ def ecl_hook_edges(edges: wp.array2d[wp.int32], parents: wp.array[wp.int32]) -> 
 
 
 @wp.kernel
-def ecl_flatten(parents: wp.array[wp.int32], out_labels: wp.array[wp.int32]) -> None:
+def ecl_flatten(
+    parents: wp.array[wp.int32], out_labels: wp.array[wp.int32], out_counts: wp.array[wp.int32]
+) -> None:
     # Not in place (``out_labels`` aliasing ``parents``, one allocation fewer): a concurrent find's
     # path-halving store can land on a node after that node's thread stored its root, putting a
     # stale ancestor back in its label. Measured on CUDA: 31-43 components on a one-component mesh.
-    v = wp.int32(wp.tid())
-    out_labels[v] = find_representative(parents, v)
-
-
-@wp.kernel
-def ecl_flatten_counted(
-    parents: wp.array[wp.int32], out_labels: wp.array[wp.int32], out_counts: wp.array[wp.int32]
-) -> None:
-    # ``ecl_flatten`` with ``scatter.count_occurrences`` over the labels it writes, for the
-    # component-size criteria (``repair.remove_small_components``' face counts, ``points``' cluster
-    # outliers): each node counts itself into its own component as it resolves the label, so the
-    # histogram is not a second launch reading the labels back. Integer atomics through
-    # ``reduce.peer_counted_add``, so the counts are the same in any order. ``out_counts`` arrives
+    #
+    # ``out_counts``, a null descriptor or not, takes ``scatter.count_occurrences`` over the labels
+    # written, for the component-size criteria (``repair.remove_small_components``' face counts,
+    # ``points``' cluster outliers): each node counts itself into its own component as it resolves
+    # the label, so the histogram is not a second launch reading the labels back. Integer atomics
+    # through ``reduce.peer_counted_add``, so the counts are the same in any order. It arrives
     # zeroed.
     v = wp.int32(wp.tid())
     label = find_representative(parents, v)
     out_labels[v] = label
-    peer_counted_add(out_counts, label)
+    if out_counts.shape[0] > 0:
+        peer_counted_add(out_counts, label)
 
 
 @wp.kernel

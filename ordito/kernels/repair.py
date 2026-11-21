@@ -33,7 +33,7 @@ from ordito.kernels.halfedge import (
     mate_twin_defect,
     next_boundary_halfedge,
 )
-from ordito.kernels.predicates import triangle_area_vector, triangle_aspect_ratio, triangle_normal
+from ordito.kernels.predicates import triangle_aspect_ratio, triangle_double_area, triangle_normal
 from ordito.kernels.reduce import GroupSumPass, read_group_sum
 from ordito.kernels.scatter import ARRIVAL_POOL_PEERS, scatter_add
 from ordito.kernels.selection import face_touches_front, mark_submesh_face
@@ -888,7 +888,7 @@ def triangle_small(v0: wp.vec3, v1: wp.vec3, v2: wp.vec3, min_dbl_area: wp.float
     # ``collapse_small_triangles``' test, libigl's: the doubled area below ``min_dbl_area``. Shared
     # by the kernel that collapses the small faces and the remap that counts the ones a collapse
     # pass leaves, so the loop's stopping count is the next pass's own.
-    return wp.length(triangle_area_vector(v0, v1, v2)) < min_dbl_area
+    return triangle_double_area(v0, v1, v2) < min_dbl_area
 
 
 @wp.kernel(enable_backward=False)

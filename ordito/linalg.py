@@ -3840,12 +3840,15 @@ class _BatchedCg:
         self._scaled = self._u
         if self._cycle is None:
             self._inv_diag = _launch.empty(self._n, dtype=dtype, device=device)
+            # The bound's kernel with no bound (``out_bound`` ``None``), at the layout of the
+            # free-free extraction's row kernels.
+            rows = int(kernel_linalg.INTERIOR_ROWS_PER_BLOCK)
             _launch.launch_tiled(
-                kernel_linalg.JACOBI_INVERSE_DIAGONAL[dtype],
+                kernel_linalg.JACOBI_DOMINANCE_BOUND[dtype],
                 dim=_interior_row_blocks(self._n),
-                inputs=[matrix.offsets, matrix.columns, matrix.values],
-                outputs=[self._inv_diag],
-                block_dim=int(kernel_linalg.INTERIOR_ROWS_PER_BLOCK),
+                inputs=[matrix.offsets, matrix.columns, matrix.values, wp.int32(1), wp.int32(rows)],
+                outputs=[self._inv_diag, None],
+                block_dim=rows,
                 device=device,
             )
         elif isinstance(self._cycle, _JacobiChebyshevApply):
@@ -6101,7 +6104,7 @@ def _dominance_bound(
     if n_rows > 0:
         rows_per_block, blocks = kernel_reduce.spanned_blocks_1d(n_rows, device)
         _launch.launch_tiled(
-            kernel_linalg.jacobi_dominance_bound,
+            kernel_linalg.JACOBI_DOMINANCE_BOUND[wp.float64],
             dim=[blocks],
             # ``nnz`` is a stale capacity, but ``offsets``/``columns``/``values`` are indexed
             # through the row offsets here rather than sliced by it, so no count is read off the
@@ -6412,7 +6415,7 @@ def _multigrid_hierarchy(
         # ``omega D^-1``, the damping already folded in, so the smoother and the prolongator read
         # one scaled diagonal and no level reads its spectral radius back to the host.
         level.inverse_diagonal = _multigrid_damped_diagonal(
-            operator, aggregation.diagonal, aggregation.power, aggregation.spare, seed
+            operator, aggregation.diagonal, aggregation.power, aggregation.spare
         )
         level.prolongator = _multigrid_prolongator(
             operator,
@@ -6605,7 +6608,6 @@ def _multigrid_damped_diagonal(
     diagonal: wp.array[wp.float64],
     first_step: wp.array[wp.float64],
     spare: wp.array[wp.float64],
-    seed: int,
 ) -> wp.array[wp.float64]:
     """
     ``omega D^-1``, with ``omega = 4/3 / rho`` and ``rho`` the spectral radius of ``D^-1 A``.
@@ -6638,15 +6640,14 @@ def _multigrid_damped_diagonal(
             kernel_mg.power_step,
             dim=_mg_row_blocks(n),
             inputs=[
-                wp.int32(seed),
-                wp.int32(0),
                 diagonal,
                 matrix.offsets,
                 matrix.columns,
                 matrix.values,
                 x,
+                wp.int32(kernel_mg.MG_ROWS_PER_BLOCK),
             ],
-            outputs=[y],
+            outputs=[y, None],
             block_dim=int(kernel_mg.MG_ROWS_PER_BLOCK),
             device=device,
         )
@@ -6660,17 +6661,15 @@ def _multigrid_damped_diagonal(
     blocks = -(-n // int(kernel_mg.POWER_ROWS_PER_BLOCK))
     partials = _launch.empty(blocks, dtype=wp.float64, device=device)
     _launch.launch_tiled(
-        kernel_mg.power_step_partials,
+        kernel_mg.power_step,
         dim=[blocks],
         inputs=[
-            wp.int32(seed),
-            # Never the first step: ``_MULTIGRID_POWER_STEPS`` is well above one.
-            wp.int32(0),
             diagonal,
             matrix.offsets,
             matrix.columns,
             matrix.values,
             x,
+            wp.int32(kernel_mg.POWER_ROWS_PER_BLOCK),
         ],
         outputs=[y, partials],
         block_dim=TILE_1D,

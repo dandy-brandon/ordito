@@ -485,47 +485,19 @@ def vertex_tangent_basis(
     return basis_x, wp.cross(normal, basis_x)
 
 
-def _vertex_tangent_frames(name: str, short_only: bool) -> wp.Kernel:
-    # The frame around a caller's normals; ``_vertex_tangent_frames_gathered`` forms the normal
-    # over the ring first. ``short_only`` (the ``_short`` kernels) skips a ring of
-    # ``halfedge.ring_long_from`` halfedges or more, which ``vertex_one_rings`` listed and
-    # ``vertex_tangent_frames_long`` lays out a block a ring; the wrapper takes it only when that
-    # list is known to be nonempty, so a mesh without a long ring runs the plain kernel and pays no
-    # argument or test for it.
-    def _kernel(
-        vertices: wp.array[wp.vec3],
-        faces: wp.array[wp.int32],
-        normals: wp.array[wp.vec3],
-        ring_offsets: wp.array[wp.int32],
-        ring_halfedges: wp.array[wp.int32],
-        is_boundary: wp.array[wp.bool],
-        out_basis_x: wp.array[wp.vec3],
-        out_basis_y: wp.array[wp.vec3],
-    ) -> None:
-        v = wp.int32(wp.tid())
-        if wp.static(short_only):
-            if ring_offsets[v + 1] - ring_offsets[v] >= ring_long_from(ring_halfedges.shape[0]):
-                return
-        total = ring_angle_total(vertices, faces, ring_offsets, ring_halfedges, v)
-        basis_x, basis_y = vertex_tangent_basis(
-            vertices, faces, normals[v], ring_offsets, ring_halfedges, is_boundary[v], v, total
-        )
-        out_basis_x[v] = basis_x
-        out_basis_y[v] = basis_y
-
-    return wp.kernel(_kernel, name=name)
-
-
-vertex_tangent_frames = _vertex_tangent_frames("vertex_tangent_frames", False)
-vertex_tangent_frames_short = _vertex_tangent_frames("vertex_tangent_frames_short", True)
-
-
-def _vertex_tangent_frames_gathered(name: str, short_only: bool) -> wp.Kernel:
-    # ``_vertex_tangent_frames`` with the angle-weighted normal gathered over the ring the frame
-    # walks (``normals.gathered_angle_weighted_sums``), in place of a ``float64`` scatter, its
-    # zeroed accumulator and a launch; the same walk totals the corner angles the frame's scale
-    # reads, which the caller-normal kernel walks for alone. The normal written is
-    # ``vertex_normals``' up to the order its ``float64`` sum is taken in. ``short_only`` as there.
+def _vertex_tangent_frames(name: str, short_only: bool, gather: bool) -> wp.Kernel:
+    # The frame around a caller's ``normals``, or with ``gather`` around the angle-weighted normal
+    # gathered over the ring the frame walks (``normals.gathered_angle_weighted_sums``, written to
+    # ``out_normals``; ``normals`` is then unread), in place of a ``float64`` scatter, its zeroed
+    # accumulator and a launch; the same walk totals the corner angles the frame's scale reads,
+    # which the caller-normal kernel walks for alone. The normal written is ``vertex_normals``' up
+    # to the order its ``float64`` sum is taken in. The two differ only in where the normal comes
+    # from, a ``wp.static`` choice, so each generated kernel is the code it was. ``short_only``
+    # (the ``_short`` kernels) skips a ring of ``halfedge.ring_long_from`` halfedges or more, which
+    # ``vertex_one_rings`` listed and ``vertex_tangent_frames_long`` lays out a block a ring; the
+    # wrapper takes it only when that list is known to be nonempty, so a mesh without a long ring
+    # runs the plain kernel and pays no argument or test for it. The signature is
+    # ``vertex_tangent_frames_long``'s, which takes the same choice at run time.
     #
     # The long rings' block is a kernel of its own because block code inlined here costs every
     # ordinary walk: ``tangent_angle_rows``' block deferral built into both frame kernels
@@ -535,14 +507,15 @@ def _vertex_tangent_frames_gathered(name: str, short_only: bool) -> wp.Kernel:
     # cost 1.2-1.7x.
     #
     # Declined 2026-11-11 (``float32`` work, unlike ``park_corner_angles``' ``float64``): a face
-    # pass parking each face's normal and corner angles for the walk to read
-    # (``triangles.face_normals_and_corner_angles``, byte-identical frames) took this kernel and
+    # pass parking each face's normal and corner angles for the gathered walk to read
+    # (``triangles.face_normals_and_corner_angles``, byte-identical frames) took the kernel and
     # the pass together to 0.87x on dragon and 0.82x on happy_buddha (4-7 % of a call), but cost
     # ``sphere_small`` / ``sphere_med`` about 1.1x their calls (a launch, before two allocations).
     # Narrower blocks: 64 lanes 0.86x on ``sphere_small``'s kernel, 1.05x on dragon's.
     def _kernel(
         vertices: wp.array[wp.vec3],
         faces: wp.array[wp.int32],
+        normals: wp.array[wp.vec3],
         ring_offsets: wp.array[wp.int32],
         ring_halfedges: wp.array[wp.int32],
         is_boundary: wp.array[wp.bool],
@@ -554,9 +527,15 @@ def _vertex_tangent_frames_gathered(name: str, short_only: bool) -> wp.Kernel:
         if wp.static(short_only):
             if ring_offsets[v + 1] - ring_offsets[v] >= ring_long_from(ring_halfedges.shape[0]):
                 return
-        sums, total = gathered_angle_weighted_sums(vertices, faces, ring_offsets, ring_halfedges, v)
-        normal = normalized_narrowed(sums[0], sums[1], sums[2])
-        out_normals[v] = normal
+        if wp.static(gather):
+            sums, total = gathered_angle_weighted_sums(
+                vertices, faces, ring_offsets, ring_halfedges, v
+            )
+            normal = normalized_narrowed(sums[0], sums[1], sums[2])
+            out_normals[v] = normal
+        else:
+            total = ring_angle_total(vertices, faces, ring_offsets, ring_halfedges, v)
+            normal = normals[v]
         basis_x, basis_y = vertex_tangent_basis(
             vertices, faces, normal, ring_offsets, ring_halfedges, is_boundary[v], v, total
         )
@@ -566,11 +545,13 @@ def _vertex_tangent_frames_gathered(name: str, short_only: bool) -> wp.Kernel:
     return wp.kernel(_kernel, name=name)
 
 
-vertex_tangent_frames_gathered = _vertex_tangent_frames_gathered(
-    "vertex_tangent_frames_gathered", False
+vertex_tangent_frames = _vertex_tangent_frames("vertex_tangent_frames", False, False)
+vertex_tangent_frames_short = _vertex_tangent_frames("vertex_tangent_frames_short", True, False)
+vertex_tangent_frames_gathered = _vertex_tangent_frames(
+    "vertex_tangent_frames_gathered", False, True
 )
-vertex_tangent_frames_gathered_short = _vertex_tangent_frames_gathered(
-    "vertex_tangent_frames_gathered_short", True
+vertex_tangent_frames_gathered_short = _vertex_tangent_frames(
+    "vertex_tangent_frames_gathered_short", True, True
 )
 
 # Lanes of a ``vertex_tangent_frames_long`` block, which lays out one long ring: ``fan_hub``'s two

@@ -2321,7 +2321,7 @@ def _remove_small_components(
             wp.int32, [n_faces, n_faces, n_faces + vertices.size], device, zeroed=True
         )
         _launch.launch(
-            kernel_connected_components.ecl_flatten_counted,
+            kernel_connected_components.ecl_flatten,
             dim=n_faces,
             inputs=[parents, labels, counts],
             device=device,

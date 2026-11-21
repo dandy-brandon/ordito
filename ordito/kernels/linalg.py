@@ -864,25 +864,31 @@ def jacobi_row_block(
 def jacobi_dominance_bound(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
-    values: wp.array[wp.float64],
+    values: wp.array[wp.Float],
     write_inverse: wp.int32,
     rows_per_block: wp.int32,
-    out_inverse_diagonal: wp.array[wp.float64],
-    out_bound: wp.array[wp.float64],
+    out_inverse_diagonal: wp.array[wp.Float],
+    out_bound: wp.array[wp.Float],
 ) -> None:
     # The maximum over the rows of a CSR operator of the Gershgorin ratio
     # ``sum_{j != i} |A_ij| / A_ii``, and with ``write_inverse`` set each row's Jacobi inverse
     # diagonal (``array.inverse_or_one``), from one walk of each row (``jacobi_row``); unset,
-    # ``out_inverse_diagonal`` is never touched and may be ``None``. The maximum is what
+    # ``out_inverse_diagonal`` is never touched and may be ``None``, and with a zero-length
+    # ``out_bound`` (``None``) no maximum is formed or committed. The maximum is what
     # ``linalg._offdiagonal_dominance`` reads to decide whether a system reaches a multigrid
     # hierarchy -- see ``linalg.CG_PROBE_ITERATIONS`` for the 29 systems behind that gate -- and
-    # what the Jacobi-Chebyshev interval is fitted to, which also wants the scaling.
+    # what the Jacobi-Chebyshev interval is fitted to, which also wants the scaling. The inverse
+    # diagonal alone is the Jacobi conjugate gradient's scaling (``linalg._BatchedCg``), in one
+    # launch where ``wps.bsr_get_diag`` followed by a ``wp.map`` of ``array.inverse_or_one`` is
+    # two and an intermediate buffer; there the ratio is dead code and compiles away.
     #
-    # Lanes stride the block's ``rows_per_block`` rows (``reduce.spanned_blocks_1d``: a row is a
-    # walk, so on CUDA a block spans as few as fill the device) by ``wp.block_dim()`` (right on the
-    # CPU device too, where a block is one lane), and lane 0 commits the block's maximum with one
-    # ``atomic_max`` into ``out_bound[0]``, which the caller seeds below any ratio. A maximum is
-    # exact in any order, so the bound repeats bit for bit, and no per-row ratio is stored.
+    # Lanes stride the block's ``rows_per_block`` rows by ``wp.block_dim()`` (right on the CPU
+    # device too, where a block is one lane): the caller picks the layout -- the bound's launch
+    # spans rows over ``TILE_1D`` lanes (``reduce.spanned_blocks_1d``: a row is a walk, so on CUDA
+    # a block spans as few as fill the device), the Jacobi scaling's takes
+    # ``INTERIOR_ROWS_PER_BLOCK`` rows at as many lanes. Lane 0 commits the block's maximum with
+    # one ``atomic_max`` into ``out_bound[0]``, which the caller seeds below any ratio. A maximum
+    # is exact in any order, so the bound repeats bit for bit, and no per-row ratio is stored.
     #
     # A row whose diagonal is *absent or zero* is a free vertex no face refers to: the least-squares
     # system does not constrain it, so it contributes no row to the operator's *conditioning* and
@@ -901,7 +907,8 @@ def jacobi_dominance_bound(
     base, count = block_chunk(offsets.shape[0] - 1, block, rows_per_block)
     if count <= 0:
         return
-    local = wp.float64(-1.0e308)
+    # Below any ratio (they are never negative) and finite at both precisions.
+    local = values.dtype(-1.0e38)
     found = wp.int32(0)
     for k in range(lane, count, wp.block_dim()):
         i = base + k
@@ -921,43 +928,11 @@ def jacobi_dominance_bound(
                     if write_inverse != 0:
                         out_inverse_diagonal[i] = inverse
                     local = wp.max(local, ratio)
+    if out_bound.shape[0] == 0:
+        return
     bound = block_max(local)
     if lane == 0:
         wp.atomic_max(out_bound, 0, bound)
-
-
-@wp.kernel
-def jacobi_inverse_diagonal(
-    offsets: wp.array[wp.int32],
-    columns: wp.array[wp.int32],
-    values: wp.array[wp.Float],
-    out_inverse_diagonal: wp.array[wp.Float],
-) -> None:
-    # The Jacobi inverse diagonal of a scalar CSR operator in one launch, where
-    # ``wps.bsr_get_diag`` followed by a ``wp.map`` of ``array.inverse_or_one`` is two and an
-    # intermediate buffer. The row's ratio is dead code here and compiles away. Launch tiled over
-    # ``INTERIOR_ROWS_PER_BLOCK`` rows a block; a long row (``csr_row_long``) is left to the whole
-    # block after (``jacobi_row_block``), so a block without one pays one reduction.
-    blk, lane = wp.tid()
-    first, rows = block_chunk(offsets.shape[0] - 1, blk, INTERIOR_ROWS_PER_BLOCK)
-    if rows <= 0:
-        return
-    found = wp.int32(0)
-    for r in range(lane, rows, wp.block_dim()):
-        i = first + r
-        if csr_row_long(offsets, i):
-            found = 1
-            continue
-        inverse, _ratio = jacobi_row(offsets, columns, values, i)
-        out_inverse_diagonal[i] = inverse
-    if block_sum(found) == 0:
-        return
-    for r in range(rows):
-        i = first + r
-        if csr_row_long(offsets, i):
-            inverse, _ratio = jacobi_row_block(offsets, columns, values, i, lane)
-            if lane == 0:
-                out_inverse_diagonal[i] = inverse
 
 
 @wp.func
@@ -1000,7 +975,7 @@ def refresh_pooled_row(
     # from its operator when it was built -- the Jacobi inverse diagonal (``derive >= 1``) -- and
     # the row's Gershgorin ratio, which the Jacobi-Chebyshev interval is refitted to
     # (``derive == 2``; ``0`` otherwise). Each is the arithmetic of the kernel that built it
-    # (``jacobi_inverse_diagonal`` / ``jacobi_dominance_bound``), so a refreshed state holds what a
+    # (``jacobi_dominance_bound``), so a refreshed state holds what a
     # new one would.
     ratio = wp.float64(0.0)
     if derive != 0:
@@ -1707,7 +1682,7 @@ SHIFTED_SYSTEM_VALUES = {d: _shifted_system_values_kernel(d) for d in (wp.float6
 
 def _register_overloads() -> None:
     """Instantiate the generic solver kernels at the precisions ``_BatchedCg`` solves in."""
-    global JACOBI_INVERSE_DIAGONAL, CSR_LONG_ROWS_MATVEC
+    global JACOBI_DOMINANCE_BOUND, CSR_LONG_ROWS_MATVEC
     # Keyed ``(vector dtype, value dtype)`` like ``conjugate_gradient.CG_MATVEC_DOTS``.
     CSR_LONG_ROWS_MATVEC = OverloadTable(
         csr_long_rows_matvec,
@@ -1722,10 +1697,11 @@ def _register_overloads() -> None:
             )
         },
     )
-    JACOBI_INVERSE_DIAGONAL = OverloadTable(
-        jacobi_inverse_diagonal,
+    JACOBI_DOMINANCE_BOUND = OverloadTable(
+        jacobi_dominance_bound,
         {
-            d: [wp.array[wp.int32], wp.array[wp.int32], wp.array[d], wp.array[d]]
+            d: [wp.array[wp.int32], wp.array[wp.int32], wp.array[d], wp.int32, wp.int32]
+            + [wp.array[d]] * 2
             for d in (wp.float32, wp.float64)
         },
     )
@@ -1768,6 +1744,7 @@ def register_bsr_mv_overloads(tile_size: int) -> None:
         register_warp_overload(make_bsr_mv_tiled_kernel(tile_size), scalar)
 
 
+JACOBI_DOMINANCE_BOUND: OverloadTable
 CSR_LONG_ROWS_MATVEC: OverloadTable
 _register_overloads()
 

@@ -230,42 +230,21 @@ def mark_sorted_boundary_vertices(
 
 
 @wp.kernel
-def clear_boundary_vertices(
-    mates: wp.array[wp.int32], faces: wp.array[wp.int32], out_mask: wp.array[wp.bool]
+def write_boundary_vertices(
+    mates: wp.array[wp.int32],
+    faces: wp.array[wp.int32],
+    value: wp.bool,
+    out_mask: wp.array[wp.bool],
 ) -> None:
-    # ``mark_boundary_vertices``' endpoints cleared in a vertex mask instead: the mask less the
-    # boundary vertices, with no scan, no index list and no readback.
+    # ``mark_boundary_vertices``' endpoints written as ``value`` into a vertex mask, with no scan,
+    # no index list and no readback: ``False`` clears them from a movable mask, ``True`` sets them
+    # in a ``False``-filled one (the fixed set ``smoothing._dirichlet_state`` pins). A closed mesh
+    # pays one launch that writes nothing.
     h = wp.int32(wp.tid())
     a, b = boundary_halfedge_endpoints(mates, faces, h)
     if a >= 0:
-        out_mask[a] = False
-        out_mask[b] = False
-
-
-@wp.kernel
-def set_boundary_vertices(
-    mates: wp.array[wp.int32], faces: wp.array[wp.int32], out_mask: wp.array[wp.bool]
-) -> None:
-    # ``clear_boundary_vertices``' dual: the boundary vertices set in a ``False``-filled mask, the
-    # fixed set ``smoothing._dirichlet_state`` pins, with no scan, no index list and no readback.
-    h = wp.int32(wp.tid())
-    a, b = boundary_halfedge_endpoints(mates, faces, h)
-    if a >= 0:
-        out_mask[a] = True
-        out_mask[b] = True
-
-
-@wp.kernel
-def zero_at_boundary_vertices(
-    mates: wp.array[wp.int32], faces: wp.array[wp.int32], out_values: wp.array[wp.float64]
-) -> None:
-    # ``out_values`` zeroed in place at both endpoints of every boundary halfedge
-    # (``energies._zero_at_boundary``); a closed mesh pays one launch that writes nothing.
-    h = wp.int32(wp.tid())
-    a, b = boundary_halfedge_endpoints(mates, faces, h)
-    if a >= 0:
-        out_values[a] = wp.float64(0.0)
-        out_values[b] = wp.float64(0.0)
+        out_mask[a] = value
+        out_mask[b] = value
 
 
 @wp.func

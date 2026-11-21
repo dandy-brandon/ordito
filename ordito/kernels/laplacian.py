@@ -160,6 +160,21 @@ def store_half_cotangents(
 
 
 @wp.func
+def store_half_cotangents_float64(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    f: wp.int32,
+    out_cot: wp.array2d[wp.float64],
+) -> None:
+    # Face ``f``'s row of the half-cotangent table formed in ``float64``
+    # (``face_half_cotangents_float64``), for the systems whose rows cancel the weights.
+    c0, c1, c2 = face_half_cotangents_float64(vertices, faces, f)
+    out_cot[f, 0] = c0
+    out_cot[f, 1] = c1
+    out_cot[f, 2] = c2
+
+
+@wp.func
 def add_face_area_exact(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],

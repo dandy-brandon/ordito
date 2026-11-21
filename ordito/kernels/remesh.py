@@ -26,6 +26,7 @@ from ordito.kernels.array import (
     declare_block_dims,
     device_is_cpu,
     divide_if_positive,
+    inclusive_scan_serial,
     launched_set_bit,
     lowbias32,
     next_row_entry,
@@ -49,7 +50,7 @@ from ordito.kernels.array import (
     unpack_edge_key,
     unpack_nearest_index,
 )
-from ordito.kernels.edges import emit_sorted_unique_edge
+from ordito.kernels.edges import edge_row_length, emit_sorted_unique_edge
 from ordito.kernels.grouping import (
     hash_find,
     hash_find_or_insert,
@@ -71,9 +72,9 @@ from ordito.kernels.predicates import (
     ordered_dot,
     orient2d,
     project_out_normal,
+    segment_segment_distance_sq,
     triangle_aspect_ratio,
     triangle_normal,
-    vector_angle,
 )
 from ordito.kernels.reduce import (
     GROUP_SUM_NONFINITE,
@@ -100,8 +101,8 @@ from ordito.kernels.scatter import (
 )
 from ordito.kernels.triangles import (
     corner_triple,
-    face_normal,
     face_normals_and_area,
+    face_pair_angle,
     face_vertices_vec3d,
     local_corner,
     triangle_area_max_side,
@@ -656,15 +657,6 @@ def extend_edge_mean_sizing(
 
 
 @wp.func
-def unique_edge_length(
-    vertices: wp.array[wp.vec3], unique_edges: wp.array2d[wp.int32], e: wp.int32
-) -> wp.float32:
-    # Length of unique edge ``e``, in the subtraction order ``edges.edges_unique_length`` uses, so
-    # a threshold test on it sees the same ``float32`` value that function would have returned.
-    return wp.length(vertices[unique_edges[e, 1]] - vertices[unique_edges[e, 0]])
-
-
-@wp.func
 def edge_exceeds_target(
     vertices: wp.array[wp.vec3],
     lo: wp.int32,
@@ -675,12 +667,12 @@ def edge_exceeds_target(
 ) -> wp.bool:
     # Whether the edge with sorted endpoints ``lo < hi`` is longer than its target: ``max_edge`` or,
     # against a per-vertex sizing field, its endpoints' mean. The one rule of the refinement loop,
-    # in ``unique_edge_length``'s subtraction order, so a face-side test of an edge
+    # measured by ``edges.edge_row_length``, so a face-side test of an edge
     # (``emit_size_faces_checked``) reads the verdict its unique row would get.
     target = max_edge
     if use_sizing:
         target = endpoints_mean_sizing(sizing, lo, hi)
-    return wp.length(vertices[hi] - vertices[lo]) > target
+    return edge_row_length(vertices, lo, hi) > target
 
 
 @wp.func
@@ -1124,7 +1116,7 @@ def mark_long_region_edges(
     e = inverse[i]
     is_long = wp.bool(False)
     if region_flags[i // 3] != 0:
-        is_long = unique_edge_length(vertices, unique_edges, e) > max_edge
+        is_long = edge_row_length(vertices, unique_edges[e, 0], unique_edges[e, 1]) > max_edge
     mark_long_region_edge(e, is_long, out_long, out_words, out_word_counts)
 
 
@@ -1145,7 +1137,7 @@ def emit_long_region_edges(
 ) -> None:
     # ``edges.emit_sorted_unique_edges`` and ``mark_long_region_edges`` in one pass over the sorted
     # corners. A corner measures its edge from its own endpoints, the row the run's first position
-    # writes (``adjacency.edge_endpoints``), in ``unique_edge_length``'s subtraction order, so the
+    # writes (``adjacency.edge_endpoints``), through ``edges.edge_row_length``, so the
     # test is ``mark_long_region_edges``' bit for bit without waiting on that row.
     #
     # The ranked bitmask is sized for the corners as ``emit_long_edges``' is, with the unique-edge
@@ -1157,7 +1149,7 @@ def emit_long_region_edges(
     is_long = wp.bool(False)
     if region_flags[corner // 3] != 0:
         a, b = edge_endpoints(faces, corner)
-        is_long = wp.length(vertices[b] - vertices[a]) > max_edge
+        is_long = edge_row_length(vertices, a, b) > max_edge
     mark_long_region_edge(e, is_long, out_long, out_words, out_word_counts)
     publish_unique_edge_count(ranks, i, out_word_counts)
 
@@ -1179,7 +1171,7 @@ def longest_edge_sort_keys(
     # (``launched_set_bit``).
     e, slot, flagged = launched_set_bit(words, word_ranks, wp.int32(wp.tid()), by_rank)
     if flagged:
-        out_keys[slot] = -unique_edge_length(vertices, unique_edges, e)
+        out_keys[slot] = -edge_row_length(vertices, unique_edges[e, 0], unique_edges[e, 1])
         out_edges[slot] = e
 
 
@@ -1242,7 +1234,7 @@ def scatter_scale_attribute(
     lo, hi = unpack_edge_key(key, base)
     # Plain atomics: the pooled form lost here (``scatter.add_value_and_count``).
     accumulate_endpoint_value(
-        lo, hi, wp.length(vertices[hi] - vertices[lo]), wp.float32(1.0), out_sum, out_valence, 0
+        lo, hi, edge_row_length(vertices, lo, hi), wp.float32(1.0), out_sum, out_valence, 0
     )
 
 
@@ -1461,43 +1453,6 @@ def density_split_provenance(
 # Float64 Delone edge-flip predicate. Computed in double precision for the reason the constants
 # above give.
 # ---------------------------------------------------------------------------
-
-
-@wp.func
-def _segments_dist_sq_d(p1: wp.vec3d, q1: wp.vec3d, p2: wp.vec3d, q2: wp.vec3d) -> wp.float64:
-    # Squared distance between segments [p1,q1] and [p2,q2] (Ericson, clamped closest points).
-    eps = wp.float64(1e-30)
-    d1 = q1 - p1
-    d2 = q2 - p2
-    r = p1 - p2
-    aa = wp.length_sq(d1)
-    ee = wp.length_sq(d2)
-    f = wp.dot(d2, r)
-    s = wp.float64(0.0)
-    t = wp.float64(0.0)
-    if aa <= eps and ee <= eps:
-        return wp.length_sq(p1 - p2)
-    if aa <= eps:
-        t = wp.clamp(f / ee, wp.float64(0.0), wp.float64(1.0))
-    else:
-        cc = wp.dot(d1, r)
-        if ee <= eps:
-            s = wp.clamp(-cc / aa, wp.float64(0.0), wp.float64(1.0))
-        else:
-            bb = wp.dot(d1, d2)
-            denom = aa * ee - bb * bb
-            if denom != wp.float64(0.0):
-                s = wp.clamp((bb * f - cc * ee) / denom, wp.float64(0.0), wp.float64(1.0))
-            t = (bb * s + f) / ee
-            if t < wp.float64(0.0):
-                t = wp.float64(0.0)
-                s = wp.clamp(-cc / aa, wp.float64(0.0), wp.float64(1.0))
-            elif t > wp.float64(1.0):
-                t = wp.float64(1.0)
-                s = wp.clamp((bb - cc) / aa, wp.float64(0.0), wp.float64(1.0))
-    cp1 = p1 + s * d1
-    cp2 = p2 + t * d2
-    return wp.length_sq(cp1 - cp2)
 
 
 # ``_delone_quadrangle_verdict_d``'s answers. ``DELONE_FLIP_UNLESS_TURNED`` is a flip the metric
@@ -2166,7 +2121,7 @@ def _delone_flip_wanted(
             if wp.abs(old_angle - new_angle) > angle:
                 return False
     if max_deviation_sq < F32_LARGE:
-        if _segments_dist_sq_d(ap, cp, bp, dp) > wp.float64(max_deviation_sq):
+        if segment_segment_distance_sq(ap, cp, bp, dp) > wp.float64(max_deviation_sq):
             return False
     return is_unfold_quadrangle_convex(ap, bp, cp, dp)
 
@@ -2720,9 +2675,11 @@ def is_feature_edge(
     count = edge_face_count[e]
     feature = count == 1
     if count == 2:
-        normal_a, _area_a = face_normals_and_area(vertices, faces, edge_faces[e, 0])
-        normal_b, _area_b = face_normals_and_area(vertices, faces, edge_faces[e, 1])
-        feature = vector_angle(normal_a, normal_b) > feature_angle
+        # ``edge_faces``' two columns arrive in atomic order on CUDA; ``face_pair_angle`` reads
+        # them lower face first, so a pair at the threshold is decided the same way every run.
+        feature = (
+            face_pair_angle(vertices, faces, edge_faces[e, 0], edge_faces[e, 1]) > feature_angle
+        )
     return feature
 
 
@@ -3403,7 +3360,7 @@ def collapse_candidates_at(
             return
     u = unique_edges[k, 0]
     v = unique_edges[k, 1]
-    length = unique_edge_length(vertices, unique_edges, k)
+    length = edge_row_length(vertices, u, v)
     if select == COLLAPSE_SELECT_LENGTH:
         low_u = vertex_band(low, low_uniform, u)
         low_v = vertex_band(low, low_uniform, v)
@@ -3750,14 +3707,11 @@ def valence_flip_candidates(
     out_flip[k] = wp.bool(False)
     f0 = adjacency[k, 0]
     f1 = adjacency[k, 1]
-    # Never flip a feature edge (sharp dihedral between the two incident faces).
-    n0 = face_normal(vertices, faces, f0)
-    n1 = face_normal(vertices, faces, f1)
-    # ``vector_angle`` is the atan2 form; two coplanar faces across an edge is the common
-    # case here and is exactly where ``acos(dot)`` loses its digits, and this is a *branch*,
-    # so the lost digits change a flip decision rather than a printed number. The sibling
-    # feature test in ``classify_vertices`` above already reads this way.
-    if vector_angle(n0, n1) > feature_angle:
+    # Never flip a feature edge (sharp dihedral between the two incident faces), by the angle
+    # ``is_feature_edge`` takes: ``face_pair_angle``, the atan2 form; two coplanar faces across an
+    # edge is the common case here and is exactly where ``acos(dot)`` loses its digits, and this
+    # is a *branch*, so the lost digits change a flip decision rather than a printed number.
+    if face_pair_angle(vertices, faces, f0, f1) > feature_angle:
         return
     a, b, c, d = _resolve_flip_quad_guarded(
         faces,
@@ -3828,7 +3782,7 @@ def scatter_normal_and_area_sums(
     out_area_sums: wp.array[wp.float64],
 ) -> None:
     # The smoothing pass's two per-vertex face sums from one evaluation of each face:
-    # ``normals.scatter_area_weighted_normals``' area-weighted normal, by the deterministic setting
+    # ``normals``' area-weighted scatter's normal, by the deterministic setting
     # (``_common.scatter_normal_sums``), and ``scatter.scatter_face_areas_exact``'s area into zeroed
     # ``float64`` sums, each added as those kernels add it. With the setting on the normal's group
     # sum launches this twice, and the area is added in the second pass alone. Their readers finish
@@ -4996,16 +4950,6 @@ def collapse_provenance_rows(
             out_face_index[row] = t
 
 
-@wp.func
-def inclusive_scan_serial(values: wp.array[wp.int32], out_scan: wp.array[wp.int32]):
-    # ``_launch.array_scan(values, out_scan, inclusive=True)`` by one thread (``out_scan`` may be
-    # ``values``): an integer scan is exact in any order.
-    running = wp.int32(0)
-    for i in range(values.shape[0]):
-        running += values[i]
-        out_scan[i] = running
-
-
 @wp.kernel(enable_backward=False)
 def collapse_pass(
     vertices: wp.array[wp.vec3],
@@ -5081,7 +5025,7 @@ def collapse_pass(
     else:
         for i in range(n):
             ranks[i] = wp.where(sorted_run_start(sorted_keys, i), wp.int32(1), wp.int32(0))
-        inclusive_scan_serial(ranks, ranks)
+        inclusive_scan_serial(ranks, ranks.shape[0], ranks)
         for i in range(n):
             emit_edge_topology_at(
                 faces,
@@ -5099,7 +5043,7 @@ def collapse_pass(
                 offsets,
                 state,
             )
-    inclusive_scan_serial(counts, offset_tail)
+    inclusive_scan_serial(counts, counts.shape[0], offset_tail)
     for t in range(wp.max(e_cap, f_cap)):
         fill_edge_topology_at(
             vertices,
@@ -5166,7 +5110,7 @@ def collapse_pass(
             )
     for f in range(f_cap):
         mark_surviving_faces_at(faces, remap, state, f, mark_tail)
-    inclusive_scan_serial(mark_tail, mark_tail)
+    inclusive_scan_serial(mark_tail, mark_tail.shape[0], mark_tail)
     for t in range(wp.max(f_cap, v_cap)):
         compact_surviving_faces_at(
             faces,
@@ -6386,13 +6330,7 @@ def quadric_collapse_candidate_at(
     # The feature rule is ``collapse_survivor``'s, shared with ``collapse_candidates``. What
     # differs is only the free placement: that one takes the midpoint, this one the quadric's
     # minimizer.
-    s, r, placement = collapse_survivor_of_codes(
-        finalize_vertex_codes(feature_count[u]),
-        finalize_vertex_codes(feature_count[v]),
-        u,
-        v,
-        is_boundary,
-    )
+    s, r, placement = collapse_survivor(feature_count, u, v, is_boundary)
     if placement == COLLAPSE_REJECTED:
         return
     free_position = placement == COLLAPSE_FREE
@@ -8109,14 +8047,20 @@ def wrap_angle(radians: wp.float64) -> wp.float64:
 
 
 @wp.func
-def qrot(q: wp.vec4d, v: wp.vec3d) -> wp.vec3d:
-    # ``la::qrot``: ``qxdir * v.x + qydir * v.y + qzdir * v.z``.
+def qxdir(q: wp.vec4d) -> wp.vec3d:
     two = wp.float64(2.0)
-    x = wp.vec3d(
+    return wp.vec3d(
         q[3] * q[3] + q[0] * q[0] - q[1] * q[1] - q[2] * q[2],
         (q[0] * q[1] + q[2] * q[3]) * two,
         (q[2] * q[0] - q[1] * q[3]) * two,
     )
+
+
+@wp.func
+def qrot(q: wp.vec4d, v: wp.vec3d) -> wp.vec3d:
+    # ``la::qrot``: ``qxdir * v.x + qydir * v.y + qzdir * v.z``.
+    two = wp.float64(2.0)
+    x = qxdir(q)
     y = wp.vec3d(
         (q[0] * q[1] - q[2] * q[3]) * two,
         q[3] * q[3] - q[0] * q[0] + q[1] * q[1] - q[2] * q[2],
@@ -8316,14 +8260,10 @@ def bezier_control(point: wp.vec3d, tangent: wp.vec4d) -> wp.vec4d:
 
 
 @wp.func
-def cubic_first(p0: wp.vec4d, p1: wp.vec4d, p2: wp.vec4d, x: wp.float64) -> wp.vec4d:
-    # ``CubicBezier2Linear``'s first point: ``lerp(lerp(p0, p1, x), lerp(p1, p2, x), x)``.
+def cubic_lerp_point(p0: wp.vec4d, p1: wp.vec4d, p2: wp.vec4d, x: wp.float64) -> wp.vec4d:
+    # ``CubicBezier2Linear``'s two points, each ``lerp(lerp(p0, p1, x), lerp(p1, p2, x), x)`` over
+    # three consecutive control points (the first over ``p0..p2``, the second over ``p1..p3``).
     return wp.lerp(wp.lerp(p0, p1, x), wp.lerp(p1, p2, x), x)
-
-
-@wp.func
-def cubic_second(p1: wp.vec4d, p2: wp.vec4d, p3: wp.vec4d, x: wp.float64) -> wp.vec4d:
-    return wp.lerp(wp.lerp(p1, p2, x), wp.lerp(p2, p3, x), x)
 
 
 @wp.func
@@ -8382,16 +8322,6 @@ def qmul(a: wp.vec4d, b: wp.vec4d) -> wp.vec4d:
 def qconj(q: wp.vec4d) -> wp.vec4d:
     m = wp.float64(-1.0)
     return wp.vec4d(m * q[0], m * q[1], m * q[2], q[3])
-
-
-@wp.func
-def qxdir(q: wp.vec4d) -> wp.vec3d:
-    two = wp.float64(2.0)
-    return wp.vec3d(
-        q[3] * q[3] + q[0] * q[0] - q[1] * q[1] - q[2] * q[2],
-        (q[0] * q[1] + q[2] * q[3]) * two,
-        (q[2] * q[0] - q[1] * q[3]) * two,
-    )
 
 
 @wp.func
@@ -8459,8 +8389,8 @@ def bezier_to_bezier(
     p1 = bezier_control(c0, tx0)
     p2 = bezier_control(c1, tx1)
     p3 = homogeneous3(c1)
-    b0 = cubic_first(p0, p1, p2, x)
-    b1 = cubic_second(p1, p2, p3, x)
+    b0 = cubic_lerp_point(p0, p1, p2, x)
+    b1 = cubic_lerp_point(p1, p2, p3, x)
     end = h_normalize(wp.lerp(b0, b1, x))
     tangent = safe_normalize(h_normalize(b1) - h_normalize(b0))
     n0 = safe_normalize(xyz(tx0))
@@ -8509,7 +8439,7 @@ def bezier_2d(
     a3 = row4(bez1, 0)
     a1 = bezier_control(xyz(a0), row4(bez0, 1))
     a2 = bezier_control(xyz(a3), row4(bez1, 1))
-    return h_normalize(wp.lerp(cubic_first(a0, a1, a2, y), cubic_second(a1, a2, a3, y), y))
+    return h_normalize(wp.lerp(cubic_lerp_point(a0, a1, a2, y), cubic_lerp_point(a1, a2, a3, y), y))
 
 
 @wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
@@ -8566,7 +8496,11 @@ def interp_tri_positions(
             b2 = bezier_control(ci, wp.lerp(r_i, l_i, x))
             b3 = homogeneous3(ci)
             p = h_normalize(
-                wp.lerp(cubic_first(b0, b1, b2, uvw[i]), cubic_second(b1, b2, b3, uvw[i]), uvw[i])
+                wp.lerp(
+                    cubic_lerp_point(b0, b1, b2, uvw[i]),
+                    cubic_lerp_point(b1, b2, b3, uvw[i]),
+                    uvw[i],
+                )
             )
             pos_h = pos_h + homogeneous4(wp.vec4d(p[0], p[1], p[2], uvw[j] * uvw[k]))
     else:

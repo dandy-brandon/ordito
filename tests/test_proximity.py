@@ -598,6 +598,27 @@ def test_mesh_to_mesh_distance_matches_meshlib_across_regimes(
     assert np.isclose(distance, distance_ml, rtol=1e-5, atol=1e-6)
 
 
+@pytest.mark.parametrize("scale", [1.0, 1e-4])
+def test_mesh_to_mesh_distance_is_scale_free_between_skew_edges(device: str, scale: float) -> None:
+    """
+    Not a library comparison: the crossed bars' edge-interior distance scales with the meshes.
+
+    The bars' clearance (``0.8`` at unit scale, ``test_mesh_to_mesh_distance_matches_meshlib_
+    where_no_vertex_wins``) is realised between the interiors of two skew edges, so it reaches the
+    segment-segment solve's parallel test. At ``1e-4`` that test's ``|d0|^2 |d1|^2 sin^2`` is
+    about ``1e-14``: an absolute ``1e-12`` tolerance there (the helper's former one) took the
+    edges for parallel and returned ``1.479`` of the scale, the nearest vertex's distance (mutation
+    probe, 1.85x the answer).
+    """
+    lower_tm, upper_tm = _crossed_bars(45.0)
+    lower_tm.apply_scale(scale)
+    upper_tm.apply_scale(scale)
+    distance, _face_a, _face_b = od.proximity.mesh_to_mesh_distance(
+        *_upload(lower_tm, device), *_upload(upper_tm, device)
+    )
+    assert np.isclose(distance, 0.8 * scale, rtol=1e-4, atol=0.0)
+
+
 def test_mesh_to_mesh_distance_face_a_tie_break_is_the_lowest_index(device: str) -> None:
     """
     Not a library comparison: pins the documented ``face_a`` tie-break rule.
@@ -1270,6 +1291,33 @@ def test_closest_point_on_edges_max_dist_and_degenerate(device: str) -> None:
             odt.as_array2d(wp.zeros((2, 3), dtype=wp.int32, device=device), wp.int32),
             queries_wp,
         )
+
+
+@pytest.mark.parametrize("scale", [1.0, 1e-5])
+def test_closest_point_on_edges_is_scale_free(device: str, scale: float) -> None:
+    """
+    Not a library comparison: a short edge's closest point is the exhaustive NumPy projection's.
+
+    Queries around an edge of length ``scale``, against ``_closest_on_edges_np``. At ``1e-5`` the
+    squared length is ``1e-10``: the segment parameter's former floor of ``1e-8`` on it pulled
+    every projection to within 1 % of the first endpoint (mutation probe: distance 5x the answer
+    at the edge's middle).
+    """
+    vertices_np = np.array([[0.0, 0.0, 0.0], [scale, 0.0, 0.0]], dtype=np.float32)
+    edges_np = np.array([[0, 1]], dtype=np.int32)
+    queries_np = (
+        np.array([[0.5, 0.1, 0.0], [0.25, 0.0, 0.3], [0.9, -0.2, 0.1], [1.5, 0.1, 0.0]]) * scale
+    ).astype(np.float32)
+    edges_wp = odt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
+    closest_wp, distance_wp, edge_id_wp = od.proximity.closest_point_on_edges(
+        points_to_warp(vertices_np, device), edges_wp, points_to_warp(queries_np, device)
+    )
+    all_distance_np, _nearest_np, closest_np = _closest_on_edges_np(
+        vertices_np, edges_np, queries_np
+    )
+    assert np.array_equal(edge_id_wp.numpy(), np.zeros(4, dtype=np.int32))
+    assert np.allclose(distance_wp.numpy(), all_distance_np[:, 0], rtol=1e-5, atol=0.0)
+    assert np.allclose(closest_wp.numpy(), closest_np, rtol=1e-5, atol=1e-6 * scale)
 
 
 def test_normals_at_closest_faces_surface(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:

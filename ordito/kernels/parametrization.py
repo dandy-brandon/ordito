@@ -15,7 +15,12 @@ from ordito.kernels.reduce import (
     last_ticket_vector,
     store_block_total,
 )
-from ordito.kernels.triangles import corner_triple, face_vertices, face_vertices_vec3d
+from ordito.kernels.triangles import (
+    corner_triple,
+    face_vertices,
+    face_vertices_vec3d,
+    known_local_corner,
+)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -394,13 +399,6 @@ def chart_vertex(
 
 
 @wp.func
-def face_corner(faces: wp.array[wp.int32], f: wp.int32, v: wp.int32) -> wp.int32:
-    # The corner of face ``f`` at vertex ``v`` (its first, should a face of no area repeat it).
-    i0, i1, _i2 = corner_triple(faces, f)
-    return wp.where(i0 == v, 0, wp.where(i1 == v, 1, 2))
-
-
-@wp.func
 def face_rotation(
     uv0: wp.vec2d, uv1: wp.vec2d, uv2: wp.vec2d, g1: wp.vec2d, g2: wp.vec2d
 ) -> wp.vec2d:
@@ -450,7 +448,7 @@ def rotated_gradient(
 ) -> wp.vec2d:
     # Face ``f``'s term of vertex ``v``'s ``rotation_row``: its ``rotation`` applied to the
     # gradient at ``v``'s corner, times its area.
-    g = gradients[f, face_corner(faces, f, v)]
+    g = gradients[f, known_local_corner(faces, f, v)]
     return areas[f] * wp.vec2d(
         g[0] * rotation[0] - g[1] * rotation[1], g[0] * rotation[1] + g[1] * rotation[0]
     )
@@ -786,7 +784,7 @@ def slim_rhs(
     total = wp.vec2d()
     for s in range(vertex_offsets[v], vertex_offsets[v + 1]):
         f = vertex_faces[s]
-        total += force[f] * gradients[f, face_corner(faces, f, v)]
+        total += force[f] * gradients[f, known_local_corner(faces, f, v)]
     out_rhs[v] = -total
 
 
@@ -1491,7 +1489,7 @@ def stiffness_row(
     total = wp.vec2d()
     for s in range(vertex_offsets[v], vertex_offsets[v + 1]):
         f = vertex_faces[s]
-        k = face_corner(faces, f, v)
+        k = known_local_corner(faces, f, v)
         weights = edge_weights[f]
         following = faces[3 * f + (k + 1) % 3]
         preceding = faces[3 * f + (k + 2) % 3]
@@ -1513,7 +1511,7 @@ def stiffness_diagonal(
     total = wp.float64(0.0)
     for s in range(vertex_offsets[v], vertex_offsets[v + 1]):
         f = vertex_faces[s]
-        g = gradients[f, face_corner(faces, f, v)]
+        g = gradients[f, known_local_corner(faces, f, v)]
         total += areas[f] * wp.dot(g, g)
     return total
 

@@ -46,9 +46,9 @@ from ordito.kernels.halfedge import halfedge_endpoints, halfedge_next, halfedge_
 from ordito.kernels.laplacian import (
     connection_offdiagonal,
     cotmatrix_offdiagonal,
-    face_half_cotangents,
-    face_half_cotangents_float64,
     pattern_row_on_rim,
+    store_half_cotangents,
+    store_half_cotangents_float64,
 )
 from ordito.kernels.linalg import shift_factor, shifted_block_entry, shifted_scalar_entry
 from ordito.kernels.predicates import (
@@ -116,15 +116,9 @@ def heat_face_terms(
     # potpourri3d's ``float64`` weights, and 0.07x with these.
     f = wp.int32(wp.tid())
     if write_cot != 0:
-        c0, c1, c2 = face_half_cotangents(vertices, faces, f)
-        out_cot[f, 0] = c0
-        out_cot[f, 1] = c1
-        out_cot[f, 2] = c2
+        store_half_cotangents(vertices, faces, f, 0, out_cot)
     if write_cot_float64 != 0:
-        d0, d1, d2 = face_half_cotangents_float64(vertices, faces, f)
-        out_cot_float64[f, 0] = d0
-        out_cot_float64[f, 1] = d1
-        out_cot_float64[f, 2] = d2
+        store_half_cotangents_float64(vertices, faces, f, out_cot_float64)
     normal, area = face_normals_and_area(vertices, faces, f)
     out_normals[f] = normal
     out_areas[f] = area
@@ -142,11 +136,7 @@ def half_cotangents_float64(
 ) -> None:
     # ``heat_face_terms``' ``float64`` table alone, for a vector system built over a scalar bundle
     # that did not form one.
-    f = wp.int32(wp.tid())
-    c0, c1, c2 = face_half_cotangents_float64(vertices, faces, f)
-    out_cot[f, 0] = c0
-    out_cot[f, 1] = c1
-    out_cot[f, 2] = c2
+    store_half_cotangents_float64(vertices, faces, wp.int32(wp.tid()), out_cot)
 
 
 @wp.func

@@ -2581,6 +2581,54 @@ def poisson_grid_index(i: wp.int32, j: wp.int32, k: wp.int32, res: wp.int32) -> 
     return ravel_index(i, j, k, res, res)
 
 
+# The narrow-band backend's storage (``kernels/algorithms/poisson_band``'s layout note): the dense
+# lattice cut into ``8**3``-node bricks, as a shift, and nodes in a brick. Defined here so the
+# kernels the dense grid and a band share can read either lattice (``lattice_node``).
+BRICK_SHIFT = 3
+BRICK_NODES = 512
+
+
+@wp.func
+def brick_index(i: wp.int32, j: wp.int32, k: wp.int32, nbk: wp.int32) -> wp.int32:
+    # Flat index into the ``nbk**3`` brick map of the brick holding node ``(i, j, k)``.
+    return ravel_index(i >> BRICK_SHIFT, j >> BRICK_SHIFT, k >> BRICK_SHIFT, nbk, nbk)
+
+
+@wp.func
+def band_node(
+    brick_map: wp.array[wp.int32], nbk: wp.int32, i: wp.int32, j: wp.int32, k: wp.int32
+) -> wp.int32:
+    # Band storage index of node ``(i, j, k)`` (all three non-negative), or ``-1`` when its brick
+    # is not in the band.
+    slot = brick_map[brick_index(i, j, k, nbk)]
+    if slot < 0:
+        return wp.int32(-1)
+    return slot * BRICK_NODES + ((((i & 7) << 3) + (j & 7)) << 3) + (k & 7)
+
+
+@wp.func
+def dense_lattice() -> wp.array[wp.int32]:
+    # The empty brick map: what a dense-grid kernel hands ``lattice_node`` and its callers.
+    return wp.array(ptr=wp.uint64(0), shape=(0,), dtype=wp.int32)
+
+
+@wp.func
+def lattice_node(
+    brick_map: wp.array[wp.int32],
+    nbk: wp.int32,
+    res: wp.int32,
+    i: wp.int32,
+    j: wp.int32,
+    k: wp.int32,
+) -> wp.int32:
+    # Storage index of lattice node ``(i, j, k)``: in the dense ``res**3`` grid when ``brick_map``
+    # is empty, else in the band (``-1`` off it), the rule ``poisson_band.restrict_target`` and
+    # ``band_prolong`` follow too.
+    if brick_map.shape[0] == 0:
+        return poisson_grid_index(i, j, k, res)
+    return band_node(brick_map, nbk, i, j, k)
+
+
 @wp.func
 def poisson_lerp_corners(low: wp.vec4, high: wp.vec4, fractions: wp.vec3) -> wp.float32:
     # The nested ``wp.lerp`` of a cell's eight corner values at ``fractions``: ``low`` holds the
@@ -2650,8 +2698,8 @@ def splat_sample(
     s: wp.int32,
 ) -> tuple[wp.vec3i, wp.vec3i, wp.vec3, wp.vec3, wp.float32]:
     # Everything sample ``s`` splats: its cell (``splat_cell``), its unit direction and its weight.
-    # Shared by the arrival-order splats (``splat_normals``, ``poisson_band.band_splat``) and the
-    # fixed-order one (``splat_term``), so the two forms add the same terms.
+    # Shared by the arrival-order splat (``splat_normals``, dense grid or band) and the fixed-order
+    # one (``splat_term``), so the two forms add the same terms.
     n = normals[s]
     length = wp.length(n)
     # Confidence weighting scales the splat by the normal magnitude; otherwise unit weight.
@@ -2675,12 +2723,16 @@ def splat_normals(
     inv_cell: wp.float32,
     res: wp.int32,
     confidence: wp.int32,
+    brick_map: wp.array[wp.int32],
+    nbk: wp.int32,
     out_vx: wp.array[wp.float32],
     out_vy: wp.array[wp.float32],
     out_vz: wp.array[wp.float32],
     out_w: wp.array[wp.float32],
 ) -> None:
-    # The oriented normals into the ``res**3`` node grid, trilinearly, in arrival order: the
+    # The oriented normals into the lattice's nodes, trilinearly, in arrival order: the dense
+    # ``res**3`` grid when ``brick_map`` is empty, a band's storage otherwise (``lattice_node``;
+    # every corner a sample reaches is in the band, ``poisson_band.mark_sample_bricks``). The
     # deterministic setting's form on CUDA is ``splat_corner_keys`` and ``sum_splat_chunks``.
     s = wp.int32(wp.tid())
     base, next_corner, fractions, n, weight = splat_sample(
@@ -2691,7 +2743,7 @@ def splat_normals(
             for dk in range(2):
                 w = trilinear_weight(fractions, di, dj, dk) * weight
                 corner = trilinear_corner(base, next_corner, wp.vec3i(di, dj, dk))
-                idx = poisson_grid_index(corner[0], corner[1], corner[2], res)
+                idx = lattice_node(brick_map, nbk, res, corner[0], corner[1], corner[2])
                 wp.atomic_add(out_vx, idx, w * n[0])
                 wp.atomic_add(out_vy, idx, w * n[1])
                 wp.atomic_add(out_vz, idx, w * n[2])
@@ -2704,18 +2756,22 @@ def splat_corner_keys(
     cube_lower: wp.vec3,
     inv_cell: wp.float32,
     res: wp.int32,
+    brick_map: wp.array[wp.int32],
+    nbk: wp.int32,
+    n_nodes: wp.int32,
     out_keys: wp.array[wp.int32],
     out_order: wp.array[wp.int32],
 ) -> None:
     # ``splat_normals``' eight targets per sample as sort keys, the payload ``8 s + corner`` naming
     # the term, for ``sum_splat_chunks`` and ``sum_splat_runs`` to add each node's terms in the one
-    # order a stable sort lists them in.
-    # ``poisson_band.band_splat_keys`` is the same for a band's storage.
+    # order a stable sort lists them in. A corner off a band (none, by
+    # ``poisson_band.mark_sample_bricks``) takes the sentinel ``n_nodes``.
     s = wp.int32(wp.tid())
     base, next_corner, _fractions = splat_cell(points, cube_lower, inv_cell, res, s)
     for c in range(8):
         corner = trilinear_corner(base, next_corner, cube_corner_offset(c))
-        out_keys[8 * s + c] = poisson_grid_index(corner[0], corner[1], corner[2], res)
+        idx = lattice_node(brick_map, nbk, res, corner[0], corner[1], corner[2])
+        out_keys[8 * s + c] = wp.where(idx < 0, n_nodes, idx)
         out_order[8 * s + c] = 8 * s + c
 
 
@@ -2860,6 +2916,77 @@ def normalized_field_component(
 
 
 @wp.func
+def lattice_field_component(
+    field: wp.array[wp.float32],
+    weights: wp.array[wp.float32],
+    brick_map: wp.array[wp.int32],
+    nbk: wp.int32,
+    res: wp.int32,
+    i: wp.int32,
+    j: wp.int32,
+    k: wp.int32,
+) -> wp.float32:
+    # ``normalized_field_component`` at lattice node ``(i, j, k)`` (``lattice_node``), zero off a
+    # band (no sample reaches there). The dense grid returns before the band's off-band test: with
+    # that test in its path (``lattice_node``, then ``idx < 0``) the dense right-hand side moved by
+    # an ulp on CUDA.
+    if brick_map.shape[0] == 0:
+        return normalized_field_component(field, weights, poisson_grid_index(i, j, k, res))
+    idx = band_node(brick_map, nbk, i, j, k)
+    if idx < 0:
+        return wp.float32(0.0)
+    return normalized_field_component(field, weights, idx)
+
+
+@wp.func
+def normalized_divergence(
+    vx: wp.array[wp.float32],
+    vy: wp.array[wp.float32],
+    vz: wp.array[wp.float32],
+    weights: wp.array[wp.float32],
+    brick_map: wp.array[wp.int32],
+    nbk: wp.int32,
+    res: wp.int32,
+    i: wp.int32,
+    j: wp.int32,
+    k: wp.int32,
+) -> wp.float32:
+    # The right-hand side ``-div V`` at lattice node ``(i, j, k)`` of the dense grid
+    # (``brick_map`` empty, ``poisson_level_setup``) or a band (``poisson_band.band_rhs``): central
+    # differences of the normalized components in index space, one-sided at the grid boundary
+    # (denominator 1 there). That denominator is 0, not 1, at res == 1 (every axis's clamp
+    # collapses to ip == im), but reconstruction.screened_poisson validates
+    # 3 <= full_depth <= depth <= 10, so the smallest reachable grid is res = 2**3 + 1 = 9 and no
+    # caller reaches res == 1; not guarded (no speculative generality).
+    #
+    # The components are normalized here rather than by a separate `normalize_vector_field` pass
+    # over the whole grid: that pass was a few percent of ``screened_poisson``'s device time,
+    # almost all of it the extra launch plus a full res**3-element write-back of vx/vy/vz that this
+    # immediately reads back at six neighbour offsets anyway. `normalized_field_component`
+    # reproduces the deleted pass's exact `field[idx] * (1.0 / max(weight, eps))` operation (a
+    # multiply by the reciprocal, not a divide), so the result is bit-identical to it.
+    ip = wp.min(i + 1, res - 1)
+    im = wp.max(i - 1, 0)
+    jp = wp.min(j + 1, res - 1)
+    jm = wp.max(j - 1, 0)
+    kp = wp.min(k + 1, res - 1)
+    km = wp.max(k - 1, 0)
+    dx = (
+        lattice_field_component(vx, weights, brick_map, nbk, res, ip, j, k)
+        - lattice_field_component(vx, weights, brick_map, nbk, res, im, j, k)
+    ) / wp.float32(ip - im)
+    dy = (
+        lattice_field_component(vy, weights, brick_map, nbk, res, i, jp, k)
+        - lattice_field_component(vy, weights, brick_map, nbk, res, i, jm, k)
+    ) / wp.float32(jp - jm)
+    dz = (
+        lattice_field_component(vz, weights, brick_map, nbk, res, i, j, kp)
+        - lattice_field_component(vz, weights, brick_map, nbk, res, i, j, km)
+    ) / wp.float32(kp - km)
+    return -(dx + dy + dz)
+
+
+@wp.func
 def poisson_neighbor_degree(i: wp.int32, j: wp.int32, k: wp.int32, res: wp.int32) -> wp.float32:
     # Number of (i, j, k)'s up-to-6 axis-aligned grid neighbours that lie inside [0, res) -- the
     # diagonal degree of the homogeneous-Neumann 7-point Poisson stencil. Shared so
@@ -2904,6 +3031,22 @@ def screened_laplacian_scaled_inverse_diagonal(
 
 
 @wp.func
+def screened_row_value(
+    lap: wp.float32,
+    deg: wp.float32,
+    acc: wp.float32,
+    screen: wp.float32,
+    weight: wp.float32,
+    xc: wp.float32,
+) -> wp.float32:
+    # ``lap * (deg * xc - acc) + screen * weight * xc``: a row of the screened Laplacian from the
+    # node's degree, its neighbours' sum and its own value. Shared by the dense grid's row
+    # (``screened_laplacian_row``) and a band's (``poisson_band.band_row``), which gather ``acc``
+    # from different storage.
+    return lap * (deg * xc - acc) + screen * weight * xc
+
+
+@wp.func
 def screened_laplacian_row(
     lap: wp.float32,
     x: wp.array[wp.float32],
@@ -2938,7 +3081,7 @@ def screened_laplacian_row(
         acc += x[poisson_grid_index(i, j, k + 1, res)]
     if k - 1 >= 0:
         acc += x[poisson_grid_index(i, j, k - 1, res)]
-    return lap * (deg * xc - acc) + screen * weights[idx] * xc
+    return screened_row_value(lap, deg, acc, screen, weights[idx], xc)
 
 
 @wp.kernel(enable_backward=False)
@@ -3079,40 +3222,8 @@ def poisson_level_setup(
     # node, so fusing removes a launch over the whole ``res**3`` grid and shares the node index. A
     # level is solved once per octree depth, so this launch pair ran several times per call.
     i, j, k = wp.tid()
-    # Central differences in index space; one-sided at the grid boundary (denominator 1 there).
-    # That denominator is 0, not 1, at res == 1 (every axis's clamp collapses to ip == im), but
-    # reconstruction.screened_poisson validates 3 <= full_depth <= depth <= 10, so the smallest
-    # reachable grid is res = 2**3 + 1 = 9 and no caller in the tree reaches res == 1. Not guarded
-    # here (no speculative generality) -- add a guard only if a future
-    # caller can legitimately reach res == 1.
-    ip = wp.min(i + 1, res - 1)
-    im = wp.max(i - 1, 0)
-    jp = wp.min(j + 1, res - 1)
-    jm = wp.max(j - 1, 0)
-    kp = wp.min(k + 1, res - 1)
-    km = wp.max(k - 1, 0)
-    # Normalized in place here rather than by a separate `normalize_vector_field` pass over the
-    # whole grid: that pass was a few percent of ``screened_poisson``'s device time, almost all of
-    # it the extra launch plus a full res**3-element write-back of vx/vy/vz that this function
-    # immediately reads back at six neighbour offsets anyway. Fusing removes one launch and that
-    # write-back, at the cost of reading `weights` at the same six offsets instead of once per node.
-    # `normalized_field_component` reproduces the deleted pass's exact
-    # `field[idx] * (1.0 / max(weight, eps))` operation (a multiply by the reciprocal, not a divide)
-    # so the result is bit-identical to computing it as a separate pass first.
-    dx = (
-        normalized_field_component(vx, weights, poisson_grid_index(ip, j, k, res))
-        - normalized_field_component(vx, weights, poisson_grid_index(im, j, k, res))
-    ) / wp.float32(ip - im)
-    dy = (
-        normalized_field_component(vy, weights, poisson_grid_index(i, jp, k, res))
-        - normalized_field_component(vy, weights, poisson_grid_index(i, jm, k, res))
-    ) / wp.float32(jp - jm)
-    dz = (
-        normalized_field_component(vz, weights, poisson_grid_index(i, j, kp, res))
-        - normalized_field_component(vz, weights, poisson_grid_index(i, j, km, res))
-    ) / wp.float32(kp - km)
     centre = poisson_grid_index(i, j, k, res)
-    out_b[centre] = -(dx + dy + dz)
+    out_b[centre] = normalized_divergence(vx, vy, vz, weights, dense_lattice(), 0, res, i, j, k)
 
     out_smoother[centre] = screened_laplacian_scaled_inverse_diagonal(
         wp.float32(1.0), weights[centre], screen, omega, res, i, j, k

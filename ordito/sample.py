@@ -1092,7 +1092,7 @@ def _draw_ball_round(
     face_index = _launch.empty(count, dtype=wp.int32, device=device)
     flags = _launch.empty(count, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_sample.sample_surface_in_ball,
+        kernel_sample.sample_surface,
         dim=count,
         inputs=[
             vertices,
@@ -1104,7 +1104,7 @@ def _draw_ball_round(
             center,
             wp.float32(radius_sq),
         ],
-        outputs=[points, face_index, flags],
+        outputs=[points, face_index, None, flags],
         device=device,
     )
     return points, face_index, flags
@@ -1192,7 +1192,7 @@ def _dart_throw_blue_noise(
     _launch.launch(
         kernel_grouping.EMIT_SORTED_UNIQUE[wp.int64],
         dim=n_pool,
-        inputs=[sorted_keys, bucket, cell_ranks, unique_keys, None, cell_offsets, None],
+        inputs=[sorted_keys, bucket, cell_ranks, unique_keys, None, cell_offsets, None, None],
         device=device,
     )
 
@@ -1457,9 +1457,13 @@ def _draw_surface_samples(
             cdf,
             wp.float32(total),
             resolve_seed(seed),
+            0,
+            wp.vec3(),
+            wp.float32(0.0),
             out_points,
             out_face_indices,
             out_barycentric,
+            None,
         ],
         device=vertices.device,
     )

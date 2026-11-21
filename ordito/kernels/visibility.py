@@ -11,12 +11,16 @@ from ordito.kernels.array import (
     ordered_item,
     to_vec3d,
 )
-from ordito.kernels.predicates import any_perpendicular, point_triangle_offset
-from ordito.kernels.proximity import box_diagonal_d, closest_face_normal, closest_point_query_within
+from ordito.kernels.predicates import any_perpendicular
+from ordito.kernels.proximity import (
+    box_diagonal_d,
+    closest_face_normal,
+    closest_point_query_within,
+    face_offset_d,
+)
 from ordito.kernels.ray import longest_ray_distance
 from ordito.kernels.reduce import block_sum, minmax_vec3_chunk
 from ordito.kernels.sample import fibonacci_direction
-from ordito.kernels.triangles import face_vertices
 
 wp.set_module_options({"enable_backward": False})
 
@@ -540,9 +544,7 @@ def sphere_shrink_step(
     touch = center_d
     gap = wp.abs(wp.float64(distance) - wp.length(center_d - point_d))
     if face >= 0:
-        mesh = wp.mesh_get(mesh_id)
-        a, b, c = face_vertices(mesh.points, mesh.indices, face)
-        offset = point_triangle_offset(center_d, to_vec3d(a), to_vec3d(b), to_vec3d(c))
+        offset = face_offset_d(mesh_id, face, center_d)
         touch = center_d - offset
         gap = wp.abs(wp.length(offset) - wp.length(center_d - point_d))
     new_radius = radius

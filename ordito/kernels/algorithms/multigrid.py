@@ -1530,7 +1530,7 @@ def cycle_chebyshev_update(
         iterate[slot] += value
 
 
-# Rows a block of ``power_step_partials`` / ``damped_inverse_diagonal`` owns, its ``TILE_1D``
+# Rows a block of ``power_step``'s last step / ``damped_inverse_diagonal`` owns, its ``TILE_1D``
 # lanes striding them. Four rows a lane rather than the ``reduce`` fold width
 # (``ITEMS_PER_BLOCK_1D``, sixteen): a level of 40 k rows then launches 160 blocks rather than 40
 # on a 170-SM part (the narrower block measured level at 40 k rows where sixteen read ~2 % slower).
@@ -1561,7 +1561,7 @@ def damped_inverse_diagonal(
     # is ``array.inverse_or_one`` of the operator's diagonal, applied as it is read, as
     # ``power_step`` does.
     #
-    # The growth arrives as ``power_step_partials``' per-block squared norms, and every block
+    # The growth arrives as ``power_step``'s last step's per-block squared norms, and every block
     # folds all of them itself (one ``block_sum`` over lanes striding the partials) before writing
     # its ``power_block_rows``: the same fixed tree in every block, so the total is identical
     # across blocks and runs, and no separate inner-product pass or ``dim=1`` launch runs. The
@@ -1774,58 +1774,28 @@ def mis_level_setup(
 
 @wp.kernel
 def power_step(
-    seed: wp.int32,
-    from_signs: wp.int32,
     diagonal: wp.array[wp.float64],
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     values: wp.array[wp.float64],
     x: wp.array[wp.float64],
-    out_y: wp.array[wp.float64],
-) -> None:
-    # One ``power_row`` per thread. Writing a second buffer rather than updating ``x`` in place is
-    # what lets a step be one launch; the caller swaps the two. The last step is
-    # ``power_step_partials``, which also measures the growth. Launch tiled over
-    # ``MG_ROWS_PER_BLOCK`` rows a block.
-    blk, lane = wp.tid()
-    first, rows = block_chunk(offsets.shape[0] - 1, blk, MG_ROWS_PER_BLOCK)
-    if rows <= 0:
-        return
-    found = wp.int32(0)
-    for r in range(lane, rows, wp.block_dim()):
-        i = first + r
-        if csr_row_long(offsets, i):
-            found = 1
-            continue
-        out_y[i] = power_row(seed, from_signs, diagonal, offsets, columns, values, x, i)
-    if block_sum(found) == 0:
-        return
-    for r in range(rows):
-        i = first + r
-        if csr_row_long(offsets, i):
-            y = power_row_block(seed, from_signs, diagonal, offsets, columns, values, x, i, lane)
-            if lane == 0:
-                out_y[i] = y
-
-
-@wp.kernel
-def power_step_partials(
-    seed: wp.int32,
-    from_signs: wp.int32,
-    diagonal: wp.array[wp.float64],
-    offsets: wp.array[wp.int32],
-    columns: wp.array[wp.int32],
-    values: wp.array[wp.float64],
-    x: wp.array[wp.float64],
+    rows_per_block: wp.int32,
     out_y: wp.array[wp.float64],
     out_partials: wp.array[wp.float64],
 ) -> None:
-    # ``power_step``'s last step, which also stores its block's share of ``|y|^2`` in the block's
-    # own slot: the growth ``damped_inverse_diagonal`` folds, in a fixed order, with no separate
-    # inner-product pass over ``y``. Launched tiled over ``POWER_ROWS_PER_BLOCK`` rows a block,
-    # lanes striding them by ``wp.block_dim()`` (so the one CPU lane walks them all).
+    # One ``power_row`` a row, past the first step (which ``mis_level_setup`` takes from the sign
+    # vector). Writing a second buffer rather than updating ``x`` in place is what lets a step be
+    # one launch; the caller swaps the two. Launched tiled over ``rows_per_block`` rows a block,
+    # lanes striding them by ``wp.block_dim()`` (so the one CPU lane walks them all): the inner
+    # steps at ``MG_ROWS_PER_BLOCK`` rows and as many lanes, the last at ``POWER_ROWS_PER_BLOCK``
+    # rows over ``TILE_1D`` lanes, since it also stores its block's share of ``|y|^2`` in the
+    # block's own ``out_partials`` slot: the growth ``damped_inverse_diagonal`` folds, in a fixed
+    # order, with no separate inner-product pass over ``y``. A zero-length ``out_partials``
+    # (``None``) skips the commit.
     block, lane = wp.tid()
-    offset, count = power_block_rows(out_y.shape[0], block)
+    offset, count = block_chunk(offsets.shape[0] - 1, block, rows_per_block)
+    if count <= 0:
+        return
     partial = wp.float64(0.0)
     found = wp.int32(0)
     for k in range(lane, count, wp.block_dim()):
@@ -1833,7 +1803,7 @@ def power_step_partials(
         if csr_row_long(offsets, i):
             found = 1
             continue
-        y = power_row(seed, from_signs, diagonal, offsets, columns, values, x, i)
+        y = power_row(wp.int32(0), wp.int32(0), diagonal, offsets, columns, values, x, i)
         out_y[i] = y
         partial += y * y
     # A long row (``csr_row_long``) is the whole block's, after the lanes' pass.
@@ -1842,11 +1812,13 @@ def power_step_partials(
             i = offset + k
             if csr_row_long(offsets, i):
                 y = power_row_block(
-                    seed, from_signs, diagonal, offsets, columns, values, x, i, lane
+                    wp.int32(0), wp.int32(0), diagonal, offsets, columns, values, x, i, lane
                 )
                 if lane == 0:
                     out_y[i] = y
                     partial += y * y
+    if out_partials.shape[0] == 0:
+        return
     total = block_sum(partial)
     if lane == 0:
         out_partials[block] = total

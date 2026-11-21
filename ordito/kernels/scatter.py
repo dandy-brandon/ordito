@@ -563,13 +563,9 @@ def atomic_add_vec3(out_sum: wp.array2d[wp.Float], row: wp.int32, v: wp.vec3) ->
 # ``kernels/reduce``'s declined one: that pooled the exact group sum's two integer words.
 @wp.func
 def peer_summed_add(out_sum: wp.array[Any], index: wp.int32, value: wp.Float):
-    lanes = warp_peer_lanes(index)
-    if lanes == 0:
-        wp.atomic_add(out_sum, index, value)
-    else:
-        total = type(value)(warp_lanes_sum_float(lanes, wp.float64(value)))
-        if warp_lane_leads(lanes) != 0:
-            wp.atomic_add(out_sum, index, total)
+    # The scalar is ``arrival_order_add``'s peer pooling; the vector forms below commit the
+    # ``float64`` lane total straight into a wider accumulator and keep their own bodies.
+    arrival_order_add(out_sum, index, value, ARRIVAL_POOL_PEERS)
 
 
 @wp.func

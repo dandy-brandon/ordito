@@ -12,7 +12,12 @@ from ordito.kernels.array import (
 from ordito.kernels.halfedge import halfedge_endpoints
 from ordito.kernels.predicates import vector_angle
 from ordito.kernels.scatter import claim_row_slot
-from ordito.kernels.triangles import corner_triple, face_normals_and_area
+from ordito.kernels.triangles import (
+    corner_triple,
+    face_normals_and_area,
+    face_pair_angle,
+    ordered_normal_angle,
+)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -78,47 +83,6 @@ def face_edge_keys_and_order(
     # separate identity fill. The upper halves are sort scratch and are never initialized.
     f = wp.int32(wp.tid())
     write_face_edge_keys_and_order(faces, f, base, out_keys, out_order)
-
-
-@wp.func
-def sorted_pair_slot(sorted_keys: wp.array[wp.uint64], i: wp.int32) -> tuple[wp.int32, wp.bool]:
-    """
-    Classify sorted position ``i`` of the packed halfedge keys by the run of equal keys it is in.
-
-    Returns ``(first, unpaired_start)``: ``first`` is the sorted position of the first member when
-    ``i`` belongs to a run of *exactly* two keys -- one undirected edge shared by two faces, the
-    rows ``grouping.group(keys, 2)`` emits and so the rows of ``face_adjacency`` -- and ``-1``
-    otherwise; ``unpaired_start`` is ``True`` on the first position of every other run (a boundary
-    edge, or one shared by three or more faces), so a kernel can flag a non-paired edge exactly
-    once. A kernel launched over every sorted position can therefore act on each adjacency pair
-    with no compacted pair table and no host read of its length. Every neighbour read sits behind
-    its own bounds test.
-    """
-    n = sorted_keys.shape[0]
-    key = sorted_keys[i]
-    prev_same = wp.bool(False)
-    if i > 0:
-        prev_same = sorted_keys[i - 1] == key
-    next_same = wp.bool(False)
-    if i + 1 < n:
-        next_same = sorted_keys[i + 1] == key
-    first = wp.int32(-1)
-    unpaired_start = wp.bool(False)
-    if not prev_same:
-        third_same = wp.bool(False)
-        if i + 2 < n:
-            third_same = sorted_keys[i + 2] == key
-        if next_same and not third_same:
-            first = i
-        else:
-            unpaired_start = True
-    elif not next_same:
-        before_same = wp.bool(False)
-        if i > 1:
-            before_same = sorted_keys[i - 2] == key
-        if not before_same:
-            first = i - 1
-    return first, unpaired_start
 
 
 @wp.func
@@ -349,8 +313,8 @@ def emit_sorted_unshared(
 def normal_pair_angle(face_normals: wp.array[wp.vec3], f0: wp.int32, f1: wp.int32) -> wp.float32:
     # The angle between two faces' held unit normals: what ``face_adjacency_angles`` returns for a
     # row, whether the row comes from a table (``face_adjacency_angles``) or off the sorted keys
-    # (``emit_sorted_normal_angles``).
-    return vector_angle(face_normals[f0], face_normals[f1])
+    # (``emit_sorted_normal_angles``), lower face first (``triangles.ordered_normal_angle``).
+    return ordered_normal_angle(f0, face_normals[f0], f1, face_normals[f1])
 
 
 @wp.kernel
@@ -398,9 +362,9 @@ def face_adjacency_angles_from_positions(
     # formed here where it is read, so the angles are bit-identical and no per-face table is built.
     # The two kernels differ only in where a normal comes from.
     tid = wp.int32(wp.tid())
-    normal_a, _area_a = face_normals_and_area(vertices, faces, face_adjacency[tid, 0])
-    normal_b, _area_b = face_normals_and_area(vertices, faces, face_adjacency[tid, 1])
-    out_angles[tid] = vector_angle(normal_a, normal_b)
+    out_angles[tid] = face_pair_angle(
+        vertices, faces, face_adjacency[tid, 0], face_adjacency[tid, 1]
+    )
 
 
 @wp.kernel
@@ -499,6 +463,24 @@ def adjacency_projection(
     )
 
 
+@wp.func
+def store_projection(
+    row: wp.int32,
+    projection: wp.float32,
+    tolerance: wp.float32,
+    out_projections: wp.array[wp.float32],
+    out_convex: wp.array[wp.bool],
+) -> None:
+    # A pair's projection into ``out_projections`` and its ``< tolerance`` convexity into
+    # ``out_convex``, each a null descriptor or not: ``face_adjacency_projections`` and
+    # ``face_adjacency_convex`` are one kernel, the threshold taken in the launch where the
+    # wrapper once wrote the ``(m,)`` projections and ``wp.map``ped a comparison over them.
+    if out_projections.shape[0] > 0:
+        out_projections[row] = projection
+    if out_convex.shape[0] > 0:
+        out_convex[row] = projection < tolerance
+
+
 @wp.kernel
 def face_adjacency_projections(
     vertices: wp.array[wp.vec3],
@@ -506,31 +488,16 @@ def face_adjacency_projections(
     face_adjacency: wp.array2d[wp.int32],
     face_adjacency_edges: wp.array2d[wp.int32],
     face_adjacency_unshared: wp.array2d[wp.int32],
-    out_projections: wp.array[wp.float32],
-) -> None:
-    tid = wp.int32(wp.tid())
-    out_projections[tid] = adjacency_projection(
-        vertices, face_normals, face_adjacency, face_adjacency_edges, face_adjacency_unshared, tid
-    )
-
-
-@wp.kernel
-def face_adjacency_convex(
-    vertices: wp.array[wp.vec3],
-    face_normals: wp.array[wp.vec3],
-    face_adjacency: wp.array2d[wp.int32],
-    face_adjacency_edges: wp.array2d[wp.int32],
-    face_adjacency_unshared: wp.array2d[wp.int32],
     tolerance: wp.float32,
+    out_projections: wp.array[wp.float32],
     out_convex: wp.array[wp.bool],
 ) -> None:
-    # The projection and its ``< tolerance`` threshold in one launch, where the wrapper used to
-    # write the ``(m,)`` projections and ``wp.map`` a comparison over them.
+    # Each table row's projection and convexity (``store_projection``).
     tid = wp.int32(wp.tid())
     projection = adjacency_projection(
         vertices, face_normals, face_adjacency, face_adjacency_edges, face_adjacency_unshared, tid
     )
-    out_convex[tid] = projection < tolerance
+    store_projection(tid, projection, tolerance, out_projections, out_convex)
 
 
 @wp.func
@@ -561,11 +528,13 @@ def emit_sorted_projections(
     faces: wp.array[wp.int32],
     inclusive: wp.array[wp.int32],
     order: wp.array[wp.int32],
+    tolerance: wp.float32,
     out_projections: wp.array[wp.float32],
+    out_convex: wp.array[wp.bool],
 ) -> None:
     # ``face_adjacency_projections`` with no table supplied, compacted off the sorted halfedge keys
     # exactly as ``emit_sorted_face_pairs`` compacts the pairs, so the rows align with
-    # ``face_adjacency``'s. Differs from ``emit_sorted_convex`` only by the threshold.
+    # ``face_adjacency``'s.
     i = wp.int32(wp.tid())
     row, count = scanned_count(inclusive, i)
     if count == 0:
@@ -573,27 +542,7 @@ def emit_sorted_projections(
     _normal_low, _normal_high, projection = sorted_pair_normals_and_projection(
         vertices, faces, order[i], order[i + 1]
     )
-    out_projections[row] = projection
-
-
-@wp.kernel
-def emit_sorted_convex(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    inclusive: wp.array[wp.int32],
-    order: wp.array[wp.int32],
-    tolerance: wp.float32,
-    out_convex: wp.array[wp.bool],
-) -> None:
-    # ``face_adjacency_convex`` with no table supplied: ``emit_sorted_projections`` thresholded.
-    i = wp.int32(wp.tid())
-    row, count = scanned_count(inclusive, i)
-    if count == 0:
-        return
-    _normal_low, _normal_high, projection = sorted_pair_normals_and_projection(
-        vertices, faces, order[i], order[i + 1]
-    )
-    out_convex[row] = projection < tolerance
+    store_projection(row, projection, tolerance, out_projections, out_convex)
 
 
 @wp.kernel

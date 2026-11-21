@@ -866,10 +866,9 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # one round, and ``state`` is the shared loop word. ``seed_points`` and ``assign_points`` bid
     # into ``best`` and flag through ``commit_beyond``, which check 13 does not follow, and
     # ``split_faces`` rewrites them through ``split_face_at``, which the CPU device's
-    # ``growth_round_serial`` shares; that kernel's ``offsets`` is the split's scan, written in
-    # place where the launched round's ``array_scan`` writes it.
+    # ``growth_round_serial`` shares (its split scan into ``offsets`` goes through
+    # ``array.inclusive_scan_serial``, which check 13 does not follow either).
     ("algorithms.convex_hull", "pick_tetrahedron_corner"): frozenset({"keys"}),
-    ("algorithms.convex_hull", "growth_round_serial"): frozenset({"offsets"}),
     ("algorithms.convex_hull", "start_tetrahedron"): frozenset({"tri", "adj", "best", "counters"}),
     # ``slot_sources`` is in place: a replacement reads its fan face's source and writes its own.
     ("repair", "emit_degree3_replacement"): frozenset({"cursor", "slot_sources"}),

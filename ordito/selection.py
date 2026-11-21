@@ -551,7 +551,7 @@ def fill_face_mask_holes(
         kernel_connected_components.ecl_flatten,
         dim=n_faces,
         inputs=[region_labels],
-        outputs=[mesh_labels],
+        outputs=[mesh_labels, None],
         device=device,
     )
     region_labels = mesh_labels

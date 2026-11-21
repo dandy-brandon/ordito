@@ -718,10 +718,9 @@ def row_vertex_on_boundary(
     vertex: wp.int32,
 ) -> wp.bool:
     # Whether a halfedge at ``vertex`` spans its undirected edge alone -- the boundary code of
-    # ``halfedge.halfedge_mates``, the rule ``kernels/boundary.zero_at_boundary_vertices`` zeroes
-    # by -- read off ``vertex``'s own vertex-face row instead of a mesh-wide pairing: every
-    # halfedge on an edge at ``vertex`` belongs to a face in that row. Quadratic in the row's
-    # length, as the Hessian rows it gates are.
+    # ``halfedge.halfedge_mates`` -- read off ``vertex``'s own vertex-face row instead of a
+    # mesh-wide pairing: every halfedge on an edge at ``vertex`` belongs to a face in that row.
+    # Quadratic in the row's length, as the Hessian rows it gates are.
     for s in range(vf_offsets[vertex], vf_offsets[vertex + 1]):
         f = vf_indices[s]
         for k in range(3):

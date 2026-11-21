@@ -127,29 +127,27 @@ def vertex_tangent_frames(
     # thread's.
     listed = long_rings(ring_offsets)
     gather = normals is None
-    if normals is not None:
-        kernel = kernel_tangent_space.vertex_tangent_frames
-        if listed is not None:
-            kernel = kernel_tangent_space.vertex_tangent_frames_short
-        _launch.launch(
-            kernel,
-            dim=n,
-            inputs=[vertices, faces, normals, ring_offsets, ring_halfedges, is_boundary],
-            outputs=[basis_x, basis_y],
-            device=device,
+    if gather:
+        kernel = (
+            kernel_tangent_space.vertex_tangent_frames_gathered
+            if listed is None
+            else kernel_tangent_space.vertex_tangent_frames_gathered_short
         )
-    else:
-        kernel = kernel_tangent_space.vertex_tangent_frames_gathered
-        if listed is not None:
-            kernel = kernel_tangent_space.vertex_tangent_frames_gathered_short
         normals = _launch.empty(n, dtype=wp.vec3, device=device)
-        _launch.launch(
-            kernel,
-            dim=n,
-            inputs=[vertices, faces, ring_offsets, ring_halfedges, is_boundary],
-            outputs=[basis_x, basis_y, normals],
-            device=device,
+    else:
+        kernel = (
+            kernel_tangent_space.vertex_tangent_frames
+            if listed is None
+            else kernel_tangent_space.vertex_tangent_frames_short
         )
+    # The gathered kernels write the normals they form into the buffer they do not read.
+    _launch.launch(
+        kernel,
+        dim=n,
+        inputs=[vertices, faces, normals, ring_offsets, ring_halfedges, is_boundary],
+        outputs=[basis_x, basis_y, normals],
+        device=device,
+    )
     if listed is not None:
         _launch.launch_tiled(
             kernel_tangent_space.vertex_tangent_frames_long,

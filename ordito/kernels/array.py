@@ -693,21 +693,6 @@ def round_trip_flags(
 
 
 @wp.kernel
-def negated_gather_keys_and_identity(
-    values: wp.array[wp.float32],
-    indices: wp.array[wp.int32],
-    out_keys: wp.array[wp.float32],
-    out_order: wp.array[wp.int32],
-) -> None:
-    # ``keys_and_identity`` of ``-values[indices]``: ascending on the negated value is descending
-    # on the value, so a stable radix sort of these keys ranks the gathered entries largest first
-    # (``remesh._keep_longest_edges``).
-    i = wp.int32(wp.tid())
-    out_keys[i] = -values[indices[i]]
-    out_order[i] = i
-
-
-@wp.kernel
 def arange_repeat(repeats: wp.Int, out_indices: wp.array[wp.Int]) -> None:
     i = wp.int32(wp.tid())
     out_indices[i] = i // repeats
@@ -996,21 +981,6 @@ def greater(a: wp.Scalar, b: wp.Scalar) -> wp.bool:
 
 
 @wp.func
-def greater_equal(a: wp.Scalar, b: wp.Scalar) -> wp.bool:
-    return a >= b
-
-
-@wp.func
-def less(a: wp.Scalar, b: wp.Scalar) -> wp.bool:
-    return a < b
-
-
-@wp.func
-def less_equal(a: wp.Scalar, b: wp.Scalar) -> wp.bool:
-    return a <= b
-
-
-@wp.func
 def is_positive_finite(value: wp.Float) -> wp.bool:
     return value > type(value)(0) and wp.isfinite(value)
 
@@ -1053,6 +1023,16 @@ def binary_search_index(values: wp.array[wp.Scalar], value: wp.Scalar) -> wp.int
         else:
             left = mid + 1
     return result
+
+
+@wp.func
+def inclusive_scan_serial(values: wp.array[wp.int32], n: wp.int32, out_scan: wp.array[wp.int32]):
+    # ``_launch.array_scan(values[:n], out_scan[:n], inclusive=True)`` by one thread (``out_scan``
+    # may be ``values``), for a CPU one-launch round: an integer scan is exact in any order.
+    running = wp.int32(0)
+    for i in range(n):
+        running += values[i]
+        out_scan[i] = running
 
 
 @wp.func
@@ -2292,18 +2272,8 @@ def bit_is_set(words: wp.array[wp.uint32], p: wp.int32) -> wp.bool:
 @wp.func
 def set_bit(words: wp.array[wp.uint32], p: wp.int32):
     # Set bit ``p`` of a bitmask by one ``atomic_or``, for scattered bits mostly on distinct words;
-    # ``set_bit_if_clear`` where many threads hit few words, ``store_ballot_bit`` where thread ``p``
-    # owns bit ``p``.
+    # ``store_counted_ballot_bit`` where thread ``p`` owns bit ``p``.
     wp.atomic_or(words, p >> 5, wp.uint32(1) << wp.uint32(p & 31))
-
-
-@wp.func
-def set_bit_if_clear(words: wp.array[wp.uint32], p: wp.int32):
-    # ``set_bit`` taking the atomic only when the bit reads clear: marks that fall on few words (the
-    # coarse octree depths, a frontier's revisits) serialized the launch an atomic each (11x).
-    mask = wp.uint32(1) << wp.uint32(p & 31)
-    if words[p >> 5] & mask == wp.uint32(0):
-        wp.atomic_or(words, p >> 5, mask)
 
 
 @wp.func
@@ -2457,7 +2427,7 @@ def declare_lazy_kernels(build: Callable[[], object]) -> Callable[[], object]:
 
 def _declare_map_kernels() -> None:
     """Declare the Warp builtins the tree forks, plus this module's own mapped ``@wp.func``s."""
-    dense, single, gathered = map_probe, map_probe_single, map_probe_gathered
+    dense, single = map_probe, map_probe_single
     declare_map_signatures(
         [
             # --- Warp builtins: one generated module each, shared across every wrapper that
@@ -2487,11 +2457,6 @@ def _declare_map_kernels() -> None:
             # --- This module's own mapped ``@wp.func``s. Every scalar argument is spelled
             # with an explicit constructor because a bare Python int at a ``wp.map`` scalar
             # infers ``wp.int32`` whatever the mapped function's own dtype is.
-            (greater_equal, (dense(wp.float32), wp.float32(1)), wp.bool),
-            (greater_equal, (dense(wp.int32), wp.int32(1)), wp.bool),
-            (greater_equal, (single(wp.int32), wp.int32(1)), wp.bool),
-            (greater_equal, (gathered(wp.float32), wp.float32(1)), wp.bool),
-            (greater_equal, (gathered(wp.int32), wp.int32(1)), wp.bool),
             (
                 is_close_scalar,
                 (dense(wp.float32), dense(wp.float32), wp.float32(1), wp.float32(1)),
@@ -2512,8 +2477,6 @@ def _declare_map_kernels() -> None:
                 (single(wp.vec3), single(wp.vec3), wp.float32(1), wp.float32(1)),
                 wp.bool,
             ),
-            (less, (dense(wp.float32), wp.float32(1)), wp.bool),
-            (less, (dense(wp.int32), dense(wp.int32)), wp.bool),
             (nonzero_flag, (dense(wp.float32),), wp.int32),
             (nonzero_flag, (dense(wp.int32),), wp.int32),
             (nonzero_flag, (dense(wp.int8),), wp.int32),
@@ -2773,7 +2736,7 @@ def copy_staged(
 # device, which runs a launch's threads one after another, ors every bit in, set or not, with no
 # branch (an ``if (bit)`` over a random mask cost ``selection.region_boundary_edges``' flagging
 # 1.8x on the CPU). A 0/1 ``int32`` verdict a slot is 32 times the bytes for the same scan.
-# The counted form also adds the ballot's population into ``word_counts[index >> 5]`` (zeroed by
+# It also adds the ballot's population into ``word_counts[index >> 5]`` (zeroed by
 # the caller), so an inclusive scan of the counts in place is ``array.bit_ranks``' table with no
 # ``popcount32`` pass; lanes that diverged ballot separately and both add.
 _BALLOT_BIT_TEMPLATE = """
@@ -2792,7 +2755,6 @@ wp::atomic_or(
 COUNT_CPU
 #endif
 """
-_STORE_BALLOT_BIT = _BALLOT_BIT_TEMPLATE.replace("COUNT_CUDA", "").replace("COUNT_CPU", "")
 _STORE_COUNTED_BALLOT_BIT = _BALLOT_BIT_TEMPLATE.replace(
     "COUNT_CUDA",
     "atomicAdd((int*)wp::data_at_byte_offset(word_counts, "
@@ -2802,10 +2764,6 @@ _STORE_COUNTED_BALLOT_BIT = _BALLOT_BIT_TEMPLATE.replace(
     "wp::atomic_add(wp::data_at_byte_offset(word_counts, "
     "wp::byte_offset(word_counts, index >> 5)), (int)bit);",
 )
-
-
-@wp.func_native(_STORE_BALLOT_BIT)
-def store_ballot_bit(words: wp.array[wp.uint32], index: wp.int32, bit: wp.bool): ...
 
 
 @wp.func_native(_STORE_COUNTED_BALLOT_BIT)

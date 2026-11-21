@@ -359,6 +359,40 @@ def face_normals_and_area(
     return normal, area
 
 
+@wp.func
+def ordered_normal_angle(
+    f0: wp.int32, normal_0: wp.vec3, f1: wp.int32, normal_1: wp.vec3
+) -> wp.float32:
+    """
+    Return the angle between two faces' unit normals, the lower-indexed face's normal first.
+
+    ``predicates.vector_angle`` is not bit-symmetric on CUDA (nvcc contracts its cross and dot
+    products into FMAs by operand position), so an angle that feeds a threshold reads its pair in
+    one order whatever order the caller holds it in: an edge-face table filled in atomic arrival
+    order, a mate, an adjacency row. Every face-pair angle in the tree goes through here.
+    """
+    if f0 <= f1:
+        return vector_angle(normal_0, normal_1)
+    return vector_angle(normal_1, normal_0)
+
+
+@wp.func
+def face_pair_angle(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], f0: wp.int32, f1: wp.int32
+) -> wp.float32:
+    """
+    Return the angle between faces ``f0`` and ``f1``'s unit normals, formed from the positions.
+
+    [`ordered_normal_angle`][ordito.kernels.triangles.ordered_normal_angle] of the normals
+    [`face_normals_and_area`][ordito.kernels.triangles.face_normals_and_area] forms (the ones
+    ``triangles.face_normals_and_areas`` stores), so it equals ``adjacency.face_adjacency_angles``
+    on the stored table bit for bit, whichever face comes first.
+    """
+    normal_0, _area_0 = face_normals_and_area(vertices, faces, f0)
+    normal_1, _area_1 = face_normals_and_area(vertices, faces, f1)
+    return ordered_normal_angle(f0, normal_0, f1, normal_1)
+
+
 @wp.kernel
 def face_normals_and_areas(
     vertices: wp.array[wp.vec3],

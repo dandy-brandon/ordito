@@ -1555,6 +1555,7 @@ def _native_mesh(
     log_rows: int = 1,
 ) -> _NativeMesh:
     """Copy ``topology`` (and ``points``) into arrays with room for the given extra elements."""
+    from ordito.kernels import halfedge as kernel_halfedge
     from ordito.kernels import holes as kernel_holes
 
     n_half = topology.size("nxt")
@@ -1582,16 +1583,21 @@ def _native_mesh(
         positions[: points.size] = points.data[: points.size]
     counts = np.array([n_half, n_verts, n_faces, 0, 0, 0], dtype=np.int32)
     log = np.full((log_rows, 7), -1, dtype=np.int32)
+    counts_wp = wp.array(counts, dtype=wp.int32, device="cpu", copy=False)
+    topo = kernel_halfedge.HalfEdges()
+    topo.next = wp.array(nxt, dtype=wp.int32, device="cpu", copy=False)
+    topo.prev = wp.array(prv, dtype=wp.int32, device="cpu", copy=False)
+    topo.org = wp.array(org, dtype=wp.int32, device="cpu", copy=False)
+    topo.left = wp.array(lft, dtype=wp.int32, device="cpu", copy=False)
+    topo.edge_per_vertex = wp.array(epv, dtype=wp.int32, device="cpu", copy=False)
+    topo.edge_per_face = wp.array(epf, dtype=wp.int32, device="cpu", copy=False)
+    # ``counts[0]`` is the half-edge count ``make_edge`` advances.
+    topo.count = counts_wp
     mesh = kernel_holes.SerialMesh()
-    mesh.nxt = wp.array(nxt, dtype=wp.int32, device="cpu", copy=False)
-    mesh.prv = wp.array(prv, dtype=wp.int32, device="cpu", copy=False)
-    mesh.org = wp.array(org, dtype=wp.int32, device="cpu", copy=False)
-    mesh.lft = wp.array(lft, dtype=wp.int32, device="cpu", copy=False)
-    mesh.edge_per_vertex = wp.array(epv, dtype=wp.int32, device="cpu", copy=False)
-    mesh.edge_per_face = wp.array(epf, dtype=wp.int32, device="cpu", copy=False)
+    mesh.topo = topo
     mesh.region = wp.array(region, dtype=wp.int32, device="cpu", copy=False)
     mesh.points = wp.array(positions, dtype=wp.vec3, device="cpu", copy=False)
-    mesh.counts = wp.array(counts, dtype=wp.int32, device="cpu", copy=False)
+    mesh.counts = counts_wp
     mesh.heap_len = wp.array(np.empty(heap_cap, dtype=np.float32), device="cpu", copy=False)
     mesh.heap_edge = wp.array(np.empty(heap_cap, dtype=np.int32), device="cpu", copy=False)
     mesh.log = wp.array(log, dtype=wp.int32, device="cpu", copy=False)

@@ -503,7 +503,7 @@ def _walk_one_rings(
     device every long ring is listed there and left for ``_rank_long_rings``, which reads the
     walk-start bids returned beside the rings (``None`` when nothing was walked). ``degrees`` is
     the ring sizes when the pairing already formed them and bid into the zeroed ``starts``
-    (``pair_bucketed_halfedges_and_ring_starts``, ``pair_sorted_halfedges_and_ring_starts``);
+    (``pair_bucketed_halfedges``' and ``pair_sorted_halfedges``' ring outputs);
     ``None`` forms both here in one pass over ``twins``.
     """
     device = faces.device
@@ -810,22 +810,13 @@ def _pair_sorted_halfedges(
     n_halfedges = faces.size // 3 * 3
     twins = _launch.empty(n_halfedges, dtype=wp.int32, device=device)
     sorted_keys, key_order = od.adjacency.sorted_face_edge_keys(faces, n_vertices=n_vertices)
-    if degrees_and_starts is None:
-        _launch.launch(
-            kernel_halfedge.pair_sorted_halfedges,
-            dim=n_halfedges,
-            inputs=[sorted_keys, key_order, faces],
-            outputs=[twins, defect_counts],
-            device=device,
-        )
-    else:
-        _launch.launch(
-            kernel_halfedge.pair_sorted_halfedges_and_ring_starts,
-            dim=n_halfedges,
-            inputs=[sorted_keys, key_order, faces],
-            outputs=[twins, defect_counts, *degrees_and_starts],
-            device=device,
-        )
+    _launch.launch(
+        kernel_halfedge.pair_sorted_halfedges,
+        dim=n_halfedges,
+        inputs=[sorted_keys, key_order, faces],
+        outputs=[twins, defect_counts, *(degrees_and_starts or (None, None))],
+        device=device,
+    )
     return twins
 
 
@@ -857,15 +848,15 @@ def _pair_bucketed_halfedges(
     if defect_counts is not None:
         zeroed = defect_counts
     twins = _launch.empty(n_halfedges, dtype=wp.int32, device=device)
-    if ring_starts_at is None:
-        kernel, extra = kernel_halfedge.pair_bucketed_halfedges, []
-    else:
-        ring_starts = _launch.view(zeroed, ring_starts_at, ring_starts_at + 2 * n_vertices)
-        kernel, extra = kernel_halfedge.pair_bucketed_halfedges_and_ring_starts, [ring_starts]
+    ring_starts = (
+        None
+        if ring_starts_at is None
+        else _launch.view(zeroed, ring_starts_at, ring_starts_at + 2 * n_vertices)
+    )
     _launch.launch(
-        kernel,
+        kernel_halfedge.pair_bucketed_halfedges,
         dim=n_halfedges,
-        inputs=[faces, degrees, cursors, buckets, twins, zeroed, *extra],
+        inputs=[faces, degrees, cursors, buckets, twins, zeroed, ring_starts],
         device=device,
     )
     return twins, degrees, zeroed

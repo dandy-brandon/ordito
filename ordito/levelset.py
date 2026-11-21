@@ -1569,8 +1569,8 @@ def thicken_mesh(
     normal_sums, normal_pass = scatter_normal_sums(
         n_vertices,
         faces,
-        kernel_normals.SCATTER_ANGLE_WEIGHTED_NORMALS[wp.float64],
-        [vertices, faces],
+        kernel_normals.SCATTER_ANGLE_WEIGHTED_NORMALS[False, False][wp.float64],
+        [vertices, faces, None, None],
     )
     rim = od.boundary.oriented_boundary_edges(vertices, faces, mates=mates)
     n_rim = int(rim.shape[0])

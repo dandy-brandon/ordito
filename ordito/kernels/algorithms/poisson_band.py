@@ -57,12 +57,9 @@ from ordito.kernels.algorithms.conjugate_gradient import (
 )
 from ordito.kernels.array import (
     LOOP_CONDITION,
-    cube_corner_offset,
     declare_block_dims,
     ravel_index,
     trilinear_cell,
-    trilinear_corner,
-    trilinear_weight,
     unravel_cube,
 )
 from ordito.kernels.levelset import (
@@ -75,44 +72,24 @@ from ordito.kernels.levelset import (
     mc_values_cross,
 )
 from ordito.kernels.reconstruction import (
-    normalized_field_component,
+    BRICK_SHIFT,
+    band_node,
+    normalized_divergence,
     poisson_grid_index,
+    poisson_lerp_corners,
+    poisson_neighbor_degree,
     poisson_prolong_node,
     screened_laplacian_row,
     screened_laplacian_scaled_inverse_diagonal,
-    splat_cell,
-    splat_sample,
+    screened_row_value,
 )
 from ordito.kernels.reduce import NVRTC12_STRUCT_TERM_OPTIONS, block_sum, term_sum_1d
 
 wp.set_module_options({"enable_backward": False})
 
-# Nodes along a brick's edge, as a shift, and nodes in a brick.
-BRICK_SHIFT = 3
-BRICK_NODES = 512
-
-
 # ---------------------------------------------------------------------------------------------
 # Brick topology
 # ---------------------------------------------------------------------------------------------
-
-
-@wp.func
-def brick_index(i: wp.int32, j: wp.int32, k: wp.int32, nbk: wp.int32) -> wp.int32:
-    # Flat index into the ``nbk**3`` brick map of the brick holding node ``(i, j, k)``.
-    return ravel_index(i >> BRICK_SHIFT, j >> BRICK_SHIFT, k >> BRICK_SHIFT, nbk, nbk)
-
-
-@wp.func
-def band_node(
-    brick_map: wp.array[wp.int32], nbk: wp.int32, i: wp.int32, j: wp.int32, k: wp.int32
-) -> wp.int32:
-    # Band storage index of node ``(i, j, k)`` (all three non-negative), or ``-1`` when its brick
-    # is not in the band.
-    slot = brick_map[brick_index(i, j, k, nbk)]
-    if slot < 0:
-        return wp.int32(-1)
-    return slot * BRICK_NODES + ((((i & 7) << 3) + (j & 7)) << 3) + (k & 7)
 
 
 @wp.func
@@ -258,81 +235,6 @@ def compact_bricks(
 
 
 @wp.kernel
-def band_splat(
-    points: wp.array[wp.vec3],
-    normals: wp.array[wp.vec3],
-    lower: wp.vec3,
-    inv_cell: wp.float32,
-    res: wp.int32,
-    confidence: wp.int32,
-    brick_map: wp.array[wp.int32],
-    nbk: wp.int32,
-    out_vx: wp.array[wp.float32],
-    out_vy: wp.array[wp.float32],
-    out_vz: wp.array[wp.float32],
-    out_w: wp.array[wp.float32],
-) -> None:
-    # ``kernels/reconstruction.splat_normals`` into the band's storage: the same unit direction,
-    # confidence weight and trilinear corners. Every corner is in the band (``mark_sample_bricks``).
-    # The deterministic setting's form on CUDA is ``band_splat_keys`` and ``sum_splat_chunks``.
-    s = wp.int32(wp.tid())
-    base, next_corner, fractions, n, weight = splat_sample(
-        points, normals, lower, inv_cell, res, confidence, s
-    )
-    for di in range(2):
-        for dj in range(2):
-            for dk in range(2):
-                w = trilinear_weight(fractions, di, dj, dk) * weight
-                corner = trilinear_corner(base, next_corner, wp.vec3i(di, dj, dk))
-                idx = band_node(brick_map, nbk, corner[0], corner[1], corner[2])
-                wp.atomic_add(out_vx, idx, w * n[0])
-                wp.atomic_add(out_vy, idx, w * n[1])
-                wp.atomic_add(out_vz, idx, w * n[2])
-                wp.atomic_add(out_w, idx, w)
-
-
-@wp.kernel
-def band_splat_keys(
-    points: wp.array[wp.vec3],
-    lower: wp.vec3,
-    inv_cell: wp.float32,
-    res: wp.int32,
-    brick_map: wp.array[wp.int32],
-    nbk: wp.int32,
-    n_nodes: wp.int32,
-    out_keys: wp.array[wp.int32],
-    out_order: wp.array[wp.int32],
-) -> None:
-    # ``kernels/reconstruction.splat_corner_keys`` into the band's storage, for
-    # ``sum_splat_chunks``: they differ only in the node index. A corner off the band (none, by
-    # ``mark_sample_bricks``) takes the sentinel ``n_nodes``.
-    s = wp.int32(wp.tid())
-    base, next_corner, _fractions = splat_cell(points, lower, inv_cell, res, s)
-    for c in range(8):
-        corner = trilinear_corner(base, next_corner, cube_corner_offset(c))
-        idx = band_node(brick_map, nbk, corner[0], corner[1], corner[2])
-        out_keys[8 * s + c] = wp.where(idx < 0, n_nodes, idx)
-        out_order[8 * s + c] = 8 * s + c
-
-
-@wp.func
-def band_field_component(
-    field: wp.array[wp.float32],
-    weights: wp.array[wp.float32],
-    brick_map: wp.array[wp.int32],
-    nbk: wp.int32,
-    i: wp.int32,
-    j: wp.int32,
-    k: wp.int32,
-) -> wp.float32:
-    # ``normalized_field_component`` at a band node, zero off the band (no sample reaches there).
-    idx = band_node(brick_map, nbk, i, j, k)
-    if idx < 0:
-        return wp.float32(0.0)
-    return normalized_field_component(field, weights, idx)
-
-
-@wp.kernel
 def band_rhs(
     brick_coords: wp.array[wp.vec3i],
     brick_map: wp.array[wp.int32],
@@ -344,35 +246,15 @@ def band_rhs(
     weights: wp.array[wp.float32],
     out_b: wp.array[wp.float32],
 ) -> None:
-    # ``poisson_level_setup``'s right-hand side ``-div V`` on the band: the same normalized central
-    # differences, one-sided on the lattice boundary.
+    # ``poisson_level_setup``'s right-hand side ``-div V`` on the band (``normalized_divergence``,
+    # which reads a component off the band as zero). The two kernels differ only in how a thread
+    # finds its node: a band slot (overhanging slots write zero) or a dense grid point.
     n = wp.int32(wp.tid())
     g = band_coordinates(brick_coords, n)
     if not node_live(g, res):
         out_b[n] = 0.0
         return
-    i = g[0]
-    j = g[1]
-    k = g[2]
-    ip = wp.min(i + 1, res - 1)
-    im = wp.max(i - 1, 0)
-    jp = wp.min(j + 1, res - 1)
-    jm = wp.max(j - 1, 0)
-    kp = wp.min(k + 1, res - 1)
-    km = wp.max(k - 1, 0)
-    dx = (
-        band_field_component(vx, weights, brick_map, nbk, ip, j, k)
-        - band_field_component(vx, weights, brick_map, nbk, im, j, k)
-    ) / wp.float32(ip - im)
-    dy = (
-        band_field_component(vy, weights, brick_map, nbk, i, jp, k)
-        - band_field_component(vy, weights, brick_map, nbk, i, jm, k)
-    ) / wp.float32(jp - jm)
-    dz = (
-        band_field_component(vz, weights, brick_map, nbk, i, j, kp)
-        - band_field_component(vz, weights, brick_map, nbk, i, j, km)
-    ) / wp.float32(kp - km)
-    out_b[n] = -(dx + dy + dz)
+    out_b[n] = normalized_divergence(vx, vy, vz, weights, brick_map, nbk, res, g[0], g[1], g[2])
 
 
 @wp.func
@@ -579,6 +461,52 @@ def dense_base_setup(
 
 
 @wp.func
+def band_value(
+    brick_map: wp.array[wp.int32],
+    nbk: wp.int32,
+    field: wp.array[wp.float32],
+    i: wp.int32,
+    j: wp.int32,
+    k: wp.int32,
+) -> wp.vec2:
+    # ``field`` at band node ``(i, j, k)`` and whether the band holds it (``(0, 0)`` when not).
+    idx = band_node(brick_map, nbk, i, j, k)
+    if idx < 0:
+        return wp.vec2(0.0, 0.0)
+    return wp.vec2(field[idx], 1.0)
+
+
+@wp.func
+def band_cell_sample(
+    brick_map: wp.array[wp.int32],
+    nbk: wp.int32,
+    field: wp.array[wp.float32],
+    lo: wp.vec3i,
+    hi: wp.vec3i,
+    fractions: wp.vec3,
+) -> wp.vec2:
+    # The band's ``field`` trilinearly in the cell of corners ``lo`` and ``hi`` at ``fractions``,
+    # and whether every corner is in the band: the corners gathered as ``poisson_sample_grid``
+    # gathers them and evaluated by its nested lerp (``poisson_lerp_corners``), so a band and the
+    # dense grid give one value for one set of corners.
+    c000 = band_value(brick_map, nbk, field, lo[0], lo[1], lo[2])
+    c100 = band_value(brick_map, nbk, field, hi[0], lo[1], lo[2])
+    c010 = band_value(brick_map, nbk, field, lo[0], hi[1], lo[2])
+    c110 = band_value(brick_map, nbk, field, hi[0], hi[1], lo[2])
+    c001 = band_value(brick_map, nbk, field, lo[0], lo[1], hi[2])
+    c101 = band_value(brick_map, nbk, field, hi[0], lo[1], hi[2])
+    c011 = band_value(brick_map, nbk, field, lo[0], hi[1], hi[2])
+    c111 = band_value(brick_map, nbk, field, hi[0], hi[1], hi[2])
+    low = wp.vec4(c000[0], c100[0], c010[0], c110[0])
+    high = wp.vec4(c001[0], c101[0], c011[0], c111[0])
+    found = wp.min(
+        wp.min(wp.min(c000[1], c100[1]), wp.min(c010[1], c110[1])),
+        wp.min(wp.min(c001[1], c101[1]), wp.min(c011[1], c111[1])),
+    )
+    return wp.vec2(poisson_lerp_corners(low, high, fractions), found)
+
+
+@wp.func
 def band_prolong(
     coarse_map: wp.array[wp.int32],
     coarse: wp.array[wp.float32],
@@ -590,30 +518,15 @@ def band_prolong(
 ) -> wp.vec2:
     # ``(P x_coarse)`` at fine node ``(i, j, k)`` and whether every coarse node it reads exists:
     # ``poisson_prolong_node`` on a dense coarse level (``coarse_map`` empty), the same trilinear
-    # factor-2 average on a band one.
+    # factor-2 interpolation on a band one (``band_cell_sample``). An even index sits on coarse
+    # node ``i / 2`` at fraction 0 and reads only that node (both corners), where the dense form
+    # also reads the next one at weight 0, which a band may lack.
     if coarse_map.shape[0] == 0:
         return wp.vec2(poisson_prolong_node(coarse, res_c, i, j, k), 1.0)
-    i0 = i >> 1
-    j0 = j >> 1
-    k0 = k >> 1
-    i1 = (i + 1) >> 1
-    j1 = (j + 1) >> 1
-    k1 = (k + 1) >> 1
-    total = wp.float32(0.0)
-    found = wp.float32(1.0)
-    for c in range(8):
-        idx = band_node(
-            coarse_map,
-            nbk_c,
-            wp.where((c & 4) == 0, i0, i1),
-            wp.where((c & 2) == 0, j0, j1),
-            wp.where((c & 1) == 0, k0, k1),
-        )
-        if idx < 0:
-            found = 0.0
-        else:
-            total += coarse[idx]
-    return wp.vec2(total * 0.125, found)
+    lo = wp.vec3i(i >> 1, j >> 1, k >> 1)
+    hi = wp.vec3i((i + 1) >> 1, (j + 1) >> 1, (k + 1) >> 1)
+    fractions = wp.vec3(wp.float32(i & 1) * 0.5, wp.float32(j & 1) * 0.5, wp.float32(k & 1) * 0.5)
+    return band_cell_sample(coarse_map, nbk_c, coarse, lo, hi, fractions)
 
 
 @wp.func
@@ -666,8 +579,11 @@ def band_row(
     n: wp.int32,
 ) -> wp.float32:
     # Row ``n`` of ``A_band x`` for ``A = lap * L_N + screen * diag(W)`` with every out-of-band
-    # neighbour at zero -- ``screened_laplacian_row`` on the band, its ghosts having been moved to
-    # the right-hand side by ``band_level_setup``. Zero on an overhanging slot.
+    # neighbour at zero -- ``screened_laplacian_row`` on the band (the same degree and
+    # ``screened_row_value``), its ghosts having been moved to the right-hand side by
+    # ``band_level_setup``. The two differ in the neighbour gather: an in-brick step or a
+    # brick-map lookup here, a grid index there. Zero on an overhanging slot. Not merged into the
+    # dense row, whose CG mat-vec would then carry the band's branch.
     g = band_coordinates(brick_coords, n)
     if not node_live(g, res):
         return wp.float32(0.0)
@@ -677,40 +593,34 @@ def band_row(
     li = (n >> 6) & 7
     lj = (n >> 3) & 7
     lk = n & 7
-    deg = wp.float32(0.0)
+    deg = poisson_neighbor_degree(i, j, k, res)
     acc = wp.float32(0.0)
     if i + 1 < res:
-        deg += 1.0
         idx = band_neighbor(brick_map, nbk, n, 64, li == 7, i + 1, j, k)
         if idx >= 0:
             acc += x[idx]
     if i > 0:
-        deg += 1.0
         idx = band_neighbor(brick_map, nbk, n, -64, li == 0, i - 1, j, k)
         if idx >= 0:
             acc += x[idx]
     if j + 1 < res:
-        deg += 1.0
         idx = band_neighbor(brick_map, nbk, n, 8, lj == 7, i, j + 1, k)
         if idx >= 0:
             acc += x[idx]
     if j > 0:
-        deg += 1.0
         idx = band_neighbor(brick_map, nbk, n, -8, lj == 0, i, j - 1, k)
         if idx >= 0:
             acc += x[idx]
     if k + 1 < res:
-        deg += 1.0
         idx = band_neighbor(brick_map, nbk, n, 1, lk == 7, i, j, k + 1)
         if idx >= 0:
             acc += x[idx]
     if k > 0:
-        deg += 1.0
         idx = band_neighbor(brick_map, nbk, n, -1, lk == 0, i, j, k - 1)
         if idx >= 0:
             acc += x[idx]
     xc = x[n]
-    return lap * (deg * xc - acc) + screen * weights[n] * xc
+    return screened_row_value(lap, deg, acc, screen, weights[n], xc)
 
 
 @wp.func
@@ -725,38 +635,31 @@ def band_ghost_sum(
     i: wp.int32,
     j: wp.int32,
     k: wp.int32,
-) -> wp.vec3:
-    # ``(degree, sum of the out-of-band neighbours' Dirichlet values, found)`` at band node
+) -> wp.vec2:
+    # ``(sum of the out-of-band neighbours' Dirichlet values, found)`` at band node
     # ``(i, j, k)``: what a band row moves onto its right-hand side. ``found`` is 0 when a ghost
     # read a coarse node the coarse band lacks. Shared by the solve's setup (``band_level_setup``)
     # and the residual the FAS restriction reads (``band_residual``), so both fold the same ghosts.
-    deg = wp.float32(0.0)
     ghosts = wp.vec2(0.0, 1.0)
     if i + 1 < res:
-        deg += 1.0
         ghost = band_ghost(brick_map, nbk, coarse_map, coarse, nbk_c, res_c, i + 1, j, k)
         ghosts = wp.vec2(ghosts[0] + ghost[0], wp.min(ghosts[1], ghost[1]))
     if i > 0:
-        deg += 1.0
         ghost = band_ghost(brick_map, nbk, coarse_map, coarse, nbk_c, res_c, i - 1, j, k)
         ghosts = wp.vec2(ghosts[0] + ghost[0], wp.min(ghosts[1], ghost[1]))
     if j + 1 < res:
-        deg += 1.0
         ghost = band_ghost(brick_map, nbk, coarse_map, coarse, nbk_c, res_c, i, j + 1, k)
         ghosts = wp.vec2(ghosts[0] + ghost[0], wp.min(ghosts[1], ghost[1]))
     if j > 0:
-        deg += 1.0
         ghost = band_ghost(brick_map, nbk, coarse_map, coarse, nbk_c, res_c, i, j - 1, k)
         ghosts = wp.vec2(ghosts[0] + ghost[0], wp.min(ghosts[1], ghost[1]))
     if k + 1 < res:
-        deg += 1.0
         ghost = band_ghost(brick_map, nbk, coarse_map, coarse, nbk_c, res_c, i, j, k + 1)
         ghosts = wp.vec2(ghosts[0] + ghost[0], wp.min(ghosts[1], ghost[1]))
     if k > 0:
-        deg += 1.0
         ghost = band_ghost(brick_map, nbk, coarse_map, coarse, nbk_c, res_c, i, j, k - 1)
         ghosts = wp.vec2(ghosts[0] + ghost[0], wp.min(ghosts[1], ghost[1]))
-    return wp.vec3(deg, ghosts[0], ghosts[1])
+    return ghosts
 
 
 @wp.kernel
@@ -781,9 +684,10 @@ def band_level_setup(
 ) -> None:
     # The band solve's right-hand side ``b + lap * sum ghosts`` (every out-of-band neighbour's
     # Dirichlet value moved onto it), its start ``x`` and the Jacobi inverse diagonal
-    # ``1 / (lap * deg + screen * W)``. The start is the prolonged coarse solution when
-    # ``previous`` is empty (the cascade); otherwise ``x`` is corrected in place by the prolonged
-    # change of the coarse solution since ``previous`` (an FAS cycle's coarse-grid correction).
+    # ``1 / (lap * deg + screen * W)`` (``screened_laplacian_scaled_inverse_diagonal``, undamped).
+    # The start is the prolonged coarse solution when ``previous`` is empty (the cascade);
+    # otherwise ``x`` is corrected in place by the prolonged change of the coarse solution since
+    # ``previous`` (an FAS cycle's coarse-grid correction).
     # Overhanging slots are all zero. A coarse node a ghost or the start reads but the coarse band
     # lacks is counted.
     n = wp.int32(wp.tid())
@@ -798,14 +702,16 @@ def band_level_setup(
     k = g[2]
     ghosts = band_ghost_sum(brick_map, nbk, res, coarse_map, coarse, nbk_c, res_c, i, j, k)
     start = band_prolong(coarse_map, coarse, nbk_c, res_c, i, j, k)
-    if ghosts[2] == 0.0 or start[1] == 0.0:
+    if ghosts[1] == 0.0 or start[1] == 0.0:
         wp.atomic_add(out_missing, 0, 1)
-    out_rhs[n] = b[n] + lap * ghosts[1]
+    out_rhs[n] = b[n] + lap * ghosts[0]
     if previous.shape[0] == 0:
         x[n] = start[0]
     else:
         x[n] = x[n] + (start[0] - band_prolong(coarse_map, previous, nbk_c, res_c, i, j, k)[0])
-    out_inv_diag[n] = 1.0 / (lap * ghosts[0] + screen * weights[n])
+    out_inv_diag[n] = screened_laplacian_scaled_inverse_diagonal(
+        lap, weights[n], screen, wp.float32(1.0), res, i, j, k
+    )
 
 
 # ---------------------------------------------------------------------------------------------
@@ -841,7 +747,7 @@ def band_residual(
     ghosts = band_ghost_sum(brick_map, nbk, res, coarse_map, coarse, nbk_c, res_c, g[0], g[1], g[2])
     out_r[n] = (
         b[n]
-        + lap * ghosts[1]
+        + lap * ghosts[0]
         - band_row(brick_coords, brick_map, nbk, res, lap, weights, screen, x, n)
     )
 
@@ -1149,20 +1055,13 @@ def band_sample_at_point(
     nbk: wp.int32,
     x: wp.array[wp.float32],
 ) -> wp.float32:
-    # The finest band's solution at a sample, trilinearly (``sample_field_trilinear``'s cell and
-    # weights); every corner is in the band (``mark_sample_bricks``).
-    g = (point - lower) * inv_cell
-    base, next_corner, fractions = trilinear_cell(g, wp.vec3i(res, res, res))
-    acc = wp.float32(0.0)
-    for di in range(2):
-        for dj in range(2):
-            for dk in range(2):
-                corner = trilinear_corner(base, next_corner, wp.vec3i(di, dj, dk))
-                acc += (
-                    trilinear_weight(fractions, di, dj, dk)
-                    * x[band_node(brick_map, nbk, corner[0], corner[1], corner[2])]
-                )
-    return acc
+    # The finest band's solution at a sample, trilinearly: ``poisson_sample_grid``'s cell and
+    # evaluation on the band (``band_cell_sample``); every corner is in the band
+    # (``mark_sample_bricks``).
+    base, next_corner, fractions = trilinear_cell(
+        (point - lower) * inv_cell, wp.vec3i(res, res, res)
+    )
+    return band_cell_sample(brick_map, nbk, x, base, next_corner, fractions)[0]
 
 
 @wp.kernel

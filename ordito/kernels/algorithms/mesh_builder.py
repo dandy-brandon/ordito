@@ -18,13 +18,14 @@ conflict, renumbered locally, in their global order. Its rings are exact where a
 star is present (``complete``); the hole walk of the complicating-face test continues past them
 through ``hole_next``, the single hole edge leaving each clean vertex.
 
-The records: half-edge ``2 e`` and ``2 e + 1`` are the two sides of edge ``e``,
-``next`` / ``prev`` rotate around the origin, ``-1`` is an invalid vertex, face or edge.
+The records are ``kernels/halfedge.HalfEdges``, edited through that module's splice functions.
 """
 
 import warp as wp
 
 from ordito.kernels.array import edge_twin
+from ordito.kernels.halfedge import HalfEdges, find_edge, make_edge, set_left, set_org, splice
+from ordito.kernels.predicates import vector_angle
 
 wp.set_module_options({"enable_backward": False})
 
@@ -45,167 +46,6 @@ COMPLICATING_ROUNDS = 3
 EDGE_KEPT = wp.int32(0)
 EDGE_VACATED = wp.int32(1)
 EDGE_LONE = wp.int32(2)
-
-
-@wp.struct
-class HalfEdges:
-    """The half-edge records and the per-vertex and per-face entry edges, plus the record count."""
-
-    next: wp.array[wp.int32]
-    prev: wp.array[wp.int32]
-    org: wp.array[wp.int32]
-    left: wp.array[wp.int32]
-    edge_per_vertex: wp.array[wp.int32]
-    edge_per_face: wp.array[wp.int32]
-    count: wp.array[wp.int32]
-
-
-@wp.func
-def set_org_ring(t: HalfEdges, a: wp.int32, v: wp.int32) -> None:
-    # Every edge of ``a``'s origin ring.
-    t.org[a] = v
-    i = t.next[a]
-    while i != a:
-        t.org[i] = v
-        i = t.next[i]
-
-
-@wp.func
-def set_left_ring(t: HalfEdges, a: wp.int32, f: wp.int32) -> None:
-    # Every edge of ``a``'s left ring.
-    t.left[a] = f
-    i = t.prev[edge_twin(a)]
-    while i != a:
-        t.left[i] = f
-        i = t.prev[edge_twin(i)]
-
-
-@wp.func
-def from_same_origin_ring(t: HalfEdges, a: wp.int32, b: wp.int32) -> wp.bool:
-    ia = a
-    ib = b
-    while True:
-        if ia == ib:
-            return True
-        ia = t.next[ia]
-        if ia == a:
-            return False
-        if ia == ib:
-            return True
-        ib = t.prev[ib]
-        if ib == b:
-            return False
-    return False
-
-
-@wp.func
-def from_same_left_ring(t: HalfEdges, a: wp.int32, b: wp.int32) -> wp.bool:
-    ia = a
-    ib = b
-    while True:
-        if ia == ib:
-            return True
-        ia = t.prev[edge_twin(ia)]
-        if ia == a:
-            return False
-        if ia == ib:
-            return True
-        ib = edge_twin(t.next[ib])
-        if ib == b:
-            return False
-    return False
-
-
-@wp.func
-def splice(t: HalfEdges, a: wp.int32, b: wp.int32) -> None:
-    # Merge the origin rings of ``a`` and ``b``, or split them if they
-    # are one, carrying the origin and left ids across.
-    if a == b:
-        return
-    an = t.next[a]
-    bn = t.next[b]
-    ao = t.org[a]
-    bo = t.org[b]
-    al = t.left[a]
-    bl = t.left[b]
-    same_org = ao == bo
-    same_left = al == bl
-    if not same_org:
-        if ao >= 0:
-            set_org_ring(t, b, ao)
-        elif bo >= 0:
-            set_org_ring(t, a, bo)
-    if not same_left:
-        if al >= 0:
-            set_left_ring(t, b, al)
-        elif bl >= 0:
-            set_left_ring(t, a, bl)
-    t.next[a] = bn
-    t.next[b] = an
-    an_prev = t.prev[an]
-    t.prev[an] = t.prev[bn]
-    t.prev[bn] = an_prev
-    if same_org and t.org[b] >= 0:
-        set_org_ring(t, b, -1)
-        v = t.org[a]
-        if not from_same_origin_ring(t, t.edge_per_vertex[v], a):
-            t.edge_per_vertex[v] = a
-    if same_left and t.left[b] >= 0:
-        set_left_ring(t, b, -1)
-        f = t.left[a]
-        if not from_same_left_ring(t, t.edge_per_face[f], a):
-            t.edge_per_face[f] = a
-
-
-@wp.func
-def set_org(t: HalfEdges, a: wp.int32, v: wp.int32) -> None:
-    old = t.org[a]
-    if v == old:
-        return
-    set_org_ring(t, a, v)
-    if old >= 0:
-        t.edge_per_vertex[old] = -1
-    if v >= 0:
-        t.edge_per_vertex[v] = a
-
-
-@wp.func
-def set_left(t: HalfEdges, a: wp.int32, f: wp.int32) -> None:
-    old = t.left[a]
-    if f == old:
-        return
-    set_left_ring(t, a, f)
-    if old >= 0:
-        t.edge_per_face[old] = -1
-    if f >= 0:
-        t.edge_per_face[f] = a
-
-
-@wp.func
-def make_edge(t: HalfEdges) -> wp.int32:
-    h = t.count[0]
-    t.count[0] = h + 2
-    for side in range(2):
-        t.next[h + side] = h + side
-        t.prev[h + side] = h + side
-        t.org[h + side] = -1
-        t.left[h + side] = -1
-    return h
-
-
-@wp.func
-def find_edge(t: HalfEdges, o: wp.int32, d: wp.int32) -> wp.int32:
-    e0 = t.edge_per_vertex[o]
-    if e0 < 0:
-        return -1
-    e = e0
-    while True:
-        if t.org[edge_twin(e)] == d:
-            return e
-        e = t.next[e]
-        if e == e0:
-            return -1
-    return -1
 
 
 @wp.func
@@ -354,14 +194,14 @@ def same_hole_returns(
 @wp.func
 def wedge_angle(t: HalfEdges, points: wp.array[wp.vec3], e0: wp.int32) -> wp.float32:
     # The angle the faces after hole edge ``e0`` span around its origin, rotating clockwise to
-    # the next gap, each angle as ``atan2(|a x b|, a . b)``.
+    # the next gap, each angle ``predicates.vector_angle``'s.
     total = wp.float32(0.0)
     e = e0
     while t.left[edge_twin(e)] >= 0:
         d1 = points[t.org[edge_twin(e)]] - points[t.org[e]]
         e = t.prev[e]
         d0 = points[t.org[edge_twin(e)]] - points[t.org[e]]
-        total += wp.atan2(wp.length(wp.cross(d0, d1)), wp.dot(d0, d1))
+        total += vector_angle(d0, d1)
     return total
 
 

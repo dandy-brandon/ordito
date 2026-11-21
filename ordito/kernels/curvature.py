@@ -19,7 +19,6 @@ from ordito.kernels.predicates import (
     any_perpendicular,
     reference_tangent,
     segment_aabb,
-    vector_angle,
 )
 from ordito.kernels.scatter import peer_summed_add_corner_triple
 from ordito.kernels.triangles import (
@@ -27,6 +26,7 @@ from ordito.kernels.triangles import (
     face_normals_and_area,
     face_vertices_vec3d,
     local_corner,
+    ordered_normal_angle,
 )
 
 wp.set_module_options({"enable_backward": False})
@@ -434,20 +434,11 @@ def extreme_curvatures(mean: wp.float64, gaussian: wp.float64) -> tuple[wp.float
 
 
 @wp.func
-def unit_face_normal_d(cross: wp.vec3d) -> wp.vec3d:
-    # A face's unit normal from its unnormalized one, zero for a face with no normal.
-    normal = wp.vec3d()
-    if wp.length(cross) > wp.float64(0.0):
-        normal = wp.normalize(cross)
-    return normal
-
-
-@wp.func
 def signed_dihedral_of_normals(
     normal_f: wp.vec3d, normal_g: wp.vec3d, direction: wp.vec3d
 ) -> wp.float64:
-    # ``signed_dihedral_d`` from the two faces' unit normals (``unit_face_normal_d``), for a walk
-    # that reads them from a face table.
+    # ``signed_dihedral_d`` from the two faces' unit normals (``wp.normalize``: zero for a face
+    # with no normal), for a walk that reads them from a face table.
     length = wp.length(direction)
     cs = wp.dot(normal_f, normal_g)
     sn = wp.float64(0.0)
@@ -466,9 +457,7 @@ def signed_dihedral_d(cross_f: wp.vec3d, cross_g: wp.vec3d, direction: wp.vec3d)
     # walks it, positive where the surface bends away from the normals (a convex edge of an
     # outward-wound solid). A face with no normal or an edge with no length reads zero. The rule
     # of VTK's mean curvature and of the normal-cycle tensor alike.
-    return signed_dihedral_of_normals(
-        unit_face_normal_d(cross_f), unit_face_normal_d(cross_g), direction
-    )
+    return signed_dihedral_of_normals(wp.normalize(cross_f), wp.normalize(cross_g), direction)
 
 
 @wp.func
@@ -858,13 +847,13 @@ def taubin_principal_curvatures(
 def normal_cycle_face_terms(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], out_face_terms: wp.array2d[wp.float64]
 ) -> None:
-    # Face ``f``'s unit normal (columns 0-2, ``unit_face_normal_d``) and area (column 3), which
+    # Face ``f``'s unit normal (columns 0-2, ``wp.normalize``) and area (column 3), which
     # the normal-cycle walk read at each of the face's corners and, for the normal, again at each
     # of its halfedges' mates. Bit-identical to forming them in the walk.
     f = wp.int32(wp.tid())
     p0, p1, p2 = face_vertices_vec3d(vertices, faces, f)
     cross = wp.cross(p1 - p0, p2 - p0)
-    normal = unit_face_normal_d(cross)
+    normal = wp.normalize(cross)
     out_face_terms[f, 0] = normal[0]
     out_face_terms[f, 1] = normal[1]
     out_face_terms[f, 2] = normal[2]
@@ -1108,8 +1097,9 @@ def face_pair_dihedrals(
     # its own pair, so taking them together writes no intermediate table.
     #
     # Each quantity is the public one exactly, spelled with the same helpers: the angle is
-    # ``vector_angle`` of the two face normals (``adjacency.face_adjacency_angles``); convexity is
-    # ``unshared_projection`` against ``TOLERANCE_MERGE`` (``adjacency.face_adjacency_convex``);
+    # ``triangles.ordered_normal_angle`` of the two face normals
+    # (``adjacency.face_adjacency_angles``); convexity is ``unshared_projection`` against
+    # ``TOLERANCE_MERGE`` (``adjacency.face_adjacency_convex``);
     # the bounds are ``segment_aabb`` (``edges.edge_aabb_bounds``).
     #
     # Folding the sign in is exact: ``ball_mean_curvature`` multiplies ``length * angle *
@@ -1120,9 +1110,11 @@ def face_pair_dihedrals(
     # table's entries bit for bit, and the wrapper then launches no normal pass and allocates no
     # normal or (unused) area table.
     k = wp.int32(wp.tid())
-    normal_a, _area_a = face_normals_and_area(vertices, faces, face_adjacency[k, 0])
-    normal_b, _area_b = face_normals_and_area(vertices, faces, face_adjacency[k, 1])
-    angle = vector_angle(normal_a, normal_b)
+    face_a = face_adjacency[k, 0]
+    face_b = face_adjacency[k, 1]
+    normal_a, _area_a = face_normals_and_area(vertices, faces, face_a)
+    normal_b, _area_b = face_normals_and_area(vertices, faces, face_b)
+    angle = ordered_normal_angle(face_a, normal_a, face_b, normal_b)
 
     e0 = face_adjacency_edges[k, 0]
     e1 = face_adjacency_edges[k, 1]

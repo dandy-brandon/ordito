@@ -465,7 +465,7 @@ def connected_component_labels(adjacency: odt.BsrMatrix[wp.Scalar]) -> wp.array[
     _launch.launch(
         kernel_connected_components.ecl_flatten,
         dim=node_count,
-        inputs=[parents, labels],
+        inputs=[parents, labels, None],
         device=device,
     )
     return labels
@@ -594,7 +594,7 @@ def connected_component_labels_from_edges(
     _launch.launch(
         kernel_connected_components.ecl_flatten,
         dim=node_count,
-        inputs=[parents, labels],
+        inputs=[parents, labels, None],
         device=device,
     )
     return labels

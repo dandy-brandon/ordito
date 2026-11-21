@@ -426,17 +426,9 @@ def _unique_edges_from_faces(
     keys, order, ranks, n_edges = _sorted_edge_run_ranks(faces, n_faces, radix, check)
     unique_edges = odt.empty_2d((n_edges, 2), wp.int32, device=device)
     inverse = _launch.empty(n, dtype=wp.int32, device=device)
-    if not return_counts:
-        _launch.launch(
-            kernel_edges.emit_sorted_unique_edges,
-            dim=n,
-            inputs=[faces, keys, order, ranks, unique_edges, inverse],
-            device=device,
-        )
-        return unique_edges, inverse, None
-    counts = _launch.empty(n_edges, dtype=wp.int32, device=device)
+    counts = _launch.empty(n_edges, dtype=wp.int32, device=device) if return_counts else None
     _launch.launch(
-        kernel_edges.emit_sorted_unique_edges_counts,
+        kernel_edges.emit_sorted_unique_edges,
         dim=n,
         inputs=[faces, keys, order, ranks, unique_edges, inverse, counts],
         device=device,

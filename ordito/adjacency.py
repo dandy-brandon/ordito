@@ -835,7 +835,13 @@ def face_adjacency_projections(
     )
     if _no_tables(face_adjacency, face_adjacency_edges, face_adjacency_unshared, face_normals):
         return _sorted_pair_values(
-            kernel_adjacency.emit_sorted_projections, vertices, faces, vertices.size, wp.float32
+            kernel_adjacency.emit_sorted_projections,
+            vertices,
+            faces,
+            vertices.size,
+            wp.float32,
+            wp.float32(0.0),
+            after=(None,),
         )
     tables = _projection_tables(
         vertices, faces, face_adjacency, face_adjacency_edges, face_adjacency_unshared, face_normals
@@ -846,7 +852,7 @@ def face_adjacency_projections(
     _launch.launch(
         kernel_adjacency.face_adjacency_projections,
         dim=out_projections.size,
-        inputs=[vertices, *tables, out_projections],
+        inputs=[vertices, *tables, wp.float32(0.0), out_projections, None],
         device=faces.device,
     )
     return out_projections
@@ -935,12 +941,13 @@ def face_adjacency_convex(
     )
     if _no_tables(face_adjacency, face_adjacency_edges, face_adjacency_unshared, face_normals):
         return _sorted_pair_values(
-            kernel_adjacency.emit_sorted_convex,
+            kernel_adjacency.emit_sorted_projections,
             vertices,
             faces,
             vertices.size,
             wp.bool,
             TOLERANCE_MERGE_CONSTANT,
+            None,
         )
     tables = _projection_tables(
         vertices, faces, face_adjacency, face_adjacency_edges, face_adjacency_unshared, face_normals
@@ -952,9 +959,9 @@ def face_adjacency_convex(
     # row-for-row consistent.
     out_convex = _launch.empty(int(tables[1].shape[0]), dtype=wp.bool, device=faces.device)
     _launch.launch(
-        kernel_adjacency.face_adjacency_convex,
+        kernel_adjacency.face_adjacency_projections,
         dim=out_convex.size,
-        inputs=[vertices, *tables, TOLERANCE_MERGE_CONSTANT, out_convex],
+        inputs=[vertices, *tables, TOLERANCE_MERGE_CONSTANT, None, out_convex],
         device=faces.device,
     )
     return out_convex
@@ -972,6 +979,7 @@ def _sorted_pair_values(
     n_vertices: int,
     dtype: type,
     *params: object,
+    after: tuple[object, ...] = (),
 ) -> wp.array[Any]:
     """
     One value per adjacency row, emitted straight off the sorted halfedge keys.
@@ -981,8 +989,10 @@ def _sorted_pair_values(
     [`face_adjacency_convex`][ordito.adjacency.face_adjacency_convex]: ``kernel`` is an
     ``emit_sorted_*`` kernel reading ``table`` (the vertex positions, or held face normals) and
     the pair's faces in the thread, so the adjacency, shared-edge and unshared tables are never
-    written. Rows align with [`face_adjacency`][ordito.adjacency.face_adjacency]'s, which sorts
-    the same keys. ``n_vertices`` is the keys' radix.
+    written. ``params`` precede the output and ``after`` follows it (a kernel with two optional
+    outputs takes ``None`` for the other). Rows align with
+    [`face_adjacency`][ordito.adjacency.face_adjacency]'s, which sorts the same keys.
+    ``n_vertices`` is the keys' radix.
     """
     device = faces.device
     if faces.size // 3 == 0:
@@ -993,7 +1003,7 @@ def _sorted_pair_values(
         _launch.launch(
             kernel,
             dim=inclusive.size,
-            inputs=[table, faces, inclusive, order, *params, out],
+            inputs=[table, faces, inclusive, order, *params, out, *after],
             device=device,
         )
     return out
@@ -1011,9 +1021,9 @@ def _projection_tables(
     Resolve the four per-row tables a projection reads, or ``None`` when there is no row.
 
     The shared front of [`face_adjacency_projections`][ordito.adjacency.face_adjacency_projections]
-    and [`face_adjacency_convex`][ordito.adjacency.face_adjacency_convex], which launch different
-    kernels over the same ``(face_normals, face_adjacency, face_adjacency_edges,
-    face_adjacency_unshared)`` -- returned in that order, the kernels' own.
+    and [`face_adjacency_convex`][ordito.adjacency.face_adjacency_convex], which launch one kernel
+    for different outputs over the same ``(face_normals, face_adjacency, face_adjacency_edges,
+    face_adjacency_unshared)`` -- returned in that order, the kernel's own.
 
     The pairing check runs *before* the empty-mesh guard, so a caller who passed only one half of
     the pair is told about it whatever the mesh is, and the four wrappers that take this pair agree
@@ -1129,7 +1139,7 @@ def face_connected_component_labels(
     _launch.launch(
         kernel_connected_components.ecl_flatten,
         dim=n_faces,
-        inputs=[parents, labels],
+        inputs=[parents, labels, None],
         device=device,
     )
     return labels

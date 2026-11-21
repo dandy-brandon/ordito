@@ -24,8 +24,7 @@ from ordito.kernels.halfedge import (
     halfedge_next,
     halfedge_prev,
 )
-from ordito.kernels.predicates import vector_angle
-from ordito.kernels.triangles import face_normals_and_area
+from ordito.kernels.triangles import face_pair_angle
 
 wp.set_module_options({"enable_backward": False})
 
@@ -59,11 +58,7 @@ def crease_flags(
     mate = mates[h]
     crease = wp.bool(False)
     if mate > h:
-        face_a = h // 3
-        face_b = mate // 3
-        normal_a, _area_a = face_normals_and_area(vertices, faces, wp.min(face_a, face_b))
-        normal_b, _area_b = face_normals_and_area(vertices, faces, wp.max(face_a, face_b))
-        crease = vector_angle(normal_a, normal_b) > threshold
+        crease = face_pair_angle(vertices, faces, h // 3, mate // 3) > threshold
     store_counted_ballot_bit(out_words, out_word_counts, h, crease)
     if out_words.shape[0] > row_bits >> 5:
         store_counted_ballot_bit(

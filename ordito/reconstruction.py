@@ -52,6 +52,7 @@ from ordito._common import (
 from ordito.config import is_deterministic
 from ordito.constants import INT32_MAX, TILE_1D
 from ordito.kernels import array as kernel_array
+from ordito.kernels import halfedge as kernel_halfedge
 from ordito.kernels import levelset as kernel_levelset
 from ordito.kernels import reconstruction as kernel_reconstruction
 from ordito.kernels import reduce as kernel_reduce
@@ -1045,7 +1046,7 @@ def _run_mesh_builder(
     ]
     starts, marks, renews = [], [], []
     for g in range(n_groups):
-        topology = kernel_mesh_builder.HalfEdges()
+        topology = kernel_halfedge.HalfEdges()
         topology.next = _launch.view(records, 0, capacity)
         topology.prev = _launch.view(records, capacity, 2 * capacity)
         topology.org = _launch.view(records, 2 * capacity, 3 * capacity)
@@ -1155,7 +1156,7 @@ def _run_mesh_builder_serial(
     host = "cpu"
     n_rows = rows.shape[0]
     capacity = 6 * n_rows
-    topology = kernel_mesh_builder.HalfEdges()
+    topology = kernel_halfedge.HalfEdges()
     records = _launch.empty(4 * capacity, dtype=wp.int32, device=host)
     topology.next = _launch.view(records, 0, capacity)
     topology.prev = _launch.view(records, capacity, 2 * capacity)
@@ -2936,7 +2937,7 @@ def _poisson_solve_level(
     if is_deterministic() and wp.get_device(device).is_cuda:
         _splat_ordered(
             kernel_reconstruction.splat_corner_keys,
-            [points, cube_lower, wp.float32(inv_cell), res],
+            [points, cube_lower, wp.float32(inv_cell), res, None, 0, n_nodes],
             points,
             normals,
             cube_lower,
@@ -2957,6 +2958,8 @@ def _poisson_solve_level(
                 wp.float32(inv_cell),
                 res,
                 wp.int32(1 if confidence else 0),
+                None,
+                0,
                 vx,
                 vy,
                 vz,
@@ -3989,7 +3992,7 @@ def _compact_bands(
         )
         levels.append(
             _BandLevel(
-                res, nbk, brick_map, brick_coords, n_bricks * int(kernel_poisson_band.BRICK_NODES)
+                res, nbk, brick_map, brick_coords, n_bricks * int(kernel_reconstruction.BRICK_NODES)
             )
         )
     return levels, values[n_sets:]
@@ -4014,7 +4017,7 @@ def _band_data(
     inv_cell = (finest.res - 1) / cube_size
     if is_deterministic() and wp.get_device(device).is_cuda:
         _splat_ordered(
-            kernel_poisson_band.band_splat_keys,
+            kernel_reconstruction.splat_corner_keys,
             [
                 points,
                 cube_lower,
@@ -4035,7 +4038,7 @@ def _band_data(
         )
     else:
         _launch.launch(
-            kernel_poisson_band.band_splat,
+            kernel_reconstruction.splat_normals,
             dim=points.size,
             inputs=[
                 points,

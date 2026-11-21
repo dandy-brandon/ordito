@@ -1390,7 +1390,7 @@ def cluster_outlier_mask(
     labels = _launch.empty(n, dtype=wp.int32, device=device)
     sizes = _launch.zeros(n, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_connected_components.ecl_flatten_counted,
+        kernel_connected_components.ecl_flatten,
         dim=n,
         inputs=[parents],
         outputs=[labels, sizes],

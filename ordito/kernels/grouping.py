@@ -494,7 +494,7 @@ def emit_sorted_run(
     out_inverse: wp.array[wp.int32],
     out_first: wp.array[wp.int32],
 ) -> wp.bool:
-    # The outputs ``emit_sorted_unique`` and ``emit_sorted_unique_counts`` share for sorted
+    # The outputs ``emit_sorted_unique`` writes for sorted
     # position ``i`` of unique index ``r``: its inverse slot, and at a run's first position the
     # value and the input index sorted there. Returns whether ``i`` starts its run.
     start = emit_sorted_inverse(i, r, sorted_keys, order, out_inverse)
@@ -504,36 +504,6 @@ def emit_sorted_run(
         if out_first.shape[0] > 0:
             out_first[r] = order[i]
     return start
-
-
-@wp.kernel
-def emit_sorted_unique(
-    sorted_keys: wp.array[wp.Int],
-    order: wp.array[wp.int32],
-    ranks: wp.array[wp.int32],
-    out_unique: wp.array[wp.Int],
-    out_inverse: wp.array[wp.int32],
-    out_starts: wp.array[wp.int32],
-    out_first: wp.array[wp.int32],
-) -> None:
-    # ``unique_1d``'s returns from one sort of every value: ``ranks`` is the inclusive scan of
-    # ``mark_sorted_run_starts``, so ``ranks[i] - 1`` is the ascending unique index of sorted
-    # position ``i``. A run's first position writes the value, where the run starts and the input
-    # index sorted there -- the class's *first* occurrence, because the sort is stable, which is
-    # what ``first_occurrence_indices`` computes. ``out_starts`` is the ``n_unique + 1``
-    # total-terminated offsets of the runs (the last position writes the terminator), so run ``r``
-    # is ``out_starts[r] : out_starts[r + 1]`` of the sorted buffer: ``sample``'s blue-noise cell
-    # bounds. Launched over the ``ranks.shape[0]`` sorted positions. The start is re-derived from
-    # the keys, so the marks may be scanned in place. Every output may be a null descriptor
-    # (``None`` at the launch). ``emit_sorted_unique_counts`` differs only in writing the run
-    # lengths in place of their offsets.
-    i = wp.int32(wp.tid())
-    r = ranks[i] - 1
-    if emit_sorted_run(i, r, sorted_keys, order, out_unique, out_inverse, out_first):
-        if out_starts.shape[0] > 0:
-            out_starts[r] = i
-    if i == ranks.shape[0] - 1 and out_starts.shape[0] > 0:
-        out_starts[r + 1] = i + 1
 
 
 @wp.func
@@ -552,21 +522,36 @@ def store_sorted_run_length(
 
 
 @wp.kernel
-def emit_sorted_unique_counts(
+def emit_sorted_unique(
     sorted_keys: wp.array[wp.Int],
     order: wp.array[wp.int32],
     ranks: wp.array[wp.int32],
     out_unique: wp.array[wp.Int],
     out_inverse: wp.array[wp.int32],
+    out_starts: wp.array[wp.int32],
     out_counts: wp.array[wp.int32],
     out_first: wp.array[wp.int32],
 ) -> None:
-    # ``emit_sorted_unique`` with each run's length in place of its offsets
-    # (``store_sorted_run_length``).
+    # ``unique_1d``'s returns from one sort of every value: ``ranks`` is the inclusive scan of
+    # ``mark_sorted_run_starts``, so ``ranks[i] - 1`` is the ascending unique index of sorted
+    # position ``i``. A run's first position writes the value, where the run starts and the input
+    # index sorted there -- the class's *first* occurrence, because the sort is stable, which is
+    # what ``first_occurrence_indices`` computes. ``out_starts`` is the ``n_unique + 1``
+    # total-terminated offsets of the runs (the last position writes the terminator), so run ``r``
+    # is ``out_starts[r] : out_starts[r + 1]`` of the sorted buffer: ``sample``'s blue-noise cell
+    # bounds. ``out_counts`` takes each run's length instead (``store_sorted_run_length``,
+    # ``unique_1d``'s ``return_counts``). Launched over the ``ranks.shape[0]`` sorted positions.
+    # The start is re-derived from the keys, so the marks may be scanned in place. Every output
+    # may be a null descriptor (``None`` at the launch).
     i = wp.int32(wp.tid())
     r = ranks[i] - 1
     start = emit_sorted_run(i, r, sorted_keys, order, out_unique, out_inverse, out_first)
-    store_sorted_run_length(i, r, start, ranks, out_counts)
+    if start and out_starts.shape[0] > 0:
+        out_starts[r] = i
+    if i == ranks.shape[0] - 1 and out_starts.shape[0] > 0:
+        out_starts[r + 1] = i + 1
+    if out_counts.shape[0] > 0:
+        store_sorted_run_length(i, r, start, ranks, out_counts)
 
 
 @wp.kernel
@@ -580,7 +565,7 @@ def emit_sorted_unique_rows(
     out_rows: wp.array[Any],
 ) -> None:
     # ``grouping.unique_rows`` / ``unique_faces``' emit over the sorted row keys: what
-    # ``emit_sorted_unique`` / ``emit_sorted_unique_counts`` write for the inverse and the counts,
+    # ``emit_sorted_unique`` writes for the inverse and the counts,
     # and at a run's first position the row of the input index sorted there -- the class's first
     # occurrence, as the stable sort leaves it -- so no ``first_occurrence_indices`` table is
     # written only for a gather to read. ``rows`` and ``out_rows`` are integer-vector views of any
@@ -780,7 +765,6 @@ COMPACT_FROM_TABLE: OverloadTable
 KEYS_AND_IDENTITY: OverloadTable
 MARK_SORTED_RUN_STARTS: OverloadTable
 EMIT_SORTED_UNIQUE: OverloadTable
-EMIT_SORTED_UNIQUE_COUNTS: OverloadTable
 EMIT_SORTED_UNIQUE_ROWS: OverloadTable
 
 # The row widths ``emit_sorted_unique_rows`` copies, as the integer vector one row of a four-byte
@@ -791,8 +775,7 @@ ROW_VECTOR_DTYPES = {2: wp.vec2i, 3: wp.vec3i, 4: wp.vec4i}
 def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
     global MARK_GROUP_STARTS, HASH_INSERT, COMPACT_FROM_TABLE
-    global KEYS_AND_IDENTITY, MARK_SORTED_RUN_STARTS, EMIT_SORTED_UNIQUE, EMIT_SORTED_UNIQUE_COUNTS
-    global EMIT_SORTED_UNIQUE_ROWS
+    global KEYS_AND_IDENTITY, MARK_SORTED_RUN_STARTS, EMIT_SORTED_UNIQUE, EMIT_SORTED_UNIQUE_ROWS
     MARK_GROUP_STARTS = OverloadTable(
         mark_group_starts,
         {d: [wp.array[d], wp.int32, wp.int32, wp.array[wp.int32]] for d in _KEY_DTYPES},
@@ -833,20 +816,6 @@ def _register_overloads() -> None:
                 wp.array[wp.int32],
                 wp.array[d],
                 wp.array[wp.int32],
-                wp.array[wp.int32],
-                wp.array[wp.int32],
-            ]
-            for d in _KEY_DTYPES
-        },
-    )
-    EMIT_SORTED_UNIQUE_COUNTS = OverloadTable(
-        emit_sorted_unique_counts,
-        {
-            d: [
-                wp.array[d],
-                wp.array[wp.int32],
-                wp.array[wp.int32],
-                wp.array[d],
                 wp.array[wp.int32],
                 wp.array[wp.int32],
                 wp.array[wp.int32],

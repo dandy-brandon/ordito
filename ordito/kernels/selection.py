@@ -259,25 +259,15 @@ def mark_submesh_by_vertex_mask(
     out_face_mask: wp.array[wp.bool],
     out_flags: wp.array[wp.int32],
 ) -> None:
-    # ``face_mask_from_vertex_mask`` and ``mark_submesh_faces_and_vertices`` (``keep_masked``
-    # true) in one pass: the face's selection is decided from its corners, stored for the
-    # compaction, and a selected face is flagged with its vertices in the zeroed rank buffer.
+    # ``face_selected_by_vertices``' face mask and ``mark_submesh_faces_and_vertices``
+    # (``keep_masked`` true) in one pass: the face's selection is decided from its corners,
+    # stored for the compaction, and a selected face is flagged with its vertices in the zeroed
+    # rank buffer.
     f = wp.int32(wp.tid())
     selected = face_selected_by_vertices(faces, vertex_mask, require_all, f)
     out_face_mask[f] = selected
     if selected:
         mark_submesh_face(faces, out_face_mask.shape[0], f, out_flags)
-
-
-@wp.kernel
-def face_mask_from_vertex_mask(
-    faces: wp.array[wp.int32],
-    vertex_mask: wp.array[wp.bool],
-    require_all: wp.bool,
-    out_face_mask: wp.array[wp.bool],
-) -> None:
-    f = wp.int32(wp.tid())
-    out_face_mask[f] = face_selected_by_vertices(faces, vertex_mask, require_all, f)
 
 
 @wp.kernel
@@ -287,7 +277,7 @@ def face_flags_from_vertex_mask(
     require_all: wp.bool,
     out_flags: wp.array[wp.int32],
 ) -> None:
-    # ``face_mask_from_vertex_mask`` as the ``int32`` flag a caller scans in place to compact the
+    # ``face_selected_by_vertices`` as the ``int32`` flag a caller scans in place to compact the
     # selected face indices, with no bool mask in between.
     f = wp.int32(wp.tid())
     out_flags[f] = wp.where(
@@ -479,9 +469,9 @@ def mark_incident_vertices(
     faces: wp.array[wp.int32], face_mask: wp.array[wp.bool], out_mask: wp.array[wp.bool]
 ) -> None:
     # Mark every corner of every selected face: the inverse direction of
-    # ``face_mask_from_vertex_mask``. Concurrent writes all store ``True``, so the race is benign
+    # ``face_selected_by_vertices``. Concurrent writes all store ``True``, so the race is benign
     # and no atomic is needed. ``dilate_vertex_hops`` above is this composed with an any-corner
-    # ``face_mask_from_vertex_mask`` in one pass, for a caller that does not keep the face mask.
+    # ``face_selected_by_vertices`` in one pass, for a caller that does not keep the face mask.
     f = wp.int32(wp.tid())
     if not face_mask[f]:
         return
