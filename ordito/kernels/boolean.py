@@ -887,6 +887,14 @@ def emit_whole_edges(
 
 
 @wp.func
+def listed_face(listed: wp.array[wp.int32], t: wp.int32) -> wp.int32:
+    # A per-face kernel's face: ``listed[t]`` when it runs over a list of faces, else ``t``.
+    if listed.shape[0] > 0:
+        return listed[t]
+    return t
+
+
+@wp.func
 def halfedge_before(
     starts: wp.array[wp.int32], ends: wp.array[wp.int32], a: wp.int32, b: wp.int32
 ) -> wp.bool:
@@ -951,6 +959,7 @@ def triangulate_faces(
     eps: wp.float64,
     heavy_sides: wp.int32,
     heavy_pass: wp.int32,
+    listed: wp.array[wp.int32],
     used: wp.array[wp.int32],
     order: wp.array[wp.int32],
     loop_heads: wp.array[wp.int32],
@@ -959,8 +968,9 @@ def triangulate_faces(
 ) -> None:
     # ``Face2Tri`` for one face of P or Q: a triangle as it is, a quad by its better diagonal,
     # anything else through the ear clipper, into ``ec.tris[tri_offsets[f]:]`` as result vertices.
-    # Faces of ``heavy_sides`` or more sides go in the heavy pass, the rest in the other.
-    f = wp.int32(wp.tid())
+    # Faces of ``heavy_sides`` or more sides go in the heavy pass, the rest in the other; a pass
+    # over ``listed`` faces runs a thread a listed face.
+    f = listed_face(listed, wp.int32(wp.tid()))
     first = face_offsets[f]
     n = face_offsets[f + 1] - first
     if (n >= heavy_sides) != (heavy_pass != 0):
@@ -1076,13 +1086,29 @@ def offset_indices(
 
 
 @wp.kernel
-def count_heavy_faces(
-    face_offsets: wp.array[wp.int32], heavy_sides: wp.int32, out_count: wp.array[wp.int32]
+def list_heavy_faces(
+    face_offsets: wp.array[wp.int32],
+    tri_offsets: wp.array[wp.int32],
+    heavy_sides: wp.int32,
+    capacity: wp.int32,
+    out_list: wp.array[wp.int32],
 ) -> None:
-    # Faces of ``heavy_sides`` or more polygon sides, whose quadratic passes go to the CPU.
+    # Faces of ``heavy_sides`` or more polygon sides, whose quadratic passes go to the CPU: their
+    # count in ``out_list[0]`` and, for the first ``capacity`` in arrival order, each face's index,
+    # side range and triangle range as five entries from ``out_list[1 + 5 slot]``. The order decides
+    # nothing: each face is triangulated alone.
     f = wp.int32(wp.tid())
-    if face_offsets[f + 1] - face_offsets[f] >= heavy_sides:
-        wp.atomic_add(out_count, 0, 1)
+    first = face_offsets[f]
+    end = face_offsets[f + 1]
+    if end - first >= heavy_sides:
+        slot = wp.atomic_add(out_list, 0, 1)
+        if slot < capacity:
+            k = 1 + 5 * slot
+            out_list[k] = f
+            out_list[k + 1] = first
+            out_list[k + 2] = end
+            out_list[k + 3] = tri_offsets[f]
+            out_list[k + 4] = tri_offsets[f + 1]
 
 
 @wp.kernel
@@ -1103,6 +1129,7 @@ def write_result_halfedges(
     invert_q: wp.int32,
     heavy_sides: wp.int32,
     heavy_pass: wp.int32,
+    listed: wp.array[wp.int32],
     slot_halfedge: wp.array[wp.int32],
     out_start: wp.array[wp.int32],
     out_pair: wp.array[wp.int32],
@@ -1113,8 +1140,9 @@ def write_result_halfedges(
     # Each face's triangles as halfedges, ``WriteLocalTriangles`` / ``WriteGeneralTriangulation``:
     # an edge on the face's polygon takes that polygon edge's slot (paired across faces by
     # ``pair_polygon_halfedges``), a diagonal pairs with its reverse in the same face; and each
-    # triangle's source (``triRef``) and normal.
-    f = wp.int32(wp.tid())
+    # triangle's source (``triRef``) and normal. A pass over ``listed`` faces runs a thread a listed
+    # face.
+    f = listed_face(listed, wp.int32(wp.tid()))
     src = tri_offsets[f]
     dst = count_offsets[f]
     n_tris = count_offsets[f + 1] - dst

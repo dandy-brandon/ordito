@@ -24,7 +24,7 @@ import heapq
 import math
 import struct
 from collections.abc import Sequence
-from typing import Literal, NamedTuple
+from typing import Literal, NamedTuple, cast
 
 import numpy as np
 import warp as wp
@@ -65,6 +65,11 @@ _MAX_UNION_SIZE = 1000
 # (5 k faces 45 -> 8.6 ms against 256); 64 lost the smallest cap. Many-sided faces come only from
 # an operand's few large triangles, so the CPU pass stays short.
 _HEAVY_FACE_SIDES = 32
+
+
+# Up to this many heavy faces travel to the CPU entry by entry, each with its own small copies;
+# more take the whole arrays (``_launch_heavy_faces``).
+_HEAVY_FACE_LIST = 16
 
 
 # An operand with at most this many halfedges crosses the other's faces pair by pair.
@@ -1201,7 +1206,15 @@ def _result(
     count_offsets, counts = offsets_buffer(n_faces, device)
     state, triangles = _ear_clip_state(max(n_capacity, 1), device)
     scratch = max(n_sides, 1)
-    heavy = _heavy_face_count(face_offsets, n_faces)
+    heavy, heavy_faces = _heavy_faces(face_offsets, tri_offsets, n_faces)
+    on_cpu = wp.get_device(device).is_cpu
+    # The heavy passes' face list on the CPU device (all of it when the list overflowed); the
+    # other passes run a thread a face.
+    unlisted = _launch.empty(0, dtype=wp.int32, device=device)
+    listed = unlisted
+    if heavy > 0 and on_cpu and heavy_faces is not None:
+        listed = _launch.array([face[0] for face in heavy_faces], dtype=wp.int32, device=device)
+    heavy_dim = n_faces if heavy_faces is None else len(heavy_faces)
     triangulate_inputs: list[object] = [
         face_offsets,
         tri_offsets,
@@ -1219,24 +1232,29 @@ def _result(
     _launch.launch(
         kernel_boolean.triangulate_faces,
         dim=n_faces,
-        inputs=[*triangulate_inputs, 0, *scratch_arrays, state],
+        inputs=[*triangulate_inputs, 0, unlisted, *scratch_arrays, state],
         outputs=[counts],
         device=device,
     )
-    if heavy > 0 and wp.get_device(device).is_cpu:
+    held: _HeavyHost | None = None
+    if heavy > 0 and on_cpu:
         _launch.launch(
             kernel_boolean.triangulate_faces,
-            dim=n_faces,
-            inputs=[*triangulate_inputs, 1, *scratch_arrays, state],
+            dim=heavy_dim,
+            inputs=[*triangulate_inputs, 1, listed, *scratch_arrays, state],
             outputs=[counts],
             device=device,
+        )
+    elif heavy > 0 and heavy_faces is not None:
+        held = _triangulate_heavy_on_host(
+            heavy_faces, triangulate_inputs, scratch, n_capacity, counts, triangles
         )
     elif heavy > 0:
         host_state, host_triangles = _ear_clip_state(max(n_capacity, 1), "cpu")
         _launch_heavy_faces(
             kernel_boolean.triangulate_faces,
             n_faces,
-            [*triangulate_inputs, 1, *scratch_arrays],
+            [*triangulate_inputs, 1, unlisted, *scratch_arrays],
             [(triangles, host_triangles)],
             host_state,
             [counts],
@@ -1273,25 +1291,27 @@ def _result(
     _launch.launch(
         kernel_boolean.write_result_halfedges,
         dim=n_faces,
-        inputs=[*write_inputs, 0, slot_halfedge],
+        inputs=[*write_inputs, 0, unlisted, slot_halfedge],
         outputs=write_outputs,
         device=device,
     )
-    if heavy > 0 and wp.get_device(device).is_cpu:
+    if heavy > 0 and on_cpu:
         _launch.launch(
             kernel_boolean.write_result_halfedges,
-            dim=n_faces,
-            inputs=[*write_inputs, 1, slot_halfedge],
+            dim=heavy_dim,
+            inputs=[*write_inputs, 1, listed, slot_halfedge],
             outputs=write_outputs,
             device=device,
         )
+    elif held is not None:
+        _write_heavy_on_host(held, write_inputs, slot_halfedge, n_triangles, write_outputs)
     elif heavy > 0:
         # Only the written prefixes travel: the result's halfedges and triangles so far.
         n_written = 3 * n_triangles
         _launch_heavy_faces(
             kernel_boolean.write_result_halfedges,
             n_faces,
-            [*write_inputs, 1, slot_halfedge],
+            [*write_inputs, 1, unlisted, slot_halfedge],
             [],
             None,
             [
@@ -1558,19 +1578,192 @@ def _ear_clip_state(
     return state, state.tris
 
 
-def _heavy_face_count(face_offsets: wp.array[wp.int32], n_faces: int) -> int:
-    """Count the result faces of ``_HEAVY_FACE_SIDES`` or more polygon sides."""
+def _heavy_faces(
+    face_offsets: wp.array[wp.int32], tri_offsets: wp.array[wp.int32], n_faces: int
+) -> tuple[int, list[tuple[int, int, int, int, int]] | None]:
+    """
+    Count the result faces of ``_HEAVY_FACE_SIDES`` or more polygon sides, and list them.
+
+    Each listed face is ``(face, first side, side end, first triangle slot, slot end)``; the list
+    is ``None`` past ``_HEAVY_FACE_LIST`` faces.
+    """
     device = face_offsets.device
-    count = _launch.zeros(1, dtype=wp.int32, device=device)
+    found = _launch.zeros(1 + 5 * _HEAVY_FACE_LIST, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_boolean.count_heavy_faces,
+        kernel_boolean.list_heavy_faces,
         dim=n_faces,
-        inputs=[face_offsets, _HEAVY_FACE_SIDES],
-        outputs=[count],
+        inputs=[face_offsets, tri_offsets, _HEAVY_FACE_SIDES, _HEAVY_FACE_LIST],
+        outputs=[found],
         device=device,
     )
-    # Host readback: whether a face is big enough to go to the CPU.
-    return int(read_values(count, 0, 1)[0])
+    # Host readback: whether a face is big enough to go to the CPU, and which ranges travel.
+    values = [int(x) for x in read_values(found, 0, 1 + 5 * _HEAVY_FACE_LIST)]
+    count = values[0]
+    if count > _HEAVY_FACE_LIST:
+        return count, None
+    faces = [
+        (values[k], values[k + 1], values[k + 2], values[k + 3], values[k + 4])
+        for k in range(1, 1 + 5 * count, 5)
+    ]
+    return count, faces
+
+
+class _HeavyHost(NamedTuple):
+    """The host copies the heavy faces' triangulation left, for their halfedge pass."""
+
+    faces: list[tuple[int, int, int, int, int]]
+    listed: wp.array[wp.int32]
+    inputs: list[object]
+    triangles: wp.array[wp.vec3i]
+
+
+def _copy_range(dest: odt.ArrayNd, src: odt.ArrayNd, start: int, count: int) -> None:
+    """Copy ``src[start:start + count]`` into the same entries of ``dest``."""
+    if count > 0:
+        _launch.copy(dest, src, dest_offset=start, src_offset=start, count=count)
+
+
+def _triangulate_heavy_on_host(
+    faces: list[tuple[int, int, int, int, int]],
+    inputs: list[object],
+    scratch: int,
+    n_capacity: int,
+    counts: wp.array[wp.int32],
+    triangles: wp.array[wp.vec3i],
+) -> _HeavyHost:
+    """
+    Triangulate the listed heavy faces on the CPU, moving only what they read and write.
+
+    A face of many polygon sides costs its thread time quadratic in them, which one CPU thread
+    runs far faster than one GPU thread. Host arrays as large as the device's take only the
+    listed faces' entries (and every position, which their sides name); their counts and
+    triangles go back.
+    """
+    host = wp.get_device("cpu")
+    face_offsets, tri_offsets, starts, ends, positions, normals_p, normals_q = (
+        cast(odt.ArrayNd, value) for value in inputs[:7]
+    )
+    n_fp = cast(int, inputs[7])
+    h_face_offsets = _launch.empty(face_offsets.size, dtype=wp.int32, device=host)
+    h_tri_offsets = _launch.empty(tri_offsets.size, dtype=wp.int32, device=host)
+    h_starts = _launch.empty(starts.size, dtype=wp.int32, device=host)
+    h_ends = _launch.empty(ends.size, dtype=wp.int32, device=host)
+    h_normals_p = _launch.empty(normals_p.size, dtype=wp.vec3d, device=host)
+    h_normals_q = _launch.empty(normals_q.size, dtype=wp.vec3d, device=host)
+    for f, first, end, _, _ in faces:
+        _copy_range(h_face_offsets, face_offsets, f, 2)
+        _copy_range(h_tri_offsets, tri_offsets, f, 2)
+        _copy_range(h_starts, starts, first, end - first)
+        _copy_range(h_ends, ends, first, end - first)
+        if f < n_fp:
+            _copy_range(h_normals_p, normals_p, f, 1)
+        else:
+            _copy_range(h_normals_q, normals_q, f - n_fp, 1)
+    host_inputs: list[object] = [
+        h_face_offsets,
+        h_tri_offsets,
+        h_starts,
+        h_ends,
+        _launch.clone(positions, device=host),
+        h_normals_p,
+        h_normals_q,
+        *inputs[7:],
+    ]
+    listed = _launch.array([face[0] for face in faces], dtype=wp.int32, device=host)
+    state, h_triangles = _ear_clip_state(max(n_capacity, 1), host)
+    h_counts = _launch.empty(counts.size, dtype=wp.int32, device=host)
+    _launch.launch(
+        kernel_boolean.triangulate_faces,
+        dim=len(faces),
+        inputs=[
+            *host_inputs,
+            1,
+            listed,
+            *[_launch.empty(scratch, dtype=wp.int32, device=host) for _ in range(3)],
+            state,
+        ],
+        outputs=[h_counts],
+        device=host,
+    )
+    for f, _, _, base, _ in faces:
+        _copy_range(counts, h_counts, f, 1)
+        # Host read: the face's triangle count, on the CPU.
+        _copy_range(triangles, h_triangles, base, int(read_values(h_counts, f, 1)[0]))
+    return _HeavyHost(faces, listed, host_inputs, h_triangles)
+
+
+def _write_heavy_on_host(
+    held: _HeavyHost,
+    inputs: list[object],
+    slot_halfedge: wp.array[wp.int32],
+    n_triangles: int,
+    outputs: list[object],
+) -> None:
+    """
+    Write the listed heavy faces' halfedges on the CPU, from their triangulation's host copies.
+
+    Only their entries travel: the counts' offsets, references and polygon slots in, and the
+    halfedges and triangles they write out.
+    """
+    host = wp.get_device("cpu")
+    count_offsets = cast(odt.ArrayNd, inputs[1])
+    coplanar_p, coplanar_q, mesh_p, mesh_q = (cast(odt.ArrayNd, value) for value in inputs[8:12])
+    n_fp = cast(int, inputs[12])
+    h_face_offsets, h_tri_offsets, h_starts, h_ends, _, h_normals_p, h_normals_q = held.inputs[:7]
+    h_count_offsets = _launch.empty(count_offsets.size, dtype=wp.int32, device=host)
+    h_references = [
+        _launch.empty(array.size, dtype=wp.int32, device=host)
+        for array in (coplanar_p, coplanar_q, mesh_p, mesh_q)
+    ]
+    h_slots = _launch.empty(slot_halfedge.size, dtype=wp.int32, device=host)
+    for f, first, end, _, _ in held.faces:
+        _copy_range(h_count_offsets, count_offsets, f, 2)
+        if f < n_fp:
+            _copy_range(h_references[0], coplanar_p, f, 1)
+            _copy_range(h_references[2], mesh_p, f, 1)
+        else:
+            _copy_range(h_references[1], coplanar_q, f - n_fp, 1)
+            _copy_range(h_references[3], mesh_q, f - n_fp, 1)
+        _copy_range(h_slots, slot_halfedge, first, end - first)
+    start, pair, tri_mesh, tri_coplanar, tri_normal = (
+        cast(odt.ArrayNd, value) for value in outputs
+    )
+    h_outputs = [
+        _launch.empty(3 * n_triangles, dtype=wp.int32, device=host),
+        _launch.empty(3 * n_triangles, dtype=wp.int32, device=host),
+        _launch.empty(n_triangles, dtype=wp.int32, device=host),
+        _launch.empty(n_triangles, dtype=wp.int32, device=host),
+        _launch.empty(n_triangles, dtype=wp.vec3d, device=host),
+    ]
+    _launch.launch(
+        kernel_boolean.write_result_halfedges,
+        dim=len(held.faces),
+        inputs=[
+            h_tri_offsets,
+            h_count_offsets,
+            held.triangles,
+            h_face_offsets,
+            h_starts,
+            h_ends,
+            h_normals_p,
+            h_normals_q,
+            *h_references,
+            *inputs[12:],
+            1,
+            held.listed,
+            h_slots,
+        ],
+        outputs=h_outputs,
+        device=host,
+    )
+    for f, first, end, _, _ in held.faces:
+        # Host read: the face's triangle range, on the CPU.
+        dst, stop = (int(x) for x in read_values(h_count_offsets, f, 2))
+        _copy_range(start, h_outputs[0], 3 * dst, 3 * (stop - dst))
+        _copy_range(pair, h_outputs[1], 3 * dst, 3 * (stop - dst))
+        for array, h_array in zip((tri_mesh, tri_coplanar, tri_normal), h_outputs[2:], strict=True):
+            _copy_range(array, h_array, dst, stop - dst)
+        _copy_range(slot_halfedge, h_slots, first, end - first)
 
 
 def _launch_heavy_faces(
