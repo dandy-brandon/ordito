@@ -78,6 +78,7 @@ from ordito.kernels import neighbors as kernel_neighbors
 from ordito.kernels import points as kernel_points
 from ordito.kernels import predicates as kernel_predicates
 from ordito.kernels import reduce as kernel_reduce
+from ordito.kernels.algorithms import connected_components as kernel_connected_components
 from ordito.kernels.algorithms import convex_hull as kernel_hull
 
 # Relative slack, against the support extent along a direction, for recognizing a point as that
@@ -1389,7 +1390,7 @@ def cluster_outlier_mask(
     labels = _launch.empty(n, dtype=wp.int32, device=device)
     sizes = _launch.zeros(n, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_points.component_sizes,
+        kernel_connected_components.ecl_flatten_counted,
         dim=n,
         inputs=[parents],
         outputs=[labels, sizes],

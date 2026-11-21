@@ -20,6 +20,7 @@ from ordito.kernels.array import (
     lift_vec2,
     loop_point,
     lowbias32,
+    offset_owner,
     scanned_count,
     to_vec3d,
 )
@@ -388,7 +389,7 @@ def segment_parameter(
     # segment. ``offsets`` is the exclusive scan of ``steps``, so the containing segment is the last
     # offset not past ``j`` -- ``binary_search_index`` returns the first strictly greater, hence the
     # ``- 1``.
-    segment = binary_search_index(offsets, j) - 1
+    segment = offset_owner(offsets, j)
     k = j - offsets[segment]
     return segment, wp.float32(k) / wp.float32(steps[segment])
 
@@ -3735,7 +3736,7 @@ def ring_ear_grid_cells(
     i = wp.int32(wp.tid())
     loop = wp.int32(-1)
     key = n_cells
-    r = binary_search_index(offsets, i) - 1
+    r = offset_owner(offsets, i)
     if r >= 0 and r < offsets.shape[0] - 1:
         start = offsets[r]
         row = ring_state_row(r)
@@ -3930,7 +3931,7 @@ def compact_ring_faces(
     # the loop wrote it. ``bases`` is the ``(n_loops + 1,)`` reservation scan: the owning loop is
     # the last whose base is at most ``i`` (a loop reserving no rows shares its base with the next).
     i = wp.int32(wp.tid())
-    r = binary_search_index(bases, i) - 1
+    r = offset_owner(bases, i)
     if i < ends[r]:
         slot = face_offsets[r] + i - bases[r]
         out_faces[slot, 0] = faces[i, 0]
@@ -4070,11 +4071,6 @@ _declare_block_dims()
 # same choices in the same order. Built in ``float64``; Manifold's ``CCW`` and friends compare
 # near-zero areas against epsilon, so the arithmetic must not fuse (the callers' modules build
 # unfused, and so does this one's functions where those modules inline them).
-
-
-@wp.func
-def det2(a: wp.vec2d, b: wp.vec2d) -> wp.float64:
-    return a[0] * b[1] - a[1] * b[0]
 
 
 @wp.func
@@ -4323,12 +4319,12 @@ def ec_signed_dist(
     ec: EarClipState, this: wp.int32, v: wp.int32, unit: wp.vec2d, eps: wp.float64
 ) -> wp.float64:
     origin = ec.pos[this]
-    d = det2(unit, ec.pos[v] - origin)
+    d = cross2(unit, ec.pos[v] - origin)
     if wp.abs(d) < eps:
-        d_right = det2(unit, ec.pos[ec.right[v]] - origin)
+        d_right = cross2(unit, ec.pos[ec.right[v]] - origin)
         if wp.abs(d_right) > eps:
             return d_right
-        d_left = det2(unit, ec.pos[ec.left[v]] - origin)
+        d_left = cross2(unit, ec.pos[ec.left[v]] - origin)
         if wp.abs(d_left) > eps:
             return d_left
     return d
@@ -4369,7 +4365,7 @@ def ec_ear_cost(
             ec_signed_dist(ec, v, test, ec.right_dir[v], eps),
             ec_signed_dist(ec, v, test, ec.right_dir[left], eps),
         )
-        cost = wp.min(cost, det2(open_side, p - ec.pos[right]))
+        cost = wp.min(cost, cross2(open_side, p - ec.pos[right]))
         if cost < wp.float64(0.0) - eps:
             diff = p - center
             cost = wp.float64(0.0) - eps - scale * wp.dot(diff, diff)
@@ -4551,7 +4547,7 @@ def ear_clip(
             p = ec.pos[v]
             box_lo = wp.min(box_lo, p)
             box_hi = wp.max(box_hi, p)
-            area1 = det2(p - origin, ec.pos[ec.right[v]] - origin)
+            area1 = cross2(p - origin, ec.pos[ec.right[v]] - origin)
             t1 = area + area1
             compensation += (area - t1) + area1
             area = t1
@@ -4656,7 +4652,7 @@ def polygons_convex(
             edge = first_edge
             if v + 1 < size:
                 edge = ec.pos[first + v + 1] - ec.pos[first + v]
-            d = det2(last_edge, edge)
+            d = cross2(last_edge, edge)
             if d <= wp.float64(0.0) or (
                 wp.abs(d) < eps and wp.dot(last_edge, edge) < wp.float64(0.0)
             ):

@@ -12,6 +12,7 @@ from ordito.kernels.array import (
     declare_block_dims,
     declare_lazy_kernels,
     declare_map_signatures,
+    leading_point,
     map_probe,
     map_probe_single,
     mat33_column,
@@ -41,7 +42,6 @@ from ordito.kernels.reduce import (
     last_ticket_matrix,
     last_ticket_vector,
     outer_sum_chunk,
-    peer_counted_add,
     stage_block_total,
     store_block_total,
     store_block_total_divided,
@@ -679,18 +679,6 @@ def ball_graph_hook(
         if j < i:
             if in_ball(points[j] - q, radius):
                 rep = ecl_hook_edge(parents, rep, j)
-
-
-@wp.kernel
-def component_sizes(
-    parents: wp.array[wp.int32], out_labels: wp.array[wp.int32], out_sizes: wp.array[wp.int32]
-) -> None:
-    # ``ecl_flatten`` and the component-size histogram (``scatter.count_occurrences``) in one
-    # launch: the count reads the label at its own index. ``out_sizes`` arrives zeroed.
-    i = wp.int32(wp.tid())
-    label = find_representative(parents, i)
-    out_labels[i] = label
-    peer_counted_add(out_sizes, label)
 
 
 @wp.kernel
@@ -1384,13 +1372,6 @@ def shell_bounds(shell_vertices: wp.indexedarray[wp.vec3], out_shell: wp.array[w
 
 
 @wp.func
-def shell_centroid(shell: wp.array[wp.vec4]) -> wp.vec3:
-    """Return the shell centroid ``shell_bounds`` packed into its word's first three components."""
-    word = shell[0]
-    return wp.vec3(word[0], word[1], word[2])
-
-
-@wp.func
 def outward_plane(p0: wp.vec3, p1: wp.vec3, p2: wp.vec3, interior: wp.vec3) -> wp.vec4:
     """Unit-normal plane through the triangle, oriented so ``interior`` has negative offset."""
     # `predicates.triangle_normal` is exactly this triangle's normalize(cross(...)), including the
@@ -1425,7 +1406,7 @@ def tetrahedron_planes(
     # rounding is relative to the shell's size rather than to how far the cloud sits from the
     # origin (see there).
     apex = wp.vec3(0.0, 0.0, 0.0)
-    centroid = shell_centroid(shell)
+    centroid = leading_point(shell)
     a = centroid_offset(shell_vertices[shell_faces[t * 3 + 0]], centroid)
     b = centroid_offset(shell_vertices[shell_faces[t * 3 + 1]], centroid)
     c = centroid_offset(shell_vertices[shell_faces[t * 3 + 2]], centroid)
@@ -1480,7 +1461,7 @@ def mark_hull_superset(
     # In the centroid's frame, as the planes are. Evaluated on raw coordinates the plane test's
     # float32 error grew with the cloud's distance from the origin while ``slack`` scales with its
     # size: a ball of radius 1 centred at 1e3 lost true hull vertices (3 of 1 976 at 200 k points).
-    point = centroid_offset(points[i], shell_centroid(shell))
+    point = centroid_offset(points[i], leading_point(shell))
     # Strict interior only, by a real distance. A point on a tetrahedron's boundary can still be a
     # hull vertex, and requiring it to clear every face by `slack` means float32 error in the plane
     # evaluation can only keep a point that could have been dropped -- never drop a hull vertex.

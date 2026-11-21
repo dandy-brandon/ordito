@@ -3,10 +3,10 @@ import warp as wp
 from ordito.constants import PI, TOLERANCE_ZERO_CONSTANT, TWO_PI
 from ordito.kernels.array import (
     STAGED_CHUNK,
-    binary_search_index,
     copy_staged,
     first_staged_chunk,
     loop_point,
+    offset_owner,
     stage_point,
     to_vec3,
     walk_item,
@@ -1323,13 +1323,6 @@ SHORTEN_STATE_SLOTS = 8
 
 
 @wp.func
-def shorten_loop_owner(loop_offsets: wp.array[wp.int32], t: wp.int32) -> wp.int32:
-    # The loop holding position ``t``: the last offset at or below it, so an empty loop (equal
-    # neighbouring offsets) is never the answer.
-    return binary_search_index(loop_offsets, t) - 1
-
-
-@wp.func
 def shorten_loop_past_end(loop_offsets: wp.array[wp.int32], t: wp.int32) -> wp.bool:
     # Whether buffer slot ``t`` lies past the current loops (their total length is the offsets'
     # last entry): every per-slot sweep kernel launches over the whole buffer and skips these.
@@ -1384,7 +1377,7 @@ def count_shortened_slot(
     out_counts[t] = wp.int32(0)
     if shorten_loop_past_end(loop_offsets, t):
         return
-    loop = shorten_loop_owner(loop_offsets, t)
+    loop = offset_owner(loop_offsets, t)
     begin = loop_offsets[loop]
     n = loop_offsets[loop + 1] - begin
     p = t - begin
@@ -1555,7 +1548,7 @@ def mark_distinct_slot(
     out_counts[t] = wp.int32(0)
     if shorten_loop_past_end(loop_offsets, t):
         return
-    if t == loop_offsets[shorten_loop_owner(loop_offsets, t)]:
+    if t == loop_offsets[offset_owner(loop_offsets, t)]:
         out_counts[t] = wp.int32(1)
     elif loop_vertices[t] != loop_vertices[t - 1]:
         out_counts[t] = wp.int32(1)

@@ -13,6 +13,7 @@ from ordito.kernels.array import (
     declare_map_signatures,
     device_is_cpu,
     greater,
+    identity_entry,
     inverse_or_one,
     map_probe,
     mask_and_not,
@@ -901,12 +902,6 @@ def component_pinned(
     return anchored[labels[row]] == 0
 
 
-@wp.func
-def pinned_row_value(column: wp.int32, row: wp.int32) -> wp.float64:
-    # Entry ``column`` of a pinned row ``row``: the identity's.
-    return wp.where(column == row, wp.float64(1.0), wp.float64(0.0))
-
-
 @wp.kernel
 def normal_equations_values(
     free_mask: wp.array[wp.bool],
@@ -947,7 +942,7 @@ def normal_equations_values(
         column = row_columns[source + s]
         out_columns[start + s] = column
         if pinned:
-            out_values[start + s] = pinned_row_value(column, ri)
+            out_values[start + s] = identity_entry(column, ri)
             if column == ri:
                 has_diagonal = True
         else:
@@ -985,7 +980,7 @@ def pin_unanchored_dirichlet_rows(
     if ri < 0 or not component_pinned(anchored, labels, ri):
         return
     for k in range(pattern_offsets[ri], pattern_offsets[ri + 1]):
-        out_values[k] = pinned_row_value(pattern_columns[k], ri)
+        out_values[k] = identity_entry(pattern_columns[k], ri)
     out_rhs_x[ri] = sol_x[ri]
     out_rhs_y[ri] = sol_y[ri]
     out_rhs_z[ri] = sol_z[ri]

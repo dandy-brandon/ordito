@@ -478,6 +478,28 @@ def cross2(a: Any, b: Any) -> wp.Float:
 
 
 @wp.func
+def edge_twin(h: wp.int32) -> wp.int32:
+    # The other halfedge of an edge whose two halfedges are stored side by side (``2 e`` and
+    # ``2 e + 1``), as quad-edge and edge-pair layouts number them.
+    return h + 1 - 2 * (h % 2)
+
+
+@wp.func
+def identity_entry(i: wp.int32, j: wp.int32) -> wp.float64:
+    # Entry ``(i, j)`` of the identity in ``float64``: a pinned row's values, a unit block's.
+    return wp.where(i == j, wp.float64(1.0), wp.float64(0.0))
+
+
+@wp.func
+def leading_point(packed: wp.array[wp.vec4]) -> wp.vec3:
+    # The point a one-word ``wp.vec4`` result packs into its first three components, the fourth a
+    # radius or a weight: ``points.shell_bounds``' centroid, ``sample.surface_centroid_apex``'s
+    # fan apex.
+    word = packed[0]
+    return wp.vec3(word[0], word[1], word[2])
+
+
+@wp.func
 def mat33_column(m: wp.mat33, col: wp.int32) -> wp.vec3:
     # A `wp.mat33`'s column as a `wp.vec3`, so extracting an SVD basis vector (`wp.svd3` returns
     # its bases as matrix columns) doesn't need three `m[row, col]` reads spelled out at every call
@@ -655,6 +677,19 @@ def keys_and_identity(
     i = wp.int32(wp.tid())
     out_keys[i] = data[i]
     out_order[i] = i
+
+
+@wp.kernel
+def round_trip_flags(
+    forward: wp.array[wp.int32], backward: wp.array[wp.int32], out_flags: wp.array[wp.int32]
+) -> None:
+    # 1 where ``i`` maps back to itself, ``backward[forward[i]] == i``, else 0: an inclusive scan
+    # of the flags ranks the round trips. ``neighbors.mutual_nearest``'s pairs (``forward`` the
+    # nearest in ``b``, ``backward`` the nearest in ``a``), and ``repair``'s first occurrence of
+    # each class (``forward`` the class, ``backward`` its first member), whose scan is the class's
+    # rank by first occurrence plus one (``repair.renumber_classes_by_first_occurrence``).
+    i = wp.int32(wp.tid())
+    out_flags[i] = wp.where(backward[forward[i]] == i, 1, 0)
 
 
 @wp.kernel
@@ -1021,6 +1056,14 @@ def binary_search_index(values: wp.array[wp.Scalar], value: wp.Scalar) -> wp.int
 
 
 @wp.func
+def offset_owner(offsets: wp.array[wp.Scalar], t: wp.Scalar) -> wp.int32:
+    # The item of a packed buffer holding slot ``t``, from its offsets: the last ``j`` with
+    # ``offsets[j] <= t``, so an empty item (equal neighbouring offsets) is never the answer.
+    # ``loop_owner`` is the same search through ``wp.lower_bound``, beside a per-slot table.
+    return binary_search_index(offsets, t) - 1
+
+
+@wp.func
 def outer_product_slot(
     segment_offsets: wp.array[wp.int32],
     a_offsets: wp.array[wp.int32],
@@ -1033,7 +1076,7 @@ def outer_product_slot(
     # (b - b_start)``, with ``segment_offsets`` the ``n_rows + 1`` scanned products (an empty
     # row's segment holds no slot). A thread a slot writes such a buffer with contiguous stores,
     # which a thread a row, writing its segment in turn, does not.
-    t = binary_search_index(segment_offsets, slot) - 1
+    t = offset_owner(segment_offsets, slot)
     local = slot - segment_offsets[t]
     b_start = b_offsets[t]
     n_b = b_offsets[t + 1] - b_start
@@ -2394,6 +2437,9 @@ def declare_map_signatures(
 # loads and fails on one ``ordito.precompile.kernel_variants`` does not produce.
 LAUNCH_BLOCK_DIMS: dict[str, set[int]] = {}
 LAZY_KERNEL_BUILDS: list[Callable[[], object]] = []
+# Modules compiled for a caller's own ``@wp.func`` (a level set's signed distance function):
+# ``ordito.precompile`` cannot know them, so the census's precompile check skips their names.
+USER_FUNCTION_MODULES: set[str] = set()
 
 
 def declare_block_dims(owner: object, block_dims: Sequence[int]) -> None:

@@ -13,6 +13,8 @@ Two variants over the same union-find core:
 
 import warp as wp
 
+from ordito.kernels.reduce import peer_counted_add
+
 wp.set_module_options({"enable_backward": False})
 
 
@@ -175,6 +177,22 @@ def ecl_flatten(parents: wp.array[wp.int32], out_labels: wp.array[wp.int32]) -> 
     # stale ancestor back in its label. Measured on CUDA: 31-43 components on a one-component mesh.
     v = wp.int32(wp.tid())
     out_labels[v] = find_representative(parents, v)
+
+
+@wp.kernel
+def ecl_flatten_counted(
+    parents: wp.array[wp.int32], out_labels: wp.array[wp.int32], out_counts: wp.array[wp.int32]
+) -> None:
+    # ``ecl_flatten`` with ``scatter.count_occurrences`` over the labels it writes, for the
+    # component-size criteria (``repair.remove_small_components``' face counts, ``points``' cluster
+    # outliers): each node counts itself into its own component as it resolves the label, so the
+    # histogram is not a second launch reading the labels back. Integer atomics through
+    # ``reduce.peer_counted_add``, so the counts are the same in any order. ``out_counts`` arrives
+    # zeroed.
+    v = wp.int32(wp.tid())
+    label = find_representative(parents, v)
+    out_labels[v] = label
+    peer_counted_add(out_counts, label)
 
 
 @wp.kernel

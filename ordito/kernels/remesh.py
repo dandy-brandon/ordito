@@ -514,22 +514,6 @@ def edge_parameters(
     out_t[e] = t
 
 
-@wp.kernel
-def mark_split_bits(
-    split_mask: wp.array[wp.bool],
-    out_words: wp.array[wp.uint32],
-    out_word_counts: wp.array[wp.int32],
-) -> None:
-    # ``split_edges``' ranks as a bitmask: bit ``e`` for a split edge, each word's population added
-    # into the zeroed counts the caller scans in place (``store_counted_ballot_bit``), a 32nd of
-    # ``array.mask_to_compact_ranks``' ``(m + 1,)`` offsets and of their scan, which on ``lucy``'s
-    # 42 M edges were 14 % of ``split_edges``' pool and its time. The refinement loops' flags come
-    # off the corner sort (``emit_long_edges``), not an edge-ordered launch a ballot could follow,
-    # and take ``store_counted_bit`` instead.
-    e = wp.int32(wp.tid())
-    store_counted_ballot_bit(out_words, out_word_counts, e, split_mask[e])
-
-
 @wp.func
 def split_edge_rank(
     offsets: wp.array[wp.int32],
@@ -538,8 +522,8 @@ def split_edge_rank(
     e: wp.int32,
 ) -> wp.int32:
     # Split edge ``e``'s rank among the split edges: ``offsets[e]``, the exclusive ranks of
-    # ``array.mask_to_compact_ranks``, or with ``words`` (``mark_split_bits``, else empty) its
-    # bit's rank.
+    # ``array.mask_to_compact_ranks``, or with ``words`` (``array.mask_ballot_bits``, else empty)
+    # its bit's rank.
     if words.shape[0] > 0:
         return bit_rank(words, word_ranks, e)
     return offsets[e]

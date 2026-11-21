@@ -234,6 +234,7 @@ def _record_module_loads() -> None:
     import warp._src.context as context
 
     import ordito.kernels
+    from ordito.kernels import array as kernel_array
 
     before = ordito.kernels.WARP_MODULES_BEFORE_ORDITO
     original = context.Module.load
@@ -241,7 +242,7 @@ def _record_module_loads() -> None:
     def load(
         self: Any, device: Any, block_dim: int | None = None, *args: Any, **kwargs: Any
     ) -> Any:
-        if self.name not in before:
+        if self.name not in before and self.name not in kernel_array.USER_FUNCTION_MODULES:
             resolved = context.runtime.get_device(device)
             width = int(block_dim if block_dim is not None else self.options["block_dim"])
             kind = "cpu" if resolved.is_cpu else "cuda"

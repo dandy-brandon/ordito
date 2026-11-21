@@ -25,7 +25,6 @@ from ordito.kernels.array import (
     OverloadTable,
     advance_round_loop,
     append_slot,
-    binary_search_index,
     cross2,
     csr_key,
     csr_row_long,
@@ -35,6 +34,7 @@ from ordito.kernels.array import (
     divide_if_positive,
     map_probe,
     next_up,
+    offset_owner,
     sorted_run_end,
     to_vec2,
     to_vec2d,
@@ -52,6 +52,8 @@ from ordito.kernels.laplacian import (
 )
 from ordito.kernels.linalg import shift_factor, shifted_block_entry, shifted_scalar_entry
 from ordito.kernels.predicates import (
+    complex_product,
+    ordered_dot,
     polar_unit,
     stable_length,
     stable_normalize,
@@ -2434,12 +2436,6 @@ def vcg_scaled_direction(d: wp.vec3d, length: wp.float64) -> wp.vec3d:
 
 
 @wp.func
-def vcg_dot(a: wp.vec3d, b: wp.vec3d) -> wp.float64:
-    # ``vcg::Point3``'s dot product, summed in component order.
-    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-
-
-@wp.func
 def vcg_acos(x: wp.float64) -> wp.float64:
     # C's ``acos``: NaN outside ``[-1, 1]``, where Warp's clamps (and propagates NaN as NaN).
     if x >= wp.float64(-1.0) and x <= wp.float64(1.0):
@@ -2467,7 +2463,7 @@ def vcg_corner_angle(
     # alone and is formed once per face.
     w_q = vcg_scaled_direction(q - p, l_pq)
     w_r = vcg_scaled_direction(r - p, l_pr)
-    return vcg_acos(vcg_dot(w_q, w_r) / (l_pq * l_pr))
+    return vcg_acos(ordered_dot(w_q, w_r) / (l_pq * l_pr))
 
 
 @wp.func
@@ -3454,7 +3450,7 @@ def curve_segment_end(
     begin = wp.int32(0)
     end = curve_vertices.shape[0]
     if single_curve == 0:
-        curve = binary_search_index(curve_offsets, k) - 1
+        curve = offset_owner(curve_offsets, k)
         if curve < 0 or curve >= curve_offsets.shape[0] - 1:
             return wp.int32(-1)
         begin = curve_offsets[curve]
@@ -4086,12 +4082,6 @@ def log_map_from_angles(
 
 HALF_PI_D = wp.float64(0.5 * math.pi)
 PI_D = wp.float64(math.pi)
-
-
-@wp.func
-def complex_product(a: wp.vec2d, b: wp.vec2d) -> wp.vec2d:
-    # Two tangent vectors multiplied as complex numbers: ``b`` rotated and scaled by ``a``.
-    return wp.vec2d(a[0] * b[0] - a[1] * b[1], a[0] * b[1] + a[1] * b[0])
 
 
 @wp.func

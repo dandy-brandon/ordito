@@ -9,6 +9,7 @@ from ordito.kernels.array import (
     declare_block_dims,
     device_is_cpu,
     float_from_ordered_bits,
+    leading_point,
     ordered_float_bits,
     row_chunk_entries,
     row_chunk_slots,
@@ -222,13 +223,6 @@ def surface_centroid_apex(
         write_block_value(lane, out_apex, 0, 1, apex)
 
 
-@wp.func
-def apex_point(center: wp.array[wp.vec4]) -> wp.vec3:
-    # The fan apex ``surface_centroid_apex`` leaves in slot 0.
-    apex = center[0]
-    return wp.vec3(apex[0], apex[1], apex[2])
-
-
 @wp.kernel
 def tetrahedron_volumes_flag_negative(
     vertices: wp.array[wp.vec3],
@@ -245,7 +239,7 @@ def tetrahedron_volumes_flag_negative(
     # ``center`` is the buffer ``surface_centroid_apex`` writes, so the centroid never crosses to
     # the host.
     fi = wp.int32(wp.tid())
-    volume = face_signed_volume(vertices, faces, fi, apex_point(center))
+    volume = face_signed_volume(vertices, faces, fi, leading_point(center))
     out_volumes[fi] = volume
     if volume < wp.float32(0.0):
         out_volumes[out_volumes.shape[0] - 1] = wp.float32(1.0)
@@ -282,7 +276,7 @@ def sample_volume_tetrahedra(
     s3 = wp.max(abc)
     s2 = a + b + c - s1 - s3
 
-    apex = apex_point(center)
+    apex = leading_point(center)
     out_points[tid] = apex * (1.0 - s3) + v0 * s1 + v1 * (s2 - s1) + v2 * (s3 - s2)
 
 

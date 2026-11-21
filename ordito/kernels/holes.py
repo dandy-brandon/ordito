@@ -20,6 +20,7 @@ from ordito.kernels.predicates import (
     circumcircle_diameter,
     dihedral_angle,
     newell_term,
+    ordered_dot,
     project_out_normal,
     side_lengths,
     triangle_aspect_ratio,
@@ -3163,15 +3164,10 @@ def serial_cross_f(a: wp.vec3, b: wp.vec3) -> wp.vec3:
 
 
 @wp.func
-def serial_dot_f(a: wp.vec3, b: wp.vec3) -> wp.float32:
-    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-
-
-@wp.func
 def serial_unfold(b: wp.vec3, c: wp.vec3, d: wp.vec2) -> wp.vec2:
-    dot_bc = serial_dot_f(b, c)
+    dot_bc = ordered_dot(b, c)
     x = serial_cross_f(b, c)
-    crs_bc = wp.sqrt(serial_dot_f(x, x))
+    crs_bc = wp.sqrt(ordered_dot(x, x))
     dd = d[0] * d[0] + d[1] * d[1]
     if dd <= wp.float32(0.0):
         return wp.vec2(wp.float32(0.0), wp.float32(0.0))
@@ -3184,7 +3180,7 @@ def serial_unfold_convex(a: wp.vec3, b: wp.vec3, c: wp.vec3, d: wp.vec3) -> wp.b
     vb = b - a
     vc = c - a
     vd = d - a
-    ub = wp.vec2(wp.sqrt(serial_dot_f(vb, vb)), wp.float32(0.0))
+    ub = wp.vec2(wp.sqrt(ordered_dot(vb, vb)), wp.float32(0.0))
     uc = serial_unfold(vb, vc, ub)
     ud = serial_unfold(vc, vd, uc)
     c1 = ud[0] * ub[1] - ud[1] * ub[0]
@@ -3211,13 +3207,13 @@ def serial_segments_dist_sq(a0: wp.vec3, a1: wp.vec3, b0: wp.vec3, b1: wp.vec3) 
     """Squared distance between the closest points of segments ``a0 a1`` and ``b0 b1``."""
     adir = a1 - a0
     bdir = b1 - b0
-    aa = serial_dot_f(adir, adir)
-    bb = serial_dot_f(bdir, bdir)
-    ab = serial_dot_f(adir, bdir)
+    aa = ordered_dot(adir, adir)
+    bb = ordered_dot(bdir, bdir)
+    ab = ordered_dot(adir, bdir)
     denom = aa * bb - ab * ab
     d = b0 - a0
-    ad = serial_dot_f(adir, d)
-    bd = serial_dot_f(bdir, d)
+    ad = ordered_dot(adir, d)
+    bd = ordered_dot(bdir, d)
     t = (ad * bb - bd * ab) / denom
     if t < wp.float32(0.0) or wp.isnan(t):
         t = wp.float32(0.0)
@@ -3253,12 +3249,7 @@ def serial_segments_dist_sq(a0: wp.vec3, a1: wp.vec3, b0: wp.vec3, b1: wp.vec3) 
         else:
             pa = a0 + adir * t
     r = pa - pb
-    return serial_dot_f(r, r)
-
-
-@wp.func
-def serial_dot_d(a: wp.vec3d, b: wp.vec3d) -> wp.float64:
-    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+    return ordered_dot(r, r)
 
 
 @wp.func
@@ -3269,7 +3260,7 @@ def serial_cross_d(a: wp.vec3d, b: wp.vec3d) -> wp.vec3d:
 @wp.func
 def serial_normal_d(p: wp.vec3d, q: wp.vec3d, r: wp.vec3d) -> wp.vec3d:
     v = serial_cross_d(q - p, r - p)
-    length = wp.sqrt(serial_dot_d(v, v))
+    length = wp.sqrt(ordered_dot(v, v))
     if length <= wp.float64(0.0):
         return wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
     inv = wp.float64(1.0) / length
@@ -3278,12 +3269,12 @@ def serial_normal_d(p: wp.vec3d, q: wp.vec3d, r: wp.vec3d) -> wp.vec3d:
 
 @wp.func
 def serial_dihedral_d(left: wp.vec3d, right: wp.vec3d, edge: wp.vec3d) -> wp.float64:
-    length = wp.sqrt(serial_dot_d(edge, edge))
+    length = wp.sqrt(ordered_dot(edge, edge))
     direction = wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
     if length > wp.float64(0.0):
         inv = wp.float64(1.0) / length
         direction = wp.vec3d(inv * edge[0], inv * edge[1], inv * edge[2])
-    return wp.atan2(serial_dot_d(direction, serial_cross_d(left, right)), serial_dot_d(left, right))
+    return wp.atan2(ordered_dot(direction, serial_cross_d(left, right)), ordered_dot(left, right))
 
 
 @wp.func
@@ -3291,9 +3282,9 @@ def serial_circum_sq_d(a: wp.vec3d, b: wp.vec3d, c: wp.vec3d) -> wp.float64:
     ba = b - a
     ac = a - c
     cb = c - b
-    ab_sq = serial_dot_d(ba, ba)
-    ca_sq = serial_dot_d(ac, ac)
-    bc_sq = serial_dot_d(cb, cb)
+    ab_sq = ordered_dot(ba, ba)
+    ca_sq = ordered_dot(ac, ac)
+    bc_sq = ordered_dot(cb, cb)
     if ab_sq <= wp.float64(0.0):
         return ca_sq
     if ca_sq <= wp.float64(0.0):
@@ -3301,7 +3292,7 @@ def serial_circum_sq_d(a: wp.vec3d, b: wp.vec3d, c: wp.vec3d) -> wp.float64:
     if bc_sq <= wp.float64(0.0):
         return ab_sq
     f = serial_cross_d(ba, c - a)
-    f_sq = serial_dot_d(f, f)
+    f_sq = ordered_dot(f, f)
     if f_sq <= wp.float64(0.0):
         return wp.float64(wp.inf)
     return ab_sq * ca_sq * bc_sq / f_sq
@@ -3312,9 +3303,9 @@ def serial_min_circle_sq_d(a: wp.vec3d, b: wp.vec3d, c: wp.vec3d) -> wp.float64:
     ba = b - a
     ac = a - c
     cb = c - b
-    ab_sq = serial_dot_d(ba, ba)
-    ca_sq = serial_dot_d(ac, ac)
-    bc_sq = serial_dot_d(cb, cb)
+    ab_sq = ordered_dot(ba, ba)
+    ca_sq = ordered_dot(ac, ac)
+    bc_sq = ordered_dot(cb, cb)
     if ca_sq >= bc_sq + ab_sq:
         return ca_sq
     if bc_sq >= ab_sq + ca_sq:
@@ -3322,7 +3313,7 @@ def serial_min_circle_sq_d(a: wp.vec3d, b: wp.vec3d, c: wp.vec3d) -> wp.float64:
     if ab_sq >= ca_sq + bc_sq:
         return ab_sq
     f = serial_cross_d(ba, c - a)
-    return ab_sq * ca_sq * bc_sq / serial_dot_d(f, f)
+    return ab_sq * ca_sq * bc_sq / ordered_dot(f, f)
 
 
 @wp.func
@@ -3332,10 +3323,10 @@ def serial_delaunay_quad(
     """Report whether diagonal ``a c`` of quadrangle ``a b c d`` should stay (no flip)."""
     n_abc = serial_normal_d(a, b, c)
     n_acd = serial_normal_d(a, c, d)
-    old_pocket = serial_dot_d(n_abc, n_acd) < wp.float64(-0.9)
+    old_pocket = ordered_dot(n_abc, n_acd) < wp.float64(-0.9)
     n_abd = serial_normal_d(a, b, d)
     n_dbc = serial_normal_d(d, b, c)
-    new_pocket = serial_dot_d(n_abd, n_dbc) < wp.float64(-0.9)
+    new_pocket = ordered_dot(n_abd, n_dbc) < wp.float64(-0.9)
     if old_pocket != new_pocket:
         return new_pocket
     eps = wp.float64(1e-7)
@@ -3355,7 +3346,7 @@ def serial_delaunay_quad(
         if not wp.isfinite(m_bd):
             ac = a - c
             bd = b - d
-            return serial_dot_d(ac, ac) <= serial_dot_d(bd, bd)
+            return ordered_dot(ac, ac) <= ordered_dot(bd, bd)
         return m_ac <= m_bd
     return m_ac <= m_bd + eps * (m_ac + m_bd)
 
@@ -3448,8 +3439,8 @@ def serial_rim_flips(
 @wp.func
 def rim_closest_on_segment(pt: wp.vec3, a: wp.vec3, b: wp.vec3) -> wp.vec3:
     ab = b - a
-    dt = serial_dot_f(pt - a, ab)
-    ab_sq = serial_dot_f(ab, ab)
+    dt = ordered_dot(pt - a, ab)
+    ab_sq = ordered_dot(ab, ab)
     if dt <= wp.float32(0.0):
         return a
     if dt >= ab_sq:
@@ -3489,7 +3480,7 @@ def rim_slide(
                     sb = (wp.float32(1.0) - c2) * mesh.points[v0] + c2 * mesh.points[v2]
                     proj = rim_closest_on_segment(pt, sa, sb)
                     r = pt - proj
-                    dist = serial_dot_f(r, r)
+                    dist = ordered_dot(r, r)
                     if dist < best_d:
                         best = proj
                         best_d = dist
@@ -3624,9 +3615,9 @@ def serial_aspect_ratio_d(a: wp.vec3d, b: wp.vec3d, c: wp.vec3d) -> wp.float64:
     u = c - b
     v = a - c
     w = b - a
-    bc = wp.sqrt(serial_dot_d(u, u))
-    ca = wp.sqrt(serial_dot_d(v, v))
-    ab = wp.sqrt(serial_dot_d(w, w))
+    bc = wp.sqrt(ordered_dot(u, u))
+    ca = wp.sqrt(ordered_dot(v, v))
+    ab = wp.sqrt(ordered_dot(w, w))
     half = (bc + ca + ab) / wp.float64(2.0)
     den = wp.float64(8.0) * (half - bc) * (half - ca) * (half - ab)
     if den <= wp.float64(0.0):
@@ -3661,14 +3652,14 @@ def serial_fill_triangle(
     cd = wp.vec3d(pc)
     face = serial_cross_d(bd - ad, cd - ad)
     if metric == SERIAL_METRIC_MIN_AREA:
-        return wp.sqrt(serial_dot_d(face, face))
+        return wp.sqrt(ordered_dot(face, face))
     diameter = wp.sqrt(serial_circum_sq_d(ad, bd, cd))
     dot = normal[0] * face[0] + normal[1] * face[1] + normal[2] * face[2]
     if metric == SERIAL_METRIC_PLANE:
         if dot < wp.float64(0.0):
             return wp.float64(_SERIAL_BAD)
         return diameter
-    area_sq = serial_dot_d(face, face)
+    area_sq = ordered_dot(face, face)
     ratio = serial_aspect_ratio_d(ad, bd, cd)
     if (
         area_sq == wp.float64(0.0)
@@ -3700,7 +3691,7 @@ def serial_fill_edge(
     sa = wp.sqrt(serial_lsq_f(norm_a))
     sc = wp.sqrt(serial_lsq_f(norm_c))
     den = sa * sc
-    cos = serial_dot_f(norm_a, norm_c) / (sa * sc)
+    cos = ordered_dot(norm_a, norm_c) / (sa * sc)
     if den == wp.float32(0.0) or cos <= wp.float32(-1.0):
         return wp.float64(_SERIAL_BAD)
     x = (wp.float32(1.0) - cos) / (wp.float32(1.0) + cos)
@@ -4019,7 +4010,7 @@ class BandSearch:
 
 @wp.func
 def serial_normalized_f(v: wp.vec3) -> wp.vec3:
-    length = wp.sqrt(serial_dot_f(v, v))
+    length = wp.sqrt(ordered_dot(v, v))
     if length > wp.float32(0.0):
         inv = wp.float32(1.0) / length
         return wp.vec3(v[0] * inv, v[1] * inv, v[2] * inv)
@@ -4042,9 +4033,9 @@ def band_triangle(q: BandSearch, a: wp.int32, b: wp.int32, c: wp.int32) -> wp.fl
     bc = wp.vec3d(pc) - wp.vec3d(pb)
     norm = serial_cross_d(ab, ac)
     parallel = wp.abs(q.up[0] * norm[0] + q.up[1] * norm[1] + q.up[2] * norm[2])
-    sides = serial_dot_d(ab, ab) + serial_dot_d(ac, ac) + serial_dot_d(bc, bc)
+    sides = ordered_dot(ab, ab) + ordered_dot(ac, ac) + ordered_dot(bc, bc)
     return (
-        serial_dot_d(norm, norm)
+        ordered_dot(norm, norm)
         + wp.float64(100.0) * parallel * parallel
         + sides * sides * wp.float64(0.5)
     )
@@ -4057,7 +4048,7 @@ def band_edge(q: BandSearch, a: wp.int32, b: wp.int32, lft: wp.int32, rgt: wp.in
     ab = q.points[b] - pa
     norm_l = serial_normalized_f(serial_cross_f(q.points[lft] - pa, ab))
     norm_r = serial_normalized_f(serial_cross_f(ab, q.points[rgt] - pa))
-    return (wp.float64(1.0) - wp.float64(serial_dot_f(norm_l, norm_r))) * wp.float64(1e4)
+    return (wp.float64(1.0) - wp.float64(ordered_dot(norm_l, norm_r))) * wp.float64(1e4)
 
 
 @wp.func

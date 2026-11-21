@@ -36,6 +36,7 @@ from ordito.config import is_deterministic
 from ordito.constants import INT32_MAX
 from ordito.graph import successor_cycles_from_table
 from ordito.halfedge import _sorted_pairing  # pyright: ignore[reportPrivateUsage]
+from ordito.kernels import array as kernel_array
 from ordito.kernels import boundary as kernel_boundary
 
 
@@ -444,8 +445,10 @@ def _split_at_pinches(
         ),
         device,
     )
+    # Each packed entry's vertex as its sort key, its position as the payload: a stable sort then
+    # leaves every vertex's occurrences adjacent and in position order.
     _launch.launch(
-        kernel_boundary.pinch_occurrence_keys,
+        kernel_array.KEYS_AND_IDENTITY[wp.int32],
         dim=total,
         inputs=[flat_loops, keys, positions],
         device=device,

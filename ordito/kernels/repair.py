@@ -1,19 +1,17 @@
 import warp as wp
 
 from ordito.constants import INDEX_RADIX_PAIR
-from ordito.kernels.algorithms.connected_components import (
-    find_representative,
-    write_corner_component_rank,
-)
+from ordito.kernels.algorithms.connected_components import write_corner_component_rank
 from ordito.kernels.array import (
     append_slot,
-    binary_search_index,
     binary_search_sorted_contains,
     declare_map_signatures,
+    indexed_heap_before,
     indexed_heap_pop,
     indexed_heap_sift_up,
     map_probe,
     map_probe_single,
+    offset_owner,
     pack_edge_key,
     pack_index_triple,
     pack_ranked_key,
@@ -36,7 +34,7 @@ from ordito.kernels.halfedge import (
     next_boundary_halfedge,
 )
 from ordito.kernels.predicates import triangle_area_vector, triangle_aspect_ratio, triangle_normal
-from ordito.kernels.reduce import GroupSumPass, peer_counted_add, read_group_sum
+from ordito.kernels.reduce import GroupSumPass, read_group_sum
 from ordito.kernels.scatter import ARRIVAL_POOL_PEERS, scatter_add
 from ordito.kernels.selection import face_touches_front, mark_submesh_face
 from ordito.kernels.triangles import (
@@ -381,16 +379,6 @@ def split_corner_outputs(
 
 
 @wp.kernel
-def flag_class_first_occurrences(
-    inverse: wp.array[wp.int32], first: wp.array[wp.int32], out_flags: wp.array[wp.int32]
-) -> None:
-    # 1 where vertex ``i`` is the first occurrence of its class, which an inclusive scan turns into
-    # the class's rank by first occurrence plus one (``renumber_classes_by_first_occurrence``).
-    i = wp.int32(wp.tid())
-    out_flags[i] = wp.where(first[inverse[i]] == i, 1, 0)
-
-
-@wp.kernel
 def renumber_classes_by_first_occurrence(
     inverse: wp.array[wp.int32],
     first: wp.array[wp.int32],
@@ -400,7 +388,7 @@ def renumber_classes_by_first_occurrence(
 ) -> None:
     # Classes numbered by key order renumbered by their first occurrence, the order Open3D's, VTK's
     # and MeshLab's welders emit, and the one that leaves an already-welded mesh unchanged.
-    # ``ranks`` is ``flag_class_first_occurrences`` scanned inclusively, so a class whose first
+    # ``ranks`` is ``array.round_trip_flags`` scanned inclusively, so a class whose first
     # vertex is ``v`` becomes ``ranks[v] - 1``. The pair and its scan cost a flat host overhead:
     # measured 1.12-1.20x the key-order weld on CUDA at 61 k and 983 k soup vertices, both
     # tolerance modes. ``out_inverse`` may be ``inverse`` itself: thread ``i`` reads and writes
@@ -827,21 +815,6 @@ def compact_kept_face_groups(
 
 
 @wp.kernel
-def flatten_and_count_labels(
-    parents: wp.array[wp.int32], out_labels: wp.array[wp.int32], out_counts: wp.array[wp.int32]
-) -> None:
-    # ``connected_components.ecl_flatten`` with ``scatter.count_occurrences`` over the labels it
-    # writes, for ``remove_small_components``' face-count criteria: each face counts itself into its
-    # own component as it resolves the label, so the histogram is not a second launch reading the
-    # labels back. Integer atomics, so the counts are the same in any order. ``out_counts`` arrives
-    # zeroed.
-    f = wp.int32(wp.tid())
-    label = find_representative(parents, f)
-    out_labels[f] = label
-    peer_counted_add(out_counts, label)
-
-
-@wp.kernel
 def reduce_largest_group(counts: wp.array[wp.int32], out_best: wp.array[wp.int64]) -> None:
     # The group with the most members, ties going to the lowest group index, reduced into one
     # ``int64`` by ``pack_ranked_key`` so the whole answer is a single ``wp.atomic_max``. Launch
@@ -1060,12 +1033,6 @@ def mark_non_manifold_candidates(
         wp.atomic_add(out_undecided, 0, 1)
 
 
-@wp.func
-def removed_before(areas: wp.array[wp.float32], g: wp.int32, f: wp.int32) -> wp.bool:
-    # The visiting order: ascending area, ties by face index.
-    return areas[g] < areas[f] or (areas[g] == areas[f] and g < f)
-
-
 @wp.kernel
 def decide_non_manifold_faces(
     mates: wp.array[wp.int32],
@@ -1097,7 +1064,8 @@ def decide_non_manifold_faces(
             start = positions[root]
             for j in range(run_lengths[root]):
                 g = key_order[start + j] // 3
-                if states[g] == NON_MANIFOLD_UNDECIDED and removed_before(areas, g, f):
+                # The visiting order: ascending area, ties by face index.
+                if states[g] == NON_MANIFOLD_UNDECIDED and indexed_heap_before(areas, g, f):
                     ready = False
             if live[root] > 2:
                 crowded = True
@@ -2069,7 +2037,7 @@ def tunnel_loop_cocycle(
     # edge's whole class from whichever end it starts. ``out_cocycle`` is zeroed by the caller;
     # loops are simple and at least three long, as the homology generators are.
     j = wp.int32(wp.tid())
-    i = binary_search_index(loop_offsets, j) - 1
+    i = offset_owner(loop_offsets, j)
     start = loop_offsets[i]
     size = loop_offsets[i + 1] - start
     position = j - start

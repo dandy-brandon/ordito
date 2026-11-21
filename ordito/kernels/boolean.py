@@ -31,7 +31,10 @@ properties (``CreateProperties``).
 
 import warp as wp
 
+from ordito.kernels import array as kernel_array
 from ordito.kernels import polyline as kernel_polyline
+from ordito.kernels.predicates import ordered_dot
+from ordito.kernels.reduce import group_sum_field
 
 wp.set_module_options({"enable_backward": False, "fuse_fp": False})
 
@@ -1813,15 +1816,6 @@ def triangle_capacities(face_offsets: wp.array[wp.int32], out_capacity: wp.array
 
 
 @wp.kernel
-def face_mesh_keys(
-    face_mesh: wp.array[wp.int32], out_keys: wp.array[wp.int32], out_order: wp.array[wp.int32]
-) -> None:
-    f = wp.int32(wp.tid())
-    out_keys[f] = face_mesh[f]
-    out_order[f] = f
-
-
-@wp.kernel
 def gather_faces(
     faces: wp.array[wp.int32], order: wp.array[wp.int32], out_faces: wp.array[wp.int32]
 ) -> None:
@@ -2324,8 +2318,16 @@ def hm_pair_up(m: HalfedgeMesh, a: wp.int32, b: wp.int32):
 
 
 @wp.func
+def same_face(
+    mesh: wp.array[wp.int32], coplanar: wp.array[wp.int32], a: wp.int32, b: wp.int32
+) -> wp.bool:
+    # ``TriRef::SameFace`` (no face ids on an imported mesh).
+    return mesh[a] == mesh[b] and coplanar[a] == coplanar[b]
+
+
+@wp.func
 def hm_same_face(m: HalfedgeMesh, t0: wp.int32, t1: wp.int32) -> wp.bool:
-    return m.tri_mesh[t0] == m.tri_mesh[t1] and m.tri_coplanar[t0] == m.tri_coplanar[t1]
+    return same_face(m.tri_mesh, m.tri_coplanar, t0, t1)
 
 
 @wp.func
@@ -2904,15 +2906,6 @@ def flag_swappable_edges(
 
 
 @wp.kernel
-def flagged_halfedges(
-    flags: wp.array[wp.int32], ranks: wp.array[wp.int32], out_list: wp.array[wp.int32]
-) -> None:
-    h = wp.int32(wp.tid())
-    if ranks[h + 1] != ranks[h]:
-        out_list[ranks[h]] = h
-
-
-@wp.kernel
 def dedupe_flagged(m: HalfedgeMesh, flagged: wp.array[wp.int32], count: wp.int32) -> None:
     # ``DedupeEdges``' serial pass over the flagged edges, in index order.
     for i in range(count):
@@ -3226,14 +3219,8 @@ def write_segment_hits(
 
 
 # -- float64 vector helpers, in linalg's operation order -----------------------------------------
-
-
-@wp.func
-def dot3(a: wp.vec3d, b: wp.vec3d) -> wp.float64:
-    # linalg's ``dot``: ``wp.dot`` starts from ``0 + a[0] * b[0]``, which turns a first term of
-    # ``-0.0`` into ``+0.0`` where Manifold keeps it (``cross``, ``lerp``, ``*`` and ``/`` round
-    # as linalg's and are Warp's own).
-    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+# (linalg's ``dot`` is ``predicates.ordered_dot``; ``cross``, ``lerp``, ``*`` and ``/`` round as
+# linalg's and are Warp's own.)
 
 
 @wp.func
@@ -3244,7 +3231,7 @@ def negated3(a: wp.vec3d) -> wp.vec3d:
 @wp.func
 def la_normalize(a: wp.vec3d) -> wp.vec3d:
     # ``la::normalize``: divided by its length, NaN for zero.
-    return a / wp.sqrt(dot3(a, a))
+    return a / wp.sqrt(ordered_dot(a, a))
 
 
 @wp.func
@@ -3369,12 +3356,12 @@ def refine_edge_added(
         edge_norm = la_normalize(d)
         t_start = xyz(tangents[h])
         t_end = xyz(tangents[twins[h]])
-        a = t_start - (edge_norm) * (dot3(edge_norm, t_start))
-        b = t_end - (edge_norm) * (dot3(edge_norm, t_end))
+        a = t_start - (edge_norm) * (ordered_dot(edge_norm, t_start))
+        b = t_end - (edge_norm) * (ordered_dot(edge_norm, t_end))
         ab = a - b
-        bulge = wp.float64(0.5) * (wp.sqrt(dot3(a, a)) + wp.sqrt(dot3(b, b))) + wp.sqrt(
-            dot3(ab, ab)
-        )
+        bulge = wp.float64(0.5) * (
+            wp.sqrt(ordered_dot(a, a)) + wp.sqrt(ordered_dot(b, b))
+        ) + wp.sqrt(ordered_dot(ab, ab))
         # A crease corner's ``0 / 0`` smoothness leaves NaN tangents, whose count Manifold
         # converts without a check (undefined, and in practice unbounded); none are added here.
         count = 0
@@ -3774,11 +3761,6 @@ def high_word(x: wp.float64) -> wp.uint32:
 
 
 @wp.func
-def exponent_bits(x: wp.float64) -> wp.int32:
-    return wp.int32((wp.cast(x, wp.uint64) >> wp.uint64(52)) & wp.uint64(0x7FF))
-
-
-@wp.func
 def rem_pio2(x: wp.float64) -> wp.vec3d:
     # ``RemPio2`` below ``2**20 * pi / 2``: ``(y0, y1, n)``, ``x = n pi / 2 + y0 + y1``.
     pio4 = wp.float64(0.78539816339744827900)
@@ -3837,13 +3819,13 @@ def rem_pio2(x: wp.float64) -> wp.vec3d:
         w = fn * pio2_1t
     y0 = r - w
     ex = wp.int32(ix >> wp.uint32(20))
-    if ex - exponent_bits(y0) > 16:
+    if ex - group_sum_field(y0) > 16:
         t = r
         w = fn * pio2_2
         r = t - w
         w = fn * pio2_2t - ((t - r) - w)
         y0 = r - w
-        if ex - exponent_bits(y0) > 49:
+        if ex - group_sum_field(y0) > 49:
             t2 = r
             w = fn * pio2_3
             r = t2 - w
@@ -3895,7 +3877,7 @@ def manifold_cos(x: wp.float64) -> wp.float64:
 @wp.func
 def angle_between(a: wp.vec3d, b: wp.vec3d) -> wp.float64:
     # ``AngleBetween`` of unit vectors.
-    d = dot3(a, b)
+    d = ordered_dot(a, b)
     if d >= wp.float64(1.0):
         return wp.float64(0.0)
     if d <= wp.float64(-1.0):
@@ -3907,8 +3889,8 @@ def angle_between(a: wp.vec3d, b: wp.vec3d) -> wp.float64:
 def circular_tangent(tangent: wp.vec3d, edge: wp.vec3d) -> wp.vec4d:
     # ``CircularTangent``: the weighted cubic Bezier tangent of a circular arc along ``edge``.
     direction = safe_normalize(tangent)
-    weight = wp.max(wp.float64(0.5), dot3(direction, safe_normalize(edge)))
-    bz2 = ((direction) * (wp.float64(0.5))) * (wp.sqrt(dot3(edge, edge)))
+    weight = wp.max(wp.float64(0.5), ordered_dot(direction, safe_normalize(edge)))
+    bz2 = ((direction) * (wp.float64(0.5))) * (wp.sqrt(ordered_dot(edge, edge)))
     t = wp.float64(2.0) / wp.float64(3.0)
     bz3 = wp.lerp(
         wp.vec4d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0), wp.float64(1.0)),
@@ -3916,14 +3898,6 @@ def circular_tangent(tangent: wp.vec3d, edge: wp.vec3d) -> wp.vec4d:
         t,
     )
     return wp.vec4d(bz3[0] / bz3[3], bz3[1] / bz3[3], bz3[2] / bz3[3], bz3[3])
-
-
-@wp.func
-def same_face(
-    mesh: wp.array[wp.int32], coplanar: wp.array[wp.int32], a: wp.int32, b: wp.int32
-) -> wp.bool:
-    # ``TriRef::SameFace`` (no face ids on an imported mesh).
-    return mesh[a] == mesh[b] and coplanar[a] == coplanar[b]
 
 
 @wp.func
@@ -4038,7 +4012,7 @@ def initial_tangents(
     edge = positions[faces[next_halfedge(h)]] - positions[start]
     edge_normal = face_normals[h // 3] + face_normals[twins[h] // 3]
     bi_tangent = wp.cross(normal, edge)
-    if dot3(normal, edge_normal) < wp.float64(0.0):
+    if ordered_dot(normal, edge_normal) < wp.float64(0.0):
         bi_tangent = wp.cross(edge_normal, edge)
     out_tangents[h] = circular_tangent(wp.cross(bi_tangent, normal), edge)
 
@@ -4340,7 +4314,9 @@ def distribute_tangents(
                 current_angle = SMOOTH_TWO_PI
             else:
                 current_angle = angle_between(this_tangent, first_tangent)
-                if dot3(approx_normal, wp.cross(this_tangent, first_tangent)) < wp.float64(0.0):
+                if ordered_dot(approx_normal, wp.cross(this_tangent, first_tangent)) < wp.float64(
+                    0.0
+                ):
                     current_angle = SMOOTH_TWO_PI - current_angle
             count += 1
             last_edge = this_edge
@@ -4348,7 +4324,7 @@ def distribute_tangents(
         steps += 1
         if fixed[current] != 0:
             break
-    if count == 1 or dot3(normal, normal) == wp.float64(0.0):
+    if count == 1 or ordered_dot(normal, normal) == wp.float64(0.0):
         return
     end = current
     scale = current_angle / desired
@@ -4368,7 +4344,9 @@ def distribute_tangents(
                 angle = SMOOTH_TWO_PI
                 if current != h:
                     angle = angle_between(this_tangent, first_tangent)
-                    if dot3(approx_normal, wp.cross(this_tangent, first_tangent)) < wp.float64(0.0):
+                    if ordered_dot(
+                        approx_normal, wp.cross(this_tangent, first_tangent)
+                    ) < wp.float64(0.0):
                         angle = SMOOTH_TWO_PI - angle
                 offset = offset + wrap_angle(angle - scale * desired)
                 last_edge = this_edge
@@ -4398,7 +4376,9 @@ def distribute_tangents(
             angle_now = SMOOTH_TWO_PI
             if current != h:
                 angle_now = angle_between(this_tangent, first_tangent)
-                if dot3(approx_normal, wp.cross(this_tangent, first_tangent)) < wp.float64(0.0):
+                if ordered_dot(approx_normal, wp.cross(this_tangent, first_tangent)) < wp.float64(
+                    0.0
+                ):
                     angle_now = SMOOTH_TWO_PI - angle_now
             d = raw * scale
             if d - previous > SMOOTH_PI:
@@ -4477,9 +4457,9 @@ def cubic_second(p1: wp.vec4d, p2: wp.vec4d, p3: wp.vec4d, x: wp.float64) -> wp.
 @wp.func
 def orthogonal_to(v: wp.vec3d, alt: wp.vec3d, ref: wp.vec3d) -> wp.vec3d:
     # ``OrthogonalTo``.
-    out = v - (ref) * (dot3(v, ref))
-    if dot3(out, out) < SMOOTH_PRECISION * dot3(v, v):
-        out = alt - (ref) * (dot3(alt, ref))
+    out = v - (ref) * (ordered_dot(v, ref))
+    if ordered_dot(out, out) < SMOOTH_PRECISION * ordered_dot(v, v):
+        out = alt - (ref) * (ordered_dot(alt, ref))
     return safe_normalize(out)
 
 
@@ -4545,12 +4525,12 @@ def qxdir(q: wp.vec4d) -> wp.vec3d:
 @wp.func
 def vector_quat(orig: wp.vec3d, dest: wp.vec3d) -> wp.vec4d:
     # ``rotation_quat(orig, dest)``: the shortest rotation between unit vectors.
-    cos_theta = dot3(orig, dest)
+    cos_theta = ordered_dot(orig, dest)
     if cos_theta >= wp.float64(1.0) - SMOOTH_DBL_EPSILON:
         return wp.vec4d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0), wp.float64(1.0))
     if cos_theta < wp.float64(-1.0) + SMOOTH_DBL_EPSILON:
         axis = wp.cross(wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(1.0)), orig)
-        if dot3(axis, axis) < SMOOTH_DBL_EPSILON:
+        if ordered_dot(axis, axis) < SMOOTH_DBL_EPSILON:
             axis = wp.cross(wp.vec3d(wp.float64(1.0), wp.float64(0.0), wp.float64(0.0)), orig)
         return axis_angle_quat(la_normalize(axis), SMOOTH_PI)
     axis = wp.cross(orig, dest)
@@ -4618,7 +4598,7 @@ def bezier_to_bezier(
     q0 = matrix_quat(n0, bi0, wp.cross(n0, bi0))
     q1 = matrix_quat(n1, bi1, wp.cross(n1, bi1))
     edge = c1 - c0
-    long_way = dot3(n0, edge) + dot3(n1, edge) < wp.float64(0.0)
+    long_way = ordered_dot(n0, edge) + ordered_dot(n1, edge) < wp.float64(0.0)
     q_tmp = slerp(q0, q1, x, long_way)
     q = qmul(vector_quat(qxdir(q_tmp), tangent), q_tmp)
     delta = wp.lerp(rotate_from_to(xyz(ty0), q0, q), rotate_from_to(xyz(ty1), q1, q), x)
@@ -5464,5 +5444,7 @@ def level_set_kernels(sdf: object) -> tuple[object, object, object]:
         )
         for f in (voxels, near_surface, edge_verts)
     )
+    for kernel in built:
+        kernel_array.USER_FUNCTION_MODULES.add(kernel.module.name)
     _LEVEL_SET_KERNELS[sdf] = built
     return built

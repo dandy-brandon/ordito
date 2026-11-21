@@ -468,7 +468,7 @@ def cross_pinch_gaps(
 # vertices bought an order nothing reads). The cut is a stack walk, a block a loop
 # (``split_pinched_loops``); what it needs from outside its loop is each entry's previous
 # occurrence of the same vertex in the same loop, which a stable sort of the entries by vertex
-# lays side by side (``pinch_occurrence_keys``, ``previous_occurrences``).
+# lays side by side (``array.keys_and_identity``, ``previous_occurrences``).
 #
 # Against the host walk it replaced (a readback, a Python stack walk a loop, an upload), new/old:
 # ``holes_pinched`` (10 460 cycles) 0.0057x CUDA and 0.11x CPU, an icosphere(7) with every
@@ -476,17 +476,6 @@ def cross_pinch_gaps(
 # form did not pay: on a five-by-five grid with two touching holes CUDA reads 0.93x but the CPU
 # 1.35x (+0.12 ms), even at about a hundred boundary entries. Kept on both devices: a host path
 # below a size would be a second implementation of one answer.
-
-
-@wp.kernel
-def pinch_occurrence_keys(
-    flat_loops: wp.array[wp.int32], out_keys: wp.array[wp.int32], out_positions: wp.array[wp.int32]
-) -> None:
-    # Each packed entry's vertex as its sort key, its position as the payload: a stable sort then
-    # leaves every vertex's occurrences adjacent and in position order.
-    p = wp.int32(wp.tid())
-    out_keys[p] = flat_loops[p]
-    out_positions[p] = p
 
 
 @wp.kernel

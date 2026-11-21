@@ -1389,14 +1389,6 @@ def march_expand_band(
         i += stride
 
 
-@wp.kernel
-def march_relabel_band(band: wp.array[wp.int32], out_local: wp.array[wp.int32]) -> None:
-    # The band's local numbering after its list was sorted (``ordito.config``'s deterministic
-    # setting): the claims' arrival order no longer reaches the band system.
-    i = wp.int32(wp.tid())
-    out_local[band[i]] = i
-
-
 @wp.func
 def raise_to(out_words: wp.array[wp.float64], index: wp.int32, value: wp.float64) -> None:
     # ``atomic_max`` onto one word every thread of a launch offers to, the plain read first sparing

@@ -48,7 +48,7 @@ def offset_packed_faces(
     # ``cpu_compiler_flags``, which recovers this row (``concatenate`` of 8 pieces 0.78-0.82x) but
     # moves nothing else (1 291 CPU rows, geomean 1.004 / 0.998, no correlation between passes).
     i = wp.int32(wp.tid())
-    piece = kernel_array.binary_search_index(piece_starts, i) - 1
+    piece = kernel_array.offset_owner(piece_starts, i)
     faces[i] = faces[i] + vertex_offsets[piece]
 
 

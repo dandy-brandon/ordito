@@ -34,23 +34,18 @@ import warp as wp
 
 from ordito.kernels.array import (
     UINT32_ALL_BITS,
-    binary_search_index,
     binary_search_index_left,
     csr_row_long,
     declare_block_dims,
+    identity_entry,
     lower_triangle_pair,
+    offset_owner,
     ordered_float_bits,
     row_chunk_entries,
     scanned_count,
 )
 from ordito.kernels.linalg import residual_and_scale
-from ordito.kernels.reduce import (
-    block_barrier,
-    block_sum,
-    last_ticket,
-    peer_counted_add,
-    take_ticket,
-)
+from ordito.kernels.reduce import block_barrier, block_sum, last_ticket, take_ticket
 
 wp.set_module_options({"enable_backward": False})
 
@@ -432,11 +427,6 @@ def panel_row(
     substitute_panel(base, m64, first, last, first, fronts, fronts, front_index(base, m64, row, 0))
 
 
-@wp.func
-def unit_entry(i: wp.int32, j: wp.int32) -> wp.float64:
-    return wp.where(i == j, wp.float64(1.0), wp.float64(0.0))
-
-
 # In a module of its own: its tile solves link MathDx objects from Warp's link-time cache, which
 # no other kernel here needs, so the rest of the module builds at every width without them and
 # a stale cache fails this launch alone (``_common.load_mathdx_kernel`` repairs it).
@@ -470,7 +460,7 @@ def factor_panel_tiled(
     for e in range(lane, PANEL * PANEL, wp.block_dim()):
         i = e // PANEL
         j = e % PANEL
-        value = unit_entry(i, j)
+        value = identity_entry(i, j)
         if i < width and j < width:
             # The lower triangle, mirrored: a front's strict upper one is not kept current.
             value = fronts[front_index(base, m64, first + wp.max(i, j), first + wp.min(i, j))]
@@ -1478,12 +1468,6 @@ NULL_SPACE_CHUNK = 1024
 
 
 @wp.func
-def chunk_component(chunk_offsets: wp.array[wp.int32], chunk: wp.int32) -> wp.int32:
-    # The component owning ``chunk``: the last whose first chunk is at or before it.
-    return binary_search_index(chunk_offsets, chunk) - 1
-
-
-@wp.func
 def null_space_partial(
     b: wp.int32,
     lane: wp.int32,
@@ -1503,7 +1487,7 @@ def null_space_partial(
     column = b // chunk_bound
     if chunk >= chunk_offsets[chunk_offsets.shape[0] - 1]:
         return
-    component = chunk_component(chunk_offsets, chunk)
+    component = offset_owner(chunk_offsets, chunk)
     if singular[component_label[component]] == 0:
         return
     offset = column * n
@@ -1606,7 +1590,7 @@ def null_space_shift_entry(
     solution: wp.array[wp.float64],
 ) -> None:
     # Thread ``(p, column)`` of ``null_space_shift``.
-    component = binary_search_index(component_offsets, p) - 1
+    component = offset_owner(component_offsets, p)
     if singular[component_label[component]] == 0:
         return
     r = column * n + component_rows[p]
@@ -1728,7 +1712,7 @@ def dissection_task(
     # ``chunk``-sized tasks, numbered segment by segment. ``tasks`` is the second half of the
     # depth's table, scanned with the starts, so each entry carries the live count in front.
     shifted = t + live_count(segment_start)
-    s = chunk_component(tasks, shifted)
+    s = offset_owner(tasks, shifted)
     begin = segment_start[s] + chunk * (shifted - tasks[s])
     return s, begin, wp.min(begin + chunk, segment_start[s + 1])
 
@@ -3218,13 +3202,6 @@ def parent_locals(
 
 
 @wp.func
-def level_item(offsets: wp.array[wp.int32], t: wp.int32) -> wp.int32:
-    # The supernode (index into the level-major order) whose run of items holds item
-    # ``t < offsets[-1]``: the last ``j`` with ``offsets[j] <= t``, so empty runs are skipped.
-    return binary_search_index(offsets, t) - 1
-
-
-@wp.func
 def forward_task_entry(
     t: wp.int32,
     level_node: wp.array[wp.int32],
@@ -3242,7 +3219,7 @@ def forward_task_entry(
 ) -> None:
     # Forward tasks of every level, level-major: supernode by supernode, chunk-major, each chunk's
     # rows from ``CHUNK`` times the chunk down.
-    j = level_item(offsets, t)
+    j = offset_owner(offsets, t)
     k = level_node[j]
     local = t - offsets[j]
     size = front_size[k]
@@ -3281,7 +3258,7 @@ def forward_row_entry(
 ) -> None:
     # Every solve-block row of every level: where its chunks sit and where their sum goes (a
     # column's forward entry, or ``-1 - pair`` for a lower row's contribution).
-    j = level_item(offsets, t)
+    j = offset_owner(offsets, t)
     k = level_node[j]
     r = t - offsets[j]
     size = front_size[k]
@@ -3316,7 +3293,7 @@ def backward_task_entry(
     out_rows: wp.array[wp.int32],
     out_slot: wp.array[wp.int32],
 ) -> None:
-    j = level_item(offsets, t)
+    j = offset_owner(offsets, t)
     k = level_node[j]
     local = t - offsets[j]
     size = front_size[k]
@@ -3357,7 +3334,7 @@ def backward_row_entry(
 ) -> None:
     # Every column of every level, level-major: its backward chunks and its position (also the
     # forward solve's gather rows, in the same order).
-    j = level_item(offsets, t)
+    j = offset_owner(offsets, t)
     k = level_node[j]
     i = t - offsets[j]
     width = ncol[k]
@@ -3603,15 +3580,6 @@ BFS_REACHED = wp.int32(2)
 
 
 @wp.kernel
-def component_sizes(labels: wp.array[wp.int32], out_size: wp.array[wp.int32]) -> None:
-    # Per label slot: the component's row count. Its lowest row needs no table: the labels are
-    # ``graph.connected_component_labels``', each the smallest row of its component, so the lowest
-    # row of a component is its own label slot.
-    v = wp.int32(wp.tid())
-    peer_counted_add(out_size, labels[v])
-
-
-@wp.kernel
 def seed_breadth_first(
     labels: wp.array[wp.int32],
     seeds: wp.array[wp.int32],
@@ -3707,8 +3675,8 @@ def farthest_seeds(
 ) -> None:
     # Each label slot's next seed: its lowest row on the first search, else its farthest row;
     # ``-1`` for a component of at most ``min_size`` rows (it keeps zero coordinates). A slot
-    # holding rows is a label, the smallest row of its component (``component_sizes``), so that
-    # lowest row is ``c`` itself.
+    # holding rows is a label, the smallest row of its component (the labels counted by
+    # ``scatter.count_occurrences``), so that lowest row is ``c`` itself.
     c = wp.int32(wp.tid())
     seed = wp.int32(-1)
     if size[c] > min_size:

@@ -63,6 +63,21 @@ def float_inf(sample: wp.Float) -> wp.Float:
 
 
 @wp.func
+def ordered_dot(a: Any, b: Any):
+    # A 3-vector dot product summed in component order, as C++ ports' own ``dot`` (Manifold's
+    # linalg, vcg's ``Point3``, libigl's serial fill) form it. Not ``wp.dot``: that starts from
+    # ``0 + a[0] * b[0]``, which turns a first term of ``-0.0`` into ``+0.0`` where the port keeps
+    # it.
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+@wp.func
+def complex_product(a: wp.vec2d, b: wp.vec2d) -> wp.vec2d:
+    # Two 2-vectors multiplied as complex numbers: ``b`` rotated and scaled by ``a``.
+    return wp.vec2d(a[0] * b[0] - a[1] * b[1], a[0] * b[1] + a[1] * b[0])
+
+
+@wp.func
 def orient2d(a: Any, b: Any, c: Any):
     # Twice the signed area of triangle ABC in 2D: > 0 when C is left of the directed line A->B.
     return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])

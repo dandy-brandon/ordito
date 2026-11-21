@@ -9,10 +9,10 @@ from ordito.kernels.algorithms.connected_components import (
     find_representative,
 )
 from ordito.kernels.array import (
-    binary_search_index,
     binary_search_sorted_contains,
     launched_set_bit,
     masked_at,
+    offset_owner,
     pack_directed_key,
     pack_edge_key,
     pack_ranked_key,
@@ -88,7 +88,7 @@ def pack_group_vertex_keys(
     # construct the promoted value portably.
     corner = wp.int32(wp.tid())
     position = corner // 3
-    group = binary_search_index(group_offsets, position) - 1
+    group = offset_owner(group_offsets, position)
     face = group_face_indices[position]
     out_keys[corner] = wp.int64(group) * radix + wp.int64(faces[face * 3 + corner % 3])
     out_order[corner] = corner

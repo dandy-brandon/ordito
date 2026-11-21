@@ -1,3 +1,5 @@
+from typing import Any
+
 import warp as wp
 
 from ordito.kernels.array import (
@@ -139,16 +141,16 @@ def _claim_pixel(
     q2: wp.vec2,
     row: wp.int32,
     col: wp.int32,
-    f: wp.int32,
-    out_owner: wp.array2d[wp.int32],
+    bid: Any,
+    out_owner: wp.array2d[Any],
 ) -> None:
-    """Bid face ``f`` for pixel ``(row, col)`` when its pixel-space triangle covers the centre."""
+    """Bid ``bid`` for pixel ``(row, col)`` when the pixel-space triangle covers its centre."""
     # A bare ``wp.atomic_min``, its result unread, is issued and not waited on. Reading the owner
     # first to skip a beaten bid (``kernels/array.atomic_min_unless_below``) waits on that load at
     # every covered pixel: 1.1-1.25x the pass on ``sphere_small`` to ``happy_buddha``, 1.7-1.8x on
     # ``lucy`` at 2048-4096, whose projection stacks dozens of faces a pixel.
     if _pixel_covered(q0, q1, q2, row, col):
-        wp.atomic_min(out_owner, row, col, f)
+        wp.atomic_min(out_owner, row, col, bid)
 
 
 @wp.func
@@ -435,21 +437,6 @@ def _face_key(priority: wp.array[wp.float32], f: wp.int32) -> wp.uint64:
     return (high << wp.uint64(32)) | wp.uint64(f)
 
 
-@wp.func
-def _claim_window_pixel(
-    q0: wp.vec2,
-    q1: wp.vec2,
-    q2: wp.vec2,
-    row: wp.int32,
-    col: wp.int32,
-    key: wp.uint64,
-    out_keys: wp.array2d[wp.uint64],
-) -> None:
-    """Bid ``key`` for pixel ``(row, col)`` when the triangle covers its centre."""
-    if _pixel_covered(q0, q1, q2, row, col):
-        wp.atomic_min(out_keys, row, col, key)
-
-
 @wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
 def rasterize_face_keys(
     pixels: wp.array[wp.vec2],
@@ -472,7 +459,7 @@ def rasterize_face_keys(
     key = _face_key(priority, f)
     for row in range(row_lo, row_hi + 1):
         for col in range(col_lo, col_hi + 1):
-            _claim_window_pixel(q0, q1, q2, row, col, key, out_keys)
+            _claim_pixel(q0, q1, q2, row, col, key, out_keys)
 
 
 @wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
@@ -496,7 +483,7 @@ def rasterize_face_keys_sliced(
     key = _face_key(priority, f)
     row, col = _first_slice_pixel(t - f * slices, row_lo, col_lo, col_hi)
     while row <= row_hi:
-        _claim_window_pixel(q0, q1, q2, row, col, key, out_keys)
+        _claim_pixel(q0, q1, q2, row, col, key, out_keys)
         row, col = _next_slice_pixel(row, col, slices, col_lo, col_hi)
 
 

@@ -28,11 +28,11 @@ from ordito.kernels.array import (
     append_slot,
     append_slot_if,
     atomic_max_unless_above,
-    binary_search_index,
     cube_corner_offset,
     curve_cell,
     curve_index,
     lattice_position,
+    offset_owner,
     ravel_index,
 )
 from ordito.kernels.grouping import hash_slot_words3, key_set_insert, next_slot
@@ -236,7 +236,7 @@ def triangle_candidate(
     # buffers alone would be tens of GB at that width). Left as a documented residual rather than
     # widening this hot loop's arithmetic to int64 for a practically unreachable input; revisit only
     # if a caller legitimately needs a wider ``max_candidates``.
-    f = binary_search_index(offsets, wp.int64(item)) - 1
+    f = offset_owner(offsets, wp.int64(item))
     p0, p1, p2 = triangle_lattice_vertices(vertices, faces, f, origin, inverse_size)
     lo, hi = triangle_lattice_window(p0, p1, p2)
     span_y = hi[1] - lo[1] + 1

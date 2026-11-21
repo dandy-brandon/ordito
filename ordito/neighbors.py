@@ -57,6 +57,7 @@ from ordito._common import (
     tiled_ball_walk,
 )
 from ordito.constants import INT64_MAX, TILE_1D
+from ordito.kernels import array as kernel_array
 from ordito.kernels import neighbors as kernel_neighbors
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels.algorithms import bfs as kernel_bfs
@@ -2430,7 +2431,7 @@ def mutual_nearest(
         nearest_in_a, _ = query_nearest(a, b)
     flags = _launch.empty(n_a, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_neighbors.mutual_nearest_flags,
+        kernel_array.round_trip_flags,
         dim=n_a,
         inputs=[nearest_in_b, nearest_in_a, flags],
         device=device,

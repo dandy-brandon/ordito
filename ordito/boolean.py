@@ -35,8 +35,10 @@ from ordito import _launch
 from ordito._common import offsets_buffer, read_array, read_values, require_same_device, scan_count
 from ordito.graph import connected_component_labels_from_edges
 from ordito.halfedge import halfedge_twins
+from ordito.kernels import array as kernel_array
 from ordito.kernels import boolean as kernel_boolean
 from ordito.kernels import polyline as kernel_polyline
+from ordito.kernels import scatter as kernel_scatter
 
 _Operation = Literal["union", "intersection", "difference"]
 
@@ -2396,7 +2398,7 @@ def _mesh_from_solid(
     )
     keys, order = _launch.sort_buffers(n_faces, wp.int32, device)
     _launch.launch(
-        kernel_boolean.face_mesh_keys,
+        kernel_array.KEYS_AND_IDENTITY[wp.int32],
         dim=n_faces,
         inputs=[solid.face_mesh],
         outputs=[keys, order],
@@ -2458,7 +2460,7 @@ def _coplanar_groups(
     )
     _launch.radix_sort_pairs(keys, order, n_faces)
     rank = _launch.empty(n_faces, dtype=wp.int32, device=device)
-    seed_offsets, seed_flags = offsets_buffer(n_faces, device)
+    _, seed_flags = offsets_buffer(n_faces, device)
     _launch.launch(
         kernel_boolean.coplanar_seed_flags,
         dim=n_faces,
@@ -2472,9 +2474,9 @@ def _coplanar_groups(
     if n_seeds > 0:
         seeds = _launch.empty(n_seeds, dtype=wp.int32, device=device)
         _launch.launch(
-            kernel_boolean.flagged_halfedges,
+            kernel_scatter.scatter_index_where_scanned,
             dim=n_faces,
-            inputs=[is_seed, seed_offsets],
+            inputs=[seed_flags],
             outputs=[seeds],
             device=device,
         )
@@ -3338,9 +3340,9 @@ def _simplify_topology(
         count = scan_count(_launch.view(flags, 0, n_h))
         if count > 0:
             _launch.launch(
-                kernel_boolean.flagged_halfedges,
+                kernel_scatter.scatter_index_where_scanned,
                 dim=n_h,
-                inputs=[flags, _launch.view(flags_offsets, 0, n_h + 1)],
+                inputs=[flags],
                 outputs=[flagged],
                 device=device,
             )

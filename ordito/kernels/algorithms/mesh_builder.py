@@ -24,6 +24,8 @@ The records: half-edge ``2 e`` and ``2 e + 1`` are the two sides of edge ``e``,
 
 import warp as wp
 
+from ordito.kernels.array import edge_twin
+
 wp.set_module_options({"enable_backward": False})
 
 # ``add_face``'s answer: added, retry after other faces, or never.
@@ -59,11 +61,6 @@ class HalfEdges:
 
 
 @wp.func
-def sym(e: wp.int32) -> wp.int32:
-    return e + 1 - 2 * (e % 2)
-
-
-@wp.func
 def set_org_ring(t: HalfEdges, a: wp.int32, v: wp.int32) -> None:
     # Every edge of ``a``'s origin ring.
     t.org[a] = v
@@ -77,10 +74,10 @@ def set_org_ring(t: HalfEdges, a: wp.int32, v: wp.int32) -> None:
 def set_left_ring(t: HalfEdges, a: wp.int32, f: wp.int32) -> None:
     # Every edge of ``a``'s left ring.
     t.left[a] = f
-    i = t.prev[sym(a)]
+    i = t.prev[edge_twin(a)]
     while i != a:
         t.left[i] = f
-        i = t.prev[sym(i)]
+        i = t.prev[edge_twin(i)]
 
 
 @wp.func
@@ -108,12 +105,12 @@ def from_same_left_ring(t: HalfEdges, a: wp.int32, b: wp.int32) -> wp.bool:
     while True:
         if ia == ib:
             return True
-        ia = t.prev[sym(ia)]
+        ia = t.prev[edge_twin(ia)]
         if ia == a:
             return False
         if ia == ib:
             return True
-        ib = sym(t.next[ib])
+        ib = edge_twin(t.next[ib])
         if ib == b:
             return False
     return False
@@ -203,7 +200,7 @@ def find_edge(t: HalfEdges, o: wp.int32, d: wp.int32) -> wp.int32:
         return -1
     e = e0
     while True:
-        if t.org[sym(e)] == d:
+        if t.org[edge_twin(e)] == d:
             return e
         e = t.next[e]
         if e == e0:
@@ -257,7 +254,7 @@ def add_face(t: HalfEdges, f: wp.int32, vs: wp.vec3i) -> wp.int32:
     for i in range(3):
         i2 = (i + 2) % 3
         if e[i] >= 0 and e[i2] >= 0:
-            if t.next[e[i]] != sym(e[i2]):
+            if t.next[e[i]] != edge_twin(e[i2]):
                 return ADD_FAIL
         if simple[i] == 0:
             h = only_left_hole(t, vs[i])
@@ -270,11 +267,11 @@ def add_face(t: HalfEdges, f: wp.int32, vs: wp.vec3i) -> wp.int32:
     for i in range(3):
         i2 = (i + 2) % 3
         ei = e[i]
-        if t.org[ei] == vs[i] and t.org[sym(e[i2])] == vs[i]:
+        if t.org[ei] == vs[i] and t.org[edge_twin(e[i2])] == vs[i]:
             continue
         if hole[i] >= 0 and hole[i] != ei:
             splice(t, hole[i], ei)
-        splice(t, ei, t.prev[sym(e[i2])])
+        splice(t, ei, t.prev[edge_twin(e[i2])])
         set_org(t, ei, vs[i])
     set_left(t, e[0], f)
     return ADD_SUCCESS
@@ -328,11 +325,11 @@ def same_hole_returns(
 ) -> wp.bool:
     # Whether the hole behind hole edge ``g`` (no left face, from ``v``) leaves ``v`` again by
     # another edge before it closes: ``v`` is then repeated on that hole. The walk is the hole's
-    # left ring, ``prev(sym(h))``, read from the records where the vertex's star is complete and
-    # from the clean vertex's single hole edge elsewhere, in global vertex ids.
+    # left ring, ``prev(edge_twin(h))``, read from the records where the vertex's star is complete
+    # and from the clean vertex's single hole edge elsewhere, in global vertex ids.
     v = local_to_global[t.org[g]]
     o = v
-    d = local_to_global[t.org[sym(g)]]
+    d = local_to_global[t.org[edge_twin(g)]]
     d0 = d
     limit = 2 * global_to_local.shape[0] + 8
     for _ in range(limit):
@@ -340,7 +337,7 @@ def same_hole_returns(
         nd = wp.int32(-1)
         if dl >= 0:
             if complete[dl] != 0:
-                nd = local_to_global[t.org[sym(t.prev[find_edge(t, dl, global_to_local[o])])]]
+                nd = local_to_global[t.org[edge_twin(t.prev[find_edge(t, dl, global_to_local[o])])]]
             else:
                 nd = hole_next[d]
         else:
@@ -360,10 +357,10 @@ def wedge_angle(t: HalfEdges, points: wp.array[wp.vec3], e0: wp.int32) -> wp.flo
     # the next gap, each angle as ``atan2(|a x b|, a . b)``.
     total = wp.float32(0.0)
     e = e0
-    while t.left[sym(e)] >= 0:
-        d1 = points[t.org[sym(e)]] - points[t.org[e]]
+    while t.left[edge_twin(e)] >= 0:
+        d1 = points[t.org[edge_twin(e)]] - points[t.org[e]]
         e = t.prev[e]
-        d0 = points[t.org[sym(e)]] - points[t.org[e]]
+        d0 = points[t.org[edge_twin(e)]] - points[t.org[e]]
         total += wp.atan2(wp.length(wp.cross(d0, d1)), wp.dot(d0, d1))
     return total
 
@@ -372,8 +369,8 @@ def wedge_angle(t: HalfEdges, points: wp.array[wp.vec3], e0: wp.int32) -> wp.flo
 def mark_wedge(t: HalfEdges, e0: wp.int32, marked: wp.array[wp.int32]) -> wp.int32:
     count = wp.int32(0)
     e = e0
-    while t.left[sym(e)] >= 0:
-        marked[t.left[sym(e)]] = 1
+    while t.left[edge_twin(e)] >= 0:
+        marked[t.left[edge_twin(e)]] = 1
         count += 1
         e = t.prev[e]
     return count

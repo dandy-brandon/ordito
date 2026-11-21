@@ -1068,10 +1068,7 @@ def _numbered_by_first_occurrence(
         return inverse, first
     ranks = _launch.empty(n, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_repair.flag_class_first_occurrences,
-        dim=n,
-        inputs=[inverse, first, ranks],
-        device=device,
+        kernel_array.round_trip_flags, dim=n, inputs=[inverse, first, ranks], device=device
     )
     _launch.array_scan(ranks, ranks, inclusive=True)
     first_ascending = _launch.empty(first.size, dtype=wp.int32, device=device)
@@ -1127,10 +1124,7 @@ def _vertex_classes(
     # spent, so it takes the ranks, and each vertex's class is renumbered in place.
     ranks = _launch.view(order, 0, n)
     _launch.launch(
-        kernel_repair.flag_class_first_occurrences,
-        dim=n,
-        inputs=[inverse, first, ranks],
-        device=device,
+        kernel_array.round_trip_flags, dim=n, inputs=[inverse, first, ranks], device=device
     )
     _launch.array_scan(ranks, ranks, inclusive=True)
     first_ascending = _launch.empty(first.size, dtype=wp.int32, device=device)
@@ -2327,7 +2321,7 @@ def _remove_small_components(
             wp.int32, [n_faces, n_faces, n_faces + vertices.size], device, zeroed=True
         )
         _launch.launch(
-            kernel_repair.flatten_and_count_labels,
+            kernel_connected_components.ecl_flatten_counted,
             dim=n_faces,
             inputs=[parents, labels, counts],
             device=device,

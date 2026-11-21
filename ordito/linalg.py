@@ -149,6 +149,7 @@ from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import linalg as kernel_linalg
 from ordito.kernels import reduce as kernel_reduce
+from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels.algorithms import conjugate_gradient as kernel_cg
 from ordito.kernels.algorithms import multigrid as kernel_mg
 
@@ -2839,11 +2840,7 @@ def _march_settled(
             # run; sorted, the band's rows are numbered as the operator's are.
             _launch.radix_sort_pairs(band, order, m)
             _launch.launch(
-                kernel_linalg.march_relabel_band,
-                dim=m,
-                inputs=[band],
-                outputs=[local],
-                device=device,
+                kernel_scatter.scatter_index, dim=m, inputs=[band], outputs=[local], device=device
             )
         band_offsets = _launch.zeros(m + 1, dtype=wp.int32, device=device)
         _launch.zero_(words)

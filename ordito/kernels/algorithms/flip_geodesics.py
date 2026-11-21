@@ -38,7 +38,15 @@ Paths are open and simple to start with (a Dijkstra path), so the closed-loop ca
 
 import warp as wp
 
-from ordito.kernels.array import LOOP_PROGRESS, copy_staged, first_staged_chunk, stage_point
+from ordito.kernels.array import (
+    LOOP_PROGRESS,
+    copy_staged,
+    cross2,
+    edge_twin,
+    first_staged_chunk,
+    stage_point,
+)
+from ordito.kernels.predicates import complex_product, polar_unit
 
 wp.set_module_options({"enable_backward": False})
 
@@ -152,16 +160,6 @@ class Network:
 
 
 @wp.func
-def twin(h: wp.int32) -> wp.int32:
-    return h + 1 - 2 * (h % 2)
-
-
-@wp.func
-def complex_mul(a: wp.vec2d, b: wp.vec2d) -> wp.vec2d:
-    return wp.vec2d(a[0] * b[0] - a[1] * b[1], a[0] * b[1] + a[1] * b[0])
-
-
-@wp.func
 def complex_div(a: wp.vec2d, b: wp.vec2d) -> wp.vec2d:
     denom = b[0] * b[0] + b[1] * b[1]
     return wp.vec2d((a[0] * b[0] + a[1] * b[1]) / denom, (a[1] * b[0] - a[0] * b[1]) / denom)
@@ -185,16 +183,6 @@ def complex_pow(c: wp.vec2d, p: wp.float64) -> wp.vec2d:
 def normalize2(v: wp.vec2d) -> wp.vec2d:
     r = wp.float64(1.0) / wp.sqrt(v[0] * v[0] + v[1] * v[1])
     return wp.vec2d(v[0] * r, v[1] * r)
-
-
-@wp.func
-def from_angle(theta: wp.float64) -> wp.vec2d:
-    return wp.vec2d(wp.cos(theta), wp.sin(theta))
-
-
-@wp.func
-def cross2(a: wp.vec2d, b: wp.vec2d) -> wp.float64:
-    return a[0] * b[1] - a[1] * b[0]
 
 
 @wp.func
@@ -372,7 +360,7 @@ def vertex_geometry(
         steps += 1
         if steps > n_out:
             break
-        h = out_mesh.next[twin(h)]
+        h = out_mesh.next[edge_twin(h)]
         if h == first:
             break
     if steps != n_out:
@@ -390,7 +378,7 @@ def vertex_geometry(
         while True:
             if out_mesh.face[h] != -1 and h > previous and (smallest == -1 or h < smallest):
                 smallest = h
-            h = out_mesh.next[twin(h)]
+            h = out_mesh.next[edge_twin(h)]
             if h == first:
                 break
         if smallest == -1:
@@ -407,13 +395,13 @@ def vertex_geometry(
     running = wp.float64(0.0)
     h = first
     while True:
-        out_mesh.vector_in_vertex[h] = from_angle(coordinate) * out_mesh.length[h // 2]
+        out_mesh.vector_in_vertex[h] = polar_unit(coordinate) * out_mesh.length[h // 2]
         out_mesh.signpost[h] = running
         if out_mesh.face[h] == -1:
             break
         coordinate += scale * corner_angle[h]
         running += intrinsic_corner_angle[h]
-        h = twin(out_mesh.next[out_mesh.next[h]])
+        h = edge_twin(out_mesh.next[out_mesh.next[h]])
         if h == first:
             break
 
@@ -458,8 +446,8 @@ def relax_vertex(mesh: InputMesh, distance: wp.array[wp.float64], v: wp.int32) -
     best = distance[v]
     h = first
     while True:
-        best = wp.min(best, distance[mesh.vertex[twin(h)]] + mesh.length[h // 2])
-        h = mesh.next[twin(h)]
+        best = wp.min(best, distance[mesh.vertex[edge_twin(h)]] + mesh.length[h // 2])
+        h = mesh.next[edge_twin(h)]
         if h == first:
             break
     moved = best < distance[v]
@@ -525,12 +513,12 @@ def settle_incoming(
         if first != -1 and d < wp.float64(wp.inf):
             h = first
             while True:
-                u = mesh.vertex[twin(h)]
-                g = twin(h)
+                u = mesh.vertex[edge_twin(h)]
+                g = edge_twin(h)
                 if distance[u] < d and distance[u] + mesh.length[h // 2] == d:
                     if result == UNDISCOVERED or g < result:
                         result = g
-                h = mesh.next[twin(h)]
+                h = mesh.next[edge_twin(h)]
                 if h == first:
                     break
     out_incoming[v] = result
@@ -609,10 +597,10 @@ def enqueue_neighbors(
         return
     h = first
     while True:
-        tip = mesh.vertex[twin(h)]
+        tip = mesh.vertex[edge_twin(h)]
         if incoming[tip] == UNDISCOVERED:
             dijkstra_push(distance, halfedge, state, d + mesh.length[h // 2], h)
-        h = mesh.next[twin(h)]
+        h = mesh.next[edge_twin(h)]
         if h == first:
             break
 
@@ -650,7 +638,7 @@ def shortest_edge_tree_serial(
                 remaining += 1
     while state[0] > 0 and remaining > 0:
         d, h = dijkstra_pop(distance, halfedge, state)
-        v = mesh.vertex[twin(h)]
+        v = mesh.vertex[edge_twin(h)]
         if out_incoming[v] != UNDISCOVERED:
             continue
         out_incoming[v] = h
@@ -696,7 +684,7 @@ def update_signpost(mesh: InputMesh, tri: Intrinsic, h: wp.int32) -> None:
     # ``updateAngleFromCWNeighor`` for an interior halfedge with an interior twin, the only kind a
     # flip creates: the clockwise neighbour's angle plus the corner between them, wrapped at an
     # interior vertex.
-    cw = tri.next[twin(h)]
+    cw = tri.next[edge_twin(h)]
     opposite = tri.next[cw]
     other = tri.next[opposite]
     corner = corner_angle_from_lengths(
@@ -793,7 +781,7 @@ def halfedge_vector(mesh: InputMesh, tri: Intrinsic, h: wp.int32) -> wp.vec2d:
     # vertex's tangent plane, at the edge's length.
     v = tri.vertex[h]
     scale = wp.float64(1.0) / (mesh.intrinsic_angle_sum[v] / turn_of(mesh, v))
-    return from_angle(tri.signpost[h] * scale) * tri.length[h // 2]
+    return polar_unit(tri.signpost[h] * scale) * tri.length[h // 2]
 
 
 # ---------------------------------------------------------------------------------------------
@@ -890,7 +878,7 @@ def side_angles(
     # from the signposts; across the boundary a side is unbounded.
     v = tri.vertex[h_next]
     s = mesh.intrinsic_angle_sum[v]
-    angle_in = tri.signpost[twin(h_prev)]
+    angle_in = tri.signpost[edge_twin(h_prev)]
     angle_out = tri.signpost[h_next]
     boundary = mesh.boundary_out[v] != -1
     infinity = wp.float64(wp.inf)
@@ -1044,17 +1032,20 @@ def wedge_is_clear(tri: Intrinsic, net: Network, s: wp.int32, turn: wp.int32) ->
                 if net.edge_front[h // 2] != -1:
                     clear = False
                     break
-                h = tri.next[twin(h)]
+                h = tri.next[edge_twin(h)]
     else:
-        if outside_segment(net, twin(h_prev)) != prev or outside_segment(net, twin(h_next)) != s:
+        if (
+            outside_segment(net, edge_twin(h_prev)) != prev
+            or outside_segment(net, edge_twin(h_next)) != s
+        ):
             clear = False
         else:
-            h = twin(tri.next[tri.next[twin(h_prev)]])
+            h = edge_twin(tri.next[tri.next[edge_twin(h_prev)]])
             while h != h_next:
                 if net.edge_front[h // 2] != -1:
                     clear = False
                     break
-                h = twin(tri.next[tri.next[h]])
+                h = edge_twin(tri.next[tri.next[h]])
     return clear
 
 
@@ -1080,8 +1071,8 @@ def replace_segments(
         pop_outside(net, h_prev)
         pop_outside(net, h_next)
     else:
-        pop_outside(net, twin(h_prev))
-        pop_outside(net, twin(h_next))
+        pop_outside(net, edge_twin(h_prev))
+        pop_outside(net, edge_twin(h_next))
     free_segment(net, prev)
     free_segment(net, s)
 
@@ -1089,13 +1080,13 @@ def replace_segments(
     for i in range(n_new):
         h = net.scratch[i]
         if backwards:
-            h = twin(net.scratch[n_new - 1 - i])
+            h = edge_twin(net.scratch[n_new - 1 - i])
         added = new_segment(net, h, loop_prev)
         if added == -1:
             out_status[STATUS_SEGMENT_OVERFLOW] = 1
             return False
         if turn == TURN_LEFT:
-            push_outside(net, twin(h), added)
+            push_outside(net, edge_twin(h), added)
         else:
             push_outside(net, h, added)
         if loop_prev != -1:
@@ -1115,8 +1106,8 @@ def replace_segments(
         queue_wedge(mesh, tri, net, outside_segment(net, h_next), out_status)
         queue_wedge(mesh, tri, net, outside_segment(net, h_prev), out_status)
     else:
-        queue_wedge(mesh, tri, net, outside_segment(net, twin(h_next)), out_status)
-        queue_wedge(mesh, tri, net, outside_segment(net, twin(h_prev)), out_status)
+        queue_wedge(mesh, tri, net, outside_segment(net, edge_twin(h_next)), out_status)
+        queue_wedge(mesh, tri, net, outside_segment(net, edge_twin(h_prev)), out_status)
     return True
 
 
@@ -1140,25 +1131,25 @@ def shorten_at(
     s_next = h_next
     backwards = wp.bool(False)
     if turn == TURN_RIGHT:
-        s_prev = twin(h_next)
-        s_next = twin(h_prev)
+        s_prev = edge_twin(h_next)
+        s_next = edge_twin(h_prev)
         backwards = True
 
     limit = net.scratch.shape[0] * 4 + 64
     h = tri.next[s_prev]
-    s_prev_twin = twin(s_prev)
+    s_prev_twin = edge_twin(s_prev)
     steps = wp.int32(0)
     while h != s_next:
         steps += 1
         if steps > limit:
             return False
         if h == s_prev_twin:
-            h = tri.next[twin(h)]
+            h = tri.next[edge_twin(h)]
             continue
         if flip_edge_if_possible(mesh, tri, net, h // 2):
-            h = twin(tri.next[twin(h)])
+            h = edge_twin(tri.next[edge_twin(h)])
         else:
-            h = tri.next[twin(h)]
+            h = tri.next[edge_twin(h)]
 
     n_new = wp.int32(0)
     new_length = wp.float64(0.0)
@@ -1167,12 +1158,12 @@ def shorten_at(
         if n_new >= net.scratch.shape[0]:
             return False
         side = tri.next[h]
-        net.scratch[n_new] = twin(side)
+        net.scratch[n_new] = edge_twin(side)
         n_new += 1
         new_length += tri.length[side // 2]
         if h == s_next:
             break
-        h = tri.next[twin(h)]
+        h = tri.next[edge_twin(h)]
 
     if new_length > initial_length:
         return True
@@ -1348,7 +1339,7 @@ def shorten_paths(
             h = net.segment_halfedge[s]
             kind = wp.where(tri.original[h // 2] != 0, ENTRY_ORIGINAL, ENTRY_TRACED)
             emit_entry(
-                n_entries, p, kind, tri.vertex[h], tri.vertex[twin(h)],
+                n_entries, p, kind, tri.vertex[h], tri.vertex[edge_twin(h)],
                 halfedge_vector(mesh, tri, h),
                 out_path, out_kind, out_tail, out_tip, out_vector,
             )  # fmt: skip
@@ -1487,7 +1478,7 @@ def trace_in_face(
     )
     result.direction = complex_div(direction, normalize2(crossing))
     result.length = remaining
-    if mesh.face[twin(cross_halfedge)] == -1:
+    if mesh.face[edge_twin(cross_halfedge)] == -1:
         result.terminated = True
         result.end_kind = POINT_EDGE
         result.end_element = cross_halfedge // 2
@@ -1510,11 +1501,11 @@ def trace_from_edge_into_face(
     length: wp.float64,
 ) -> Step:
     # ``traceInFaceFromEdge``: enter the face across ``from_halfedge``.
-    face_halfedge = twin(from_halfedge)
+    face_halfedge = edge_twin(from_halfedge)
     f = mesh.face[face_halfedge]
     d = -direction
     d = wp.vec2d(d[0], wp.max(d[1], TRACE_EPS_LOOSE))
-    in_face = complex_mul(normalize2(mesh.vector_in_face[face_halfedge]), d)
+    in_face = complex_product(normalize2(mesh.vector_in_face[face_halfedge]), d)
     k = index_in_face(mesh, face_halfedge)
     b = permute_from_canonical(cartesian_to_barycentric(mesh, f, in_face), k)
     b = wp.vec3d(b[0], b[1], wp.max(b[2], TRACE_EPS_TIGHT))
@@ -1570,7 +1561,7 @@ def trace_from_vertex(
     while True:
         if mesh.face[h] == -1:
             break
-        h_next = twin(mesh.next[mesh.next[h]])
+        h_next = edge_twin(mesh.next[mesh.next[h]])
         interval_start = normalize2(mesh.vector_in_vertex[h])
         interval_end = normalize2(mesh.vector_in_vertex[h_next])
         cross_start = cross2(interval_start, direction)
@@ -1596,7 +1587,7 @@ def trace_from_vertex(
             mesh, min_halfedge // 2, edge_t(min_halfedge, wp.float64(0.0)), edge_direction, length
         )
     relative = normalize2(complex_pow(relative, mesh.angle_sum[v] / turn_of(mesh, v)))
-    in_face = complex_mul(relative, normalize2(mesh.vector_in_face[wedge]))
+    in_face = complex_product(relative, normalize2(mesh.vector_in_face[wedge]))
 
     # ``traceInFaceTowardsEdge`` from ``wedge``'s tail towards the opposite edge.
     towards = mesh.next[wedge]
@@ -1744,10 +1735,10 @@ def trim_succeeds(
             first = mesh.vertex_halfedge[tail]
             h = first
             while True:
-                if mesh.vertex[twin(h)] == target:
+                if mesh.vertex[edge_twin(h)] == target:
                     found = True
                     break
-                h = mesh.next[twin(h)]
+                h = mesh.next[edge_twin(h)]
                 if h == first:
                     break
     else:

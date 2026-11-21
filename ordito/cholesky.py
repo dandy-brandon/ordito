@@ -58,6 +58,7 @@ from ordito.graph import connected_component_labels
 from ordito.kernels import array as kernel_array
 from ordito.kernels import cholesky as kernel_cholesky
 from ordito.kernels import grouping as kernel_grouping
+from ordito.kernels import scatter as kernel_scatter
 
 # Largest leaf of the nested-dissection tree, in rows.
 CHOLESKY_LEAF_ROWS = 32
@@ -2467,7 +2468,7 @@ def _landmark_coordinates(
     axes = coordinates.view(wp.float32)
     size = _launch.zeros(n, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_cholesky.component_sizes, dim=n, inputs=[labels], outputs=[size], device=device
+        kernel_scatter.count_occurrences, dim=n, inputs=[labels], outputs=[size], device=device
     )
     distance = _launch.empty(n, dtype=wp.int32, device=device)
     state = _launch.empty(3, dtype=wp.int32, device=device)

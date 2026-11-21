@@ -5950,7 +5950,7 @@ def _keep_longest_edges(
     one launch writes each flagged edge's negated length and index at its rank, straight into the
     sort's buffers, with the length measured there -- only on the pass the budget actually trims --
     and one launch over the sorted edges clears all but the first ``remaining``. The returned ranks
-    are the trimmed mask's ranked bitmask (``kernels/remesh.mark_split_bits``), without its count
+    are the trimmed mask's ranked bitmask (``kernels/array.mask_ballot_bits``), without its count
     readback.
 
     Ties are not ordered by contract on either path -- ``numpy.argsort``'s introsort is unstable and
@@ -5982,7 +5982,7 @@ def _keep_longest_edges(
     words = _launch.view_as(_launch.view(kept, 0, n_words), wp.uint32)
     word_ranks = _launch.view(kept, n_words, 2 * n_words)
     _launch.launch(
-        kernel_remesh.mark_split_bits, dim=m, inputs=[long_mask, words, word_ranks], device=device
+        kernel_array.mask_ballot_bits, dim=m, inputs=[long_mask, words, word_ranks], device=device
     )
     _launch.array_scan(word_ranks, word_ranks, inclusive=True)
     return words, word_ranks
@@ -6553,13 +6553,17 @@ def split_edges(
 
     # A bit a split edge, ranked: the scan both counts the split edges and assigns each one its new
     # vertex slot (its bit's rank), which is the indexing ``split_positions`` is documented against.
+    # A 32nd of ``array.mask_to_compact_ranks``' ``(m + 1,)`` offsets and of their scan, which on
+    # ``lucy``'s 42 M edges were 14 % of ``split_edges``' pool and its time. The refinement loops'
+    # flags come off the corner sort (``emit_long_edges``), not an edge-ordered launch a ballot
+    # could follow, and take ``store_counted_bit`` instead.
     n_words = (n_edges + 31) // 32
     bits = _launch.zeros(2 * n_words, dtype=wp.int32, device=device)
     words = _launch.view_as(_launch.view(bits, 0, n_words), wp.uint32)
     word_ranks = _launch.view(bits, n_words, 2 * n_words)
     if n_edges > 0:
         _launch.launch(
-            kernel_remesh.mark_split_bits,
+            kernel_array.mask_ballot_bits,
             dim=n_edges,
             inputs=[split_mask, words, word_ranks],
             device=device,
@@ -6681,7 +6685,7 @@ def _split_ranked_edges(
 
     ``offsets`` / ``n_split`` are ``mask_to_compact_ranks(split_mask)``, or with ``offsets=None``
     ``split_bits`` is the ranked bitmask of the same split edges: ``split_edges`` passes
-    ``kernels/remesh.mark_split_bits``', and the two refinement loops ``_rank_long_edge_bits``',
+    ``kernels/array.mask_ballot_bits``', and the two refinement loops ``_rank_long_edge_bits``',
     which they already hold for their own bookkeeping, so the scan and its count readback do not
     run twice per pass. ``carried`` is the provenance to thread through (``index`` or a fresh
     ``arange``); the no-split path copies it when it is the caller's ``index`` and

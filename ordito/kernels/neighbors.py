@@ -1890,19 +1890,6 @@ def closest_pair_key(
 
 
 @wp.kernel
-def mutual_nearest_flags(
-    nearest_in_b: wp.array[wp.int32],
-    nearest_in_a: wp.array[wp.int32],
-    out_flags: wp.array[wp.int32],
-) -> None:
-    # ``neighbors.mutual_nearest``: point ``i`` of ``a`` pairs with its nearest point of ``b``
-    # exactly when that point's nearest in ``a`` is ``i``. Written into the buffer the selection
-    # scan runs in.
-    i = wp.int32(wp.tid())
-    out_flags[i] = wp.where(nearest_in_a[nearest_in_b[i]] == i, 1, 0)
-
-
-@wp.kernel
 def emit_mutual_pairs(
     inclusive: wp.array[wp.int32],
     nearest_in_b: wp.array[wp.int32],

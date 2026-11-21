@@ -4,10 +4,10 @@ from ordito.constants import TILE_1D
 from ordito.kernels.adjacency import edge_endpoints
 from ordito.kernels.array import (
     OverloadTable,
-    binary_search_index,
     binary_search_index_left,
     csr_row_long,
     declare_block_dims,
+    offset_owner,
     outer_product_slot,
     popcount32,
     sorted_run_end,
@@ -846,7 +846,7 @@ def hessian_energy_blocks(
     k = ring_columns[p]
     if not (inv_mass[k] > wp.float64(0.0)):
         return
-    r = binary_search_index(ring_offsets, p) - 1
+    r = offset_owner(ring_offsets, p)
     zero = wp.float64(0.0)
     block = wp.mat33d(zero, zero, zero, zero, zero, zero, zero, zero, zero)
     for a in range(vf_offsets[k], vf_offsets[k + 1]):
@@ -888,7 +888,7 @@ def hessian_energy_values(
     # not) on CUDA, 0.57-0.66x on the CPU, at the same peak; the values move by under 1e-15 of
     # the largest.
     e = wp.int32(wp.tid())
-    i = binary_search_index(offsets, e) - 1
+    i = offset_owner(offsets, e)
     j = columns[e]
     i_start = ring_offsets[i]
     i_end = ring_offsets[i + 1]
