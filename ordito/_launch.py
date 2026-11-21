@@ -1818,6 +1818,22 @@ def carve_typed(
     ]
 
 
+def carve_struct(struct_type: Any, count: int, device: wp.DeviceLike) -> Any:
+    """
+    Return a ``struct_type`` instance whose every field, a rank-1 array, holds ``count`` elements.
+
+    The fields are [`carve_typed`][ordito._launch.carve_typed] views of one allocation, for a
+    struct of scratch tables a kernel works through together (the ear clipper's): one allocation
+    where each field took its own. Any field holds the whole buffer alive.
+    """
+    names = list(struct_type.vars)
+    arrays = carve_typed([(struct_type.vars[name].type.dtype, count) for name in names], device)
+    instance = struct_type()
+    for name, array in zip(names, arrays, strict=True):
+        setattr(instance, name, array)
+    return instance
+
+
 def sort_buffers(
     count: int, key_dtype: type[DType], device: wp.DeviceLike, payload_dtype: Any = wp.int32
 ) -> tuple[wp.array[DType], wp.array[Any]]:

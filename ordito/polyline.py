@@ -2578,24 +2578,8 @@ def triangulate_polygons_from_offsets(
         # Host data already: the ``float64`` loops the clipper works on.
         points = _launch.array(read_array(points).astype(np.float64), dtype=wp.vec2d, device=host)
     capacity = 3 * n_points + 16
-    state = kernel_polyline.EarClipState()
-    state.pos = _launch.empty(capacity, dtype=wp.vec2d, device=host)
-    state.right_dir = _launch.empty(capacity, dtype=wp.vec2d, device=host)
-    state.left = _launch.empty(capacity, dtype=wp.int32, device=host)
-    state.right = _launch.empty(capacity, dtype=wp.int32, device=host)
-    state.idx = _launch.empty(capacity, dtype=wp.int32, device=host)
-    state.cost = _launch.empty(capacity, dtype=wp.float64, device=host)
-    state.seq = _launch.empty(capacity, dtype=wp.int32, device=host)
-    state.visit = _launch.empty(capacity, dtype=wp.int32, device=host)
-    state.collider = _launch.empty(capacity, dtype=wp.int32, device=host)
-    state.stack = _launch.empty(capacity, dtype=wp.int32, device=host)
-    state.starts = _launch.empty(capacity, dtype=wp.int32, device=host)
-    state.holes = _launch.empty(capacity, dtype=wp.int32, device=host)
-    state.hole_box = _launch.empty(capacity, dtype=wp.vec4d, device=host)
-    state.outers = _launch.empty(capacity, dtype=wp.int32, device=host)
-    state.simples = _launch.empty(capacity, dtype=wp.int32, device=host)
-    tris = _launch.empty(capacity, dtype=wp.vec3i, device=host)
-    state.tris = tris
+    state = _launch.carve_struct(kernel_polyline.EarClipState, capacity, host)
+    tris = state.tris
     count = _launch.zeros(1, dtype=wp.int32, device=host)
     if n_points > 0 and int(offsets.shape[0]) > 1:
         _launch.launch(

@@ -1554,25 +1554,8 @@ def _ear_clip_state(
     capacity: int, device: wp.DeviceLike
 ) -> tuple[StructInstance, wp.array[wp.vec3i]]:
     """Allocate the ear clipper's scratch for ``capacity`` slots over every face, and its output."""
-    state = kernel_polyline.EarClipState()
-    state.pos = _launch.empty(capacity, dtype=wp.vec2d, device=device)
-    state.right_dir = _launch.empty(capacity, dtype=wp.vec2d, device=device)
-    state.left = _launch.empty(capacity, dtype=wp.int32, device=device)
-    state.right = _launch.empty(capacity, dtype=wp.int32, device=device)
-    state.idx = _launch.empty(capacity, dtype=wp.int32, device=device)
-    state.cost = _launch.empty(capacity, dtype=wp.float64, device=device)
-    state.seq = _launch.empty(capacity, dtype=wp.int32, device=device)
-    state.visit = _launch.empty(capacity, dtype=wp.int32, device=device)
-    state.collider = _launch.empty(capacity, dtype=wp.int32, device=device)
-    state.stack = _launch.empty(capacity, dtype=wp.int32, device=device)
-    state.starts = _launch.empty(capacity, dtype=wp.int32, device=device)
-    state.holes = _launch.empty(capacity, dtype=wp.int32, device=device)
-    state.hole_box = _launch.empty(capacity, dtype=wp.vec4d, device=device)
-    state.outers = _launch.empty(capacity, dtype=wp.int32, device=device)
-    state.simples = _launch.empty(capacity, dtype=wp.int32, device=device)
-    tris = _launch.empty(capacity, dtype=wp.vec3i, device=device)
-    state.tris = tris
-    return state, tris
+    state = _launch.carve_struct(kernel_polyline.EarClipState, capacity, device)
+    return state, state.tris
 
 
 def _heavy_face_count(face_offsets: wp.array[wp.int32], n_faces: int) -> int:
