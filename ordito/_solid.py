@@ -302,11 +302,14 @@ def positions_box(
     device = positions.device
     inf = float("inf")
     box = _launch.array([inf, inf, inf, -inf, -inf, -inf], dtype=wp.float64, device=device)
-    _launch.launch(
+    n = int(positions.shape[0])
+    items = kernel_solid.POSITIONS_BOX_ITEMS
+    _launch.launch_tiled(
         kernel_solid.positions_box,
-        dim=int(positions.shape[0]),
-        inputs=[positions],
+        dim=max((n + items - 1) // items, 1),
+        inputs=[positions, inf],
         outputs=[box],
+        block_dim=kernel_solid.POSITIONS_BOX_BLOCK_DIM,
         device=device,
     )
     # Host readback: the box frames the Morton codes and sets the tolerances.

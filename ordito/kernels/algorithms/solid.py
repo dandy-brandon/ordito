@@ -20,6 +20,7 @@ import warp as wp
 
 from ordito.kernels.algorithms.portable_trigonometry import portable_acos
 from ordito.kernels.halfedge import halfedge_next
+from ordito.kernels.reduce import block_chunk, block_max, block_min
 
 wp.set_module_options({"enable_backward": False, "fuse_fp": False})
 
@@ -187,17 +188,37 @@ def operand_boxes(
     out_uppers[f] = wp.max(wp.max(a, b), c) + padding
 
 
+# Positions one block of ``positions_box`` owns: its module's launch width times the standard fold.
+POSITIONS_BOX_BLOCK_DIM = 256
+POSITIONS_BOX_ITEMS = POSITIONS_BOX_BLOCK_DIM * 16
+
+
 @wp.kernel
-def positions_box(positions: wp.array[wp.vec3d], out_box: wp.array[wp.float64]) -> None:
+def positions_box(
+    positions: wp.array[wp.vec3d], infinity: wp.float64, out_box: wp.array[wp.float64]
+) -> None:
     # ``CalculateBBox``: the box of the vertices, into ``(min x, y, z, max x, y, z)`` (filled with
-    # +-inf); a removed (NaN) vertex is skipped.
-    v = wp.int32(wp.tid())
-    p = positions[v]
-    if not wp.isfinite(p[0]):
-        return
+    # +-inf); a removed (NaN) vertex is skipped. A block folds its ``POSITIONS_BOX_ITEMS`` lanes
+    # strided by ``wp.block_dim()`` and commits once a slot: one atomic a vertex a slot onto the
+    # same six addresses serialized the launch (2026-11-21: 157 us a call at 164 k vertices).
+    # Extrema are exact in any order, so the box is the same bits.
+    block, lane = wp.tid()
+    offset, count = block_chunk(positions.shape[0], block, POSITIONS_BOX_ITEMS)
+    low = wp.vec3d(infinity, infinity, infinity)
+    high = -low
+    for k in range(lane, count, wp.block_dim()):
+        p = positions[offset + k]
+        if wp.isfinite(p[0]):
+            # A tie keeps the value seen first, as the CPU's ``atomic_min`` / ``atomic_max`` do.
+            for i in range(3):
+                low[i] = wp.where(p[i] < low[i], p[i], low[i])
+                high[i] = wp.where(p[i] > high[i], p[i], high[i])
     for i in range(3):
-        wp.atomic_min(out_box, i, p[i])
-        wp.atomic_max(out_box, 3 + i, p[i])
+        block_low = block_min(low[i])
+        block_high = block_max(high[i])
+        if lane == 0:
+            wp.atomic_min(out_box, i, block_low)
+            wp.atomic_max(out_box, 3 + i, block_high)
 
 
 @wp.func
