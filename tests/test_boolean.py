@@ -402,6 +402,63 @@ def test_simplify_matches_manifold3d(
     _assert_same_as_m3(od.boolean.simplify(*_upload(mesh_tm, device), tolerance), result_m3)
 
 
+def _refine_mesh_tm(request: pytest.FixtureRequest, shape: str) -> tm.Trimesh:
+    """Return a refinement case's mesh: a box, a long cylinder or ``sphere_irregular``."""
+    if shape == "box":
+        return _box([0, 0, 0], [1, 1, 1])
+    if shape == "cylinder":
+        return _float32_mesh(tm.creation.cylinder(radius=0.3, height=3.0, sections=12))
+    return _float32_mesh(request.getfixturevalue("sphere_irregular")[0])
+
+
+@pytest.mark.parity("refine", "manifold3d")
+@pytest.mark.parametrize("shape", ["box", "cylinder", "sphere_irregular"])
+@pytest.mark.parametrize("n", [1, 2, 3, 6])
+def test_refine_matches_manifold3d(
+    request: pytest.FixtureRequest, device: str, shape: str, n: int
+) -> None:
+    """
+    ``refine`` is Manifold's ``Manifold.refine``, array for array.
+
+    Class A. ``n = 1`` is the mesh as Manifold lays it out; above it, every face takes the
+    partition of ``n`` pieces a side, its added vertices at Manifold's barycentrics.
+    """
+    mesh_tm = _refine_mesh_tm(request, shape)
+    result_m3 = _manifold_m3(mesh_tm).refine(n)
+    assert result_m3.num_tri() == n * n * len(mesh_tm.faces)
+    _assert_same_as_m3(od.boolean.refine(*_upload(mesh_tm, device), n), result_m3)
+
+
+@pytest.mark.parity("refine_to_length", "manifold3d")
+@pytest.mark.parametrize("shape", ["box", "cylinder", "sphere_irregular"])
+@pytest.mark.parametrize("fraction", [2.0, 0.3, 0.1, -0.04])
+def test_refine_to_length_matches_manifold3d(
+    request: pytest.FixtureRequest, device: str, shape: str, fraction: float
+) -> None:
+    """
+    ``refine_to_length`` is Manifold's ``Manifold.refine_to_length``, array for array.
+
+    Class A. Lengths are fractions of the median edge: above every edge (no vertex added, the
+    mesh re-laid out), and short enough that sides of different divisions meet in a face, which
+    takes the obtuse partitions and their interior vertices; a negative length is its magnitude.
+    """
+    mesh_tm = _refine_mesh_tm(request, shape)
+    length = fraction * float(np.median(mesh_tm.edges_unique_length))
+    result_m3 = _manifold_m3(mesh_tm).refine_to_length(length)
+    if abs(fraction) < 1.0:
+        assert result_m3.num_tri() > 4 * len(mesh_tm.faces)
+    _assert_same_as_m3(od.boolean.refine_to_length(*_upload(mesh_tm, device), length), result_m3)
+
+
+def test_refine_rejects_a_degenerate_count_or_length(device: str) -> None:
+    """``n`` below one and a zero length raise ``ValueError``. Not a library comparison: guards."""
+    vertices, faces = _upload(_box([0, 0, 0], [1, 1, 1]), device)
+    with pytest.raises(ValueError, match="n must be at least 1"):
+        od.boolean.refine(vertices, faces, 0)
+    with pytest.raises(ValueError, match="length must be finite and nonzero"):
+        od.boolean.refine_to_length(vertices, faces, 0.0)
+
+
 def _without_repeats(loop: np.ndarray, tolerance: float = 1e-7) -> np.ndarray:
     """Return a loop with its consecutive coincident points (and a repeated closing one) dropped."""
     kept: list[np.ndarray] = []

@@ -3076,3 +3076,288 @@ def count_unpaired(twins: wp.array[wp.int32], out_count: wp.array[wp.int32]) -> 
     h = wp.int32(wp.tid())
     if twins[h] < 0:
         wp.atomic_add(out_count, 0, 1)
+
+
+# -- refinement (``Subdivide``) --------------------------------------------------------------------
+
+
+@wp.kernel
+def forward_halfedge_flags(faces: wp.array[wp.int32], out_flags: wp.array[wp.int32]) -> None:
+    # ``CreateTmpEdges``: an edge is its forward halfedge, ranked in halfedge order.
+    h = wp.int32(wp.tid())
+    out_flags[h] = wp.where(faces[h] < faces[next_halfedge(h)], 1, 0)
+
+
+@wp.func
+def refine_edge_of(
+    faces: wp.array[wp.int32], twins: wp.array[wp.int32], ranks: wp.array[wp.int32], h: wp.int32
+) -> wp.int32:
+    # ``half2Edge``: the rank of the halfedge's forward copy.
+    forward = h
+    if faces[h] > faces[next_halfedge(h)]:
+        forward = twins[h]
+    return ranks[forward]
+
+
+@wp.kernel
+def refine_edge_added(
+    positions: wp.array[wp.vec3d],
+    faces: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    added: wp.int32,
+    length: wp.float64,
+    out_added: wp.array[wp.int32],
+    out_edge_halfedge: wp.array[wp.int32],
+) -> None:
+    # Each edge's added vertices: ``Refine``'s ``n - 1``, or ``RefineToLength``'s truncated
+    # ``length(edge) / length`` when ``length`` is positive (a warp-uniform selector).
+    h = wp.int32(wp.tid())
+    start = faces[h]
+    end = faces[next_halfedge(h)]
+    if start >= end:
+        return
+    e = ranks[h]
+    out_edge_halfedge[e] = h
+    count = added
+    if length > wp.float64(0.0):
+        d = positions[start] - positions[end]
+        count = wp.int32(wp.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) / length)
+    out_added[e] = count
+
+
+@wp.func
+def refine_sorted_sides(d: wp.vec3i) -> wp.vec3i:
+    # ``Partition::GetPartition``'s triangle branch: which side each sorted division came from.
+    idx = wp.vec3i(0, 1, 2)
+    s = wp.vec3i(d[0], d[1], d[2])
+    if s[2] > s[1]:
+        t = s[2]
+        s[2] = s[1]
+        s[1] = t
+        t = idx[2]
+        idx[2] = idx[1]
+        idx[1] = t
+    if s[1] > s[0]:
+        t = s[1]
+        s[1] = s[0]
+        s[0] = t
+        t = idx[1]
+        idx[1] = idx[0]
+        idx[0] = t
+        if s[2] > s[1]:
+            t = s[2]
+            s[2] = s[1]
+            s[1] = t
+            t = idx[2]
+            idx[2] = idx[1]
+            idx[1] = t
+    return idx
+
+
+@wp.func
+def refine_face_divisions(
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    added_offsets: wp.array[wp.int32],
+    f: wp.int32,
+) -> wp.vec3i:
+    d = wp.vec3i(0, 0, 0)
+    for i in range(3):
+        e = refine_edge_of(faces, twins, ranks, 3 * f + i)
+        d[i] = added_offsets[e + 1] - added_offsets[e] + 1
+    return d
+
+
+@wp.kernel
+def refine_face_keys(
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    added_offsets: wp.array[wp.int32],
+    out_keys: wp.array[wp.vec3i],
+) -> None:
+    # Each face's sorted divisions, the partition it takes.
+    f = wp.int32(wp.tid())
+    d = refine_face_divisions(faces, twins, ranks, added_offsets, f)
+    idx = refine_sorted_sides(d)
+    out_keys[f] = wp.vec3i(d[idx[0]], d[idx[1]], d[idx[2]])
+
+
+@wp.func
+def bary_point(
+    c0: wp.vec3d, c1: wp.vec3d, c2: wp.vec3d, u: wp.float64, v: wp.float64, w: wp.float64
+) -> wp.vec3d:
+    # ``triPos * uvw``: the columns weighted in order.
+    return c0 * u + c1 * v + c2 * w
+
+
+@wp.func
+def face_bary_point(
+    positions: wp.array[wp.vec3d], faces: wp.array[wp.int32], f: wp.int32, uvw: wp.vec3d
+) -> wp.vec3d:
+    return bary_point(
+        positions[faces[3 * f]],
+        positions[faces[3 * f + 1]],
+        positions[faces[3 * f + 2]],
+        uvw[0],
+        uvw[1],
+        uvw[2],
+    )
+
+
+@wp.kernel
+def last_corner_halfedges(faces: wp.array[wp.int32], out_last: wp.array[wp.int32]) -> None:
+    # ``FillRetainedVerts``: the last face through a vertex names its barycentric.
+    h = wp.int32(wp.tid())
+    wp.atomic_max(out_last, faces[h], h)
+
+
+@wp.kernel
+def refine_retained_points(
+    positions: wp.array[wp.vec3d],
+    faces: wp.array[wp.int32],
+    last: wp.array[wp.int32],
+    out_positions: wp.array[wp.vec3d],
+) -> None:
+    v = wp.int32(wp.tid())
+    h = last[v]
+    uvw = wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
+    uvw[h % 3] = wp.float64(1.0)
+    out_positions[v] = face_bary_point(positions, faces, h // 3, uvw)
+
+
+@wp.kernel
+def refine_edge_points(
+    positions: wp.array[wp.vec3d],
+    faces: wp.array[wp.int32],
+    edge_halfedge: wp.array[wp.int32],
+    added_offsets: wp.array[wp.int32],
+    n_vertices: wp.int32,
+    out_positions: wp.array[wp.vec3d],
+) -> None:
+    # An edge's added vertices, evenly along it from its forward halfedge's start.
+    e = wp.int32(wp.tid())
+    h = edge_halfedge[e]
+    first = added_offsets[e]
+    n = added_offsets[e + 1] - first
+    start4 = h % 3
+    end4 = next3(start4)
+    frac = wp.float64(1.0) / wp.float64(n + 1)
+    for i in range(n):
+        uvw = wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
+        uvw[end4] = wp.float64(i + 1) * frac
+        uvw[start4] = wp.float64(1.0) - uvw[end4]
+        out_positions[n_vertices + first + i] = face_bary_point(positions, faces, h // 3, uvw)
+
+
+@wp.func
+def refine_local_vertex(
+    v: wp.int32,
+    corners: wp.vec3i,
+    sorted_divisions: wp.vec3i,
+    idx: wp.vec3i,
+    edge_offsets: wp.vec3i,
+    edge_forward: wp.vec3i,
+    interior_offset: wp.int32,
+) -> wp.int32:
+    # ``Partition::Reindex``'s ``newVerts``: the corners, each sorted side's added vertices in its
+    # direction, then the interior.
+    if v < 3:
+        return corners[v]
+    base = wp.int32(3)
+    for i in range(3):
+        n = sorted_divisions[i] - 1
+        if v < base + n:
+            j = v - base
+            side = idx[i]
+            if edge_forward[side] != 0:
+                return edge_offsets[side] + j
+            return edge_offsets[side] + n - 1 - j
+        base = base + n
+    return interior_offset + v - base
+
+
+@wp.kernel
+def refine_faces(
+    positions: wp.array[wp.vec3d],
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    added_offsets: wp.array[wp.int32],
+    n_vertices: wp.int32,
+    face_key: wp.array[wp.int32],
+    key_triangles: wp.array[wp.int32],
+    key_vertices: wp.array[wp.int32],
+    partition_triangles: wp.array[wp.vec3i],
+    partition_bary: wp.array[wp.vec3d],
+    triangle_offsets: wp.array[wp.int32],
+    interior_offsets: wp.array[wp.int32],
+    face_normals: wp.array[wp.vec3d],
+    face_mesh: wp.array[wp.int32],
+    face_coplanar: wp.array[wp.int32],
+    out_faces: wp.array[wp.int32],
+    out_normals: wp.array[wp.vec3d],
+    out_mesh: wp.array[wp.int32],
+    out_coplanar: wp.array[wp.int32],
+    out_positions: wp.array[wp.vec3d],
+) -> None:
+    # ``Subdivide``'s per-triangle pass: the cached partition reindexed onto the face's corners,
+    # sides and interior, each sub-triangle inheriting the face's normal and reference, and the
+    # interior vertices at their barycentrics.
+    f = wp.int32(wp.tid())
+    d = refine_face_divisions(faces, twins, ranks, added_offsets, f)
+    idx = refine_sorted_sides(d)
+    sorted_divisions = wp.vec3i(d[idx[0]], d[idx[1]], d[idx[2]])
+    corners = wp.vec3i(0, 0, 0)
+    edge_offsets = wp.vec3i(0, 0, 0)
+    edge_forward = wp.vec3i(0, 0, 0)
+    for i in range(3):
+        h = 3 * f + i
+        corners[i] = faces[h]
+        edge_offsets[i] = n_vertices + added_offsets[refine_edge_of(faces, twins, ranks, h)]
+        edge_forward[i] = wp.where(faces[h] < faces[next_halfedge(h)], 1, 0)
+    mirrored = idx[1] != next3(idx[0])
+    tri_idx = idx
+    v_idx = idx
+    out0 = wp.int32(0)
+    out1 = wp.int32(1)
+    if mirrored:
+        tri_idx = wp.vec3i(idx[2], idx[0], idx[1])
+        v_idx = tri_idx
+        for i in range(3):
+            edge_forward[i] = 1 - edge_forward[i]
+        out0 = 1
+        out1 = 0
+    ordered = wp.vec3i(corners[tri_idx[0]], corners[tri_idx[1]], corners[tri_idx[2]])
+    key = face_key[f]
+    tri_first = key_triangles[key]
+    tri_count = key_triangles[key + 1] - tri_first
+    interior = interior_offsets[f]
+    out_first = triangle_offsets[f]
+    for j in range(tri_count):
+        local = partition_triangles[tri_first + j]
+        o = 3 * (out_first + j)
+        out_faces[o + out0] = refine_local_vertex(
+            local[0], ordered, sorted_divisions, idx, edge_offsets, edge_forward, interior
+        )
+        out_faces[o + out1] = refine_local_vertex(
+            local[1], ordered, sorted_divisions, idx, edge_offsets, edge_forward, interior
+        )
+        out_faces[o + 2] = refine_local_vertex(
+            local[2], ordered, sorted_divisions, idx, edge_offsets, edge_forward, interior
+        )
+        out_normals[out_first + j] = face_normals[f]
+        out_mesh[out_first + j] = face_mesh[f]
+        out_coplanar[out_first + j] = face_coplanar[f]
+    r_idx = wp.vec3i(0, 0, 0)
+    for i in range(3):
+        r_idx[v_idx[i]] = i
+    vert_first = key_vertices[key]
+    vert_count = key_vertices[key + 1] - vert_first
+    boundary = sorted_divisions[0] + sorted_divisions[1] + sorted_divisions[2]
+    for s in range(vert_count - boundary):
+        b = partition_bary[vert_first + boundary + s]
+        out_positions[interior + s] = face_bary_point(
+            positions, faces, f, wp.vec3d(b[r_idx[0]], b[r_idx[1]], b[r_idx[2]])
+        )

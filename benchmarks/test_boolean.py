@@ -362,6 +362,40 @@ def test_simplify(bench_case: BenchCase) -> None:
     assert faces.size > 0
 
 
+@pytest.mark.benchmark(group="refine")
+@pytest.mark.benchlibs("ordito", "manifold3d")
+@pytest.mark.benchaxis("scale")
+def test_refine(bench_case: BenchCase) -> None:
+    """``od.boolean.refine`` of the sphere into three pieces an edge."""
+    if bench_case.kind == "manifold3d":
+        a_m3, _ = _manifolds_m3(bench_case)
+        result_m3 = bench_case.run(lambda: _forced(a_m3.refine(3)))
+        assert result_m3.num_tri() > 0
+        return
+    vertices_wp, faces_wp = bench_case.vertices_wp, bench_case.faces_wp
+    _, faces = bench_case.run(lambda: od.boolean.refine(vertices_wp, faces_wp, 3))
+    assert faces.size == 9 * faces_wp.size
+
+
+@pytest.mark.benchmark(group="refine_to_length")
+@pytest.mark.benchlibs("ordito", "manifold3d")
+@pytest.mark.benchaxis("scale")
+def test_refine_to_length(bench_case: BenchCase) -> None:
+    """``od.boolean.refine_to_length`` at a third of the sphere's median edge."""
+    vertices = np.asarray(bench_case.vertices_np, dtype=np.float64)
+    faces = np.asarray(bench_case.faces_np).reshape(-1, 3)
+    length = float(np.median(np.linalg.norm(vertices[faces[:, 0]] - vertices[faces[:, 1]], axis=1)))
+    length /= 3.0
+    if bench_case.kind == "manifold3d":
+        a_m3, _ = _manifolds_m3(bench_case)
+        result_m3 = bench_case.run(lambda: _forced(a_m3.refine_to_length(length)))
+        assert result_m3.num_tri() > 0
+        return
+    vertices_wp, faces_wp = bench_case.vertices_wp, bench_case.faces_wp
+    _, faces = bench_case.run(lambda: od.boolean.refine_to_length(vertices_wp, faces_wp, length))
+    assert faces.size > faces_wp.size
+
+
 @pytest.mark.benchmark(group="cross_section")
 @pytest.mark.benchlibs("ordito", "manifold3d")
 @pytest.mark.benchaxis("scale")

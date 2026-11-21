@@ -45,6 +45,10 @@ _FLOAT32_EPSILON = 1.1920929e-07
 
 # ``BatchUnion``'s chunk: it groups at most this many of its last children at a time.
 _MAX_UNION_SIZE = 1000
+# ``Partition``'s cache: each sorted set of side divisions' barycentrics and sub-triangles.
+_PARTITIONS: dict[
+    tuple[int, int, int], tuple[list[tuple[float, float, float, float]], list[tuple[int, int, int]]]
+] = {}
 
 
 def union(
@@ -1153,6 +1157,454 @@ def decompose(
         )
         pieces.append((piece_vertices, sorted_faces))
     return pieces
+
+
+def refine(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], n: int
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    Return a closed mesh with every edge split into ``n`` equal pieces and each face tiled to match.
+
+    Each face becomes ``n * n`` flat triangles in its own plane, so the surface does not move.
+
+    Parameters
+    ----------
+    vertices, faces
+        ``(n_vertices,)`` and ``(3 * n_faces,)`` closed, consistently wound mesh.
+    n
+        The pieces each edge is split into; ``1`` returns the mesh as
+        [`union`][ordito.boolean.union] lays out a result.
+
+    Returns
+    -------
+    vertices : wp.array[wp.vec3]
+        ``(n_vertices_out,)`` the input vertices and the added ones.
+    faces : wp.array[wp.int32]
+        ``(3 * n_faces_out,)`` result triangles.
+
+    Raises
+    ------
+    RuntimeError
+        If ``vertices`` and ``faces`` are not on one device.
+    ValueError
+        If ``n`` is below one, the mesh is not closed, has an edge shared by more than two faces,
+        or is not consistently wound.
+
+    See Also
+    --------
+    [`refine_to_length`][ordito.boolean.refine_to_length]
+    [`remesh.subdivide`][ordito.remesh.subdivide]
+
+    Notes
+    -----
+    Manifold's ``Manifold.refine``.
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, faces = od.boolean.refine(*od.creation.box(), 3)
+    print(faces.size // 3)  # 108
+    ```
+    """
+    require_same_device(vertices=vertices, faces=faces)
+    if n < 1:
+        raise ValueError(f"n must be at least 1, got {n}")
+    device = vertices.device
+    solid = _solid_from_mesh(vertices, faces, 0, "")
+    if solid.is_empty or n == 1:
+        return _mesh_from_solid(solid, device)
+    return _mesh_from_solid(_solid_refine(solid, int(n) - 1, 0.0), device)
+
+
+def refine_to_length(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], length: float
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    Return a closed mesh with each edge split into pieces of about ``length``, faces tiled to match.
+
+    An edge of length ``l`` takes ``floor(l / length)`` added vertices, evenly spaced, and each
+    face is tiled flat between its split sides with interior vertices where they keep the new
+    edges near that length too.
+
+    Parameters
+    ----------
+    vertices, faces
+        ``(n_vertices,)`` and ``(3 * n_faces,)`` closed, consistently wound mesh.
+    length
+        The target piece length; its sign is ignored.
+
+    Returns
+    -------
+    vertices : wp.array[wp.vec3]
+        ``(n_vertices_out,)`` the input vertices and the added ones.
+    faces : wp.array[wp.int32]
+        ``(3 * n_faces_out,)`` result triangles.
+
+    Raises
+    ------
+    RuntimeError
+        If ``vertices`` and ``faces`` are not on one device.
+    ValueError
+        If ``length`` is zero or not finite, the mesh is not closed, has an edge shared by more
+        than two faces, or is not consistently wound.
+
+    See Also
+    --------
+    [`refine`][ordito.boolean.refine]
+    [`remesh.isotropic_remesh`][ordito.remesh.isotropic_remesh]
+
+    Notes
+    -----
+    Manifold's ``Manifold.refine_to_length``.
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, faces = od.boolean.refine_to_length(*od.creation.box(), 0.25)
+    print(faces.size // 3)  # 312
+    ```
+    """
+    require_same_device(vertices=vertices, faces=faces)
+    length = abs(float(length))
+    if length == 0.0 or not math.isfinite(length):
+        raise ValueError(f"length must be finite and nonzero, got {length}")
+    device = vertices.device
+    solid = _solid_from_mesh(vertices, faces, 0, "")
+    if solid.is_empty:
+        return _mesh_from_solid(solid, device)
+    return _mesh_from_solid(_solid_refine(solid, 0, length), device)
+
+
+def _solid_refine(solid: _Solid, added: int, length: float) -> _Solid:
+    """
+    ``Impl::Refine`` with no tangents: ``Subdivide``, ``CalculateVertNormals``, ``SortGeometry``.
+
+    Every edge takes ``added`` vertices, or ``int(|edge| / length)`` when ``length`` is positive;
+    each face takes the cached partition of its sides' divisions, its sub-triangles inheriting
+    its normal and reference. Sorted in the solid's own box (``Refine`` does not recalculate it).
+    """
+    device = solid.positions.device
+    n_h = solid.faces.size
+    n_v = solid.n_vertices
+    n_t = solid.n_faces
+    twins = halfedge_twins(solid.faces, n_v, validate=False)
+    ranks, forward = offsets_buffer(n_h, device)
+    _launch.launch(
+        kernel_boolean.forward_halfedge_flags,
+        dim=n_h,
+        inputs=[solid.faces],
+        outputs=[forward],
+        device=device,
+    )
+    # ``ranks[h]`` is then each forward halfedge's edge index.
+    n_edges = scan_count(forward)
+    added_offsets, added_counts = offsets_buffer(n_edges, device)
+    edge_halfedge = _launch.empty(n_edges, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_boolean.refine_edge_added,
+        dim=n_h,
+        inputs=[solid.positions, solid.faces, ranks, added, length],
+        outputs=[added_counts, edge_halfedge],
+        device=device,
+    )
+    n_added = scan_count(added_counts)
+    keys = _launch.empty(n_t, dtype=wp.vec3i, device=device)
+    _launch.launch(
+        kernel_boolean.refine_face_keys,
+        dim=n_t,
+        inputs=[solid.faces, twins, ranks, added_offsets],
+        outputs=[keys],
+        device=device,
+    )
+    # Host readback: the partitions are built on the host, one per distinct set of divisions.
+    unique_keys, face_key_np = np.unique(read_array(keys), axis=0, return_inverse=True)
+    partitions = [_triangle_partition((int(a), int(b), int(c))) for a, b, c in unique_keys]
+    key_triangles_np = np.cumsum([0] + [len(tris) for _, tris in partitions], dtype=np.int64)
+    key_vertices_np = np.cumsum([0] + [len(bary) for bary, _ in partitions], dtype=np.int64)
+    key_interior_np = np.diff(key_vertices_np) - unique_keys.sum(axis=1)
+    face_key_np = face_key_np.reshape(-1)
+    face_triangles_np = np.diff(key_triangles_np)[face_key_np]
+    face_interior_np = key_interior_np[face_key_np]
+    triangle_offsets_np = np.concatenate([[0], np.cumsum(face_triangles_np)])
+    interior_offsets_np = n_v + n_added + np.concatenate([[0], np.cumsum(face_interior_np)])
+    n_new_t = int(triangle_offsets_np[-1])
+    n_new_v = int(interior_offsets_np[-1])
+    partition_triangles = np.asarray([t for _, tris in partitions for t in tris], dtype=np.int32)
+    partition_bary = np.asarray([b[:3] for bary, _ in partitions for b in bary], dtype=np.float64)
+
+    def upload(values: np.ndarray) -> wp.array[wp.int32]:
+        return _launch.array(values.astype(np.int32), dtype=wp.int32, device=device)
+
+    positions = _launch.empty(n_new_v, dtype=wp.vec3d, device=device)
+    last = _launch.full(n_v, -1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_boolean.last_corner_halfedges,
+        dim=n_h,
+        inputs=[solid.faces],
+        outputs=[last],
+        device=device,
+    )
+    _launch.launch(
+        kernel_boolean.refine_retained_points,
+        dim=n_v,
+        inputs=[solid.positions, solid.faces, last],
+        outputs=[positions],
+        device=device,
+    )
+    _launch.launch(
+        kernel_boolean.refine_edge_points,
+        dim=n_edges,
+        inputs=[solid.positions, solid.faces, edge_halfedge, added_offsets, n_v],
+        outputs=[positions],
+        device=device,
+    )
+    faces = _launch.empty(3 * n_new_t, dtype=wp.int32, device=device)
+    face_normals = _launch.empty(n_new_t, dtype=wp.vec3d, device=device)
+    face_mesh = _launch.empty(n_new_t, dtype=wp.int32, device=device)
+    face_coplanar = _launch.empty(n_new_t, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_boolean.refine_faces,
+        dim=n_t,
+        inputs=[
+            solid.positions,
+            solid.faces,
+            twins,
+            ranks,
+            added_offsets,
+            n_v,
+            upload(face_key_np),
+            upload(key_triangles_np),
+            upload(key_vertices_np),
+            _launch.array(partition_triangles.reshape(-1, 3), dtype=wp.vec3i, device=device),
+            _launch.array(partition_bary.reshape(-1, 3), dtype=wp.vec3d, device=device),
+            upload(triangle_offsets_np),
+            upload(interior_offsets_np),
+            solid.face_normals,
+            solid.face_mesh,
+            solid.face_coplanar,
+        ],
+        outputs=[faces, face_normals, face_mesh, face_coplanar, positions],
+        device=device,
+    )
+    refined = solid._replace(
+        positions=positions,
+        faces=faces,
+        face_normals=face_normals,
+        vertex_normals=positions,
+        face_mesh=face_mesh,
+        face_coplanar=face_coplanar,
+        face_source=None,
+    )
+    mesh = _halfedge_mesh_from_solid(refined)
+    return _finish_solid(mesh, solid.epsilon, solid.tolerance, device, (solid.lower, solid.upper))
+
+
+def _triangle_partition(
+    n: tuple[int, int, int],
+) -> tuple[list[tuple[float, float, float, float]], list[tuple[int, int, int]]]:
+    """
+    ``Partition::GetCachedPartition`` of a triangle with sides of ``n[0] >= n[1] >= n[2]`` pieces.
+
+    Purely topological: each vertex's barycentric (corners, then each side's added vertices, then
+    the interior) and the sub-triangles over them, cached by the divisions.
+    """
+    cached = _PARTITIONS.get(n)
+    if cached is not None:
+        return cached
+    bary: list[tuple[float, float, float, float]] = [
+        (1.0, 0.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0, 0.0),
+        (0.0, 0.0, 1.0, 0.0),
+    ]
+    tris: list[tuple[int, int, int]] = []
+    for i in range(3):
+        next_bary = bary[(i + 1) % 3]
+        for j in range(1, n[i]):
+            bary.append(_lerp4(bary[i], next_bary, j / n[i]))
+    offsets = (3, 3 + n[0] - 1, 3 + n[0] - 1 + n[1] - 1)
+    f = float(n[2] * n[2] + n[0] * n[0])
+    if n[1] == 1:
+        if n[0] == 1:
+            tris.append((0, 1, 2))
+        else:
+            _partition_fan(tris, (0, 1, 2), n[0] - 1, offsets[0])
+    elif n[1] * n[1] > f - math.sqrt(2.0) * n[0] * n[2]:  # acute-ish
+        tris.append((offsets[1] - 1, 1, offsets[1]))
+        _partition_quad(
+            tris,
+            bary,
+            [offsets[1] - 1, offsets[1], 2, 0],
+            [-1, offsets[1] + 1, offsets[2], offsets[0]],
+            [0, n[1] - 2, n[2] - 1, n[0] - 2],
+            [True, True, True, True],
+        )
+    else:  # obtuse: split into two acute
+        ns = min(n[0] - 2, int(_round_half_away((f - n[1] * n[1]) / (2 * n[0]))))
+        nh = int(max(1.0, _round_half_away(math.sqrt(n[2] * n[2] - ns * ns))))
+        h_offset = len(bary)
+        middle = bary[offsets[0] + ns - 1]
+        for j in range(1, nh):
+            bary.append(_lerp4(bary[2], middle, j / nh))
+        tris.append((offsets[1] - 1, 1, offsets[1]))
+        _partition_quad(
+            tris,
+            bary,
+            [offsets[1] - 1, offsets[1], 2, offsets[0] + ns - 1],
+            [-1, offsets[1] + 1, h_offset, offsets[0] + ns],
+            [0, n[1] - 2, nh - 1, n[0] - ns - 2],
+            [True, True, True, True],
+        )
+        if n[2] == 1:
+            _partition_fan(tris, (0, offsets[0] + ns - 1, 2), ns - 1, offsets[0])
+        elif ns == 1:
+            tris.append((h_offset, 2, offsets[2]))
+            _partition_quad(
+                tris,
+                bary,
+                [h_offset, offsets[2], 0, offsets[0]],
+                [-1, offsets[2] + 1, -1, h_offset + nh - 2],
+                [0, n[2] - 2, ns - 1, nh - 2],
+                [True, True, True, False],
+            )
+        else:
+            tris.append((h_offset - 1, 0, offsets[0]))
+            _partition_quad(
+                tris,
+                bary,
+                [h_offset - 1, offsets[0], offsets[0] + ns - 1, 2],
+                [-1, offsets[0] + 1, h_offset + nh - 2, offsets[2]],
+                [0, ns - 2, nh - 1, n[2] - 2],
+                [True, True, False, True],
+            )
+    _PARTITIONS[n] = (bary, tris)
+    return bary, tris
+
+
+def _lerp4(
+    a: tuple[float, float, float, float], b: tuple[float, float, float, float], t: float
+) -> tuple[float, float, float, float]:
+    """``la::lerp`` of two barycentrics: ``a * (1 - t) + b * t``, component by component."""
+    s = 1.0 - t
+    return (a[0] * s + b[0] * t, a[1] * s + b[1] * t, a[2] * s + b[2] * t, a[3] * s + b[3] * t)
+
+
+def _round_half_away(x: float) -> float:
+    """``std::round``: to the nearest integer, halves away from zero."""
+    r = math.floor(abs(x))
+    if abs(x) - r >= 0.5:
+        r += 1.0
+    return math.copysign(r, x)
+
+
+def _partition_fan(
+    tris: list[tuple[int, int, int]], corners: tuple[int, int, int], added: int, offset: int
+) -> None:
+    """``PartitionFan``: side 0's added vertices fanned from corner 2."""
+    last = corners[0]
+    for i in range(added):
+        nxt = offset + i
+        tris.append((last, nxt, corners[2]))
+        last = nxt
+    tris.append((last, corners[1], corners[2]))
+
+
+def _partition_quad(
+    tris: list[tuple[int, int, int]],
+    bary: list[tuple[float, float, float, float]],
+    corners: list[int],
+    offsets: list[int],
+    added: list[int],
+    forward: list[bool],
+) -> None:
+    """``PartitionQuad``: strips parallel to side 0, or a terminal fan where two sides add none."""
+
+    def edge_vert(edge: int, index: int) -> int:
+        return offsets[edge] + (index if forward[edge] else -index)
+
+    corner = -1
+    last = 3
+    max_edge = -1
+    for i in range(4):
+        if corner == -1 and added[i] == 0 and added[last] == 0:
+            corner = i
+        if added[i] > 0:
+            max_edge = i if max_edge == -1 else -2
+        last = i
+    if corner >= 0:  # terminate
+        if max_edge >= 0:
+            edge = [(k + max_edge) % 4 for k in range(4)]
+            middle = added[max_edge] // 2
+            tris.append((corners[edge[2]], corners[edge[3]], edge_vert(max_edge, middle)))
+            prev = corners[edge[0]]
+            for i in range(middle + 1):
+                nxt = edge_vert(max_edge, i)
+                tris.append((corners[edge[3]], prev, nxt))
+                prev = nxt
+            prev = corners[edge[1]]
+            for i in range(added[max_edge] - 1, middle - 1, -1):
+                nxt = edge_vert(max_edge, i)
+                tris.append((corners[edge[2]], nxt, prev))
+                prev = nxt
+        else:
+            side_vert = corners[0]
+            for j in (1, 2):
+                side = (corner + j) % 4
+                if j == 2 and added[side] > 0:
+                    tris.append((corners[side], edge_vert(side, 0), side_vert))
+                else:
+                    side_vert = corners[side]
+                for i in range(added[side]):
+                    nxt = edge_vert(side, i)
+                    tris.append((corners[corner], side_vert, nxt))
+                    side_vert = nxt
+                if j == 2 or added[side] == 0:
+                    tris.append((corners[corner], side_vert, corners[(corner + j + 1) % 4]))
+        return
+    partitions = 1 + min(added[1], added[3])
+    new_corners = [corners[1], -1, -1, corners[0]]
+    new_offsets = [offsets[1], -1, edge_vert(3, added[3] + 1), offsets[0]]
+    new_added = [0, -1, 0, added[0]]
+    new_forward = [forward[1], True, forward[3], forward[0]]
+    for i in range(1, partitions):
+        corner_offset1 = (added[1] * i) // partitions
+        corner_offset3 = added[3] - 1 - (added[3] * i) // partitions
+        next_offset1 = edge_vert(1, corner_offset1 + 1)
+        next_offset3 = edge_vert(3, corner_offset3 + 1)
+        t = i / partitions
+        count = int(_round_half_away(float(added[0]) * (1.0 - t) + float(added[2]) * t))
+        new_corners[1] = edge_vert(1, corner_offset1)
+        new_corners[2] = edge_vert(3, corner_offset3)
+        new_added[0] = abs(next_offset1 - new_offsets[0]) - 1
+        new_added[1] = count
+        new_added[2] = abs(next_offset3 - new_offsets[2]) - 1
+        new_offsets[1] = len(bary)
+        new_offsets[2] = next_offset3
+        for j in range(count):
+            bary.append(
+                _lerp4(bary[new_corners[1]], bary[new_corners[2]], (j + 1.0) / (count + 1.0))
+            )
+        _partition_quad(
+            tris, bary, list(new_corners), list(new_offsets), list(new_added), list(new_forward)
+        )
+        new_corners[0] = new_corners[1]
+        new_corners[3] = new_corners[2]
+        new_added[3] = new_added[1]
+        new_offsets[0] = next_offset1
+        new_offsets[3] = new_offsets[1] + new_added[1] - 1
+        new_forward[3] = False
+    new_corners[1] = corners[2]
+    new_corners[2] = corners[3]
+    new_offsets[1] = offsets[2]
+    new_added[0] = added[1] - abs(new_offsets[0] - offsets[1])
+    new_added[1] = added[2]
+    new_added[2] = abs(new_offsets[2] - offsets[3]) - 1
+    new_offsets[2] = offsets[3]
+    new_forward[1] = forward[2]
+    _partition_quad(tris, bary, new_corners, new_offsets, new_added, new_forward)
 
 
 def _closed_positions(
