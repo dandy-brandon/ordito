@@ -355,6 +355,9 @@ LIBRARIES: list[LibrarySpec] = [
     {"id": "pyvista", "kind": "pyvista", "device": None, "cpu_bound": True},
     {"id": "meshlib", "kind": "meshlib", "device": None, "cpu_bound": True},
     {"id": "pymeshfix", "kind": "pymeshfix", "device": None, "cpu_bound": True},
+    # ``manifold3d`` (Manifold) is TBB-parallel on the CPU; it is the library ``ordito.boolean``
+    # ports, and the rows time its Booleans on the inputs as ``Manifold`` objects.
+    {"id": "manifold3d", "kind": "manifold3d", "device": None, "cpu_bound": True},
     {"id": "pytorch3d-cuda", "kind": "pytorch3d", "device": "cuda:0", "cpu_bound": False},
 ]
 LIBRARIES_BY_ID = {lib["id"]: lib for lib in LIBRARIES}
@@ -906,7 +909,7 @@ def pytest_configure(config: pytest.Config) -> None:
         "markers",
         "benchlibs(*kinds): library kinds "
         "(ordito/trimesh/igl/open3d/scipy/numpy/potpourri3d/pymeshlab/pyvista/meshlib/"
-        "pymeshfix/pytorch3d) a "
+        "pymeshfix/pytorch3d/manifold3d) a "
         "benchmark supports.",
     )
     config.addinivalue_line(

@@ -8,6 +8,10 @@ edge, then the cut faces' triangulation, which is what the size sweep reads.
 
 References
 ----------
+**manifold3d** is Manifold itself, TBB-parallel, timed on its own ``Manifold`` objects (built
+outside the timed call); its CSG is lazy, so each row reads the vertex count to force the result.
+Its answers equal ordito's array for array (``tests/test_boolean.py``, Class A).
+
 **trimesh**'s ``boolean.union`` / ``intersection`` / ``difference`` with the ``manifold`` engine
 is Manifold itself (``manifold3d``, TBB-parallel), the library whose Boolean ordito ports; the
 row passes ``check_volume=False`` so its per-call watertightness check is not timed. Its answers
@@ -24,6 +28,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import manifold3d as m3
 import numpy as np
 import pytest
 import trimesh as tm
@@ -60,6 +65,22 @@ def _moved_vertices(bench_case: BenchCase) -> tuple[wp.array[wp.vec3], np.ndarra
     return _moved_cache[key]
 
 
+def _manifolds_m3(bench_case: BenchCase) -> tuple[m3.Manifold, m3.Manifold]:
+    """Return the sphere and its moved copy as Manifolds."""
+    _, moved_np = _moved_vertices(bench_case)
+    faces_np = np.asarray(bench_case.faces_np, dtype=np.uint32)
+    sphere_np = np.asarray(bench_case.vertices_np, dtype=np.float32)
+    a_m3 = m3.Manifold(m3.Mesh(vert_properties=sphere_np, tri_verts=faces_np))
+    b_m3 = m3.Manifold(m3.Mesh(vert_properties=moved_np, tri_verts=faces_np))
+    return a_m3, b_m3
+
+
+def _forced(result_m3: m3.Manifold) -> m3.Manifold:
+    """Evaluate Manifold's lazy CSG result."""
+    assert result_m3.num_vert() >= 0
+    return result_m3
+
+
 def _run(bench_case: BenchCase, name: str, operation: Operation) -> None:
     """Time one Boolean of the sphere and its moved copy on the case's library."""
     moved_wp, moved_np = _moved_vertices(bench_case)
@@ -72,13 +93,23 @@ def _run(bench_case: BenchCase, name: str, operation: Operation) -> None:
         )
         assert len(result_tm.faces) > 0
         return
+    if bench_case.kind == "manifold3d":
+        a_m3, b_m3 = _manifolds_m3(bench_case)
+        operations_m3 = {
+            "union": lambda: a_m3 + b_m3,
+            "intersection": lambda: a_m3 ^ b_m3,
+            "difference": lambda: a_m3 - b_m3,
+        }
+        result_m3 = bench_case.run(lambda: _forced(operations_m3[name]()))
+        assert result_m3.num_tri() > 0
+        return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     _vertices, result_faces = bench_case.run(lambda: operation(vertices, faces, moved_wp, faces))
     assert result_faces.size > 0
 
 
 @pytest.mark.benchmark(group="boolean_union")
-@pytest.mark.benchlibs("ordito", "trimesh")
+@pytest.mark.benchlibs("ordito", "trimesh", "manifold3d")
 @pytest.mark.benchaxis("scale")
 def test_union(bench_case: BenchCase) -> None:
     """``od.boolean.union`` of a sphere and its rotated, shifted copy."""
@@ -86,7 +117,7 @@ def test_union(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="boolean_intersection")
-@pytest.mark.benchlibs("ordito", "trimesh")
+@pytest.mark.benchlibs("ordito", "trimesh", "manifold3d")
 @pytest.mark.benchaxis("scale")
 def test_intersection(bench_case: BenchCase) -> None:
     """``od.boolean.intersection`` of a sphere and its rotated, shifted copy."""
@@ -94,8 +125,155 @@ def test_intersection(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="boolean_difference")
-@pytest.mark.benchlibs("ordito", "trimesh")
+@pytest.mark.benchlibs("ordito", "trimesh", "manifold3d")
 @pytest.mark.benchaxis("scale")
 def test_difference(bench_case: BenchCase) -> None:
     """``od.boolean.difference`` of a sphere and its rotated, shifted copy."""
     _run(bench_case, "difference", od.boolean.difference)
+
+
+@pytest.mark.benchmark(group="split_by_mesh")
+@pytest.mark.benchlibs("ordito", "manifold3d")
+@pytest.mark.benchaxis("scale")
+def test_split_by_mesh(bench_case: BenchCase) -> None:
+    """``od.boolean.split_by_mesh``: both parts from one pass over the crossings."""
+    if bench_case.kind == "manifold3d":
+        a_m3, b_m3 = _manifolds_m3(bench_case)
+
+        def split_m3() -> tuple[m3.Manifold, m3.Manifold]:
+            inside_m3, outside_m3 = a_m3.split(b_m3)
+            return _forced(inside_m3), _forced(outside_m3)
+
+        inside_m3, _outside_m3 = bench_case.run(split_m3)
+        assert inside_m3.num_tri() > 0
+        return
+    moved_wp, _ = _moved_vertices(bench_case)
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    (_, inside_faces), _outside = bench_case.run(
+        lambda: od.boolean.split_by_mesh(vertices, faces, moved_wp, faces)
+    )
+    assert inside_faces.size > 0
+
+
+# An oblique plane through the sphere's middle.
+_PLANE_NORMAL = (0.3, -0.5, 0.8)
+_PLANE_OFFSET = 0.1
+
+
+def _plane_offset(bench_case: BenchCase) -> float:
+    """Return the plane's offset, through the mesh's centre."""
+    vertices = np.asarray(bench_case.vertices_np, dtype=np.float64)
+    normal = np.asarray(_PLANE_NORMAL) / np.linalg.norm(_PLANE_NORMAL)
+    return float(vertices.mean(axis=0) @ normal) + _PLANE_OFFSET
+
+
+@pytest.mark.benchmark(group="split_by_plane")
+@pytest.mark.benchlibs("ordito", "manifold3d")
+@pytest.mark.benchaxis("scale")
+def test_split_by_plane(bench_case: BenchCase) -> None:
+    """``od.boolean.split_by_plane`` by an oblique plane through the middle."""
+    offset = _plane_offset(bench_case)
+    if bench_case.kind == "manifold3d":
+        a_m3, _ = _manifolds_m3(bench_case)
+
+        def split_m3() -> tuple[m3.Manifold, m3.Manifold]:
+            above_m3, below_m3 = a_m3.split_by_plane(_PLANE_NORMAL, offset)
+            return _forced(above_m3), _forced(below_m3)
+
+        above_m3, _below_m3 = bench_case.run(split_m3)
+        assert above_m3.num_tri() > 0
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    (_, above_faces), _below = bench_case.run(
+        lambda: od.boolean.split_by_plane(vertices, faces, _PLANE_NORMAL, offset)
+    )
+    assert above_faces.size > 0
+
+
+@pytest.mark.benchmark(group="trim_by_plane")
+@pytest.mark.benchlibs("ordito", "manifold3d")
+@pytest.mark.benchaxis("scale")
+def test_trim_by_plane(bench_case: BenchCase) -> None:
+    """``od.boolean.trim_by_plane`` by an oblique plane through the middle."""
+    offset = _plane_offset(bench_case)
+    if bench_case.kind == "manifold3d":
+        a_m3, _ = _manifolds_m3(bench_case)
+        kept_m3 = bench_case.run(lambda: _forced(a_m3.trim_by_plane(_PLANE_NORMAL, offset)))
+        assert kept_m3.num_tri() > 0
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    _, kept_faces = bench_case.run(
+        lambda: od.boolean.trim_by_plane(vertices, faces, _PLANE_NORMAL, offset)
+    )
+    assert kept_faces.size > 0
+
+
+# Batches: the sphere and copies turned and moved around it, overlapping in a ring.
+_BATCH_COPIES = 4
+
+
+def _batch_inputs(bench_case: BenchCase) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Return the batch's meshes as ``float32`` NumPy pairs."""
+    vertices = np.asarray(bench_case.vertices_np, dtype=np.float64)
+    faces = np.asarray(bench_case.faces_np)
+    centre = vertices.mean(axis=0)
+    extent = vertices.max(axis=0) - vertices.min(axis=0)
+    rng = np.random.default_rng(_ROTATION_SEED)
+    meshes = [(vertices.astype(np.float32), faces)]
+    for i in range(1, _BATCH_COPIES):
+        rotation = tm.transformations.random_rotation_matrix(rng.random(3))[:3, :3]
+        angle = 2.0 * np.pi * i / _BATCH_COPIES
+        shift = 0.3 * extent * np.array([np.cos(angle), np.sin(angle), 0.1 * i])
+        moved = (vertices - centre) @ rotation.T + centre + shift
+        meshes.append((moved.astype(np.float32), faces))
+    return meshes
+
+
+def _run_batch(
+    bench_case: BenchCase,
+    function: Callable[[list[tuple[wp.array[wp.vec3], wp.array[wp.int32]]]], object],
+    op_m3: m3.OpType,
+) -> None:
+    """Time one batch Boolean of the sphere and its copies."""
+    meshes = _batch_inputs(bench_case)
+    if bench_case.kind == "manifold3d":
+        manifolds_m3 = [
+            m3.Manifold(m3.Mesh(vert_properties=v, tri_verts=f.astype(np.uint32)))
+            for v, f in meshes
+        ]
+        result_m3 = bench_case.run(lambda: _forced(m3.Manifold.batch_boolean(manifolds_m3, op_m3)))
+        assert result_m3.num_tri() > 0
+        return
+    device = bench_case.device
+    meshes_wp = [
+        (
+            wp.array(v, dtype=wp.vec3, device=device),
+            wp.array(f.reshape(-1).astype(np.int32), dtype=wp.int32, device=device),
+        )
+        for v, f in meshes
+    ]
+    bench_case.run(lambda: function(meshes_wp))
+
+
+@pytest.mark.benchmark(group="union_all")
+@pytest.mark.benchlibs("ordito", "manifold3d")
+@pytest.mark.benchaxis("scale")
+def test_union_all(bench_case: BenchCase) -> None:
+    """``od.boolean.union_all`` of the sphere and three copies around it."""
+    _run_batch(bench_case, od.boolean.union_all, m3.OpType.Add)
+
+
+@pytest.mark.benchmark(group="intersection_all")
+@pytest.mark.benchlibs("ordito", "manifold3d")
+@pytest.mark.benchaxis("scale")
+def test_intersection_all(bench_case: BenchCase) -> None:
+    """``od.boolean.intersection_all`` of the sphere and three copies around it."""
+    _run_batch(bench_case, od.boolean.intersection_all, m3.OpType.Intersect)
+
+
+@pytest.mark.benchmark(group="difference_all")
+@pytest.mark.benchlibs("ordito", "manifold3d")
+@pytest.mark.benchaxis("scale")
+def test_difference_all(bench_case: BenchCase) -> None:
+    """``od.boolean.difference_all``: the sphere less three copies around it."""
+    _run_batch(bench_case, od.boolean.difference_all, m3.OpType.Subtract)

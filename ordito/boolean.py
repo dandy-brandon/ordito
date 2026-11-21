@@ -1,10 +1,15 @@
 """
-Boolean operations on closed meshes: union, intersection and difference.
+Boolean operations on closed meshes: union, intersection, difference, and cuts.
 
 [`union`][ordito.boolean.union], [`intersection`][ordito.boolean.intersection] and
 [`difference`][ordito.boolean.difference] combine two closed, consistently wound meshes as solids
-and return a closed, consistently wound mesh. Mirrors ``trimesh.boolean``'s three operations, and
-gives the answers of its default engine, the Manifold library, whose Boolean this module ports.
+and return a closed, consistently wound mesh; [`union_all`][ordito.boolean.union_all],
+[`intersection_all`][ordito.boolean.intersection_all] and
+[`difference_all`][ordito.boolean.difference_all] combine many.
+[`split_by_mesh`][ordito.boolean.split_by_mesh], [`split_by_plane`][ordito.boolean.split_by_plane]
+and [`trim_by_plane`][ordito.boolean.trim_by_plane] cut a solid into capped parts. Mirrors
+``trimesh.boolean``, and gives the answers of its default engine, the Manifold library, whose
+Boolean this module ports: the same meshes, vertex and triangle order included.
 
 Every crossing of an edge of one mesh with a face of the other, and every vertex's winding number
 with respect to the other mesh, is decided exactly from the ``float32`` coordinates. Ties --
@@ -15,15 +20,19 @@ the slivers such contacts leave are collapsed afterwards.
 
 from __future__ import annotations
 
+import heapq
+import math
+import struct
+from collections.abc import Sequence
 from typing import Literal, NamedTuple
 
+import numpy as np
 import warp as wp
 from warp._src.codegen import StructInstance
 
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import offsets_buffer, read_values, require_same_device, scan_count
-from ordito.bounds import aabb
+from ordito._common import offsets_buffer, read_array, read_values, require_same_device, scan_count
 from ordito.graph import connected_component_labels_from_edges
 from ordito.halfedge import halfedge_twins
 from ordito.kernels import boolean as kernel_boolean
@@ -31,6 +40,9 @@ from ordito.kernels import boolean as kernel_boolean
 _Operation = Literal["union", "intersection", "difference"]
 
 _FLOAT32_EPSILON = 1.1920929e-07
+
+# ``BatchUnion``'s chunk: it groups at most this many of its last children at a time.
+_MAX_UNION_SIZE = 1000
 
 
 def union(
@@ -201,6 +213,484 @@ def difference(
     return _boolean(vertices_a, faces_a, vertices_b, faces_b, "difference")
 
 
+def split_by_mesh(
+    vertices_a: wp.array[wp.vec3],
+    faces_a: wp.array[wp.int32],
+    vertices_b: wp.array[wp.vec3],
+    faces_b: wp.array[wp.int32],
+) -> tuple[
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]], tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+]:
+    """
+    Return the first closed mesh cut by the second: its part inside, and its part outside.
+
+    The same two meshes as [`intersection`][ordito.boolean.intersection] and
+    [`difference`][ordito.boolean.difference] of the pair, from one pass over the crossings.
+
+    Parameters
+    ----------
+    vertices_a, faces_a
+        ``(n_vertices_a,)`` and ``(3 * n_faces_a,)`` closed, consistently wound mesh to cut.
+    vertices_b, faces_b
+        ``(n_vertices_b,)`` and ``(3 * n_faces_b,)`` closed, consistently wound cutter.
+
+    Returns
+    -------
+    inside : tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+        ``(n_vertices,)`` and ``(3 * n_faces,)`` part of the first mesh inside the cutter.
+    outside : tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+        ``(n_vertices,)`` and ``(3 * n_faces,)`` part of the first mesh outside the cutter.
+
+    Raises
+    ------
+    RuntimeError
+        If the four arrays are not all on one device.
+    ValueError
+        If either mesh is not closed, has an edge shared by more than two faces, or is not
+        consistently wound.
+
+    See Also
+    --------
+    [`split_by_plane`][ordito.boolean.split_by_plane]
+
+    Notes
+    -----
+    Manifold's ``Manifold.split``.
+
+    Examples
+    --------
+    A unit cube cut by another overlapping it in a 0.5 x 0.7 x 0.8 box:
+
+    ```python
+    import ordito as od
+
+    vertices_a, faces_a = od.creation.box(bounds=[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
+    vertices_b, faces_b = od.creation.box(bounds=[[0.5, 0.3, 0.2], [1.5, 1.3, 1.2]])
+    inside, outside = od.boolean.split_by_mesh(vertices_a, faces_a, vertices_b, faces_b)
+    print(f"{od.measures.volume(*inside):.4f} {od.measures.volume(*outside):.4f}")  # 0.2800 0.7200
+    ```
+    """
+    require_same_device(
+        vertices_a=vertices_a, faces_a=faces_a, vertices_b=vertices_b, faces_b=faces_b
+    )
+    device = vertices_a.device
+    p = _solid_from_mesh(vertices_a, faces_a, 0, "a")
+    q = _solid_from_mesh(vertices_b, faces_b, 1, "b")
+    inside, outside = _solid_split(p, q)
+    return _mesh_from_solid(inside, device), _mesh_from_solid(outside, device)
+
+
+def split_by_plane(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    normal: Sequence[float],
+    origin_offset: float = 0.0,
+) -> tuple[
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]], tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+]:
+    """
+    Return a closed mesh cut by a plane into two closed meshes, one on each side.
+
+    The plane is the points ``x`` with ``dot(x, normal / |normal|) == origin_offset``. Both parts
+    are capped where the plane cuts them, and the cut is exact: the parts are the mesh's
+    [`split_by_mesh`][ordito.boolean.split_by_mesh] by a box covering it beyond the plane.
+
+    Parameters
+    ----------
+    vertices, faces
+        ``(n_vertices,)`` and ``(3 * n_faces,)`` closed, consistently wound mesh.
+    normal
+        ``(3,)`` plane normal, of any nonzero length; the first part lies on its side.
+    origin_offset
+        The plane's signed distance from the origin along the unit normal.
+
+    Returns
+    -------
+    above : tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+        ``(n_vertices,)`` and ``(3 * n_faces,)`` part on the side ``normal`` points to.
+    below : tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+        ``(n_vertices,)`` and ``(3 * n_faces,)`` part on the other side.
+
+    Raises
+    ------
+    RuntimeError
+        If ``vertices`` and ``faces`` are not on one device.
+    ValueError
+        If the mesh is not closed, has an edge shared by more than two faces, or is not
+        consistently wound, or if ``normal`` is zero or not finite.
+
+    See Also
+    --------
+    [`trim_by_plane`][ordito.boolean.trim_by_plane]
+    [`intersection.split_mesh_with_plane`][ordito.intersection.split_mesh_with_plane]
+
+    Notes
+    -----
+    Manifold's ``Manifold.split_by_plane``, whose half-space this builds the same way: the
+    answers are the same meshes.
+
+    Examples
+    --------
+    A unit cube halved at ``z = 0.25``:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box(bounds=[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
+    above, below = od.boolean.split_by_plane(vertices, faces, (0.0, 0.0, 1.0), 0.25)
+    print(f"{od.measures.volume(*above):.4f} {od.measures.volume(*below):.4f}")  # 0.7500 0.2500
+    ```
+    """
+    require_same_device(vertices=vertices, faces=faces)
+    device = vertices.device
+    solid = _solid_from_mesh(vertices, faces, 0, "")
+    if solid.is_empty:
+        empty = _mesh_from_solid(solid, device)
+        return empty, _mesh_from_solid(solid, device)
+    above, below = _solid_split(solid, _halfspace_solid(solid, normal, origin_offset, 1))
+    return _mesh_from_solid(above, device), _mesh_from_solid(below, device)
+
+
+def trim_by_plane(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    normal: Sequence[float],
+    origin_offset: float = 0.0,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    Return the part of a closed mesh on one side of a plane, capped, as a closed mesh.
+
+    The first part of [`split_by_plane`][ordito.boolean.split_by_plane], computed alone.
+
+    Parameters
+    ----------
+    vertices, faces
+        ``(n_vertices,)`` and ``(3 * n_faces,)`` closed, consistently wound mesh.
+    normal
+        ``(3,)`` plane normal, of any nonzero length, pointing to the part kept.
+    origin_offset
+        The plane's signed distance from the origin along the unit normal.
+
+    Returns
+    -------
+    vertices : wp.array[wp.vec3]
+        ``(n_vertices,)`` vertices of the part kept.
+    faces : wp.array[wp.int32]
+        ``(3 * n_faces,)`` its triangles.
+
+    Raises
+    ------
+    RuntimeError
+        If ``vertices`` and ``faces`` are not on one device.
+    ValueError
+        If the mesh is not closed, has an edge shared by more than two faces, or is not
+        consistently wound, or if ``normal`` is zero or not finite.
+
+    See Also
+    --------
+    [`split_by_plane`][ordito.boolean.split_by_plane]
+
+    Notes
+    -----
+    Manifold's ``Manifold.trim_by_plane``.
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box(bounds=[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
+    kept = od.boolean.trim_by_plane(vertices, faces, (1.0, 1.0, 0.0), 0.0)
+    print(f"{od.measures.volume(*kept):.4f}")  # 1.0000
+    ```
+    """
+    require_same_device(vertices=vertices, faces=faces)
+    device = vertices.device
+    solid = _solid_from_mesh(vertices, faces, 0, "")
+    if solid.is_empty:
+        return _mesh_from_solid(solid, device)
+    halfspace = _halfspace_solid(solid, normal, origin_offset, 1)
+    return _mesh_from_solid(_solid_boolean(solid, halfspace, "intersection"), device)
+
+
+def union_all(
+    meshes: Sequence[tuple[wp.array[wp.vec3], wp.array[wp.int32]]],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    Return the solid any of several closed meshes encloses, as a closed mesh.
+
+    Meshes whose boxes do not touch are joined without a Boolean, and the rest are united
+    pairwise, largest first, so the answer is the one a chain of
+    [`union`][ordito.boolean.union] calls in that order gives.
+
+    Parameters
+    ----------
+    meshes
+        ``(vertices, faces)`` pairs of closed, consistently wound meshes, on one device.
+
+    Returns
+    -------
+    vertices : wp.array[wp.vec3]
+        ``(n_vertices,)`` result vertices.
+    faces : wp.array[wp.int32]
+        ``(3 * n_faces,)`` result triangles.
+
+    Raises
+    ------
+    RuntimeError
+        If the meshes are not all on one device.
+    ValueError
+        If ``meshes`` is empty, or a mesh is not closed, has an edge shared by more than two
+        faces, or is not consistently wound.
+
+    See Also
+    --------
+    [`union`][ordito.boolean.union]
+    [`intersection_all`][ordito.boolean.intersection_all]
+    [`difference_all`][ordito.boolean.difference_all]
+
+    Notes
+    -----
+    Manifold's ``Manifold.batch_boolean`` with ``OpType.Add``: the same grouping of disjoint
+    meshes and the same order of unions, so the same mesh.
+
+    Examples
+    --------
+    Three unit cubes in a row, overlapping by a quarter:
+
+    ```python
+    import ordito as od
+
+    cubes = [
+        od.creation.box(bounds=[[0.75 * i, 0.0, 0.0], [0.75 * i + 1.0, 1.0, 1.0]])
+        for i in range(3)
+    ]
+    vertices, faces = od.boolean.union_all(cubes)
+    print(f"{od.measures.volume(vertices, faces):.4f}")  # 2.5000
+    ```
+    """
+    solids, device = _batch_solids(meshes)
+    return _mesh_from_solid(_batch_union(solids), device)
+
+
+def intersection_all(
+    meshes: Sequence[tuple[wp.array[wp.vec3], wp.array[wp.int32]]],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    Return the solid every one of several closed meshes encloses, as a closed mesh.
+
+    Parameters
+    ----------
+    meshes
+        ``(vertices, faces)`` pairs of closed, consistently wound meshes, on one device.
+
+    Returns
+    -------
+    vertices : wp.array[wp.vec3]
+        ``(n_vertices,)`` result vertices.
+    faces : wp.array[wp.int32]
+        ``(3 * n_faces,)`` result triangles; empty when the solids share no volume.
+
+    Raises
+    ------
+    RuntimeError
+        If the meshes are not all on one device.
+    ValueError
+        If ``meshes`` is empty, or a mesh is not closed, has an edge shared by more than two
+        faces, or is not consistently wound.
+
+    See Also
+    --------
+    [`intersection`][ordito.boolean.intersection]
+    [`union_all`][ordito.boolean.union_all]
+
+    Notes
+    -----
+    Manifold's ``Manifold.batch_boolean`` with ``OpType.Intersect``: pairwise, largest first.
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    cubes = [
+        od.creation.box(bounds=[[0.25 * i, 0.0, 0.0], [0.25 * i + 1.0, 1.0, 1.0]])
+        for i in range(3)
+    ]
+    vertices, faces = od.boolean.intersection_all(cubes)
+    print(f"{od.measures.volume(vertices, faces):.4f}")  # 0.5000
+    ```
+    """
+    solids, device = _batch_solids(meshes)
+    return _mesh_from_solid(_batch_boolean(solids, "intersection"), device)
+
+
+def difference_all(
+    meshes: Sequence[tuple[wp.array[wp.vec3], wp.array[wp.int32]]],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    Return the solid the first closed mesh encloses outside all the others, as a closed mesh.
+
+    The others are united first ([`union_all`][ordito.boolean.union_all]), then removed.
+
+    Parameters
+    ----------
+    meshes
+        ``(vertices, faces)`` pairs of closed, consistently wound meshes, on one device: the
+        mesh to cut, then the meshes to remove.
+
+    Returns
+    -------
+    vertices : wp.array[wp.vec3]
+        ``(n_vertices,)`` result vertices.
+    faces : wp.array[wp.int32]
+        ``(3 * n_faces,)`` result triangles, wound outward.
+
+    Raises
+    ------
+    RuntimeError
+        If the meshes are not all on one device.
+    ValueError
+        If ``meshes`` is empty, or a mesh is not closed, has an edge shared by more than two
+        faces, or is not consistently wound.
+
+    See Also
+    --------
+    [`difference`][ordito.boolean.difference]
+    [`union_all`][ordito.boolean.union_all]
+
+    Notes
+    -----
+    Manifold's ``Manifold.batch_boolean`` with ``OpType.Subtract``.
+
+    Examples
+    --------
+    A unit cube with two corners cut off:
+
+    ```python
+    import ordito as od
+
+    meshes = [
+        od.creation.box(bounds=[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]]),
+        od.creation.box(bounds=[[0.5, 0.5, 0.5], [1.5, 1.5, 1.5]]),
+        od.creation.box(bounds=[[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]]),
+    ]
+    vertices, faces = od.boolean.difference_all(meshes)
+    print(f"{od.measures.volume(vertices, faces):.4f}")  # 0.7500
+    ```
+    """
+    solids, device = _batch_solids(meshes)
+    first = solids[0]
+    if len(solids) == 1:
+        return _mesh_from_solid(first, device)
+    return _mesh_from_solid(_solid_boolean(first, _batch_union(solids[1:]), "difference"), device)
+
+
+class _Solid(NamedTuple):
+    """
+    A closed mesh as Manifold's ``Impl`` carries it between operations.
+
+    ``float64`` positions and Morton-ordered vertices and faces (``SortGeometry``); each face's
+    normal (inherited from the face it was cut from, never recomputed), its mesh's id and its
+    coplanar group (``triRef``); each vertex's pseudo-normal; and the tolerances.
+    """
+
+    positions: wp.array[wp.vec3d]
+    faces: wp.array[wp.int32]
+    face_normals: wp.array[wp.vec3d]
+    vertex_normals: wp.array[wp.vec3d]
+    face_mesh: wp.array[wp.int32]
+    face_coplanar: wp.array[wp.int32]
+    epsilon: float
+    tolerance: float
+    lower: tuple[float, float, float]
+    upper: tuple[float, float, float]
+
+    @property
+    def n_vertices(self) -> int:
+        """The vertex count."""
+        return int(self.positions.shape[0])
+
+    @property
+    def n_faces(self) -> int:
+        """The face count."""
+        return self.faces.size // 3
+
+    @property
+    def is_empty(self) -> bool:
+        """Whether the solid has no faces."""
+        return self.faces.size == 0
+
+    @property
+    def scale(self) -> float:
+        """``Box::Scale``: the largest absolute coordinate of the box."""
+        if self.is_empty:
+            return 0.0
+        return max(abs(x) for x in (*self.lower, *self.upper))
+
+
+class _Operand(NamedTuple):
+    """A solid with its halfedge pairing and face tree, ready for the crossing passes."""
+
+    solid: _Solid
+    mates: wp.array[wp.int32]
+    first_halfedge: wp.array[wp.int32]
+    bvh: wp.Bvh
+
+    @property
+    def positions(self) -> wp.array[wp.vec3d]:
+        """The solid's positions."""
+        return self.solid.positions
+
+    @property
+    def faces(self) -> wp.array[wp.int32]:
+        """The solid's faces."""
+        return self.solid.faces
+
+    @property
+    def face_normals(self) -> wp.array[wp.vec3d]:
+        """The solid's face normals."""
+        return self.solid.face_normals
+
+    @property
+    def vertex_normals(self) -> wp.array[wp.vec3d]:
+        """The solid's vertex normals."""
+        return self.solid.vertex_normals
+
+    @property
+    def n_vertices(self) -> int:
+        """The vertex count."""
+        return self.solid.n_vertices
+
+    @property
+    def n_faces(self) -> int:
+        """The face count."""
+        return self.solid.n_faces
+
+
+class _Crossings(NamedTuple):
+    """``Boolean3``: both operands' edge-face crossings and their vertices' windings."""
+
+    p: _Operand
+    q: _Operand
+    expand: int
+    n12: int
+    n21: int
+    run_offsets_p: wp.array[wp.int32]
+    run_offsets_q: wp.array[wp.int32]
+    record_edge: wp.array[wp.int32]
+    record_face: wp.array[wp.int32]
+    record_crossing: wp.array[wp.int32]
+    record_point: wp.array[wp.vec3d]
+    broken_p: wp.array[wp.int32]
+    broken_q: wp.array[wp.int32]
+    labels_p: wp.array[wp.int32]
+    labels_q: wp.array[wp.int32]
+    windings_p: wp.array[wp.int32]
+    windings_q: wp.array[wp.int32]
+    pad: float
+
+
 class _ResultMesh(NamedTuple):
     """The result's ``HalfedgeMesh`` struct and the arrays it bundles, for host-side reads."""
 
@@ -214,36 +704,6 @@ class _ResultMesh(NamedTuple):
     sizes: wp.array[wp.int32]
 
 
-class _Operand(NamedTuple):
-    """One operand's ``float64`` geometry, halfedge pairing and face tree."""
-
-    vertices: wp.array[wp.vec3]
-    faces: wp.array[wp.int32]
-    positions: wp.array[wp.vec3d]
-    face_normals: wp.array[wp.vec3d]
-    vertex_normals: wp.array[wp.vec3d]
-    mates: wp.array[wp.int32]
-    first_halfedge: wp.array[wp.int32]
-    coplanar: wp.array[wp.int32]
-    bvh: wp.Bvh
-    lower: tuple[float, float, float]
-    upper: tuple[float, float, float]
-
-    @property
-    def n_vertices(self) -> int:
-        """The vertex count."""
-        return int(self.vertices.shape[0])
-
-    @property
-    def n_faces(self) -> int:
-        """The face count."""
-        return self.faces.size // 3
-
-    def predicate_inputs(self) -> list[object]:
-        """Return the arrays every predicate reads of this mesh as an edge mesh."""
-        return [self.faces, self.positions, self.vertex_normals, self.face_normals, self.mates]
-
-
 def _boolean(
     vertices_a: wp.array[wp.vec3],
     faces_a: wp.array[wp.int32],
@@ -252,7 +712,7 @@ def _boolean(
     operation: _Operation,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
-    Run the Boolean ``operation`` on two closed meshes (``Boolean3`` and its ``Result``).
+    Run the Boolean ``operation`` on two closed meshes.
 
     Raises
     ------
@@ -262,37 +722,591 @@ def _boolean(
     require_same_device(
         vertices_a=vertices_a, faces_a=faces_a, vertices_b=vertices_b, faces_b=faces_b
     )
-    device = vertices_a.device
-    empty_a = faces_a.size == 0
-    empty_b = faces_b.size == 0
-    if empty_a or empty_b:
-        if empty_a and not empty_b and operation == "union":
-            return _launch.clone(vertices_b), _launch.clone(faces_b)
-        if empty_b and not empty_a and operation != "intersection":
-            return _launch.clone(vertices_a), _launch.clone(faces_a)
-        return _launch.empty(0, dtype=wp.vec3, device=device), _launch.empty(
-            0, dtype=wp.int32, device=device
-        )
-    p = _prepare_operand(vertices_a, faces_a, "a")
-    q = _prepare_operand(vertices_b, faces_b, "b")
+    p = _solid_from_mesh(vertices_a, faces_a, 0, "a")
+    q = _solid_from_mesh(vertices_b, faces_b, 1, "b")
+    if operation == "union":
+        # ``a + b`` is a two-child ``BatchUnion``: meshes whose boxes are apart are composed.
+        return _mesh_from_solid(_batch_union([p, q]), vertices_a.device)
+    return _mesh_from_solid(_solid_boolean(p, q, operation), vertices_a.device)
 
-    # The symbolic perturbation: a union expands both operands, the other operations contract P.
-    expand = 1 if operation == "union" else 0
-    c1 = 0 if operation == "intersection" else 1
-    c2 = 1 if operation == "union" else 0
-    c3 = 1 if operation == "intersection" else -1
-    invert_q = operation == "difference"
-    scale = max(abs(x) for x in (*p.lower, *p.upper, *q.lower, *q.upper))
+
+def _solid_boolean(p: _Solid, q: _Solid, operation: _Operation) -> _Solid:
+    """``SimpleBoolean``: one Boolean of two solids, as a solid."""
+    early = _empty_operand_result(p, q, operation)
+    if early is not None:
+        return early
+    crossings = _boolean3(_operand(p), _operand(q), 1 if operation == "union" else 0)
+    return _result(crossings, operation)
+
+
+def _batch_solids(
+    meshes: Sequence[tuple[wp.array[wp.vec3], wp.array[wp.int32]]],
+) -> tuple[list[_Solid], wp.Device]:
+    """
+    Build each mesh's solid, numbered in order, and return them with their device.
+
+    Raises
+    ------
+    ValueError
+        If ``meshes`` is empty, or a mesh is not closed, edge-manifold and consistently wound.
+    """
+    if len(meshes) == 0:
+        raise ValueError("meshes must hold at least one mesh")
+    require_same_device(meshes=[array for mesh in meshes for array in mesh])
+    device = wp.get_device(meshes[0][0].device)
+    solids = [
+        _solid_from_mesh(vertices, faces, index, str(index))
+        for index, (vertices, faces) in enumerate(meshes)
+    ]
+    return solids, device
+
+
+def _batch_union(children: list[_Solid]) -> _Solid:
+    """
+    ``BatchUnion``: compose the meshes whose boxes are pairwise apart, then unite the groups.
+
+    Each mesh joins the first group none of whose boxes it touches (``Box::DoesOverlap``,
+    closed); a group of several is joined by ``Compose``, and the groups go to
+    ``BatchBoolean``. Manifold works through its children a thousand at a time from the back.
+    """
+    children = list(children)
+    while len(children) > 1:
+        start = max(len(children) - _MAX_UNION_SIZE, 0)
+        boxes = [(child.lower, child.upper) for child in children[start:]]
+        groups: list[list[int]] = []
+        for i, box in enumerate(boxes):
+            for group in groups:
+                if not any(_boxes_overlap(box, boxes[j]) for j in group):
+                    group.append(i)
+                    break
+            else:
+                groups.append([i])
+        composed = [
+            children[start + group[0]]
+            if len(group) == 1
+            else _compose([children[start + j] for j in group])
+            for group in groups
+        ]
+        children = [*children[:start], _batch_boolean(composed, "union")]
+        children[0], children[-1] = children[-1], children[0]
+    return children[0]
+
+
+def _boxes_overlap(
+    a: tuple[tuple[float, float, float], tuple[float, float, float]],
+    b: tuple[tuple[float, float, float], tuple[float, float, float]],
+) -> bool:
+    """``Box::DoesOverlap``: whether two closed boxes share a point."""
+    return all(a[0][i] <= b[1][i] and a[1][i] >= b[0][i] for i in range(3))
+
+
+def _batch_boolean(results: list[_Solid], operation: _Operation) -> _Solid:
+    """
+    ``BatchBoolean``: combine pairwise, the two with the most vertices first, four pairs a round.
+
+    Manifold's heap pops the largest by ``(vertex count, insertion number)``; each round pairs up
+    to four times and returns its results, numbered on, together.
+    """
+    if len(results) == 1:
+        return results[0]
+    if len(results) == 2:
+        return _solid_boolean(results[0], results[1], operation)
+    heap = [(-solid.n_vertices, -serial, serial, solid) for serial, solid in enumerate(results)]
+    heapq.heapify(heap)
+    next_serial = len(results)
+    while len(heap) > 1:
+        done: list[tuple[int, int, int, _Solid]] = []
+        for _ in range(4):
+            if len(heap) <= 1:
+                break
+            a = heapq.heappop(heap)[3]
+            b = heapq.heappop(heap)[3]
+            result = _solid_boolean(a, b, operation)
+            done.append((-result.n_vertices, -next_serial, next_serial, result))
+            next_serial += 1
+        for item in done:
+            heapq.heappush(heap, item)
+    return heap[0][3]
+
+
+def _compose(solids: list[_Solid]) -> _Solid:
+    """
+    ``CsgLeafNode::Compose``: meshes known apart, joined into one solid.
+
+    Their vertices, faces and references concatenated, ``RemoveDegenerates``, ``SortGeometry``.
+    """
+    device = solids[0].positions.device
+    positions = _concatenate([solid.positions for solid in solids], wp.vec3d, device)
+    vertex_offsets = np.cumsum([0] + [solid.n_vertices for solid in solids[:-1]])
+    faces = _concatenate(
+        [
+            _offset_faces(solid.faces, int(offset))
+            for solid, offset in zip(solids, vertex_offsets, strict=True)
+        ],
+        wp.int32,
+        device,
+    )
+    face_normals = _concatenate([solid.face_normals for solid in solids], wp.vec3d, device)
+    face_mesh = _concatenate([solid.face_mesh for solid in solids], wp.int32, device)
+    face_coplanar = _concatenate([solid.face_coplanar for solid in solids], wp.int32, device)
+    epsilon = max(max(solid.epsilon, kernel_boolean.PRECISION * solid.scale) for solid in solids)
+    tolerance = max(solid.tolerance for solid in solids)
+    n_faces = faces.size // 3
+    mesh = _halfedge_mesh(n_faces, int(positions.shape[0]), positions, device)
+    twins = halfedge_twins(faces, int(positions.shape[0]), validate=False)
+    _launch.copy(mesh.start, faces, count=faces.size)
+    _launch.copy(mesh.pair, twins, count=faces.size)
+    _launch.copy(mesh.tri_normal, face_normals, count=n_faces)
+    _launch.copy(mesh.tri_mesh, face_mesh, count=n_faces)
+    _launch.copy(mesh.tri_coplanar, face_coplanar, count=n_faces)
+    _simplify_topology(mesh, 0, epsilon, tolerance, device, colinear=False)
+    return _finish_solid(mesh, epsilon, tolerance, device)
+
+
+def _concatenate(arrays: list[odt.ArrayNd], dtype: object, device: wp.DeviceLike) -> odt.ArrayNd:
+    """Return the arrays end to end in one new array."""
+    total = sum(int(array.shape[0]) for array in arrays)
+    out = _launch.empty(total, dtype=dtype, device=device)
+    offset = 0
+    for array in arrays:
+        count = int(array.shape[0])
+        if count > 0:
+            _launch.copy(out, array, dest_offset=offset, count=count)
+        offset += count
+    return out
+
+
+def _offset_faces(faces: wp.array[wp.int32], offset: int) -> wp.array[wp.int32]:
+    """Return ``faces`` with every index moved by ``offset``."""
+    if offset == 0 or faces.size == 0:
+        return faces
+    out = _launch.empty(faces.size, dtype=wp.int32, device=faces.device)
+    _launch.launch(
+        kernel_boolean.offset_indices,
+        dim=faces.size,
+        inputs=[faces, offset],
+        outputs=[out],
+        device=faces.device,
+    )
+    return out
+
+
+def _solid_split(p: _Solid, q: _Solid) -> tuple[_Solid, _Solid]:
+    """``Manifold::Split``: one ``Boolean3`` of a difference, read as both results."""
+    if p.is_empty or q.is_empty:
+        inside = _empty_operand_result(p, q, "intersection")
+        outside = _empty_operand_result(p, q, "difference")
+        assert inside is not None
+        assert outside is not None
+        return inside, outside
+    crossings = _boolean3(_operand(p), _operand(q), 0)
+    return _result(crossings, "intersection"), _result(crossings, "difference")
+
+
+def _empty_operand_result(p: _Solid, q: _Solid, operation: _Operation) -> _Solid | None:
+    """``Boolean3::Result``'s answer when an operand is empty, else ``None``."""
+    if p.is_empty:
+        return q if operation == "union" else p
+    if q.is_empty:
+        return q if operation == "intersection" else p
+    return None
+
+
+def _solid_from_mesh(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], mesh_id: int, name: str
+) -> _Solid:
+    """
+    Build a solid from a ``float32`` mesh, as Manifold's ``MeshGL`` constructor does.
+
+    Raises
+    ------
+    ValueError
+        If the mesh is not closed, edge-manifold and consistently wound.
+    """
+    device = vertices.device
+    n_vertices = int(vertices.shape[0])
+    if faces.size == 0:
+        return _empty_solid(device)
+    widened = _launch.empty(n_vertices, dtype=wp.vec3d, device=device)
+    _launch.launch(
+        kernel_boolean.widen_positions,
+        dim=n_vertices,
+        inputs=[vertices],
+        outputs=[widened],
+        device=device,
+    )
+    lower, upper = _positions_box(widened)
+    scale = max(abs(x) for x in (*lower, *upper))
+    epsilon = kernel_boolean.PRECISION * scale
+    # ``SetEpsilon(-1, useSingle=true)``: a single-precision mesh's tolerance.
+    tolerance = max(epsilon, _FLOAT32_EPSILON * scale)
+    return _solid_from_positions(widened, faces, mesh_id, epsilon, tolerance, lower, upper, name)
+
+
+def _solid_from_positions(
+    positions: wp.array[wp.vec3d],
+    faces: wp.array[wp.int32],
+    mesh_id: int,
+    epsilon: float,
+    tolerance: float,
+    lower: tuple[float, float, float],
+    upper: tuple[float, float, float],
+    name: str,
+    *,
+    sort_first: bool = False,
+) -> _Solid:
+    """
+    Build a solid from ``float64`` positions: coplanar groups, normals and Morton order.
+
+    ``SetNormalsAndCoplanar`` (the coplanar groups and their normals, then the vertices'
+    pseudo-normals) in the given order, then ``SortGeometry``, as the ``MeshGL`` constructor runs
+    them; with ``sort_first`` the other way round, as Manifold's primitive shapes do. The coplanar
+    ids are triangle indices in the order the groups were formed in.
+
+    Raises
+    ------
+    ValueError
+        If the mesh is not closed, edge-manifold and consistently wound.
+    """
+    device = positions.device
+    n_vertices = int(positions.shape[0])
+    n_faces = faces.size // 3
+    if sort_first:
+        positions, faces, _, _, _, _ = _morton_sorted(positions, faces, lower, upper)
+    defects = _launch.zeros(3, dtype=wp.int32, device=device)
+    twins = halfedge_twins(faces, n_vertices, defect_counts=defects)
+    first_halfedge = _launch.full(n_vertices, 2147483647, dtype=wp.int32, device=device)
+    lowers = _launch.empty(n_faces, dtype=wp.vec3, device=device)
+    uppers = _launch.empty(n_faces, dtype=wp.vec3, device=device)
+    _launch.launch(
+        kernel_boolean.operand_boxes,
+        dim=n_faces,
+        inputs=[positions, faces, twins],
+        outputs=[lowers, uppers, first_halfedge, _launch.view(defects, 2, 3)],
+        device=device,
+    )
+    # Host readback: whether the mesh is closed and paired decides whether there is a Boolean.
+    non_manifold, inconsistent, boundary = read_values(defects, 0, 3)
+    if non_manifold or inconsistent or boundary:
+        raise ValueError(
+            f"mesh {name} must be closed, edge-manifold and consistently wound: {boundary} "
+            f"boundary halfedges, {non_manifold} edges with three or more faces, {inconsistent} "
+            "edges whose faces wind the same way"
+        )
+    face_normals = _launch.empty(n_faces, dtype=wp.vec3d, device=device)
+    _launch.launch(
+        kernel_boolean.mesh_face_normals,
+        dim=n_faces,
+        inputs=[positions, faces],
+        outputs=[face_normals],
+        device=device,
+    )
+    coplanar = _coplanar_groups(positions, faces, twins, face_normals, tolerance)
+    vertex_normals = _launch.empty(n_vertices, dtype=wp.vec3d, device=device)
+    _launch.launch(
+        kernel_boolean.vertex_pseudo_normals,
+        dim=n_vertices,
+        inputs=[faces, twins, positions, face_normals, first_halfedge],
+        outputs=[vertex_normals],
+        device=device,
+    )
+    face_mesh = _launch.full(n_faces, mesh_id, dtype=wp.int32, device=device)
+    if sort_first:
+        return _Solid(
+            positions,
+            faces,
+            face_normals,
+            vertex_normals,
+            face_mesh,
+            coplanar,
+            epsilon,
+            tolerance,
+            lower,
+            upper,
+        )
+    return _sorted_solid(
+        positions,
+        faces,
+        vertex_normals,
+        face_normals,
+        face_mesh,
+        coplanar,
+        epsilon,
+        tolerance,
+        lower,
+        upper,
+    )
+
+
+def _empty_solid(device: wp.DeviceLike) -> _Solid:
+    """Return the empty solid."""
+    nothing = (0.0, 0.0, 0.0)
+    return _Solid(
+        _launch.empty(0, dtype=wp.vec3d, device=device),
+        _launch.empty(0, dtype=wp.int32, device=device),
+        _launch.empty(0, dtype=wp.vec3d, device=device),
+        _launch.empty(0, dtype=wp.vec3d, device=device),
+        _launch.empty(0, dtype=wp.int32, device=device),
+        _launch.empty(0, dtype=wp.int32, device=device),
+        -1.0,
+        -1.0,
+        nothing,
+        nothing,
+    )
+
+
+def _mesh_from_solid(
+    solid: _Solid, device: wp.DeviceLike
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    Return a solid as a ``float32`` mesh, as Manifold's ``MeshGL`` lays it out.
+
+    Vertices in the solid's Morton order; faces in it too, stably grouped by the input mesh each
+    came from (``GetMeshGL``'s runs).
+    """
+    n_vertices = solid.n_vertices
+    n_faces = solid.n_faces
+    vertices = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
+    if n_faces == 0:
+        return vertices, _launch.empty(0, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_boolean.narrow_positions,
+        dim=n_vertices,
+        inputs=[solid.positions],
+        outputs=[vertices],
+        device=device,
+    )
+    keys, order = _launch.sort_buffers(n_faces, wp.int32, device)
+    _launch.launch(
+        kernel_boolean.face_mesh_keys,
+        dim=n_faces,
+        inputs=[solid.face_mesh],
+        outputs=[keys, order],
+        device=device,
+    )
+    _launch.radix_sort_pairs(keys, order, n_faces)
+    faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_boolean.gather_faces,
+        dim=n_faces,
+        inputs=[solid.faces, order],
+        outputs=[faces],
+        device=device,
+    )
+    return vertices, faces
+
+
+def _positions_box(
+    positions: wp.array[wp.vec3d],
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    """``CalculateBBox`` over the finite positions, read back."""
+    device = positions.device
+    inf = float("inf")
+    box = _launch.array([inf, inf, inf, -inf, -inf, -inf], dtype=wp.float64, device=device)
+    _launch.launch(
+        kernel_boolean.positions_box,
+        dim=int(positions.shape[0]),
+        inputs=[positions],
+        outputs=[box],
+        device=device,
+    )
+    # Host readback: the box frames the Morton codes and sets the tolerances.
+    values = [float(x) for x in read_values(box, 0, 6)]
+    return (values[0], values[1], values[2]), (values[3], values[4], values[5])
+
+
+def _coplanar_groups(
+    positions: wp.array[wp.vec3d],
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    face_normals: wp.array[wp.vec3d],
+    tolerance: float,
+) -> wp.array[wp.int32]:
+    """
+    ``SetNormalsAndCoplanar``: each face's coplanar group, its normal set to its seed's.
+
+    Faces in decreasing area seed groups that spread across edges to neighbours within
+    ``tolerance`` of the seed's plane; ``face_normals`` is updated in place.
+    """
+    device = positions.device
+    n_faces = faces.size // 3
+    keys, order = _launch.sort_buffers(n_faces, wp.float64, device)
+    _launch.launch(
+        kernel_boolean.face_area_keys,
+        dim=n_faces,
+        inputs=[positions, faces],
+        outputs=[keys, order],
+        device=device,
+    )
+    _launch.radix_sort_pairs(keys, order, n_faces)
+    rank = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    seed_offsets, seed_flags = offsets_buffer(n_faces, device)
+    _launch.launch(
+        kernel_boolean.coplanar_seed_flags,
+        dim=n_faces,
+        inputs=[faces, twins, positions, face_normals, order, tolerance],
+        outputs=[rank, seed_flags],
+        device=device,
+    )
+    is_seed = _launch.clone(seed_flags)
+    n_seeds = scan_count(seed_flags)
+    coplanar = _launch.full(n_faces, -1, dtype=wp.int32, device=device)
+    if n_seeds > 0:
+        seeds = _launch.empty(n_seeds, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_boolean.flagged_halfedges,
+            dim=n_faces,
+            inputs=[is_seed, seed_offsets],
+            outputs=[seeds],
+            device=device,
+        )
+        _launch.launch(
+            kernel_boolean.flood_coplanar,
+            dim=1,
+            inputs=[
+                faces,
+                twins,
+                positions,
+                seeds,
+                n_seeds,
+                order,
+                rank,
+                is_seed,
+                tolerance,
+                face_normals,
+                _launch.empty(2 * n_faces + 4, dtype=wp.int32, device=device),
+            ],
+            outputs=[coplanar],
+            device=device,
+        )
+    _launch.launch(
+        kernel_boolean.own_coplanar_groups, dim=n_faces, inputs=[coplanar], device=device
+    )
+    return coplanar
+
+
+def _morton_sorted(
+    positions: wp.array[wp.vec3d],
+    faces: wp.array[wp.int32],
+    lower: tuple[float, float, float],
+    upper: tuple[float, float, float],
+    vertex_normals: wp.array[wp.vec3d] | None = None,
+    face_normals: wp.array[wp.vec3d] | None = None,
+    face_mesh: wp.array[wp.int32] | None = None,
+    face_coplanar: wp.array[wp.int32] | None = None,
+) -> tuple[
+    wp.array[wp.vec3d],
+    wp.array[wp.int32],
+    wp.array[wp.vec3d],
+    wp.array[wp.vec3d],
+    wp.array[wp.int32],
+    wp.array[wp.int32],
+]:
+    """
+    Renumber vertices and faces in Morton order within the box, as ``SortGeometry`` does.
+
+    The order decides nothing geometric; it is the order Manifold's ties fall in (which halfedge of
+    an edge is forward, which edge collapses first), so following it reproduces its answers in
+    the degenerate cases too. The attributes, where given, move with their vertex or face.
+    """
+    device = positions.device
+    n_vertices = int(positions.shape[0])
+    n_faces = faces.size // 3
+    low = wp.vec3d(*lower)
+    high = wp.vec3d(*upper)
+    keys, order = _launch.sort_buffers(n_vertices, wp.uint32, device)
+    _launch.launch(
+        kernel_boolean.vertex_morton_keys,
+        dim=n_vertices,
+        inputs=[positions, low, high],
+        outputs=[keys, order],
+        device=device,
+    )
+    _launch.radix_sort_pairs(keys, order, n_vertices)
+    with_normals = vertex_normals is not None
+    sorted_positions = _launch.empty(n_vertices, dtype=wp.vec3d, device=device)
+    sorted_normals = _launch.empty(n_vertices if with_normals else 0, dtype=wp.vec3d, device=device)
+    old_to_new = _launch.empty(n_vertices, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_boolean.renumber_vertices,
+        dim=n_vertices,
+        inputs=[
+            positions,
+            vertex_normals if vertex_normals is not None else positions,
+            order,
+            1 if with_normals else 0,
+        ],
+        outputs=[sorted_positions, sorted_normals, old_to_new],
+        device=device,
+    )
+    keys, order = _launch.sort_buffers(n_faces, wp.uint32, device)
+    _launch.launch(
+        kernel_boolean.face_morton_keys,
+        dim=n_faces,
+        inputs=[positions, faces, low, high],
+        outputs=[keys, order],
+        device=device,
+    )
+    _launch.radix_sort_pairs(keys, order, n_faces)
+    with_attributes = face_normals is not None
+    n_attributes = n_faces if with_attributes else 0
+    sorted_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
+    sorted_face_normals = _launch.empty(n_attributes, dtype=wp.vec3d, device=device)
+    sorted_face_mesh = _launch.empty(n_attributes, dtype=wp.int32, device=device)
+    sorted_face_coplanar = _launch.empty(n_attributes, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_boolean.renumber_faces,
+        dim=n_faces,
+        inputs=[
+            faces,
+            face_normals if face_normals is not None else positions,
+            face_mesh if face_mesh is not None else faces,
+            face_coplanar if face_coplanar is not None else faces,
+            order,
+            old_to_new,
+            1 if with_attributes else 0,
+        ],
+        outputs=[sorted_faces, sorted_face_normals, sorted_face_mesh, sorted_face_coplanar],
+        device=device,
+    )
+    return (
+        sorted_positions,
+        sorted_faces,
+        sorted_normals,
+        sorted_face_normals,
+        sorted_face_mesh,
+        sorted_face_coplanar,
+    )
+
+
+def _operand(solid: _Solid) -> _Operand:
+    """Pair a solid's halfedges and build its face tree."""
+    device = solid.positions.device
+    n_faces = solid.n_faces
+    twins = halfedge_twins(solid.faces, solid.n_vertices, validate=False)
+    first_halfedge = _launch.full(solid.n_vertices, 2147483647, dtype=wp.int32, device=device)
+    lowers = _launch.empty(n_faces, dtype=wp.vec3, device=device)
+    uppers = _launch.empty(n_faces, dtype=wp.vec3, device=device)
+    _launch.launch(
+        kernel_boolean.operand_boxes,
+        dim=n_faces,
+        inputs=[solid.positions, solid.faces, twins],
+        outputs=[lowers, uppers, first_halfedge, _launch.zeros(1, dtype=wp.int32, device=device)],
+        device=device,
+    )
+    return _Operand(solid, twins, first_halfedge, wp.Bvh(lowers, uppers))
+
+
+def _boolean3(p: _Operand, q: _Operand, expand: int) -> _Crossings:
+    """``Boolean3``: the edge-face crossings both ways and the vertices' winding numbers."""
+    device = p.positions.device
+    scale = max(p.solid.scale, q.solid.scale)
     # The face trees' query boxes are padded by a few float32 ulps of the scene: a superset of the
     # candidates the exact predicates then decide.
     pad = max(scale, 1.0) * 4.0 * _FLOAT32_EPSILON
-    epsilon = kernel_boolean.PRECISION * scale
-
-    # Level 3: the edge-face crossings, P's edges through Q's faces and Q's through P's.
     run_offsets_p, n12 = _count_crossings(p, q, pad, expand, forward=True)
     run_offsets_q, n21 = _count_crossings(q, p, pad, expand, forward=False)
-    n_records = n12 + n21
-    size = max(n_records, 1)
+    size = max(n12 + n21, 1)
     record_edge = _launch.empty(size, dtype=wp.int32, device=device)
     record_face = _launch.empty(size, dtype=wp.int32, device=device)
     record_crossing = _launch.empty(size, dtype=wp.int32, device=device)
@@ -300,20 +1314,54 @@ def _boolean(
     records = [record_edge, record_face, record_crossing, record_point]
     _write_crossings(p, q, pad, expand, True, run_offsets_p, 0, records)
     _write_crossings(q, p, pad, expand, False, run_offsets_q, n12, records)
-
-    # The winding numbers, a vertex's component's from its least vertex.
     broken_p, labels_p, windings_p = _windings(p, q, record_edge, 0, n12, pad, expand, True)
     broken_q, labels_q, windings_q = _windings(q, p, record_edge, n12, n21, pad, expand, False)
+    return _Crossings(
+        p,
+        q,
+        expand,
+        n12,
+        n21,
+        run_offsets_p,
+        run_offsets_q,
+        record_edge,
+        record_face,
+        record_crossing,
+        record_point,
+        broken_p,
+        broken_q,
+        labels_p,
+        labels_q,
+        windings_p,
+        windings_q,
+        pad,
+    )
+
+
+def _result(crossings: _Crossings, operation: _Operation) -> _Solid:
+    """``Boolean3::Result``: one operation's solid from the crossings and windings."""
+    p, q = crossings.p, crossings.q
+    device = p.positions.device
+    n12, n21 = crossings.n12, crossings.n21
+    record_edge, record_face = crossings.record_edge, crossings.record_face
+    c1 = 0 if operation == "intersection" else 1
+    c2 = 1 if operation == "union" else 0
+    c3 = 1 if operation == "intersection" else -1
+    invert_q = operation == "difference"
+    epsilon = max(p.solid.epsilon, q.solid.epsilon)
+    tolerance = max(p.solid.tolerance, q.solid.tolerance)
 
     # Level 4: the inclusions and the result's vertices.
+    n_records = n12 + n21
+    size = max(n_records, 1)
     n_vp = p.n_vertices
     n_vq = q.n_vertices
     n_items = n_vp + n_vq + n_records
     vertex_offsets, abs_inclusion = offsets_buffer(n_items, device)
     inclusion = _launch.empty(n_items, dtype=wp.int32, device=device)
     for operand, labels, windings, base, c_base in (
-        (p, labels_p, windings_p, 0, c1),
-        (q, labels_q, windings_q, n_vp, c2),
+        (p, crossings.labels_p, crossings.windings_p, 0, c1),
+        (q, crossings.labels_q, crossings.windings_q, n_vp, c2),
     ):
         _launch.launch(
             kernel_boolean.vertex_inclusions,
@@ -335,7 +1383,7 @@ def _boolean(
             kernel_boolean.crossing_inclusions,
             dim=n_records,
             inputs=[
-                record_crossing,
+                crossings.record_crossing,
                 c3,
                 _launch.view(inclusion, n_vp + n_vq, n_items),
                 _launch.view(abs_inclusion, n_vp + n_vq, n_items),
@@ -344,9 +1392,7 @@ def _boolean(
         )
     n_result_vertices = scan_count(abs_inclusion)
     if n_result_vertices == 0:
-        return _launch.empty(0, dtype=wp.vec3, device=device), _launch.empty(
-            0, dtype=wp.int32, device=device
-        )
+        return _empty_solid(device)
     # Host readback: the retained vertices come first, and the simplification moves only those
     # after them, so it needs their count.
     first_new_vert = int(read_values(vertex_offsets, n_vp + n_vq, 1)[0])
@@ -354,7 +1400,15 @@ def _boolean(
     _launch.launch(
         kernel_boolean.place_result_vertices,
         dim=n_items,
-        inputs=[p.positions, q.positions, record_point, inclusion, vertex_offsets, n_vp, n_vq],
+        inputs=[
+            p.positions,
+            q.positions,
+            crossings.record_point,
+            inclusion,
+            vertex_offsets,
+            n_vp,
+            n_vq,
+        ],
         outputs=[positions],
         device=device,
     )
@@ -408,8 +1462,8 @@ def _boolean(
     # Level 5: the polygon edges -- the broken edges' pieces, the new edges, the whole edges.
     rank = _launch.empty(size, dtype=wp.int32, device=device)
     for operand, run_offsets, record_base, vertex_base, face_base in (
-        (p, run_offsets_p, 0, 0, 0),
-        (q, run_offsets_q, n12, n_vp, n_fp),
+        (p, crossings.run_offsets_p, 0, 0, 0),
+        (q, crossings.run_offsets_q, n12, n_vp, n_fp),
     ):
         _launch.launch(
             kernel_boolean.emit_partial_edges,
@@ -466,7 +1520,10 @@ def _boolean(
             outputs=[starts, ends, partner],
             device=device,
         )
-    for operand, broken, vertex_base, face_base in ((p, broken_p, 0, 0), (q, broken_q, n_vp, n_fp)):
+    for operand, broken, vertex_base, face_base in (
+        (p, crossings.broken_p, 0, 0),
+        (q, crossings.broken_q, n_vp, n_fp),
+    ):
         _launch.launch(
             kernel_boolean.emit_whole_edges,
             dim=operand.faces.size,
@@ -521,9 +1578,7 @@ def _boolean(
     )
     n_triangles = scan_count(counts)
     if n_triangles == 0:
-        return _launch.empty(0, dtype=wp.vec3, device=device), _launch.empty(
-            0, dtype=wp.int32, device=device
-        )
+        return _empty_solid(device)
     mesh = _halfedge_mesh(n_triangles, n_result_vertices, positions, device)
     slot_halfedge = _launch.full(max(n_sides, 1), -1, dtype=wp.int32, device=device)
     _launch.launch(
@@ -538,8 +1593,10 @@ def _boolean(
             ends,
             p.face_normals,
             q.face_normals,
-            p.coplanar,
-            q.coplanar,
+            p.solid.face_coplanar,
+            q.solid.face_coplanar,
+            p.solid.face_mesh,
+            q.solid.face_mesh,
             n_fp,
             1 if invert_q else 0,
             slot_halfedge,
@@ -554,200 +1611,19 @@ def _boolean(
         outputs=[mesh.pair],
         device=device,
     )
-    tolerance = max(epsilon, _FLOAT32_EPSILON * scale)
-    return _simplify_topology(mesh, first_new_vert, epsilon, tolerance, device)
-
-
-def _prepare_operand(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], name: str) -> _Operand:
-    """
-    Widen one operand to ``float64``, pair its halfedges and build its face tree.
-
-    Raises
-    ------
-    ValueError
-        If the mesh is not closed, edge-manifold and consistently wound.
-    """
-    device = vertices.device
-    n_vertices = int(vertices.shape[0])
-    n_faces = faces.size // 3
-    vertices, faces, lower, upper = _morton_sorted(vertices, faces)
-    defects = _launch.zeros(3, dtype=wp.int32, device=device)
-    twins = halfedge_twins(faces, n_vertices, defect_counts=defects)
-    positions = _launch.empty(n_vertices, dtype=wp.vec3d, device=device)
-    face_normals = _launch.empty(n_faces, dtype=wp.vec3d, device=device)
-    lowers = _launch.empty(n_faces, dtype=wp.vec3, device=device)
-    uppers = _launch.empty(n_faces, dtype=wp.vec3, device=device)
-    first_halfedge = _launch.full(n_vertices, 2147483647, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_boolean.face_normals_and_boxes,
-        dim=n_faces,
-        inputs=[vertices, faces, twins],
-        outputs=[
-            positions,
-            face_normals,
-            lowers,
-            uppers,
-            first_halfedge,
-            _launch.view(defects, 2, 3),
-        ],
-        device=device,
-    )
-    # Host readback: whether the mesh is closed and paired decides whether there is a Boolean.
-    non_manifold, inconsistent, boundary = read_values(defects, 0, 3)
-    if non_manifold or inconsistent or boundary:
-        raise ValueError(
-            f"mesh {name} must be closed, edge-manifold and consistently wound: {boundary} "
-            f"boundary halfedges, {non_manifold} edges with three or more faces, {inconsistent} "
-            "edges whose faces wind the same way"
-        )
-    scale = max(abs(x) for x in (*lower, *upper))
-    # ``SetNormalsAndCoplanar``: coplanar neighbours share their largest triangle's normal, within
-    # a single-precision mesh's tolerance (``SetEpsilon(-1, useSingle=true)``).
-    tolerance = max(kernel_boolean.PRECISION, _FLOAT32_EPSILON) * scale
-    keys, order = _launch.sort_buffers(n_faces, wp.float64, device)
-    _launch.launch(
-        kernel_boolean.face_area_keys,
-        dim=n_faces,
-        inputs=[positions, faces],
-        outputs=[keys, order],
-        device=device,
-    )
-    _launch.radix_sort_pairs(keys, order, n_faces)
-    rank = _launch.empty(n_faces, dtype=wp.int32, device=device)
-    seed_offsets, seed_flags = offsets_buffer(n_faces, device)
-    _launch.launch(
-        kernel_boolean.coplanar_seed_flags,
-        dim=n_faces,
-        inputs=[faces, twins, positions, face_normals, order, tolerance],
-        outputs=[rank, seed_flags],
-        device=device,
-    )
-    is_seed = _launch.clone(seed_flags)
-    n_seeds = scan_count(seed_flags)
-    coplanar = _launch.full(n_faces, -1, dtype=wp.int32, device=device)
-    if n_seeds > 0:
-        seeds = _launch.empty(n_seeds, dtype=wp.int32, device=device)
-        _launch.launch(
-            kernel_boolean.flagged_halfedges,
-            dim=n_faces,
-            inputs=[is_seed, seed_offsets],
-            outputs=[seeds],
-            device=device,
-        )
-        _launch.launch(
-            kernel_boolean.flood_coplanar,
-            dim=1,
-            inputs=[
-                faces,
-                twins,
-                positions,
-                seeds,
-                n_seeds,
-                order,
-                rank,
-                is_seed,
-                tolerance,
-                face_normals,
-                _launch.empty(2 * n_faces + 4, dtype=wp.int32, device=device),
-            ],
-            outputs=[coplanar],
-            device=device,
-        )
-    _launch.launch(
-        kernel_boolean.own_coplanar_groups, dim=n_faces, inputs=[coplanar], device=device
-    )
-    vertex_normals = _launch.empty(n_vertices, dtype=wp.vec3d, device=device)
-    _launch.launch(
-        kernel_boolean.vertex_pseudo_normals,
-        dim=n_vertices,
-        inputs=[faces, twins, positions, face_normals, first_halfedge],
-        outputs=[vertex_normals],
-        device=device,
-    )
-    bvh = wp.Bvh(lowers, uppers)
-    return _Operand(
-        vertices,
-        faces,
-        positions,
-        face_normals,
-        vertex_normals,
-        twins,
-        first_halfedge,
-        coplanar,
-        bvh,
-        lower,
-        upper,
-    )
-
-
-def _morton_sorted(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
-) -> tuple[
-    wp.array[wp.vec3], wp.array[wp.int32], tuple[float, float, float], tuple[float, float, float]
-]:
-    """
-    Renumber a mesh's vertices and faces in Morton order, as Manifold's ``SortGeometry`` does.
-
-    The order decides nothing geometric; it is the order Manifold's ties fall in (which halfedge of
-    an edge is forward, which edge collapses first), so following it reproduces its answers in
-    the degenerate cases too.
-    """
-    device = vertices.device
-    n_vertices = int(vertices.shape[0])
-    n_faces = faces.size // 3
-    box_low, box_high = aabb(vertices)
-    lower = (float(box_low[0]), float(box_low[1]), float(box_low[2]))
-    upper = (float(box_high[0]), float(box_high[1]), float(box_high[2]))
-    low = wp.vec3d(*lower)
-    high = wp.vec3d(*upper)
-    keys, order = _launch.sort_buffers(n_vertices, wp.uint32, device)
-    _launch.launch(
-        kernel_boolean.vertex_morton_keys,
-        dim=n_vertices,
-        inputs=[vertices, low, high],
-        outputs=[keys, order],
-        device=device,
-    )
-    _launch.radix_sort_pairs(keys, order, n_vertices)
-    sorted_vertices = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
-    old_to_new = _launch.empty(n_vertices, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_boolean.renumber_vertices,
-        dim=n_vertices,
-        inputs=[vertices, order],
-        outputs=[sorted_vertices, old_to_new],
-        device=device,
-    )
-    keys, order = _launch.sort_buffers(n_faces, wp.uint32, device)
-    _launch.launch(
-        kernel_boolean.face_morton_keys,
-        dim=n_faces,
-        inputs=[vertices, faces, low, high],
-        outputs=[keys, order],
-        device=device,
-    )
-    _launch.radix_sort_pairs(keys, order, n_faces)
-    sorted_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_boolean.renumber_faces,
-        dim=n_faces,
-        inputs=[faces, order, old_to_new],
-        outputs=[sorted_faces],
-        device=device,
-    )
-    return sorted_vertices, sorted_faces, lower, upper
+    _simplify_topology(mesh, first_new_vert, epsilon, tolerance, device)
+    return _finish_solid(mesh, epsilon, tolerance, device)
 
 
 def _count_crossings(
     a: _Operand, b: _Operand, pad: float, expand: int, *, forward: bool
 ) -> tuple[wp.array[wp.int32], int]:
     """Count each edge of ``a``'s crossings with ``b``'s faces; their offsets and total."""
-    offsets, counts = offsets_buffer(a.faces.size, a.vertices.device)
+    offsets, counts = offsets_buffer(a.faces.size, a.positions.device)
     _launch.launch(
         kernel_boolean.count_edge_crossings,
         dim=a.faces.size,
         inputs=[
-            a.vertices,
             a.faces,
             a.positions,
             a.vertex_normals,
@@ -764,7 +1640,7 @@ def _count_crossings(
             1 if forward else 0,
         ],
         outputs=[counts],
-        device=a.vertices.device,
+        device=a.positions.device,
     )
     return offsets, scan_count(counts)
 
@@ -784,7 +1660,6 @@ def _write_crossings(
         kernel_boolean.write_edge_crossings,
         dim=a.faces.size,
         inputs=[
-            a.vertices,
             a.faces,
             a.positions,
             a.vertex_normals,
@@ -803,7 +1678,7 @@ def _write_crossings(
             record_base,
         ],
         outputs=records,
-        device=a.vertices.device,
+        device=a.positions.device,
     )
 
 
@@ -818,7 +1693,7 @@ def _windings(
     forward: bool,
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]:
     """Return ``a``'s broken-halfedge flags, vertex components and roots' windings in ``b``."""
-    device = a.vertices.device
+    device = a.positions.device
     broken = _launch.zeros(a.faces.size, dtype=wp.int32, device=device)
     if count > 0:
         _launch.launch(
@@ -843,7 +1718,6 @@ def _windings(
         dim=a.n_vertices,
         inputs=[
             labels,
-            a.vertices,
             a.positions,
             a.vertex_normals,
             b.faces,
@@ -852,8 +1726,8 @@ def _windings(
             b.face_normals,
             b.mates,
             b.bvh.id,
-            b.lower[2] - 1.0,
-            b.upper[2] + 1.0,
+            b.solid.lower[2] - 1.0,
+            b.solid.upper[2] + 1.0,
             pad,
             expand,
             1 if forward else 0,
@@ -926,8 +1800,14 @@ def _simplify_topology(
     epsilon: float,
     tolerance: float,
     device: wp.DeviceLike,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
-    """``SimplifyTopology(firstNewVert)`` and ``RemoveUnreferencedVerts``, then the flat mesh."""
+    *,
+    colinear: bool = True,
+) -> None:
+    """
+    ``SimplifyTopology(firstNewVert)`` on the result's halfedges, in place.
+
+    Without ``colinear``, ``RemoveDegenerates``: the same less the collinear-edge collapses.
+    """
     mesh = result.struct
     capacity = result.start.size
     flags_offsets, flags = offsets_buffer(capacity, device)
@@ -991,17 +1871,19 @@ def _simplify_topology(
         _launch.launch(
             kernel_boolean.dedupe_flagged, dim=1, inputs=[mesh, flagged, count], device=device
         )
-    # ``CollapseShortEdges``, ``CollapseColinearEdges``, ``SwapDegenerates``.
-    count = flag(kernel_boolean.flag_short_edges, [first_new_vert, tolerance, epsilon])
+    # ``CollapseShortEdges`` (to ``tolerance`` only past the new vertices: everywhere it is
+    # ``epsilon``), ``CollapseColinearEdges``, ``SwapDegenerates``.
+    short_tolerance = tolerance if first_new_vert > 0 else epsilon
+    count = flag(kernel_boolean.flag_short_edges, [first_new_vert, short_tolerance, epsilon])
     if count > 0:
         _launch.launch(
             kernel_boolean.collapse_flagged,
             dim=1,
-            inputs=[mesh, flagged, count, tolerance, first_new_vert, epsilon, scratch],
+            inputs=[mesh, flagged, count, short_tolerance, first_new_vert, epsilon, scratch],
             outputs=[collapsed],
             device=device,
         )
-    while True:
+    while colinear:
         count = flag(kernel_boolean.flag_colinear_edges, [first_new_vert])
         if count == 0:
             break
@@ -1032,9 +1914,33 @@ def _simplify_topology(
             ],
             device=device,
         )
-    # ``RemoveUnreferencedVerts`` and the collapsed triangles.
-    n_h, n_v = sizes()
+
+
+def _finish_solid(
+    result: _ResultMesh, epsilon: float, tolerance: float, device: wp.DeviceLike
+) -> _Solid:
+    """
+    Return the simplified result as a solid.
+
+    ``CalculateVertNormals`` (the end of ``SimplifyTopology``) on the halfedges as they stand,
+    ``RemoveUnreferencedVerts`` with the collapsed triangles, then ``SortGeometry``.
+    """
+    mesh = result.struct
+    # Host readback: the simplification grew the mesh, and the compaction's grid follows it.
+    n_h, n_v = (int(x) for x in read_values(result.sizes, 0, 2))
     n_t = n_h // 3
+    first = _launch.full(n_v, 2147483647, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_boolean.hm_first_halfedges, dim=n_h, inputs=[mesh], outputs=[first], device=device
+    )
+    vertex_normals = _launch.empty(n_v, dtype=wp.vec3d, device=device)
+    _launch.launch(
+        kernel_boolean.hm_vertex_normals,
+        dim=n_v,
+        inputs=[mesh, first],
+        outputs=[vertex_normals],
+        device=device,
+    )
     tri_offsets, tri_kept = offsets_buffer(n_t, device)
     vert_offsets, vert_used = offsets_buffer(n_v, device)
     _launch.launch(
@@ -1046,21 +1952,512 @@ def _simplify_topology(
     )
     n_kept = scan_count(tri_kept)
     n_used = scan_count(vert_used)
+    if n_kept == 0:
+        return _empty_solid(device)
     faces = _launch.empty(3 * n_kept, dtype=wp.int32, device=device)
-    vertices = _launch.empty(n_used, dtype=wp.vec3, device=device)
-    if n_kept > 0:
-        _launch.launch(
-            kernel_boolean.write_kept_faces,
-            dim=n_t,
-            inputs=[mesh, tri_offsets, vert_offsets],
-            outputs=[faces],
-            device=device,
+    face_normals = _launch.empty(n_kept, dtype=wp.vec3d, device=device)
+    face_mesh = _launch.empty(n_kept, dtype=wp.int32, device=device)
+    face_coplanar = _launch.empty(n_kept, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_boolean.write_kept_faces,
+        dim=n_t,
+        inputs=[mesh, tri_offsets, vert_offsets],
+        outputs=[faces, face_normals, face_mesh, face_coplanar],
+        device=device,
+    )
+    positions = _launch.empty(n_used, dtype=wp.vec3d, device=device)
+    kept_normals = _launch.empty(n_used, dtype=wp.vec3d, device=device)
+    _launch.launch(
+        kernel_boolean.write_kept_vertices,
+        dim=n_v,
+        inputs=[mesh, vertex_normals, vert_offsets],
+        outputs=[positions, kept_normals],
+        device=device,
+    )
+    lower, upper = _positions_box(positions)
+    return _sorted_solid(
+        positions,
+        faces,
+        kept_normals,
+        face_normals,
+        face_mesh,
+        face_coplanar,
+        epsilon,
+        tolerance,
+        lower,
+        upper,
+    )
+
+
+def _sorted_solid(
+    positions: wp.array[wp.vec3d],
+    faces: wp.array[wp.int32],
+    vertex_normals: wp.array[wp.vec3d],
+    face_normals: wp.array[wp.vec3d],
+    face_mesh: wp.array[wp.int32],
+    face_coplanar: wp.array[wp.int32],
+    epsilon: float,
+    tolerance: float,
+    lower: tuple[float, float, float],
+    upper: tuple[float, float, float],
+) -> _Solid:
+    """``SortGeometry``: the solid with its vertices and faces in Morton order, attributes along."""
+    (
+        sorted_positions,
+        sorted_faces,
+        sorted_vertex_normals,
+        sorted_face_normals,
+        sorted_face_mesh,
+        sorted_face_coplanar,
+    ) = _morton_sorted(
+        positions, faces, lower, upper, vertex_normals, face_normals, face_mesh, face_coplanar
+    )
+    return _Solid(
+        sorted_positions,
+        sorted_faces,
+        sorted_face_normals,
+        sorted_vertex_normals,
+        sorted_face_mesh,
+        sorted_face_coplanar,
+        epsilon,
+        tolerance,
+        lower,
+        upper,
+    )
+
+
+# An affine transform as Manifold's ``mat3x4``: four columns of three rows.
+_Affine = tuple[tuple[float, float, float], ...]
+
+
+# -- Manifold's host math (``include/manifold/math.h``), for the half-space's frame ----------------
+#
+# The cutter's rotation is built from these, in ``float64``, as Manifold builds it; Python's
+# ``math`` would round some of them differently.
+
+_PIO2_HI = 1.57079632679489655800e00
+_PIO2_LO = 6.12323399573676603587e-17
+_HALF_PI = 1.57079632679489661923132169163975144
+_PI = 3.1415926535897931160e00
+_PI_LO = 1.2246467991473531772e-16
+_K_PI = 3.14159265358979323846264338327950288
+
+
+def _halfspace_solid(
+    solid: _Solid, normal: Sequence[float], origin_offset: float, mesh_id: int
+) -> _Solid:
+    """
+    Manifold's ``Halfspace``: a cube past the plane covering ``solid``'s box, as a solid.
+
+    ``Cube(vec3(2), true)`` moved by one along +x, scaled to cover the box, moved to the plane
+    and turned onto the normal, every step in Manifold's ``float64`` order, the transforms
+    composed lazily and applied once (``Impl::Transform``).
+
+    Raises
+    ------
+    ValueError
+        If ``normal`` is zero or not finite.
+    """
+    device = solid.positions.device
+    nx, ny, nz = (float(c) for c in normal)
+    length = math.sqrt(nx * nx + ny * ny + nz * nz)
+    if not (length > 0.0 and math.isfinite(length)):
+        raise ValueError(f"normal must be finite and nonzero, got {tuple(normal)}")
+    n = (nx / length, ny / length, nz / length)
+    offset = float(origin_offset)
+    cube = _unit_cube_solid(mesh_id, device)
+    lower, upper = solid.lower, solid.upper
+    center = tuple(0.5 * (upper[i] + lower[i]) for i in range(3))
+    size_box = tuple(upper[i] - lower[i] for i in range(3))
+    delta = tuple(center[i] - n[i] * offset for i in range(3))
+    size = math.sqrt(delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]) + 0.5 * (
+        math.sqrt(size_box[0] * size_box[0] + size_box[1] * size_box[1] + size_box[2] * size_box[2])
+    )
+    y_deg = -_m_asin(n[2]) * 180 / _K_PI
+    z_deg = _m_atan2(n[1], n[0]) * 180 / _K_PI
+    transform = _translation(1.0, 0.0, 0.0)
+    transform = _compose_affine(_scaling(size), transform)
+    transform = _compose_affine(_translation(offset, 0.0, 0.0), transform)
+    transform = _compose_affine(_rotation(0.0, y_deg, z_deg), transform)
+    return _transformed_solid(cube, transform)
+
+
+def _unit_cube_solid(mesh_id: int, device: wp.DeviceLike) -> _Solid:
+    """``Manifold::Cube(vec3(2.0), true)``: Manifold's cube, its vertices and faces in its order."""
+    corners = [
+        (0.0, 0.0, 0.0),
+        (0.0, 0.0, 1.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 1.0, 1.0),
+        (1.0, 0.0, 0.0),
+        (1.0, 0.0, 1.0),
+        (1.0, 1.0, 0.0),
+        (1.0, 1.0, 1.0),
+    ]
+    triangles = [1, 0, 4, 2, 4, 0, 1, 3, 0, 3, 1, 5, 3, 2, 0, 3, 7, 2]
+    triangles += [5, 4, 6, 5, 1, 4, 6, 4, 2, 7, 6, 2, 7, 3, 5, 7, 5, 6]
+    positions_np = np.array([[2.0 * c - 1.0 for c in corner] for corner in corners])
+    positions = _launch.array(positions_np, dtype=wp.vec3d, device=device)
+    faces = _launch.array(np.array(triangles, dtype=np.int32), dtype=wp.int32, device=device)
+    # ``SetEpsilon()`` on a box of scale one: both tolerances ``kPrecision``.
+    epsilon = kernel_boolean.PRECISION
+    box = ((-1.0, -1.0, -1.0), (1.0, 1.0, 1.0))
+    return _solid_from_positions(
+        positions, faces, mesh_id, epsilon, epsilon, *box, "cube", sort_first=True
+    )
+
+
+def _m_asin(x: float) -> float:
+    """``math::asin``."""
+    if not math.isfinite(x) or x < -1.0 or x > 1.0:
+        return float("nan")
+    if x == 1.0:
+        return _HALF_PI
+    if x == -1.0:
+        return -_HALF_PI
+    return _HALF_PI - _m_acos(x)
+
+
+def _m_acos(x: float) -> float:
+    """``math::acos``."""
+    xx = _bits(x)
+    hx = xx >> 32
+    ix = hx & 0x7FFFFFFF
+    if ix >= 0x3FF00000:
+        if x == 1.0:
+            return 0.0
+        if x == -1.0:
+            return 2 * _PIO2_HI
+        return float("nan")
+    if ix < 0x3FE00000:
+        if ix <= 0x3C600000:
+            return _PIO2_HI
+        return _PIO2_HI - (x - (_PIO2_LO - x * _acos_ratio(x * x)))
+    if hx >> 31:
+        z = (1.0 + x) * 0.5
+        s = math.sqrt(z)
+        w = _acos_ratio(z) * s - _PIO2_LO
+        return 2 * (_PIO2_HI - (s + w))
+    z = (1.0 - x) * 0.5
+    s = math.sqrt(z)
+    df = _from_bits(_bits(s) & 0xFFFFFFFF00000000)
+    c = (z - df * df) / (s + df)
+    w = _acos_ratio(z) * s + c
+    return 2 * (df + w)
+
+
+def _bits(x: float) -> int:
+    """Return the IEEE bits of a ``float64``."""
+    return struct.unpack("<Q", struct.pack("<d", x))[0]
+
+
+def _acos_ratio(z: float) -> float:
+    p = z * (
+        1.66666666666666657415e-01
+        + z
+        * (
+            -3.25565818622400915405e-01
+            + z
+            * (
+                2.01212532134862925881e-01
+                + z
+                * (
+                    -4.00555345006794114027e-02
+                    + z * (7.91534994289814532176e-04 + z * 3.47933107596021167570e-05)
+                )
+            )
         )
-        _launch.launch(
-            kernel_boolean.write_kept_vertices,
-            dim=n_v,
-            inputs=[mesh, vert_offsets],
-            outputs=[vertices],
-            device=device,
+    )
+    q = 1.0 + z * (
+        -2.40339491173441421878e00
+        + z
+        * (
+            2.02094576023350569471e00
+            + z * (-6.88283971605453293030e-01 + z * 7.70381505559019352791e-02)
         )
-    return vertices, faces
+    )
+    return p / q
+
+
+def _from_bits(u: int) -> float:
+    """Return the ``float64`` of IEEE bits."""
+    return struct.unpack("<d", struct.pack("<Q", u))[0]
+
+
+def _m_atan2(y: float, x: float) -> float:
+    """``math::atan2``."""
+    if math.isnan(x) or math.isnan(y):
+        return x + y
+    bx = _bits(x)
+    by = _bits(y)
+    ix = bx >> 32
+    iy = by >> 32
+    lx = bx & 0xFFFFFFFF
+    ly = by & 0xFFFFFFFF
+    if ((ix - 0x3FF00000) | lx) == 0:
+        return _m_atan(y)
+    m = ((iy >> 31) & 1) | ((ix >> 30) & 2)
+    ix &= 0x7FFFFFFF
+    iy &= 0x7FFFFFFF
+    if (iy | ly) == 0:
+        return y if m in (0, 1) else (_PI if m == 2 else -_PI)
+    if (ix | lx) == 0:
+        return -_PI / 2 if m & 1 else _PI / 2
+    if ix == 0x7FF00000:
+        if iy == 0x7FF00000:
+            return (_PI / 4, -_PI / 4, 3 * _PI / 4, -3 * _PI / 4)[m]
+        return (0.0, -0.0, _PI, -_PI)[m]
+    if ix + (64 << 20) < iy or iy == 0x7FF00000:
+        return -_PI / 2 if m & 1 else _PI / 2
+    z = 0.0 if (m & 2) and iy + (64 << 20) < ix else _m_atan(abs(y / x))
+    if m == 0:
+        return z
+    if m == 1:
+        return -z
+    if m == 2:
+        return _PI - (z - _PI_LO)
+    return (z - _PI_LO) - _PI
+
+
+def _m_atan(x: float) -> float:
+    """``math::atan``."""
+    atanhi = (
+        4.63647609000806093515e-01,
+        7.85398163397448278999e-01,
+        9.82793723247329054082e-01,
+        1.57079632679489655800e00,
+    )
+    atanlo = (
+        2.26987774529616870924e-17,
+        3.06161699786838301793e-17,
+        1.39033110312309984516e-17,
+        6.12323399573676603587e-17,
+    )
+    at = (
+        3.33333333333329318027e-01,
+        -1.99999999998764832476e-01,
+        1.42857142725034663711e-01,
+        -1.11111104054623557880e-01,
+        9.09088713343650656196e-02,
+        -7.69187620504482999495e-02,
+        6.66107313738753120669e-02,
+        -5.83357013379057348645e-02,
+        4.97687799461593236017e-02,
+        -3.65315727442169155270e-02,
+        1.62858201153657823623e-02,
+    )
+    ix = _bits(x) >> 32
+    sign = ix >> 31
+    ix &= 0x7FFFFFFF
+    if ix >= 0x44100000:
+        if math.isnan(x):
+            return x
+        z = atanhi[3]
+        return -z if sign else z
+    if ix < 0x3FDC0000:
+        if ix < 0x3E400000:
+            return x
+        index = -1
+    else:
+        x = abs(x)
+        if ix < 0x3FF30000:
+            if ix < 0x3FE60000:
+                index = 0
+                x = (2.0 * x - 1.0) / (2.0 + x)
+            else:
+                index = 1
+                x = (x - 1.0) / (x + 1.0)
+        elif ix < 0x40038000:
+            index = 2
+            x = (x - 1.5) / (1.0 + 1.5 * x)
+        else:
+            index = 3
+            x = -1.0 / x
+    z = x * x
+    w = z * z
+    s1 = z * (at[0] + w * (at[2] + w * (at[4] + w * (at[6] + w * (at[8] + w * at[10])))))
+    s2 = w * (at[1] + w * (at[3] + w * (at[5] + w * (at[7] + w * at[9]))))
+    if index < 0:
+        return x - x * (s1 + s2)
+    zz = atanhi[index] - (x * (s1 + s2) - atanlo[index] - x)
+    return -zz if sign else zz
+
+
+def _translation(x: float, y: float, z: float) -> _Affine:
+    return ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (x, y, z))
+
+
+def _compose_affine(m: _Affine, transform: _Affine) -> _Affine:
+    """``CsgLeafNode::Transform``: ``m * Mat4(transform)``."""
+    columns4 = [(*transform[0], 0.0), (*transform[1], 0.0), (*transform[2], 0.0)]
+    columns4.append((*transform[3], 1.0))
+    return tuple(_mat_vec(m, column) for column in columns4)
+
+
+def _mat_vec(columns: _Affine, v: Sequence[float]) -> tuple[float, float, float]:
+    """``la::mul`` of a matrix by a vector: the columns' sum weighted by ``v``, left to right."""
+    out = [0.0, 0.0, 0.0]
+    for i in range(3):
+        acc = columns[0][i] * v[0]
+        for k in range(1, len(v)):
+            acc = acc + columns[k][i] * v[k]
+        out[i] = acc
+    return out[0], out[1], out[2]
+
+
+def _scaling(s: float) -> _Affine:
+    return ((s, 0.0, 0.0), (0.0, s, 0.0), (0.0, 0.0, s), (0.0, 0.0, 0.0))
+
+
+def _rotation(x_degrees: float, y_degrees: float, z_degrees: float) -> _Affine:
+    """``CsgNode::Rotate``: ``rZ * rY * rX`` from ``sind`` / ``cosd``."""
+    rx = (
+        (1.0, 0.0, 0.0),
+        (0.0, _cosd(x_degrees), _sind(x_degrees)),
+        (0.0, -_sind(x_degrees), _cosd(x_degrees)),
+    )
+    ry = (
+        (_cosd(y_degrees), 0.0, -_sind(y_degrees)),
+        (0.0, 1.0, 0.0),
+        (_sind(y_degrees), 0.0, _cosd(y_degrees)),
+    )
+    rz = (
+        (_cosd(z_degrees), _sind(z_degrees), 0.0),
+        (-_sind(z_degrees), _cosd(z_degrees), 0.0),
+        (0.0, 0.0, 1.0),
+    )
+    rotation = _mat3_mul(_mat3_mul(rz, ry), rx)
+    return (*rotation, (0.0, 0.0, 0.0))
+
+
+def _cosd(x: float) -> float:
+    """``cosd``: the cosine of ``x`` degrees, exact at multiples of 90."""
+    return _sind(x + 90.0)
+
+
+def _sind(x: float) -> float:
+    """``sind``: the sine of ``x`` degrees, exact at multiples of 90."""
+    if not math.isfinite(x):
+        return float("nan")
+    if x < 0.0:
+        return -_sind(-x)
+    r = math.remainder(abs(x), 90.0)
+    quo = round((abs(x) - r) / 90.0)
+    xr = r * _K_PI / 180
+    return (_m_sin(xr), _m_cos(xr), -_m_sin(xr), -_m_cos(xr))[quo % 4]
+
+
+def _m_sin(x: float) -> float:
+    """``math::sin`` for ``|x| <= pi / 4``, the only range ``sind`` hands it."""
+    ix = (_bits(x) >> 32) & 0x7FFFFFFF
+    if ix > 0x3FE921FB:
+        raise ValueError("outside the reduced range")
+    if ix < 0x3E500000:
+        return x
+    return _sin_kernel(x, 0.0, 0)
+
+
+def _sin_kernel(x: float, y: float, iy: int) -> float:
+    s1 = -1.66666666666666324348e-01
+    s2 = 8.33333333332248946124e-03
+    s3 = -1.98412698298579493134e-04
+    s4 = 2.75573137070700676789e-06
+    s5 = -2.50507602534068634195e-08
+    s6 = 1.58969099521155010221e-10
+    z = x * x
+    w = z * z
+    r = s2 + z * (s3 + z * s4) + z * w * (s5 + z * s6)
+    v = z * x
+    if iy == 0:
+        return x + v * (s1 + z * r)
+    return x - ((z * (0.5 * y - v * r) - y) - v * s1)
+
+
+def _m_cos(x: float) -> float:
+    """``math::cos`` for ``|x| <= pi / 4``."""
+    ix = (_bits(x) >> 32) & 0x7FFFFFFF
+    if ix > 0x3FE921FB:
+        raise ValueError("outside the reduced range")
+    if ix < 0x3E46A09E:
+        return 1.0
+    return _cos_kernel(x, 0.0)
+
+
+def _cos_kernel(x: float, y: float) -> float:
+    c1 = 4.16666666666666019037e-02
+    c2 = -1.38888888888741095749e-03
+    c3 = 2.48015872894767294178e-05
+    c4 = -2.75573143513906633035e-07
+    c5 = 2.08757232129817482790e-09
+    c6 = -1.13596475577881948265e-11
+    z = x * x
+    w = z * z
+    r = z * (c1 + z * (c2 + z * c3)) + w * w * (c4 + z * (c5 + z * c6))
+    hz = 0.5 * z
+    w1 = 1.0 - hz
+    return w1 + (((1.0 - w1) - hz) + (z * r - x * y))
+
+
+def _mat3_mul(a: _Affine, b: _Affine) -> _Affine:
+    return tuple(_mat_vec(a, column) for column in b)
+
+
+def _transformed_solid(solid: _Solid, transform: _Affine) -> _Solid:
+    """``Impl::Transform``: positions and normals moved, the order and references kept."""
+    device = solid.positions.device
+    # Host readback: a cutter of eight vertices is transformed in ``float64`` on the host, in
+    # Manifold's operation order.
+    positions = read_array(solid.positions)
+    face_normals = read_array(solid.face_normals)
+    vertex_normals = read_array(solid.vertex_normals)
+    moved = np.array([_mat_vec(transform, (*p, 1.0)) for p in positions.tolist()])
+    normal_transform = _normal_transform(transform)
+    faces_n = np.array([_transform_normal(normal_transform, v) for v in face_normals.tolist()])
+    verts_n = np.array([_transform_normal(normal_transform, v) for v in vertex_normals.tolist()])
+    lower = (float(moved[:, 0].min()), float(moved[:, 1].min()), float(moved[:, 2].min()))
+    upper = (float(moved[:, 0].max()), float(moved[:, 1].max()), float(moved[:, 2].max()))
+    linear = np.array([transform[c] for c in range(3)]).T
+    spectral = float(np.linalg.svd(linear, compute_uv=False)[0])
+    scale = max(abs(x) for x in (*lower, *upper))
+    # ``SetEpsilon(epsilon * SpectralNorm)``, the tolerance at least the new epsilon.
+    epsilon = max(solid.epsilon * spectral, kernel_boolean.PRECISION * scale)
+    tolerance = max(solid.tolerance, epsilon)
+    return _Solid(
+        _launch.array(moved, dtype=wp.vec3d, device=device),
+        solid.faces,
+        _launch.array(faces_n, dtype=wp.vec3d, device=device),
+        _launch.array(verts_n, dtype=wp.vec3d, device=device),
+        solid.face_mesh,
+        solid.face_coplanar,
+        epsilon,
+        tolerance,
+        lower,
+        upper,
+    )
+
+
+def _normal_transform(m: _Affine) -> _Affine:
+    """``NormalTransform``: ``inverse(transpose(mat3(m)))``, by the adjugate."""
+    a = tuple(tuple(m[r][c] for r in range(3)) for c in range(3))
+    xx, xy, xz = a[0]
+    yx, yy, yz = a[1]
+    zx, zy, zz = a[2]
+    adjugate = (
+        (yy * zz - zy * yz, zy * xz - xy * zz, xy * yz - yy * xz),
+        (yz * zx - zz * yx, zz * xx - xz * zx, xz * yx - yz * xx),
+        (yx * zy - zx * yy, zx * xy - xx * zy, xx * yy - yx * xy),
+    )
+    determinant = xx * (yy * zz - zy * yz) + xy * (yz * zx - zz * yx) + xz * (yx * zy - zx * yy)
+    return tuple((c[0] / determinant, c[1] / determinant, c[2] / determinant) for c in adjugate)
+
+
+def _transform_normal(n: _Affine, v: Sequence[float]) -> tuple[float, float, float]:
+    """``TransformNormals``: the normal transformed and normalized, or zero."""
+    t = _mat_vec(n, v)
+    length = math.sqrt(t[0] * t[0] + t[1] * t[1] + t[2] * t[2])
+    if not length > 0.0:
+        return 0.0, 0.0, 0.0
+    out = (t[0] / length, t[1] / length, t[2] / length)
+    if math.isnan(out[0]):
+        return 0.0, 0.0, 0.0
+    return out

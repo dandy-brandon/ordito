@@ -102,6 +102,9 @@ _LIBRARY_SUFFIXES: dict[str, frozenset[str]] = {
     "pyvista": frozenset({"_pv"}),
     "meshlib": frozenset({"_ml"}),
     "pymeshfix": frozenset({"_pmf"}),
+    # ``manifold3d`` is the reference ``ordito.boolean`` ports: its answers are compared array for
+    # array.
+    "manifold3d": frozenset({"_m3"}),
     "moderngl": frozenset({"_gl"}),
     # ``pytorch3d`` is the only reference here with GPU kernels of its own, and it is registered
     # for those alone -- one ``LIBRARIES`` row (``pytorch3d-cuda``) and one entry here, since a
@@ -137,6 +140,7 @@ _LIBRARY_ROOTS: dict[str, frozenset[str]] = {
         }
     ),
     "igl": frozenset({"igl", "igl_module"}),
+    "manifold3d": frozenset({"m3"}),
     "open3d": frozenset(
         {"o3d", "trimesh_to_open3d", "points_to_open3d", "open3d_to_trimesh", "trimesh_to_open3d_t"}
     ),

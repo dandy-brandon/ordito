@@ -308,6 +308,7 @@ known-first-party = ["ordito"]
 split-on-trailing-comma = false
 
 [tool.ruff.lint.flake8-import-conventions.aliases]
+manifold3d = "m3"
 "meshlib.mrmeshnumpy" = "mn"
 "meshlib.mrmeshpy" = "mm"
 numpy = "np"

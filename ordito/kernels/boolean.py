@@ -26,8 +26,7 @@ every group as the full serial loop forms it. The operands are renumbered in Mor
 (``SortGeometry``), so every tie Manifold breaks by index falls the same way. Not ported: the
 input-side ``CleanupTopology`` / ``RemoveDegenerates`` (a closed, edge-manifold input with no
 pinched vertex and no degenerate triangle is what they leave unchanged) and the per-vertex
-properties (``CreateProperties``). The pseudo-normals' angle weights take a correctly rounded
-arc cosine where Manifold calls the C library's (see ``acos_rounded``).
+properties (``CreateProperties``).
 """
 
 import warp as wp
@@ -462,34 +461,39 @@ def morton_code(p: wp.vec3d, low: wp.vec3d, high: wp.vec3d) -> wp.uint32:
 
 @wp.kernel
 def vertex_morton_keys(
-    vertices: wp.array[wp.vec3],
+    positions: wp.array[wp.vec3d],
     low: wp.vec3d,
     high: wp.vec3d,
     out_keys: wp.array[wp.uint32],
     out_order: wp.array[wp.int32],
 ) -> None:
-    # ``SortVerts``: each vertex's Morton code in the mesh's box, for a stable sort.
+    # ``SortVerts``: each vertex's Morton code in the box, for a stable sort.
     v = wp.int32(wp.tid())
-    out_keys[v] = morton_code(wp.vec3d(vertices[v]), low, high)
+    out_keys[v] = morton_code(positions[v], low, high)
     out_order[v] = v
 
 
 @wp.kernel
 def renumber_vertices(
-    vertices: wp.array[wp.vec3],
+    positions: wp.array[wp.vec3d],
+    normals: wp.array[wp.vec3d],
     new_to_old: wp.array[wp.int32],
-    out_vertices: wp.array[wp.vec3],
+    with_normals: wp.int32,
+    out_positions: wp.array[wp.vec3d],
+    out_normals: wp.array[wp.vec3d],
     out_old_to_new: wp.array[wp.int32],
 ) -> None:
     v = wp.int32(wp.tid())
     old = new_to_old[v]
-    out_vertices[v] = vertices[old]
+    out_positions[v] = positions[old]
+    if with_normals != 0:
+        out_normals[v] = normals[old]
     out_old_to_new[old] = v
 
 
 @wp.kernel
 def face_morton_keys(
-    vertices: wp.array[wp.vec3],
+    positions: wp.array[wp.vec3d],
     faces: wp.array[wp.int32],
     low: wp.vec3d,
     high: wp.vec3d,
@@ -498,9 +502,9 @@ def face_morton_keys(
 ) -> None:
     # ``GetFaceBoxMorton``: each face's centroid's Morton code, for ``SortFaces``' stable sort.
     f = wp.int32(wp.tid())
-    center = wp.vec3d(vertices[faces[3 * f]])
-    center = center + wp.vec3d(vertices[faces[3 * f + 1]])
-    center = center + wp.vec3d(vertices[faces[3 * f + 2]])
+    center = positions[faces[3 * f]]
+    center = center + positions[faces[3 * f + 1]]
+    center = center + positions[faces[3 * f + 2]]
     center = center / wp.float64(3.0)
     out_keys[f] = morton_code(center, low, high)
     out_order[f] = f
@@ -509,211 +513,162 @@ def face_morton_keys(
 @wp.kernel
 def renumber_faces(
     faces: wp.array[wp.int32],
+    face_normals: wp.array[wp.vec3d],
+    face_mesh: wp.array[wp.int32],
+    face_coplanar: wp.array[wp.int32],
     new_to_old: wp.array[wp.int32],
     old_to_new: wp.array[wp.int32],
+    with_attributes: wp.int32,
     out_faces: wp.array[wp.int32],
+    out_face_normals: wp.array[wp.vec3d],
+    out_face_mesh: wp.array[wp.int32],
+    out_face_coplanar: wp.array[wp.int32],
 ) -> None:
     # ``GatherFaces`` with ``ReindexVerts``: each face moved to its sorted slot, its corners
-    # renamed, its rotation kept.
+    # renamed, its rotation and its references kept.
     f = wp.int32(wp.tid())
     old = new_to_old[f]
     for i in range(3):
         out_faces[3 * f + i] = old_to_new[faces[3 * old + i]]
+    if with_attributes != 0:
+        out_face_normals[f] = face_normals[old]
+        out_face_mesh[f] = face_mesh[old]
+        out_face_coplanar[f] = face_coplanar[old]
 
 
 @wp.kernel
-def face_normals_and_boxes(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    twins: wp.array[wp.int32],
-    out_positions: wp.array[wp.vec3d],
-    out_face_normals: wp.array[wp.vec3d],
-    out_lowers: wp.array[wp.vec3],
-    out_uppers: wp.array[wp.vec3],
-    out_first_halfedge: wp.array[wp.int32],
-    out_boundary: wp.array[wp.int32],
+def widen_positions(vertices: wp.array[wp.vec3], out_positions: wp.array[wp.vec3d]) -> None:
+    # A ``float32`` mesh's exact ``float64`` positions.
+    v = wp.int32(wp.tid())
+    out_positions[v] = wp.vec3d(vertices[v])
+
+
+@wp.kernel
+def mesh_face_normals(
+    positions: wp.array[wp.vec3d], faces: wp.array[wp.int32], out_face_normals: wp.array[wp.vec3d]
 ) -> None:
-    # Each face's ``float64`` normal (``SetNormalsAndCoplanar`` without the coplanar merge), its
-    # box for the broad phase, and its corners' bids for the least halfedge leaving each vertex.
-    # The positions are widened here too, a face a corner: a vertex no face references keeps its
-    # unwritten slot, and nothing reads it.
+    # Each face's ``float64`` normal (``SetNormalsAndCoplanar`` before the coplanar merge); a
+    # degenerate face's is +z.
     f = wp.int32(wp.tid())
-    a = vertices[faces[3 * f]]
-    b = vertices[faces[3 * f + 1]]
-    c = vertices[faces[3 * f + 2]]
-    for i in range(3):
-        v = faces[3 * f + i]
-        out_positions[v] = wp.vec3d(vertices[v])
-        wp.atomic_min(out_first_halfedge, v, 3 * f + i)
-        if twins[3 * f + i] < 0:
-            wp.atomic_add(out_boundary, 0, 1)
-    pa = wp.vec3d(a)
-    n = wp.cross(wp.vec3d(b) - pa, wp.vec3d(c) - pa)
+    a = positions[faces[3 * f]]
+    n = wp.cross(positions[faces[3 * f + 1]] - a, positions[faces[3 * f + 2]] - a)
     length = wp.length(n)
     normal = wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(1.0))
     if length > wp.float64(0.0) and wp.isfinite(length):
         normal = n / length
     out_face_normals[f] = normal
+
+
+@wp.kernel
+def operand_boxes(
+    positions: wp.array[wp.vec3d],
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    out_lowers: wp.array[wp.vec3],
+    out_uppers: wp.array[wp.vec3],
+    out_first_halfedge: wp.array[wp.int32],
+    out_boundary: wp.array[wp.int32],
+) -> None:
+    # Each face's box for the broad phase (``float32``, which the queries' padding covers), its
+    # corners' bids for the least halfedge leaving each vertex, and a count of unpaired halfedges.
+    f = wp.int32(wp.tid())
+    a = wp.vec3(positions[faces[3 * f]])
+    b = wp.vec3(positions[faces[3 * f + 1]])
+    c = wp.vec3(positions[faces[3 * f + 2]])
+    for i in range(3):
+        wp.atomic_min(out_first_halfedge, faces[3 * f + i], 3 * f + i)
+        if twins[3 * f + i] < 0:
+            wp.atomic_add(out_boundary, 0, 1)
     out_lowers[f] = wp.min(wp.min(a, b), c)
     out_uppers[f] = wp.max(wp.max(a, b), c)
 
 
-# -- a correctly rounded arc cosine (the pseudo-normals' angle weights) ----------------------------
+@wp.kernel
+def positions_box(positions: wp.array[wp.vec3d], out_box: wp.array[wp.float64]) -> None:
+    # ``CalculateBBox``: the box of the vertices, into ``(min x, y, z, max x, y, z)`` (filled with
+    # +-inf); a removed (NaN) vertex is skipped.
+    v = wp.int32(wp.tid())
+    p = positions[v]
+    if not wp.isfinite(p[0]):
+        return
+    for i in range(3):
+        wp.atomic_min(out_box, i, p[i])
+        wp.atomic_max(out_box, 3 + i, p[i])
+
+
+# -- Manifold's arc cosine (the pseudo-normals' angle weights) ------------------------------------
 #
 # The angle weights of a vertex's pseudo-normal decide ties wherever two normals cancel (two
-# boxes' matching corners), so they must round the same on every device. CUDA's ``acos`` and the
-# C library's differ in the last bit on 12.6 % of inputs, and glibc's is itself not correctly
-# rounded (0.08 %; measured 2026-11-21 against mpmath on 3 M inputs). This one is: the arcsine
-# series in double-double arithmetic after a half-angle reduction, rounded once, the same code on
-# both devices (0 mismatches against mpmath's rounding on the same inputs).
-
-# ``asin(t) = t sum_k ASIN_HI[k] t^(2k)``, each coefficient ``(2k)! / (4^k (k!)^2 (2k+1))``; the
-# first ``ASIN_EXACT_TERMS`` as double-doubles ``(ASIN_HI, ASIN_LO)``. After the half-angle step the
-# series sees ``t <= sin(pi / 12)``, where 24 terms reach 2^-90 and every term past the sixth is
-# under 2^-20 of the sum, so the tail is summed in plain ``float64`` (2^-73) and only the head in
-# double-double: 0 mismatches against mpmath's rounding on 600 k inputs, 3x the full
-# double-double series' speed.
-ASIN_TERMS = 24
-ASIN_EXACT_TERMS = 6
-ASIN_HI = wp.types.vector(length=ASIN_TERMS, dtype=wp.float64)(
-    1.0,
-    0.16666666666666666,
-    0.075,
-    0.044642857142857144,
-    0.030381944444444444,
-    0.022372159090909092,
-    0.017352764423076924,
-    0.01396484375,
-    0.011551800896139705,
-    0.009761609529194078,
-    0.008390335809616815,
-    0.0073125258735988454,
-    0.006447210311889649,
-    0.005740037670841924,
-    0.005153309682319905,
-    0.004660143486915096,
-    0.004240907093679363,
-    0.003880964558837669,
-    0.0035692053938259347,
-    0.003297059503473485,
-    0.0030578216492580306,
-    0.002846178401108942,
-    0.00265787063820729,
-    0.0024894486782468836,
-)
-ASIN_LO = wp.types.vector(length=ASIN_EXACT_TERMS, dtype=wp.float64)(
-    0.0,
-    9.25185853854297e-18,
-    2.7755575615628915e-18,
-    -9.912705577010326e-19,
-    3.854941057726238e-19,
-    -9.462128050782583e-19,
-)
+# boxes' matching corners), so they must round as Manifold's do, on every device. Manifold does
+# not call the C library: ``include/manifold/math.h`` carries its own ``acos`` (fdlibm's, in plain
+# ``float64`` arithmetic), which this ports. CUDA's ``acos`` and glibc's differ from it and from
+# each other in the last bit on a tenth of inputs (2026-11-21).
 
 
 @wp.func
-def two_sum(a: wp.float64, b: wp.float64) -> wp.vec2d:
-    s = a + b
-    bb = s - a
-    return wp.vec2d(s, (a - (s - bb)) + (b - bb))
+def acos_ratio(z: wp.float64) -> wp.float64:
+    p = z * (
+        wp.float64(1.66666666666666657415e-01)
+        + z
+        * (
+            wp.float64(-3.25565818622400915405e-01)
+            + z
+            * (
+                wp.float64(2.01212532134862925881e-01)
+                + z
+                * (
+                    wp.float64(-4.00555345006794114027e-02)
+                    + z
+                    * (
+                        wp.float64(7.91534994289814532176e-04)
+                        + z * wp.float64(3.47933107596021167570e-05)
+                    )
+                )
+            )
+        )
+    )
+    q = wp.float64(1.0) + z * (
+        wp.float64(-2.40339491173441421878e00)
+        + z
+        * (
+            wp.float64(2.02094576023350569471e00)
+            + z
+            * (wp.float64(-6.88283971605453293030e-01) + z * wp.float64(7.70381505559019352791e-02))
+        )
+    )
+    return p / q
 
 
 @wp.func
-def quick_two_sum(a: wp.float64, b: wp.float64) -> wp.vec2d:
-    s = a + b
-    return wp.vec2d(s, b - (s - a))
-
-
-@wp.func
-def split_dekker(a: wp.float64) -> wp.vec2d:
-    t = wp.float64(134217729.0) * a
-    hi = t - (t - a)
-    return wp.vec2d(hi, a - hi)
-
-
-@wp.func
-def two_prod(a: wp.float64, b: wp.float64) -> wp.vec2d:
-    p = a * b
-    sa = split_dekker(a)
-    sb = split_dekker(b)
-    err = ((sa[0] * sb[0] - p) + sa[0] * sb[1] + sa[1] * sb[0]) + sa[1] * sb[1]
-    return wp.vec2d(p, err)
-
-
-@wp.func
-def dd_add(a: wp.vec2d, b: wp.vec2d) -> wp.vec2d:
-    s = two_sum(a[0], b[0])
-    t = two_sum(a[1], b[1])
-    r = quick_two_sum(s[0], s[1] + t[0])
-    return quick_two_sum(r[0], t[1] + r[1])
-
-
-@wp.func
-def dd_mul(a: wp.vec2d, b: wp.vec2d) -> wp.vec2d:
-    p = two_prod(a[0], b[0])
-    return quick_two_sum(p[0], p[1] + (a[0] * b[1] + a[1] * b[0]))
-
-
-@wp.func
-def dd_div(a: wp.vec2d, b: wp.vec2d) -> wp.vec2d:
-    q1 = a[0] / b[0]
-    r = dd_add(a, wp.vec2d() - dd_mul(wp.vec2d(q1, wp.float64(0.0)), b))
-    q2 = r[0] / b[0]
-    r = dd_add(r, wp.vec2d() - dd_mul(wp.vec2d(q2, wp.float64(0.0)), b))
-    q3 = r[0] / b[0]
-    return dd_add(quick_two_sum(q1, q2), wp.vec2d(q3, wp.float64(0.0)))
-
-
-@wp.func
-def dd_sqrt(a: wp.vec2d) -> wp.vec2d:
-    s = wp.sqrt(a[0])
-    if s == wp.float64(0.0):
-        return wp.vec2d()
-    p = two_prod(s, s)
-    return quick_two_sum(s, (((a[0] - p[0]) - p[1]) + a[1]) / (wp.float64(2.0) * s))
-
-
-@wp.func
-def dd_asin_small(t: wp.vec2d) -> wp.vec2d:
-    # The arcsine series for ``|t| <= sin(pi / 12)``: its tail in ``float64``, its head exact.
-    t2 = dd_mul(t, t)
-    tail = ASIN_HI[ASIN_TERMS - 1]
-    for i in range(ASIN_TERMS - 1 - ASIN_EXACT_TERMS):
-        tail = tail * t2[0] + ASIN_HI[ASIN_TERMS - 2 - i]
-    acc = wp.vec2d(tail, wp.float64(0.0))
-    for i in range(ASIN_EXACT_TERMS):
-        k = ASIN_EXACT_TERMS - 1 - i
-        acc = dd_add(dd_mul(acc, t2), wp.vec2d(ASIN_HI[k], ASIN_LO[k]))
-    return dd_mul(acc, t)
-
-
-@wp.func
-def dd_asin(t: wp.vec2d) -> wp.vec2d:
-    # ``asin(t) = 2 asin(t / sqrt(2 (1 + sqrt(1 - t^2))))``: the series sees at most sin(pi / 12).
-    one = wp.vec2d(wp.float64(1.0), wp.float64(0.0))
-    c = dd_sqrt(dd_add(one, wp.vec2d() - dd_mul(t, t)))
-    d = dd_sqrt(dd_add(dd_add(one, c), dd_add(one, c)))
-    a = dd_asin_small(dd_div(t, d))
-    return dd_add(a, a)
-
-
-@wp.func
-def acos_rounded(x: wp.float64) -> wp.float64:
-    # ``acos`` correctly rounded: ``pi / 2 - asin(x)`` for ``|x| <= 1/2``, else
-    # ``2 asin(sqrt((1 - x) / 2))`` (``pi`` minus that for negative ``x``), whose ``1 -+ x`` is
-    # exact there.
-    half_pi = wp.vec2d(wp.float64(1.5707963267948966), wp.float64(6.123233995736766e-17))
-    pi = wp.vec2d(wp.float64(3.141592653589793), wp.float64(1.2246467991473532e-16))
-    r = wp.vec2d()
-    if wp.abs(x) <= wp.float64(0.5):
-        r = dd_add(half_pi, wp.vec2d() - dd_asin(wp.vec2d(x, wp.float64(0.0))))
-    elif x > wp.float64(0.0):
-        a = dd_asin(dd_sqrt(wp.vec2d((wp.float64(1.0) - x) * wp.float64(0.5), wp.float64(0.0))))
-        r = dd_add(a, a)
-    else:
-        a = dd_asin(dd_sqrt(wp.vec2d((wp.float64(1.0) + x) * wp.float64(0.5), wp.float64(0.0))))
-        r = dd_add(pi, wp.vec2d() - dd_add(a, a))
-    return r[0] + r[1]
+def manifold_acos(x: wp.float64) -> wp.float64:
+    # ``math::acos``: three ranges, the outer two through ``2 asin(sqrt((1 -+ x) / 2))`` with the
+    # square root's low word split off.
+    pio2_hi = wp.float64(1.57079632679489655800e00)
+    pio2_lo = wp.float64(6.12323399573676603587e-17)
+    bits = wp.cast(x, wp.uint64)
+    hx = wp.uint32(bits >> wp.uint64(32))
+    ix = hx & wp.uint32(0x7FFFFFFF)
+    if ix >= wp.uint32(0x3FF00000):
+        if x == wp.float64(1.0):
+            return wp.float64(0.0)
+        if x == wp.float64(-1.0):
+            return wp.float64(2.0) * pio2_hi
+        return wp.float64(0.0) / (x - x)
+    if ix < wp.uint32(0x3FE00000):
+        if ix <= wp.uint32(0x3C600000):
+            return pio2_hi
+        return pio2_hi - (x - (pio2_lo - x * acos_ratio(x * x)))
+    if (hx >> wp.uint32(31)) != wp.uint32(0):
+        z = (wp.float64(1.0) + x) * wp.float64(0.5)
+        s = wp.sqrt(z)
+        w = acos_ratio(z) * s - pio2_lo
+        return wp.float64(2.0) * (pio2_hi - (s + w))
+    z = (wp.float64(1.0) - x) * wp.float64(0.5)
+    s = wp.sqrt(z)
+    df = wp.cast(wp.cast(s, wp.uint64) & wp.uint64(0xFFFFFFFF00000000), wp.float64)
+    c = (z - df * df) / (s + df)
+    w = acos_ratio(z) * s + c
+    return wp.float64(2.0) * (df + w)
 
 
 @wp.kernel
@@ -749,7 +704,7 @@ def vertex_pseudo_normals(
             if d <= wp.float64(-1.0):
                 phi = wp.float64(3.141592653589793)
             elif d < wp.float64(1.0):
-                phi = acos_rounded(d)
+                phi = manifold_acos(d)
             normal = normal + phi * face_normals[tri]
         steps += 1
         if current == first:
@@ -767,17 +722,17 @@ def vertex_pseudo_normals(
 
 @wp.func
 def edge_query_box(
-    vertices: wp.array[wp.vec3], start: wp.int32, end: wp.int32, pad: wp.float32
+    positions: wp.array[wp.vec3d], start: wp.int32, end: wp.int32, pad: wp.float32
 ) -> tuple[wp.vec3, wp.vec3]:
-    a = vertices[start]
-    b = vertices[end]
+    # The edge's box in ``float32``, padded past the rounding of the narrowing.
+    a = wp.vec3(positions[start])
+    b = wp.vec3(positions[end])
     padding = wp.vec3(pad, pad, pad)
     return wp.min(a, b) - padding, wp.max(a, b) + padding
 
 
 @wp.kernel
 def count_edge_crossings(
-    vertices_a: wp.array[wp.vec3],
     faces_a: wp.array[wp.int32],
     pos_a: wp.array[wp.vec3d],
     vnormal_a: wp.array[wp.vec3d],
@@ -801,7 +756,7 @@ def count_edge_crossings(
     end = faces_a[next_halfedge(h)]
     count = wp.int32(0)
     if start < end:
-        lower, upper = edge_query_box(vertices_a, start, end, pad)
+        lower, upper = edge_query_box(pos_a, start, end, pad)
         query = wp.bvh_query_aabb(bvh_b, lower, upper)
         face = wp.int32(0)
         while wp.bvh_query_next(query, face):
@@ -828,7 +783,6 @@ def count_edge_crossings(
 
 @wp.kernel
 def write_edge_crossings(
-    vertices_a: wp.array[wp.vec3],
     faces_a: wp.array[wp.int32],
     pos_a: wp.array[wp.vec3d],
     vnormal_a: wp.array[wp.vec3d],
@@ -859,7 +813,7 @@ def write_edge_crossings(
         return
     start = faces_a[h]
     end = faces_a[next_halfedge(h)]
-    lower, upper = edge_query_box(vertices_a, start, end, pad)
+    lower, upper = edge_query_box(pos_a, start, end, pad)
     query = wp.bvh_query_aabb(bvh_b, lower, upper)
     face = wp.int32(0)
     slot = record_base + first
@@ -935,7 +889,6 @@ def unbroken_edge_rows(
 @wp.kernel
 def component_windings(
     labels: wp.array[wp.int32],
-    vertices_a: wp.array[wp.vec3],
     pos_a: wp.array[wp.vec3d],
     vnormal_a: wp.array[wp.vec3d],
     faces_b: wp.array[wp.int32],
@@ -956,7 +909,7 @@ def component_windings(
     v = wp.int32(wp.tid())
     if labels[v] != v:
         return
-    p = vertices_a[v]
+    p = wp.vec3(pos_a[v])
     lower = wp.vec3(p[0] - pad, p[1] - pad, z_low)
     upper = wp.vec3(p[0] + pad, p[1] + pad, z_high)
     query = wp.bvh_query_aabb(bvh_b, lower, upper)
@@ -2230,6 +2183,33 @@ def triangle_capacities(face_offsets: wp.array[wp.int32], out_capacity: wp.array
 
 
 @wp.kernel
+def face_mesh_keys(
+    face_mesh: wp.array[wp.int32], out_keys: wp.array[wp.int32], out_order: wp.array[wp.int32]
+) -> None:
+    f = wp.int32(wp.tid())
+    out_keys[f] = face_mesh[f]
+    out_order[f] = f
+
+
+@wp.kernel
+def gather_faces(
+    faces: wp.array[wp.int32], order: wp.array[wp.int32], out_faces: wp.array[wp.int32]
+) -> None:
+    f = wp.int32(wp.tid())
+    old = order[f]
+    for i in range(3):
+        out_faces[3 * f + i] = faces[3 * old + i]
+
+
+@wp.kernel
+def offset_indices(
+    indices: wp.array[wp.int32], offset: wp.int32, out_indices: wp.array[wp.int32]
+) -> None:
+    i = wp.int32(wp.tid())
+    out_indices[i] = indices[i] + offset
+
+
+@wp.kernel
 def narrow_positions(positions: wp.array[wp.vec3d], out_vertices: wp.array[wp.vec3]) -> None:
     i = wp.int32(wp.tid())
     out_vertices[i] = wp.vec3(positions[i])
@@ -2358,6 +2338,8 @@ def write_result_halfedges(
     fnormal_q: wp.array[wp.vec3d],
     coplanar_p: wp.array[wp.int32],
     coplanar_q: wp.array[wp.int32],
+    mesh_p: wp.array[wp.int32],
+    mesh_q: wp.array[wp.int32],
     n_faces_p: wp.int32,
     invert_q: wp.int32,
     slot_halfedge: wp.array[wp.int32],
@@ -2383,10 +2365,11 @@ def write_result_halfedges(
     coplanar = wp.int32(0)
     normal = wp.vec3d()
     if f < n_faces_p:
+        mesh = mesh_p[f]
         coplanar = coplanar_p[f]
         normal = fnormal_p[f]
     else:
-        mesh = wp.int32(1)
+        mesh = mesh_q[f - n_faces_p]
         coplanar = coplanar_q[f - n_faces_p]
         normal = fnormal_q[f - n_faces_p]
         if invert_q != 0:
@@ -3137,6 +3120,9 @@ def write_kept_faces(
     tri_ranks: wp.array[wp.int32],
     vert_ranks: wp.array[wp.int32],
     out_faces: wp.array[wp.int32],
+    out_face_normals: wp.array[wp.vec3d],
+    out_face_mesh: wp.array[wp.int32],
+    out_face_coplanar: wp.array[wp.int32],
 ) -> None:
     t = wp.int32(wp.tid())
     r = tri_ranks[t]
@@ -3144,13 +3130,73 @@ def write_kept_faces(
         return
     for i in range(3):
         out_faces[3 * r + i] = vert_ranks[m.start[3 * t + i]]
+    out_face_normals[r] = m.tri_normal[t]
+    out_face_mesh[r] = m.tri_mesh[t]
+    out_face_coplanar[r] = m.tri_coplanar[t]
 
 
 @wp.kernel
 def write_kept_vertices(
-    m: HalfedgeMesh, vert_ranks: wp.array[wp.int32], out_vertices: wp.array[wp.vec3]
+    m: HalfedgeMesh,
+    vertex_normals: wp.array[wp.vec3d],
+    vert_ranks: wp.array[wp.int32],
+    out_positions: wp.array[wp.vec3d],
+    out_vertex_normals: wp.array[wp.vec3d],
 ) -> None:
     v = wp.int32(wp.tid())
     r = vert_ranks[v]
     if vert_ranks[v + 1] != r:
-        out_vertices[r] = wp.vec3(m.pos[v])
+        out_positions[r] = m.pos[v]
+        out_vertex_normals[r] = vertex_normals[v]
+
+
+@wp.kernel
+def hm_first_halfedges(m: HalfedgeMesh, out_first: wp.array[wp.int32]) -> None:
+    # ``CalculateVertNormals``' least live halfedge leaving each vertex.
+    h = wp.int32(wp.tid())
+    v = m.start[h]
+    if v >= 0:
+        wp.atomic_min(out_first, v, h)
+
+
+@wp.kernel
+def hm_vertex_normals(
+    m: HalfedgeMesh, first: wp.array[wp.int32], out_normals: wp.array[wp.vec3d]
+) -> None:
+    # ``CalculateVertNormals`` on the simplified result, in ``ForVert``'s order from the least
+    # halfedge, with the faces' inherited normals.
+    v = wp.int32(wp.tid())
+    start = first[v]
+    normal = wp.vec3d()
+    if start >= m.sizes[0]:
+        out_normals[v] = normal
+        return
+    current = start
+    steps = wp.int32(0)
+    while steps < m.sizes[0]:
+        steps += 1
+        p = m.pair[current]
+        if p < 0:
+            break
+        current = next_halfedge(p)
+        a = m.start[current]
+        b = m.start[next_halfedge(current)]
+        c = m.start[next_halfedge(next_halfedge(current))]
+        curr_edge = wp.normalize(m.pos[b] - m.pos[a])
+        prev_edge = wp.normalize(m.pos[a] - m.pos[c])
+        if wp.isfinite(curr_edge[0]) and wp.isfinite(prev_edge[0]):
+            d = wp.float64(0.0) - wp.dot(prev_edge, curr_edge)
+            phi = wp.float64(0.0)
+            if d <= wp.float64(-1.0):
+                phi = wp.float64(3.141592653589793)
+            elif d < wp.float64(1.0):
+                phi = manifold_acos(d)
+            normal = normal + phi * m.tri_normal[current // 3]
+        if current == start:
+            break
+    length = wp.length(normal)
+    if length > wp.float64(0.0) and wp.isfinite(length):
+        normal = normal / length
+    else:
+        normal = wp.vec3d()
+    out_normals[v] = normal

@@ -409,32 +409,92 @@
  },
  "benchmarks/test_boolean.py::test_difference[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 69,
-   "alloc": 106,
-   "h2h": 5,
-   "readback": 26,
+   "launch": 89,
+   "alloc": 149,
+   "h2h": 8,
+   "readback": 27,
    "scan": 15,
-   "sort": 9
+   "sort": 14
+  }
+ },
+ "benchmarks/test_boolean.py::test_difference_all[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 239,
+   "alloc": 391,
+   "h2h": 20,
+   "readback": 81,
+   "scan": 45,
+   "sort": 32
   }
  },
  "benchmarks/test_boolean.py::test_intersection[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 69,
-   "alloc": 106,
-   "h2h": 5,
-   "readback": 26,
+   "launch": 89,
+   "alloc": 149,
+   "h2h": 8,
+   "readback": 27,
    "scan": 15,
-   "sort": 9
+   "sort": 14
+  }
+ },
+ "benchmarks/test_boolean.py::test_intersection_all[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 236,
+   "alloc": 391,
+   "h2h": 20,
+   "readback": 78,
+   "scan": 44,
+   "sort": 32
+  }
+ },
+ "benchmarks/test_boolean.py::test_split_by_mesh[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 126,
+   "alloc": 218,
+   "h2h": 12,
+   "readback": 46,
+   "scan": 26,
+   "sort": 18
+  }
+ },
+ "benchmarks/test_boolean.py::test_split_by_plane[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 132,
+   "alloc": 219,
+   "h2h": 16,
+   "readback": 54,
+   "scan": 28,
+   "sort": 18
+  }
+ },
+ "benchmarks/test_boolean.py::test_trim_by_plane[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 92,
+   "alloc": 150,
+   "h2h": 12,
+   "readback": 32,
+   "scan": 16,
+   "sort": 14
   }
  },
  "benchmarks/test_boolean.py::test_union[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 69,
-   "alloc": 106,
-   "h2h": 5,
-   "readback": 26,
+   "launch": 89,
+   "alloc": 149,
+   "h2h": 8,
+   "readback": 27,
    "scan": 15,
-   "sort": 9
+   "sort": 14
+  }
+ },
+ "benchmarks/test_boolean.py::test_union_all[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 236,
+   "alloc": 391,
+   "h2h": 20,
+   "readback": 78,
+   "scan": 44,
+   "sort": 32
   }
  },
  "benchmarks/test_boundary.py::test_boundary_edges[holes_many-ordito-cpu]": {

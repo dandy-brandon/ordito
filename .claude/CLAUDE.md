@@ -534,7 +534,7 @@ Docstrings are NumPy-style. Use mkdocs-autorefs syntax; Sphinx roles (`:func:` e
 ## 7. Testing
 
 Every new geometry function MUST have regression tests comparing against a CPU reference
-implementation. `trimesh` is the default; §7.6 covers the other eight libraries.
+implementation. `trimesh` is the default; §7.6 covers the other nine libraries.
 
 ### 7.1 Conventions
 
@@ -682,15 +682,21 @@ marker citing it. Both markers are stackable and take string literals only.
 - `lexsort` is unusable on float coordinates with ties. For positions use a `cKDTree` match with a
   bijection check, or `hausdorff_two_sided`; keep `lexsort_rows` for integer index rows.
 
-### 7.6 The nine reference libraries
+### 7.6 The ten reference libraries
 
-- All nine (trimesh, igl, potpourri3d, pymeshlab, open3d, pyvista, meshlib, pymeshfix, pytorch3d)
-  are hard test dependencies: import them plainly, never via `pytest.importorskip`. Aliases are
-  pinned in ruff (`import trimesh as tm`, `import igl`, `import potpourri3d as pp3d`, `import
-  pymeshlab as ml`, `import open3d as o3d`, `import pyvista as pv`, `from meshlib import mrmeshpy
-  as mm` / `mrmeshnumpy as mn`, `import pymeshfix`, `import pytorch3d.ops as p3d_ops`).
+- All ten (trimesh, igl, potpourri3d, pymeshlab, open3d, pyvista, meshlib, pymeshfix, pytorch3d,
+  manifold3d) are hard test dependencies: import them plainly, never via `pytest.importorskip`.
+  Aliases are pinned in ruff (`import trimesh as tm`, `import igl`, `import potpourri3d as pp3d`,
+  `import pymeshlab as ml`, `import open3d as o3d`, `import pyvista as pv`, `from meshlib import
+  mrmeshpy as mm` / `mrmeshnumpy as mn`, `import pymeshfix`, `import pytorch3d.ops as p3d_ops`,
+  `import manifold3d as m3`; result suffix `_m3`).
 - Threading decides how a ratio reads: trimesh, igl, pyvista and pymeshfix are single-threaded;
-  meshlib and pytorch3d-cpu are multi-threaded; only pytorch3d-cuda runs on the GPU.
+  meshlib, manifold3d (TBB) and pytorch3d-cpu are multi-threaded; only pytorch3d-cuda runs on the
+  GPU.
+- `manifold3d` is the library `ordito.boolean` ports (Apache-2.0, code may derive from it): its
+  answers are compared array for array, `to_mesh()` order included. Its CSG is lazy (time a row
+  through `num_vert()`), it reads `float32` meshes, and `a + b` composes rather than intersects
+  meshes whose boxes are apart.
 - Licensing: nothing under `ordito/` may name MeshLib or promesh (check 21), except an option
   reproducing MeshLib, whose method value is `"meshlib"`; pymeshfix and pymeshlab
   (GPL) may be named in prose, but no ordito code may derive from their source.
