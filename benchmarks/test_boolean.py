@@ -360,3 +360,39 @@ def test_simplify(bench_case: BenchCase) -> None:
     vertices_wp, faces_wp = bench_case.vertices_wp, bench_case.faces_wp
     _, faces = bench_case.run(lambda: od.boolean.simplify(vertices_wp, faces_wp, tolerance))
     assert faces.size > 0
+
+
+@pytest.mark.benchmark(group="cross_section")
+@pytest.mark.benchlibs("ordito", "manifold3d")
+@pytest.mark.benchaxis("scale")
+def test_cross_section(bench_case: BenchCase) -> None:
+    """``od.boolean.cross_section`` through the sphere's middle (manifold3d: ``slice``)."""
+    vertices = np.asarray(bench_case.vertices_np, dtype=np.float64)
+    height = float(vertices[:, 2].mean()) + 0.01
+    if bench_case.kind == "manifold3d":
+        a_m3, _ = _manifolds_m3(bench_case)
+        loops_m3 = bench_case.run(lambda: a_m3.slice(height).to_polygons())
+        assert len(loops_m3) > 0
+        return
+    vertices_wp, faces_wp = bench_case.vertices_wp, bench_case.faces_wp
+    loops = bench_case.run(lambda: od.boolean.cross_section(vertices_wp, faces_wp, height))
+    assert len(loops) > 0
+
+
+@pytest.mark.benchmark(group="cross_section_with_offsets")
+@pytest.mark.benchlibs("ordito", "manifold3d")
+@pytest.mark.benchaxis("scale")
+def test_cross_section_with_offsets(bench_case: BenchCase) -> None:
+    """``od.boolean.cross_section_with_offsets``, the packed loops."""
+    vertices = np.asarray(bench_case.vertices_np, dtype=np.float64)
+    height = float(vertices[:, 2].mean()) + 0.01
+    if bench_case.kind == "manifold3d":
+        a_m3, _ = _manifolds_m3(bench_case)
+        loops_m3 = bench_case.run(lambda: a_m3.slice(height).to_polygons())
+        assert len(loops_m3) > 0
+        return
+    vertices_wp, faces_wp = bench_case.vertices_wp, bench_case.faces_wp
+    _, offsets = bench_case.run(
+        lambda: od.boolean.cross_section_with_offsets(vertices_wp, faces_wp, height)
+    )
+    assert offsets.size > 1

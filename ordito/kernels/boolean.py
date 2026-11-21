@@ -3014,3 +3014,65 @@ def min_face_distance(
         best = wp.min(best, triangle_distance_squared(p, q))
     if best < out_min[0]:
         wp.atomic_min(out_min, 0, best)
+
+
+# -- cross-sections (``Impl::Slice``) -------------------------------------------------------------
+
+
+@wp.kernel
+def slice_crossings(
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    positions: wp.array[wp.vec3d],
+    height: wp.float64,
+    out_flags: wp.array[wp.int32],
+    out_points: wp.array[wp.vec2d],
+    out_next: wp.array[wp.int32],
+) -> None:
+    # ``Slice``: a face crosses the plane when ``min z <= height < max z``; its one edge running
+    # from at-or-below to above the plane gives the section's point there (``la::lerp``), and the
+    # face across that edge is the next face along the section's loop.
+    f = wp.int32(wp.tid())
+    out_flags[f] = 0
+    z0 = positions[faces[3 * f]][2]
+    z1 = positions[faces[3 * f + 1]][2]
+    z2 = positions[faces[3 * f + 2]][2]
+    low = wp.min(wp.min(z0, z1), z2)
+    high = wp.max(wp.max(z0, z1), z2)
+    if not (low <= height and high > height):
+        return
+    for i in range(3):
+        below = positions[faces[3 * f + i]]
+        above = positions[faces[3 * f + next3(i)]]
+        if below[2] <= height and above[2] > height:
+            a = (height - below[2]) / (above[2] - below[2])
+            p = below * (wp.float64(1.0) - a) + above * a
+            out_points[f] = wp.vec2d(p[0], p[1])
+            out_next[f] = twins[3 * f + i] // 3
+    out_flags[f] = 1
+
+
+@wp.kernel
+def gather_crossings(
+    flags: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    points: wp.array[wp.vec2d],
+    next_face: wp.array[wp.int32],
+    out_points: wp.array[wp.vec2d],
+    out_next: wp.array[wp.int32],
+) -> None:
+    # The crossing faces packed in face order, each successor renumbered to its packed rank.
+    f = wp.int32(wp.tid())
+    if flags[f] == 0:
+        return
+    r = ranks[f]
+    out_points[r] = points[f]
+    out_next[r] = ranks[next_face[f]]
+
+
+@wp.kernel
+def count_unpaired(twins: wp.array[wp.int32], out_count: wp.array[wp.int32]) -> None:
+    # Halfedges with no twin: a closed mesh has none.
+    h = wp.int32(wp.tid())
+    if twins[h] < 0:
+        wp.atomic_add(out_count, 0, 1)

@@ -402,6 +402,77 @@ def test_simplify_matches_manifold3d(
     _assert_same_as_m3(od.boolean.simplify(*_upload(mesh_tm, device), tolerance), result_m3)
 
 
+def _without_repeats(loop: np.ndarray, tolerance: float = 1e-7) -> np.ndarray:
+    """Return a loop with its consecutive coincident points (and a repeated closing one) dropped."""
+    kept: list[np.ndarray] = []
+    for point in loop:
+        if kept and np.linalg.norm(point - kept[-1]) <= tolerance:
+            continue
+        kept.append(point)
+    while len(kept) > 1 and np.linalg.norm(kept[0] - kept[-1]) <= tolerance:
+        kept.pop()
+    return np.asarray(kept)
+
+
+def _same_loops(loops: list[np.ndarray], loops_m3: list[np.ndarray]) -> bool:
+    """Whether two sets of loops match one to one, each up to its starting point."""
+    if len(loops) != len(loops_m3):
+        return False
+    used = [False] * len(loops_m3)
+    for loop in loops:
+        for j, loop_m3 in enumerate(loops_m3):
+            if used[j] or len(loop) != len(loop_m3):
+                continue
+            if any(
+                np.allclose(np.roll(loop_m3, -shift, axis=0), loop, atol=1e-7, rtol=0)
+                for shift in range(len(loop_m3))
+            ):
+                used[j] = True
+                break
+        else:
+            return False
+    return True
+
+
+@pytest.mark.parity("cross_section", "manifold3d")
+@pytest.mark.parity("cross_section_with_offsets", "manifold3d")
+@pytest.mark.parametrize("shape", ["sphere", "box", "torus", "holed_box"])
+@pytest.mark.parametrize("height", [-0.5, 0.0, 0.1, 0.25, 0.5, 0.999, 1.0, 2.0])
+def test_cross_section_matches_manifold3d(device: str, shape: str, height: float) -> None:
+    """
+    The section's loops are Manifold's ``slice``, each up to where it starts.
+
+    Class B, after one named transform: ``manifold3d`` hands the loops through a ``CrossSection``,
+    whose cleanup drops a point repeated at a vertex the plane passes through (ordito keeps the C++
+    ``Slice``'s loops, a point a face); so consecutive coincident points are dropped before the
+    loops are matched, one to one, up to rotation, at ``1e-7``. Heights below, through vertices
+    (``0``, ``1``, the bottom face and the top), between, and above; the holed box has two loops.
+    """
+    mesh_tm = {
+        "sphere": _float32_mesh(tm.creation.icosphere(subdivisions=3)),
+        "box": _box([0, 0, 0], [1, 1, 1]),
+        "torus": _float32_mesh(tm.creation.torus(1.0, 0.3, 24, 12)),
+        "holed_box": _manifold_mesh_tm(
+            _manifold_m3(_box([0, 0, 0], [1, 1, 1]))
+            - _manifold_m3(_box([0.25, 0.25, -1], [0.75, 0.75, 2]))
+        ),
+    }[shape]
+    loops_m3 = [np.asarray(loop) for loop in _manifold_m3(mesh_tm).slice(height).to_polygons()]
+    loops = [loop.numpy() for loop in od.boolean.cross_section(*_upload(mesh_tm, device), height)]
+    assert _same_loops([_without_repeats(loop) for loop in loops], loops_m3)
+    points, offsets = od.boolean.cross_section_with_offsets(*_upload(mesh_tm, device), height)
+    assert np.array_equal(points.numpy(), np.concatenate(loops) if loops else np.zeros((0, 2)))
+    assert offsets.numpy()[-1] == sum(len(loop) for loop in loops)
+
+
+def _manifold_mesh_tm(result_m3: m3.Manifold) -> tm.Trimesh:
+    """Return a Manifold as a ``float32`` trimesh mesh."""
+    mesh_m3 = result_m3.to_mesh()
+    return tm.Trimesh(
+        np.asarray(mesh_m3.vert_properties)[:, :3], np.asarray(mesh_m3.tri_verts), process=False
+    )
+
+
 @pytest.mark.parametrize(("name", "operation"), OPERATIONS, ids=_OPERATION_IDS)
 def test_boolean_with_an_empty_operand(device: str, name: str, operation: Operation) -> None:
     """

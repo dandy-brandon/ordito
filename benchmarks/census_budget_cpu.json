@@ -407,6 +407,26 @@
    "alloc": 3
   }
  },
+ "benchmarks/test_boolean.py::test_cross_section[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 12,
+   "h2h": 3,
+   "readback": 5,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_boolean.py::test_cross_section_with_offsets[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 12,
+   "h2h": 3,
+   "readback": 4,
+   "scan": 1,
+   "sort": 1
+  }
+ },
  "benchmarks/test_boolean.py::test_difference[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 89,

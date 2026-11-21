@@ -426,6 +426,28 @@
    "alloc": 3
   }
  },
+ "benchmarks/test_boolean.py::test_cross_section[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 8,
+   "alloc": 16,
+   "memset": 3,
+   "d2d": 1,
+   "h2d": 2,
+   "d2h": 5,
+   "scan": 2
+  }
+ },
+ "benchmarks/test_boolean.py::test_cross_section_with_offsets[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 8,
+   "alloc": 15,
+   "memset": 3,
+   "d2d": 1,
+   "h2d": 2,
+   "d2h": 4,
+   "scan": 2
+  }
+ },
  "benchmarks/test_boolean.py::test_difference[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 97,

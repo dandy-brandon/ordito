@@ -63,6 +63,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | every crossing of segments with a closed surface, exact at edges and vertices | [`boolean.segment_hits`][ordito.boolean.segment_hits] |
 | the gap between two solids | [`boolean.min_gap`][ordito.boolean.min_gap] |
 | drop a closed mesh's redundant vertices within a tolerance | [`boolean.simplify`][ordito.boolean.simplify] |
+| the loops where a horizontal plane cuts a solid | [`boolean.cross_section`][ordito.boolean.cross_section], [`cross_section_with_offsets`][ordito.boolean.cross_section_with_offsets] |
 | triangulate a planar region with holes | [`polyline.triangulate_polygons`][ordito.polyline.triangulate_polygons], [`triangulate_polygons_from_offsets`][ordito.polyline.triangulate_polygons_from_offsets] |
 | keep a subset of faces | [`selection.submesh_from_face_mask`][ordito.selection.submesh_from_face_mask] |
 | grow a selection, or measure hops from it | [`selection.expand_vertex_mask`][ordito.selection.expand_vertex_mask], [`vertex_hop_distance`][ordito.selection.vertex_hop_distance] |

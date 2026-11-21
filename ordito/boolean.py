@@ -33,6 +33,7 @@ from warp._src.codegen import StructInstance
 import ordito.typing as odt
 from ordito import _launch
 from ordito._common import offsets_buffer, read_array, read_values, require_same_device, scan_count
+from ordito.array import split as array_split
 from ordito.graph import connected_component_labels_from_edges
 from ordito.halfedge import halfedge_twins
 from ordito.kernels import boolean as kernel_boolean
@@ -891,6 +892,210 @@ def simplify(
     if solid.is_empty:
         return _mesh_from_solid(solid, device)
     return _mesh_from_solid(_solid_simplify(solid, float(tolerance)), device)
+
+
+def cross_section(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], height: float = 0.0
+) -> list[wp.array[wp.vec2]]:
+    """
+    Return the closed loops where the plane ``z = height`` cuts a closed mesh.
+
+    The loops of [`cross_section_with_offsets`][ordito.boolean.cross_section_with_offsets], one
+    array each.
+
+    Parameters
+    ----------
+    vertices, faces
+        ``(n_vertices,)`` and ``(3 * n_faces,)`` closed, consistently wound mesh.
+    height
+        The plane's ``z``.
+
+    Returns
+    -------
+    list[wp.array[wp.vec2]]
+        ``(n_i,)`` each loop's ``(x, y)`` points, outer loops counter-clockwise and holes clockwise.
+
+    Raises
+    ------
+    RuntimeError
+        If ``vertices`` and ``faces`` are not on one device.
+    ValueError
+        If the mesh is not closed, has an edge shared by more than two faces, or is not
+        consistently wound.
+
+    See Also
+    --------
+    [`cross_section_with_offsets`][ordito.boolean.cross_section_with_offsets]
+    [`intersection.mesh_with_plane`][ordito.intersection.mesh_with_plane]
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box(bounds=[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
+    loops = od.boolean.cross_section(vertices, faces, 0.5)
+    print(len(loops))  # 1
+    ```
+    """
+    points, offsets = cross_section_with_offsets(vertices, faces, height)
+    return array_split(points, offsets)
+
+
+def cross_section_with_offsets(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], height: float = 0.0
+) -> tuple[wp.array[wp.vec2], wp.array[wp.int32]]:
+    """
+    Return the closed loops where the plane ``z = height`` cuts a closed mesh, packed.
+
+    A face belongs to the section when its lowest corner is at or below the plane and its
+    highest above it, so a plane through vertices or along faces is decided one way, the same
+    for every face: the section of a box at its bottom height is the bottom face, at its top
+    nothing. Each loop runs counter-clockwise around material, as seen from above.
+
+    Parameters
+    ----------
+    vertices, faces
+        ``(n_vertices,)`` and ``(3 * n_faces,)`` closed, consistently wound mesh.
+    height
+        The plane's ``z``.
+
+    Returns
+    -------
+    points : wp.array[wp.vec2]
+        ``(n_points,)`` every loop's ``(x, y)`` points, loop after loop.
+    offsets : wp.array[wp.int32]
+        ``(n_loops + 1,)`` loop ``r`` is ``points[offsets[r] : offsets[r + 1]]``.
+
+    Raises
+    ------
+    RuntimeError
+        If ``vertices`` and ``faces`` are not on one device.
+    ValueError
+        If the mesh is not closed, has an edge shared by more than two faces, or is not
+        consistently wound.
+
+    See Also
+    --------
+    [`cross_section`][ordito.boolean.cross_section]
+    [`polyline.triangulate_polygons_from_offsets`][ordito.polyline.triangulate_polygons_from_offsets]
+
+    Notes
+    -----
+    Manifold's ``Manifold::Slice``: the same loops (Manifold starts each where its hash set does;
+    here at the crossing on the earliest face). A plane through a vertex reaches it from each face
+    around it, so the loop repeats that point once a face; ``manifold3d``'s ``slice`` returns a
+    ``CrossSection``, whose cleanup drops the repeats.
+
+    Examples
+    --------
+    A unit cube cut through its middle: one square loop of eight points (its faces' diagonals
+    cross the plane too):
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box(bounds=[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
+    points, offsets = od.boolean.cross_section_with_offsets(vertices, faces, 0.5)
+    print(offsets.numpy().tolist())  # [0, 8]
+    ```
+    """
+    require_same_device(vertices=vertices, faces=faces)
+    device = vertices.device
+    n_faces = faces.size // 3
+    if n_faces == 0:
+        return _launch.empty(0, dtype=wp.vec2, device=device), _launch.zeros(
+            1, dtype=wp.int32, device=device
+        )
+    positions, twins = _closed_positions(vertices, faces)
+    ranks, flags = offsets_buffer(n_faces, device)
+    face_points = _launch.empty(n_faces, dtype=wp.vec2d, device=device)
+    face_next = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_boolean.slice_crossings,
+        dim=n_faces,
+        inputs=[faces, twins, positions, float(height)],
+        outputs=[flags, face_points, face_next],
+        device=device,
+    )
+    raw_flags = _launch.clone(flags)
+    n_crossings = scan_count(flags)
+    if n_crossings == 0:
+        return _launch.empty(0, dtype=wp.vec2, device=device), _launch.zeros(
+            1, dtype=wp.int32, device=device
+        )
+    packed_points = _launch.empty(n_crossings, dtype=wp.vec2d, device=device)
+    packed_next = _launch.empty(n_crossings, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_boolean.gather_crossings,
+        dim=n_faces,
+        inputs=[raw_flags, ranks, face_points, face_next],
+        outputs=[packed_points, packed_next],
+        device=device,
+    )
+    # Host readback: the loops are linked by walking each crossing's successor, a serial chase
+    # over the section's points only.
+    next_np = read_array(packed_next)
+    points_np = read_array(packed_points)
+    order: list[int] = []
+    sizes = [0]
+    visited = np.zeros(n_crossings, dtype=bool)
+    for start in range(n_crossings):
+        if visited[start]:
+            continue
+        current = start
+        count = 0
+        while not visited[current]:
+            visited[current] = True
+            order.append(current)
+            count += 1
+            current = int(next_np[current])
+        sizes.append(count)
+    loops_np = points_np[np.asarray(order)].astype(np.float32)
+    points = _launch.array(loops_np, dtype=wp.vec2, device=device)
+    offsets = _launch.array(np.cumsum(sizes).astype(np.int32), dtype=wp.int32, device=device)
+    return points, offsets
+
+
+def _closed_positions(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
+) -> tuple[wp.array[wp.vec3d], wp.array[wp.int32]]:
+    """
+    Return a closed mesh's ``float64`` positions and its twin halfedges, in the caller's order.
+
+    Raises
+    ------
+    ValueError
+        If the mesh is not closed, edge-manifold and consistently wound.
+    """
+    device = vertices.device
+    n_vertices = int(vertices.shape[0])
+    positions = _launch.empty(n_vertices, dtype=wp.vec3d, device=device)
+    _launch.launch(
+        kernel_boolean.widen_positions,
+        dim=n_vertices,
+        inputs=[vertices],
+        outputs=[positions],
+        device=device,
+    )
+    defects = _launch.zeros(3, dtype=wp.int32, device=device)
+    twins = halfedge_twins(faces, n_vertices, defect_counts=defects)
+    _launch.launch(
+        kernel_boolean.count_unpaired,
+        dim=faces.size,
+        inputs=[twins],
+        outputs=[_launch.view(defects, 2, 3)],
+        device=device,
+    )
+    # Host readback: whether the mesh is closed and paired decides whether it has a section.
+    non_manifold, inconsistent, boundary = read_values(defects, 0, 3)
+    if non_manifold or inconsistent or boundary:
+        raise ValueError(
+            f"the mesh must be closed, edge-manifold and consistently wound: {boundary} boundary "
+            f"halfedges, {non_manifold} edges with three or more faces, {inconsistent} edges "
+            "whose faces wind the same way"
+        )
+    return positions, twins
 
 
 class _Solid(NamedTuple):
