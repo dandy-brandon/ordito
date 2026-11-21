@@ -13574,11 +13574,11 @@ merges the pair:</p>
 an edge no longer than <code>tiny_edge_length</code>, grown by <code>region_rings</code> rings of neighbouring
 faces. Inside it, two local moves alternate until no collapse remains:</p>
 <ul>
-<li><strong>Flip</strong> every edge that fails the Delaunay test, as
-  <a class="autorefs autorefs-internal" title="flip_to_delaunay" href="../remesh/#ordito.remesh.flip_to_delaunay"><code>flip_to_delaunay</code></a> does, when the flip moves the surface
-  by at most <code>max_deviation</code> and changes the dihedral angle across it by at most
-  <code>max_angle_change</code> (a quad holding a degenerate face may exceed the angle). This is what
-  fixes a <em>cap</em>, whose apex sits on its long edge.</li>
+<li><strong>Flip</strong> every edge whose other diagonal makes the smaller larger circumcircle (on planar
+  input the Delaunay test of <a class="autorefs autorefs-internal" title="flip_to_delaunay" href="../remesh/#ordito.remesh.flip_to_delaunay"><code>flip_to_delaunay</code></a>), when the
+  flip moves the surface by at most <code>max_deviation</code> and changes the dihedral angle across it
+  by at most <code>max_angle_change</code> (a quad holding a degenerate face may exceed the angle).
+  This is what fixes a <em>cap</em>, whose apex sits on its long edge.</li>
 <li><strong>Collapse</strong> every edge no longer than <code>max_deviation</code>, shortest first, into the endpoint
   whose removal moves the surface least. This is what fixes a <em>needle</em>. A collapse that would
   leave a face of aspect ratio above 20 is skipped, unless a face it touches was already worse
@@ -14113,11 +14113,11 @@ edge:</p>
 <span class="sd">    an edge no longer than ``tiny_edge_length``, grown by ``region_rings`` rings of neighbouring</span>
 <span class="sd">    faces. Inside it, two local moves alternate until no collapse remains:</span>
 
-<span class="sd">    - **Flip** every edge that fails the Delaunay test, as</span>
-<span class="sd">      [`flip_to_delaunay`][ordito.remesh.flip_to_delaunay] does, when the flip moves the surface</span>
-<span class="sd">      by at most ``max_deviation`` and changes the dihedral angle across it by at most</span>
-<span class="sd">      ``max_angle_change`` (a quad holding a degenerate face may exceed the angle). This is what</span>
-<span class="sd">      fixes a *cap*, whose apex sits on its long edge.</span>
+<span class="sd">    - **Flip** every edge whose other diagonal makes the smaller larger circumcircle (on planar</span>
+<span class="sd">      input the Delaunay test of [`flip_to_delaunay`][ordito.remesh.flip_to_delaunay]), when the</span>
+<span class="sd">      flip moves the surface by at most ``max_deviation`` and changes the dihedral angle across it</span>
+<span class="sd">      by at most ``max_angle_change`` (a quad holding a degenerate face may exceed the angle).</span>
+<span class="sd">      This is what fixes a *cap*, whose apex sits on its long edge.</span>
 <span class="sd">    - **Collapse** every edge no longer than ``max_deviation``, shortest first, into the endpoint</span>
 <span class="sd">      whose removal moves the surface least. This is what fixes a *needle*. A collapse that would</span>
 <span class="sd">      leave a face of aspect ratio above 20 is skipped, unless a face it touches was already worse</span>

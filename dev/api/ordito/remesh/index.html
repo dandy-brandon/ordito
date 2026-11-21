@@ -9809,11 +9809,14 @@ evaluated when the pass is <em>issued</em>, so the captured graph does not conta
 
         <p>Improve triangle quality by flipping interior edges toward the Delaunay criterion.</p>
 <p>For every interior edge whose two incident faces are both in <code>region</code>, the shared diagonal
-is flipped when doing so satisfies the local Delone (empty-circumcircle) test — subject to an
-optional dihedral-angle-change gate and a surface-deviation gate, so the flips never distort
-the surface. Rim edges (with a face
-outside the region, or on the mesh boundary) are never flipped. Vertices, face count and
-region membership are unchanged; only the triangulation of the region is rewritten.</p>
+is flipped when the two angles opposite it sum to more than pi: the local Delaunay test of a
+surface, which on planar input is the empty-circumcircle test. Flips are subject to an
+optional dihedral-angle-change gate and a surface-deviation gate, so they never distort the
+surface. A flip that would fold the two faces onto each other, make a non-convex quadrangle
+or duplicate an existing edge is never made, so an edge around a valence-3 vertex can stay
+non-Delaunay. Rim edges (with a face outside the region, or on the mesh boundary) are never
+flipped. Vertices, face count and region membership are unchanged; only the triangulation of
+the region is rewritten.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -10167,7 +10170,11 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 <span class="normal">4236</span>
 <span class="normal">4237</span>
 <span class="normal">4238</span>
-<span class="normal">4239</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">flip_to_delaunay</span><span class="p">(</span>
+<span class="normal">4239</span>
+<span class="normal">4240</span>
+<span class="normal">4241</span>
+<span class="normal">4242</span>
+<span class="normal">4243</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">flip_to_delaunay</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">region</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -10180,11 +10187,14 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 <span class="sd">    Improve triangle quality by flipping interior edges toward the Delaunay criterion.</span>
 
 <span class="sd">    For every interior edge whose two incident faces are both in ``region``, the shared diagonal</span>
-<span class="sd">    is flipped when doing so satisfies the local Delone (empty-circumcircle) test — subject to an</span>
-<span class="sd">    optional dihedral-angle-change gate and a surface-deviation gate, so the flips never distort</span>
-<span class="sd">    the surface. Rim edges (with a face</span>
-<span class="sd">    outside the region, or on the mesh boundary) are never flipped. Vertices, face count and</span>
-<span class="sd">    region membership are unchanged; only the triangulation of the region is rewritten.</span>
+<span class="sd">    is flipped when the two angles opposite it sum to more than pi: the local Delaunay test of a</span>
+<span class="sd">    surface, which on planar input is the empty-circumcircle test. Flips are subject to an</span>
+<span class="sd">    optional dihedral-angle-change gate and a surface-deviation gate, so they never distort the</span>
+<span class="sd">    surface. A flip that would fold the two faces onto each other, make a non-convex quadrangle</span>
+<span class="sd">    or duplicate an existing edge is never made, so an edge around a valence-3 vertex can stay</span>
+<span class="sd">    non-Delaunay. Rim edges (with a face outside the region, or on the mesh boundary) are never</span>
+<span class="sd">    flipped. Vertices, face count and region membership are unchanged; only the triangulation of</span>
+<span class="sd">    the region is rewritten.</span>
 
 <span class="sd">    Parameters</span>
 <span class="sd">    ----------</span>
@@ -10285,6 +10295,7 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
                 <span class="n">mac</span><span class="p">,</span>
                 <span class="n">mdsq</span><span class="p">,</span>
                 <span class="n">car</span><span class="p">,</span>
+                <span class="n">kernel_remesh</span><span class="o">.</span><span class="n">DELONE_CRITERION_ANGLE</span><span class="p">,</span>
                 <span class="kc">None</span><span class="p">,</span>
                 <span class="n">settled</span><span class="p">,</span>
                 <span class="n">out_flip</span><span class="p">,</span>
@@ -10601,11 +10612,7 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4245</span>
-<span class="normal">4246</span>
-<span class="normal">4247</span>
-<span class="normal">4248</span>
-<span class="normal">4249</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4249</span>
 <span class="normal">4250</span>
 <span class="normal">4251</span>
 <span class="normal">4252</span>
@@ -10774,7 +10781,11 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 <span class="normal">4415</span>
 <span class="normal">4416</span>
 <span class="normal">4417</span>
-<span class="normal">4418</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">flip_by_objective</span><span class="p">(</span>
+<span class="normal">4418</span>
+<span class="normal">4419</span>
+<span class="normal">4420</span>
+<span class="normal">4421</span>
+<span class="normal">4422</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">flip_by_objective</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -11211,11 +11222,7 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4462</span>
-<span class="normal">4463</span>
-<span class="normal">4464</span>
-<span class="normal">4465</span>
-<span class="normal">4466</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4466</span>
 <span class="normal">4467</span>
 <span class="normal">4468</span>
 <span class="normal">4469</span>
@@ -11391,7 +11398,11 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 <span class="normal">4639</span>
 <span class="normal">4640</span>
 <span class="normal">4641</span>
-<span class="normal">4642</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">intrinsic_delaunay</span><span class="p">(</span>
+<span class="normal">4642</span>
+<span class="normal">4643</span>
+<span class="normal">4644</span>
+<span class="normal">4645</span>
+<span class="normal">4646</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">intrinsic_delaunay</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">epsilon</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">TOLERANCE_MOLLIFY</span><span class="p">,</span>
@@ -11845,11 +11856,7 @@ endpoints, and a child face comes from its parent.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4663</span>
-<span class="normal">4664</span>
-<span class="normal">4665</span>
-<span class="normal">4666</span>
-<span class="normal">4667</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4667</span>
 <span class="normal">4668</span>
 <span class="normal">4669</span>
 <span class="normal">4670</span>
@@ -11955,7 +11962,11 @@ endpoints, and a child face comes from its parent.</p>
 <span class="normal">4770</span>
 <span class="normal">4771</span>
 <span class="normal">4772</span>
-<span class="normal">4773</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide</span><span class="p">(</span>
+<span class="normal">4773</span>
+<span class="normal">4774</span>
+<span class="normal">4775</span>
+<span class="normal">4776</span>
+<span class="normal">4777</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -12394,11 +12405,7 @@ ones:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4794</span>
-<span class="normal">4795</span>
-<span class="normal">4796</span>
-<span class="normal">4797</span>
-<span class="normal">4798</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4798</span>
 <span class="normal">4799</span>
 <span class="normal">4800</span>
 <span class="normal">4801</span>
@@ -12626,7 +12633,11 @@ ones:</p>
 <span class="normal">5023</span>
 <span class="normal">5024</span>
 <span class="normal">5025</span>
-<span class="normal">5026</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_loop</span><span class="p">(</span>
+<span class="normal">5026</span>
+<span class="normal">5027</span>
+<span class="normal">5028</span>
+<span class="normal">5029</span>
+<span class="normal">5030</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_loop</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -13136,11 +13147,7 @@ face comes from the input face it was refined from.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5111</span>
-<span class="normal">5112</span>
-<span class="normal">5113</span>
-<span class="normal">5114</span>
-<span class="normal">5115</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5115</span>
 <span class="normal">5116</span>
 <span class="normal">5117</span>
 <span class="normal">5118</span>
@@ -13227,7 +13234,11 @@ face comes from the input face it was refined from.</p>
 <span class="normal">5199</span>
 <span class="normal">5200</span>
 <span class="normal">5201</span>
-<span class="normal">5202</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_to_size</span><span class="p">(</span>
+<span class="normal">5202</span>
+<span class="normal">5203</span>
+<span class="normal">5204</span>
+<span class="normal">5205</span>
+<span class="normal">5206</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_to_size</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">max_edge</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span>
@@ -13463,8 +13474,10 @@ face and length
 greater than <code>max_edge</code> is bisected, the incident faces are re-triangulated crack-free
 (the <a class="autorefs autorefs-internal" title="subdivide_to_size" href="./#ordito.remesh.subdivide_to_size"><code>subdivide_to_size</code></a> 1/2/3-split templates, so faces
 outside the region that touch a split edge stay watertight), and — unless disabled — a
-parallel Delaunay edge-flip pass (<a class="autorefs autorefs-internal" title="flip_to_delaunay" href="./#ordito.remesh.flip_to_delaunay"><code>flip_to_delaunay</code></a>)
-improves the region triangulation after each pass. New vertices are appended after the
+parallel edge-flip pass improves the region triangulation after each pass. That pass keeps
+the diagonal whose larger circumcircle is the smaller, which on planar input is
+<a class="autorefs autorefs-internal" title="flip_to_delaunay" href="./#ordito.remesh.flip_to_delaunay"><code>flip_to_delaunay</code></a>'s Delaunay test and on a curved region
+may differ from it. New vertices are appended after the
 originals, so the caller derives the new-vertex set as the index range
 <code>[len(vertices), len(new_vertices))</code>.</p>
 <p>Where a sequential implementation would drive this from a longest-edge-first priority queue,
@@ -13821,11 +13834,7 @@ it borders a refined edge, which keeps the mesh free of cracks:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5611</span>
-<span class="normal">5612</span>
-<span class="normal">5613</span>
-<span class="normal">5614</span>
-<span class="normal">5615</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5615</span>
 <span class="normal">5616</span>
 <span class="normal">5617</span>
 <span class="normal">5618</span>
@@ -14157,7 +14166,13 @@ it borders a refined edge, which keeps the mesh free of cracks:</p>
 <span class="normal">5944</span>
 <span class="normal">5945</span>
 <span class="normal">5946</span>
-<span class="normal">5947</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_region_to_size</span><span class="p">(</span>
+<span class="normal">5947</span>
+<span class="normal">5948</span>
+<span class="normal">5949</span>
+<span class="normal">5950</span>
+<span class="normal">5951</span>
+<span class="normal">5952</span>
+<span class="normal">5953</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_region_to_size</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">region</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
@@ -14198,8 +14213,10 @@ it borders a refined edge, which keeps the mesh free of cracks:</p>
 <span class="sd">    greater than ``max_edge`` is bisected, the incident faces are re-triangulated crack-free</span>
 <span class="sd">    (the [`subdivide_to_size`][ordito.remesh.subdivide_to_size] 1/2/3-split templates, so faces</span>
 <span class="sd">    outside the region that touch a split edge stay watertight), and — unless disabled — a</span>
-<span class="sd">    parallel Delaunay edge-flip pass ([`flip_to_delaunay`][ordito.remesh.flip_to_delaunay])</span>
-<span class="sd">    improves the region triangulation after each pass. New vertices are appended after the</span>
+<span class="sd">    parallel edge-flip pass improves the region triangulation after each pass. That pass keeps</span>
+<span class="sd">    the diagonal whose larger circumcircle is the smaller, which on planar input is</span>
+<span class="sd">    [`flip_to_delaunay`][ordito.remesh.flip_to_delaunay]'s Delaunay test and on a curved region</span>
+<span class="sd">    may differ from it. New vertices are appended after the</span>
 <span class="sd">    originals, so the caller derives the new-vertex set as the index range</span>
 <span class="sd">    ``[len(vertices), len(new_vertices))``.</span>
 
@@ -14898,13 +14915,7 @@ already split) is refined until it matches its surroundings:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">6034</span>
-<span class="normal">6035</span>
-<span class="normal">6036</span>
-<span class="normal">6037</span>
-<span class="normal">6038</span>
-<span class="normal">6039</span>
-<span class="normal">6040</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">6040</span>
 <span class="normal">6041</span>
 <span class="normal">6042</span>
 <span class="normal">6043</span>
@@ -15124,7 +15135,13 @@ already split) is refined until it matches its surroundings:</p>
 <span class="normal">6257</span>
 <span class="normal">6258</span>
 <span class="normal">6259</span>
-<span class="normal">6260</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">refine_region_to_density</span><span class="p">(</span>
+<span class="normal">6260</span>
+<span class="normal">6261</span>
+<span class="normal">6262</span>
+<span class="normal">6263</span>
+<span class="normal">6264</span>
+<span class="normal">6265</span>
+<span class="normal">6266</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">refine_region_to_density</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">region</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
@@ -15706,13 +15723,7 @@ splits just the two faces sharing that edge:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">6420</span>
-<span class="normal">6421</span>
-<span class="normal">6422</span>
-<span class="normal">6423</span>
-<span class="normal">6424</span>
-<span class="normal">6425</span>
-<span class="normal">6426</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">6426</span>
 <span class="normal">6427</span>
 <span class="normal">6428</span>
 <span class="normal">6429</span>
@@ -15910,7 +15921,13 @@ splits just the two faces sharing that edge:</p>
 <span class="normal">6621</span>
 <span class="normal">6622</span>
 <span class="normal">6623</span>
-<span class="normal">6624</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_edges</span><span class="p">(</span>
+<span class="normal">6624</span>
+<span class="normal">6625</span>
+<span class="normal">6626</span>
+<span class="normal">6627</span>
+<span class="normal">6628</span>
+<span class="normal">6629</span>
+<span class="normal">6630</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_edges</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">split_mask</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
@@ -16306,14 +16323,7 @@ consistently wound.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">6942</span>
-<span class="normal">6943</span>
-<span class="normal">6944</span>
-<span class="normal">6945</span>
-<span class="normal">6946</span>
-<span class="normal">6947</span>
-<span class="normal">6948</span>
-<span class="normal">6949</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">6949</span>
 <span class="normal">6950</span>
 <span class="normal">6951</span>
 <span class="normal">6952</span>
@@ -16366,7 +16376,14 @@ consistently wound.</p>
 <span class="normal">6999</span>
 <span class="normal">7000</span>
 <span class="normal">7001</span>
-<span class="normal">7002</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">simplify</span><span class="p">(</span>
+<span class="normal">7002</span>
+<span class="normal">7003</span>
+<span class="normal">7004</span>
+<span class="normal">7005</span>
+<span class="normal">7006</span>
+<span class="normal">7007</span>
+<span class="normal">7008</span>
+<span class="normal">7009</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">simplify</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">tolerance</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -16689,14 +16706,7 @@ shared by more than two faces, or is not consistently wound.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">7005</span>
-<span class="normal">7006</span>
-<span class="normal">7007</span>
-<span class="normal">7008</span>
-<span class="normal">7009</span>
-<span class="normal">7010</span>
-<span class="normal">7011</span>
-<span class="normal">7012</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">7012</span>
 <span class="normal">7013</span>
 <span class="normal">7014</span>
 <span class="normal">7015</span>
@@ -16780,7 +16790,14 @@ shared by more than two faces, or is not consistently wound.</p>
 <span class="normal">7093</span>
 <span class="normal">7094</span>
 <span class="normal">7095</span>
-<span class="normal">7096</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_smooth</span><span class="p">(</span>
+<span class="normal">7096</span>
+<span class="normal">7097</span>
+<span class="normal">7098</span>
+<span class="normal">7099</span>
+<span class="normal">7100</span>
+<span class="normal">7101</span>
+<span class="normal">7102</span>
+<span class="normal">7103</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_smooth</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">n</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
