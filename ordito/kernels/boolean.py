@@ -32,16 +32,13 @@ properties (``CreateProperties``).
 import warp as wp
 
 from ordito.kernels import polyline as kernel_polyline
-from ordito.kernels.algorithms.manifold import (
-    RETAINED_COLLISION,
-    kernel02,
-    kernel12,
-    next3,
-    next_halfedge,
-    project,
-)
+from ordito.kernels.halfedge import halfedge_next, next3
+from ordito.kernels.predicates import project, shadow_edge_face, shadow_vertex_face
 
 wp.set_module_options({"enable_backward": False, "fuse_fp": False})
+
+# The collision id of a retained vertex in an edge's sort, after every crossing's.
+RETAINED_COLLISION = wp.int32(2147483647)
 
 
 # -- edge-face crossings (``Intersect12``) ---------------------------------------------------------
@@ -77,17 +74,18 @@ def count_edge_crossings(
     out_counts: wp.array[wp.int32],
 ) -> None:
     # How many faces of B each edge of A crosses: a thread a forward halfedge, its box through
-    # B's face tree, ``kernel12`` on each candidate. The box is a superset; ``kernel12`` decides.
+    # B's face tree, ``shadow_edge_face`` on each candidate. The box is a superset;
+    # ``shadow_edge_face`` decides.
     h = wp.int32(wp.tid())
     start = faces_a[h]
-    end = faces_a[next_halfedge(h)]
+    end = faces_a[halfedge_next(h)]
     count = wp.int32(0)
     if start < end:
         lower, upper = edge_query_box(pos_a, start, end, pad)
         query = wp.bvh_query_aabb(bvh_b, lower, upper)
         face = wp.int32(0)
         while wp.bvh_query_next(query, face):
-            x12, _v12 = kernel12(
+            x12, _v12 = shadow_edge_face(
                 h,
                 face,
                 faces_a,
@@ -139,7 +137,7 @@ def write_edge_crossings(
     if first == last:
         return
     start = faces_a[h]
-    end = faces_a[next_halfedge(h)]
+    end = faces_a[halfedge_next(h)]
     lower, upper = edge_query_box(pos_a, start, end, pad)
     query = wp.bvh_query_aabb(bvh_b, lower, upper)
     face = wp.int32(0)
@@ -147,7 +145,7 @@ def write_edge_crossings(
     stop = record_base + last
     while wp.bvh_query_next(query, face):
         if slot < stop:
-            x12, v12 = kernel12(
+            x12, v12 = shadow_edge_face(
                 h,
                 face,
                 faces_a,
@@ -205,7 +203,7 @@ def unbroken_edge_rows(
     # other halfedge writes a self loop, which joins nothing.
     h = wp.int32(wp.tid())
     start = faces[h]
-    end = faces[next_halfedge(h)]
+    end = faces[halfedge_next(h)]
     out_edges[h, 0] = start
     if start < end and broken[h] == 0:
         out_edges[h, 1] = end
@@ -243,7 +241,7 @@ def component_windings(
     face = wp.int32(0)
     winding = wp.int32(0)
     while wp.bvh_query_next(query, face):
-        s02, _z02, ok = kernel02(
+        s02, _z02, ok = shadow_vertex_face(
             v,
             face,
             pos_a,
@@ -290,7 +288,7 @@ def vertex_inclusions(
 # instead of a thread an edge walking the face tree, which leaves a large operand's faces to a
 # handful of threads when the few edges are long (a half-space cutter's). Flags scanned in edge-
 # major, face-minor order place each edge's run sorted by face, as ``write_edge_crossings``'
-# insertion leaves it; ``kernel12`` alone decides, so the box test only skips work.
+# insertion leaves it; ``shadow_edge_face`` alone decides, so the box test only skips work.
 
 
 @wp.func
@@ -316,7 +314,7 @@ def pair_crossing(
     h = p // n_faces_b
     face = p - h * n_faces_b
     start = faces_a[h]
-    end = faces_a[next_halfedge(h)]
+    end = faces_a[halfedge_next(h)]
     if start >= end:
         return 0, wp.vec3d()
     lower, upper = edge_query_box(pos_a, start, end, pad)
@@ -331,7 +329,7 @@ def pair_crossing(
         or lo[2] > upper[2]
     ):
         return 0, wp.vec3d()
-    return kernel12(
+    return shadow_edge_face(
         h,
         face,
         faces_a,
@@ -643,7 +641,7 @@ def emit_partial_edges(
     if m == 0:
         return
     v_start = faces[h]
-    v_end = faces[next_halfedge(h)]
+    v_end = faces[halfedge_next(h)]
     edge_vec = pos_in[v_end] - pos_in[v_start]
     n_items = m + 2
     rank_start = wp.int32(0)
@@ -898,7 +896,7 @@ def emit_whole_edges(
     if broken[h] != 0:
         return
     start = faces[h]
-    end = faces[next_halfedge(h)]
+    end = faces[halfedge_next(h)]
     if start >= end:
         return
     inclusion = vertex_inclusion[vertex_base + start]
@@ -1205,13 +1203,13 @@ def write_result_halfedges(
         if out_pair[h] != -1:
             continue
         u = out_start[h]
-        v = out_start[next_halfedge(h)]
+        v = out_start[halfedge_next(h)]
         for g in range(h0, h1):
             if (
                 g != h
                 and out_pair[g] == -1
                 and out_start[g] == v
-                and out_start[next_halfedge(g)] == u
+                and out_start[halfedge_next(g)] == u
             ):
                 out_pair[h] = g
                 out_pair[g] = h

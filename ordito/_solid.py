@@ -1,13 +1,13 @@
 """
-Manifold's mesh machinery, shared by its ports: Booleans, simplification, subdivision, level sets.
+Closed solids in halfedge form, shared by the Booleans, simplification, subdivision and level sets.
 
-Segment casts use it too.
-A solid is a closed mesh as Manifold's ``Impl`` carries it: ``float64`` positions in Morton order,
-each face's normal and coplanar group, each vertex's pseudo-normal and the tolerances. This module
-builds solids from meshes (``solid_from_mesh``, ``solid_from_positions``), lays them out again as
+A solid is a closed, edge-manifold mesh with ``float64`` positions in Morton order, each face's
+normal and coplanar group, each vertex's pseudo-normal and the tolerances. This module builds
+solids from meshes (``solid_from_mesh``, ``solid_from_positions``), lays them out again as
 ``float32`` meshes (``mesh_from_solid``), and runs the topology passes on a halfedge result
-(``simplify_topology``, ``finish_solid``), as Manifold does, so each port's answer is Manifold's
-bit for bit. Its kernels are ``kernels/algorithms/manifold``.
+(``simplify_topology``, ``finish_solid``). It ports the Manifold library's ``Impl``, so every
+answer built on it is Manifold's bit for bit. Its kernels are ``kernels/algorithms/solid`` and
+``kernels/algorithms/solid_topology``; ``ray.segment_hits`` builds its solids here too.
 """
 
 from __future__ import annotations
@@ -22,7 +22,8 @@ from ordito._common import offsets_buffer, read_array, read_values, scan_count
 from ordito.halfedge import halfedge_twins
 from ordito.kernels import array as kernel_array
 from ordito.kernels import scatter as kernel_scatter
-from ordito.kernels.algorithms import manifold as kernel_manifold
+from ordito.kernels.algorithms import solid as kernel_solid
+from ordito.kernels.algorithms import solid_topology as kernel_solid_topology
 
 FLOAT32_EPSILON = 1.1920929e-07
 
@@ -81,7 +82,7 @@ class Solid(NamedTuple):
 
 class _HalfedgeMesh(Protocol):
     """
-    The fields of a ``kernel_manifold.HalfedgeMesh`` struct, for the type checker.
+    The fields of a ``kernel_solid_topology.HalfedgeMesh`` struct, for the type checker.
 
     The result's halfedges, triangles and vertices as the topology passes edit them in place, and
     their used ``sizes``.
@@ -127,7 +128,7 @@ def solid_from_mesh(
         return empty_solid(device)
     widened = _launch.empty(n_vertices, dtype=wp.vec3d, device=device)
     _launch.launch(
-        kernel_manifold.widen_positions,
+        kernel_solid.widen_positions,
         dim=n_vertices,
         inputs=[vertices],
         outputs=[widened],
@@ -135,7 +136,7 @@ def solid_from_mesh(
     )
     lower, upper = positions_box(widened)
     scale = max(abs(x) for x in (*lower, *upper))
-    epsilon = kernel_manifold.PRECISION * scale
+    epsilon = kernel_solid.PRECISION * scale
     # ``SetEpsilon(-1, useSingle=true)``: a single-precision mesh's tolerance.
     tolerance = max(epsilon, FLOAT32_EPSILON * scale)
     return solid_from_positions(widened, faces, mesh_id, epsilon, tolerance, lower, upper, name)
@@ -177,7 +178,7 @@ def solid_from_positions(
     lowers = _launch.empty(n_faces, dtype=wp.vec3, device=device)
     uppers = _launch.empty(n_faces, dtype=wp.vec3, device=device)
     _launch.launch(
-        kernel_manifold.operand_boxes,
+        kernel_solid.operand_boxes,
         dim=n_faces,
         inputs=[positions, faces, twins, 0.0],
         outputs=[lowers, uppers, first_halfedge, _launch.view(defects, 2, 3)],
@@ -193,7 +194,7 @@ def solid_from_positions(
         )
     face_normals = _launch.empty(n_faces, dtype=wp.vec3d, device=device)
     _launch.launch(
-        kernel_manifold.mesh_face_normals,
+        kernel_solid.mesh_face_normals,
         dim=n_faces,
         inputs=[positions, faces],
         outputs=[face_normals],
@@ -202,7 +203,7 @@ def solid_from_positions(
     coplanar = coplanar_groups(positions, faces, twins, face_normals, tolerance)
     vertex_normals = _launch.empty(n_vertices, dtype=wp.vec3d, device=device)
     _launch.launch(
-        kernel_manifold.vertex_pseudo_normals,
+        kernel_solid.vertex_pseudo_normals,
         dim=n_vertices,
         inputs=[faces, twins, positions, face_normals, first_halfedge],
         outputs=[vertex_normals],
@@ -268,7 +269,7 @@ def mesh_from_solid(
     if n_faces == 0:
         return vertices, _launch.empty(0, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_manifold.narrow_positions,
+        kernel_solid.narrow_positions,
         dim=n_vertices,
         inputs=[solid.positions],
         outputs=[vertices],
@@ -285,7 +286,7 @@ def mesh_from_solid(
     _launch.radix_sort_pairs(keys, order, n_faces)
     faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_manifold.gather_faces,
+        kernel_solid.gather_faces,
         dim=n_faces,
         inputs=[solid.faces, order],
         outputs=[faces],
@@ -302,7 +303,7 @@ def positions_box(
     inf = float("inf")
     box = _launch.array([inf, inf, inf, -inf, -inf, -inf], dtype=wp.float64, device=device)
     _launch.launch(
-        kernel_manifold.positions_box,
+        kernel_solid.positions_box,
         dim=int(positions.shape[0]),
         inputs=[positions],
         outputs=[box],
@@ -330,7 +331,7 @@ def coplanar_groups(
     n_faces = faces.size // 3
     keys, order = _launch.sort_buffers(n_faces, wp.float64, device)
     _launch.launch(
-        kernel_manifold.face_area_keys,
+        kernel_solid.face_area_keys,
         dim=n_faces,
         inputs=[positions, faces],
         outputs=[keys, order],
@@ -340,7 +341,7 @@ def coplanar_groups(
     rank = _launch.empty(n_faces, dtype=wp.int32, device=device)
     _, seed_flags = offsets_buffer(n_faces, device)
     _launch.launch(
-        kernel_manifold.coplanar_seed_flags,
+        kernel_solid.coplanar_seed_flags,
         dim=n_faces,
         inputs=[faces, twins, positions, face_normals, order, tolerance],
         outputs=[rank, seed_flags],
@@ -363,9 +364,7 @@ def coplanar_groups(
             _serial_flood(flood, seeds, n_seeds)
         else:
             _flood_in_rounds(flood, seeds, n_seeds)
-    _launch.launch(
-        kernel_manifold.own_coplanar_groups, dim=n_faces, inputs=[coplanar], device=device
-    )
+    _launch.launch(kernel_solid.own_coplanar_groups, dim=n_faces, inputs=[coplanar], device=device)
     return coplanar
 
 
@@ -389,11 +388,11 @@ def _serial_flood(flood: tuple[object, ...], seeds: wp.array[wp.int32], n_seeds:
     ]
     if wp.get_device(device).is_cpu or n_seeds <= _SERIAL_FLOOD_SEEDS:
         _launch.launch(
-            kernel_manifold.flood_coplanar, dim=1, inputs=inputs, outputs=[coplanar], device=device
+            kernel_solid.flood_coplanar, dim=1, inputs=inputs, outputs=[coplanar], device=device
         )
     else:
         # A long flood is a serial walk of dependent loads: one CPU thread runs it far faster.
-        launch_on_host(kernel_manifold.flood_coplanar, inputs, [coplanar])
+        launch_on_host(kernel_solid.flood_coplanar, inputs, [coplanar])
 
 
 def _flood_in_rounds(flood: tuple[object, ...], seeds: wp.array[wp.int32], n_seeds: int) -> None:
@@ -408,7 +407,7 @@ def _flood_in_rounds(flood: tuple[object, ...], seeds: wp.array[wp.int32], n_see
     n_faces = flood[4].size  # pyright: ignore[reportAttributeAccessIssue]
     bids = _launch.empty(n_faces, dtype=wp.int32, device=device)
     scratch = _launch.empty(
-        n_seeds * 4 * kernel_manifold.COPLANAR_REGION, dtype=wp.int32, device=device
+        n_seeds * 4 * kernel_solid.COPLANAR_REGION, dtype=wp.int32, device=device
     )
     first_overflow = _launch.empty(1, dtype=wp.int32, device=device)
     commit = _launch.empty(n_seeds, dtype=wp.int32, device=device)
@@ -419,21 +418,21 @@ def _flood_in_rounds(flood: tuple[object, ...], seeds: wp.array[wp.int32], n_see
         first_overflow.fill_(2147483647)
         left_offsets, left = offsets_buffer(m, device)
         _launch.launch(
-            kernel_manifold.coplanar_round_bids,
+            kernel_solid.coplanar_round_bids,
             dim=m,
             inputs=[*flood, pending, bids, scratch],
             outputs=[first_overflow],
             device=device,
         )
         _launch.launch(
-            kernel_manifold.coplanar_round_checks,
+            kernel_solid.coplanar_round_checks,
             dim=m,
             inputs=[*flood, pending, bids, scratch, first_overflow],
             outputs=[commit],
             device=device,
         )
         _launch.launch(
-            kernel_manifold.coplanar_round_commits,
+            kernel_solid.coplanar_round_commits,
             dim=m,
             inputs=[*flood, pending, bids, scratch, commit],
             outputs=[left],
@@ -451,7 +450,7 @@ def _flood_in_rounds(flood: tuple[object, ...], seeds: wp.array[wp.int32], n_see
         if n_left > 0:
             remaining = _launch.empty(n_left, dtype=wp.int32, device=device)
             _launch.launch(
-                kernel_manifold.compact_pending,
+                kernel_solid.compact_pending,
                 dim=m,
                 inputs=[pending, left_offsets],
                 outputs=[remaining],
@@ -495,7 +494,7 @@ def _morton_sorted(
     high = wp.vec3d(*upper)
     keys, order = _launch.sort_buffers(n_vertices, wp.uint32, device)
     _launch.launch(
-        kernel_manifold.vertex_morton_keys,
+        kernel_solid.vertex_morton_keys,
         dim=n_vertices,
         inputs=[positions, low, high],
         outputs=[keys, order],
@@ -507,7 +506,7 @@ def _morton_sorted(
     sorted_normals = _launch.empty(n_vertices if with_normals else 0, dtype=wp.vec3d, device=device)
     old_to_new = _launch.empty(n_vertices, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_manifold.renumber_vertices,
+        kernel_solid.renumber_vertices,
         dim=n_vertices,
         inputs=[
             positions,
@@ -520,7 +519,7 @@ def _morton_sorted(
     )
     keys, order = _launch.sort_buffers(n_faces, wp.uint32, device)
     _launch.launch(
-        kernel_manifold.face_morton_keys,
+        kernel_solid.face_morton_keys,
         dim=n_faces,
         inputs=[positions, faces, low, high],
         outputs=[keys, order],
@@ -534,7 +533,7 @@ def _morton_sorted(
     sorted_face_mesh = _launch.empty(n_attributes, dtype=wp.int32, device=device)
     sorted_face_coplanar = _launch.empty(n_attributes, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_manifold.renumber_faces,
+        kernel_solid.renumber_faces,
         dim=n_faces,
         inputs=[
             faces,
@@ -579,7 +578,7 @@ def halfedge_mesh(
         dtype=wp.int32,
         device=device,
     )
-    struct = kernel_manifold.HalfedgeMesh()
+    struct = kernel_solid_topology.HalfedgeMesh()
     struct.start = start
     struct.pair = pair
     struct.tri_mesh = tri_mesh
@@ -651,14 +650,14 @@ def simplify_topology(
     fan_min = _launch.empty(capacity, dtype=wp.int32, device=device)
     vertex_min = _launch.full(result.pos.shape[0], 2147483647, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_manifold.flag_pinched_fans,
+        kernel_solid_topology.flag_pinched_fans,
         dim=n_h,
         inputs=[mesh],
         outputs=[fan_min, vertex_min],
         device=device,
     )
     _launch.launch(
-        kernel_manifold.count_pinched_fans,
+        kernel_solid_topology.count_pinched_fans,
         dim=n_h,
         inputs=[mesh, fan_min, vertex_min],
         outputs=[flags],
@@ -667,7 +666,7 @@ def simplify_topology(
     n_pinched = scan_count(_launch.view(flags, 0, n_h))
     if n_pinched > 0:
         _launch.launch(
-            kernel_manifold.split_pinched_fans,
+            kernel_solid_topology.split_pinched_fans,
             dim=n_h,
             inputs=[mesh, _launch.view(flags_offsets, 0, n_h + 1), n_v],
             device=device,
@@ -676,41 +675,43 @@ def simplify_topology(
             result.sizes, _launch.array([n_v + n_pinched], dtype=wp.int32, device=device), 1
         )
     while True:
-        count = flag(kernel_manifold.flag_duplicate_edges, [])
+        count = flag(kernel_solid_topology.flag_duplicate_edges, [])
         if count == 0:
             break
-        _launch_serial(result, kernel_manifold.dedupe_flagged, [_HostIn(flagged, count), count], [])
+        _launch_serial(
+            result, kernel_solid_topology.dedupe_flagged, [_HostIn(flagged, count), count], []
+        )
     if cleanup_only:
         return
     # ``CollapseShortEdges`` (to ``tolerance`` only past the new vertices: everywhere it is
     # ``epsilon``), ``CollapseColinearEdges``, ``SwapDegenerates``.
     short_tolerance = tolerance if first_new_vert > 0 else epsilon
-    count = flag(kernel_manifold.flag_short_edges, [first_new_vert, short_tolerance, epsilon])
+    count = flag(kernel_solid_topology.flag_short_edges, [first_new_vert, short_tolerance, epsilon])
     if count > 0:
         _launch_serial(
             result,
-            kernel_manifold.collapse_flagged,
+            kernel_solid_topology.collapse_flagged,
             [_HostIn(flagged, count), count, short_tolerance, first_new_vert, epsilon, scratch_arg],
             [collapsed],
         )
     while colinear:
-        count = flag(kernel_manifold.flag_colinear_edges, [first_new_vert])
+        count = flag(kernel_solid_topology.flag_colinear_edges, [first_new_vert])
         if count == 0:
             break
         _launch_serial(
             result,
-            kernel_manifold.collapse_flagged,
+            kernel_solid_topology.collapse_flagged,
             [_HostIn(flagged, count), count, epsilon, 0, epsilon, scratch_arg],
             [collapsed],
         )
         # Host readback: ``CollapseColinearEdges`` repeats until a pass collapses nothing.
         if read_values(collapsed, 0, 1)[0] == 0:
             break
-    count = flag(kernel_manifold.flag_swappable_edges, [first_new_vert, tolerance])
+    count = flag(kernel_solid_topology.flag_swappable_edges, [first_new_vert, tolerance])
     if count > 0:
         _launch_serial(
             result,
-            kernel_manifold.swap_flagged,
+            kernel_solid_topology.swap_flagged,
             [_HostIn(flagged, count), count, tolerance, epsilon, *swap_scratch, scratch_arg],
             [],
         )
@@ -736,7 +737,7 @@ def _launch_serial(
     host = wp.get_device("cpu")
     # Host readback: the prefixes to move.
     n_h, n_v = (int(x) for x in read_values(result.sizes, 0, 2))
-    struct = kernel_manifold.HalfedgeMesh()
+    struct = kernel_solid_topology.HalfedgeMesh()
     prefixes = {
         "start": n_h,
         "pair": n_h,
@@ -859,7 +860,7 @@ def finish_solid(
     n_t = n_h // 3
     first = _launch.full(n_v, 2147483647, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_manifold.least_outgoing_halfedges,
+        kernel_solid.least_outgoing_halfedges,
         dim=n_h,
         inputs=[mesh.start],
         outputs=[first],
@@ -867,7 +868,7 @@ def finish_solid(
     )
     vertex_normals = _launch.empty(n_v, dtype=wp.vec3d, device=device)
     _launch.launch(
-        kernel_manifold.hm_vertex_normals,
+        kernel_solid_topology.hm_vertex_normals,
         dim=n_v,
         inputs=[mesh, first],
         outputs=[vertex_normals],
@@ -916,7 +917,7 @@ def compacted(
     tri_offsets, tri_kept = offsets_buffer(n_t, device)
     vert_offsets, vert_used = offsets_buffer(n_v, device)
     _launch.launch(
-        kernel_manifold.mark_kept,
+        kernel_solid_topology.mark_kept,
         dim=n_t,
         inputs=[mesh],
         outputs=[tri_kept, vert_used],
@@ -931,7 +932,7 @@ def compacted(
     face_mesh = _launch.empty(n_kept, dtype=wp.int32, device=device)
     face_coplanar = _launch.empty(n_kept, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_manifold.write_kept_faces,
+        kernel_solid_topology.write_kept_faces,
         dim=n_t,
         inputs=[mesh, tri_offsets, vert_offsets],
         outputs=[faces, face_normals, face_mesh, face_coplanar],
@@ -940,7 +941,7 @@ def compacted(
     positions = _launch.empty(n_used, dtype=wp.vec3d, device=device)
     kept_normals = _launch.empty(n_used, dtype=wp.vec3d, device=device)
     _launch.launch(
-        kernel_manifold.write_kept_vertices,
+        kernel_solid_topology.write_kept_vertices,
         dim=n_v,
         inputs=[mesh, vertex_normals, vert_offsets],
         outputs=[positions, kept_normals],

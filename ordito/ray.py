@@ -8,13 +8,13 @@ import warp as wp
 
 from ordito import _launch
 from ordito._common import offsets_buffer, read_scalar, require_same_device, scan_count
-from ordito._manifold import FLOAT32_EPSILON, positions_box, solid_from_mesh
+from ordito._solid import FLOAT32_EPSILON, positions_box, solid_from_mesh
 from ordito.config import is_deterministic
 from ordito.constants import TOLERANCE_PLANAR
 from ordito.halfedge import halfedge_twins
 from ordito.kernels import proximity as kernel_proximity
 from ordito.kernels import ray as kernel_ray
-from ordito.kernels.algorithms import manifold as kernel_manifold
+from ordito.kernels.algorithms import solid as kernel_solid
 
 
 def intersects_location(
@@ -738,7 +738,7 @@ def segment_hits(
     ray_mates = _launch.empty(3 * n_segments, dtype=wp.int32, device=device)
     ray_normals = _launch.empty(2 * n_segments, dtype=wp.vec3d, device=device)
     _launch.launch(
-        kernel_manifold.segment_edge_mesh,
+        kernel_ray.segment_edge_mesh,
         dim=n_segments,
         inputs=[origins, endpoints],
         outputs=[ray_positions, ray_faces, ray_mates, ray_normals],
@@ -751,7 +751,7 @@ def segment_hits(
     lowers = _launch.empty(solid.n_faces, dtype=wp.vec3, device=device)
     uppers = _launch.empty(solid.n_faces, dtype=wp.vec3, device=device)
     _launch.launch(
-        kernel_manifold.operand_boxes,
+        kernel_solid.operand_boxes,
         dim=solid.n_faces,
         inputs=[solid.positions, solid.faces, mates, pad],
         outputs=[
@@ -777,7 +777,7 @@ def segment_hits(
         pad,
     ]
     _launch.launch(
-        kernel_manifold.count_segment_hits,
+        kernel_ray.count_segment_hits,
         dim=n_segments,
         inputs=shared,
         outputs=[counts],
@@ -791,7 +791,7 @@ def segment_hits(
     assert solid.face_source is not None
     if n_hits > 0:
         _launch.launch(
-            kernel_manifold.write_segment_hits,
+            kernel_ray.write_segment_hits,
             dim=n_segments,
             inputs=[*shared, offsets, solid.face_source],
             outputs=[hit_faces, parameters, points, normals],

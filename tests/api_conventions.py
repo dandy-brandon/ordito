@@ -589,15 +589,15 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("boolean", "emit_new_edges"): frozenset({"item_rank"}),
     ("boolean", "triangulate_faces"): frozenset({"ec"}),
     ("polyline", "triangulate_polygon_set"): frozenset({"ec"}),
-    ("algorithms.manifold", "flood_coplanar"): frozenset({"coplanar", "face_normals", "stack"}),
-    ("algorithms.manifold", "own_coplanar_groups"): frozenset({"coplanar"}),
+    ("algorithms.solid", "flood_coplanar"): frozenset({"coplanar", "face_normals", "stack"}),
+    ("algorithms.solid", "own_coplanar_groups"): frozenset({"coplanar"}),
     ("boolean", "write_result_halfedges"): frozenset({"slot_halfedge"}),
-    ("algorithms.manifold", "split_pinched_fans"): frozenset({"m"}),
+    ("algorithms.solid_topology", "split_pinched_fans"): frozenset({"m"}),
     # The smoothing passes refine each halfedge's ``tangents`` in place, in ``CreateTangents``'
     # order; the vertex pass marks the ``fixed`` halfedges the distribution pass turns between.
-    ("algorithms.manifold", "sharpen_vertex_tangents"): frozenset({"tangents", "fixed"}),
-    ("algorithms.manifold", "linearize_flat_tangents"): frozenset({"tangents"}),
-    ("algorithms.manifold", "distribute_tangents"): frozenset({"tangents"}),
+    ("remesh", "sharpen_vertex_tangents"): frozenset({"tangents", "fixed"}),
+    ("remesh", "linearize_flat_tangents"): frozenset({"tangents"}),
+    ("remesh", "distribute_tangents"): frozenset({"tangents"}),
     # The multifrontal factorization works in place: ``fronts`` holds each front's operator
     # entries, then its factor and the Schur complement its parent extends; ``blocks`` the solve
     # blocks each panel's update rewrites. The refinement loop's ``state`` / ``rhs_scale`` are its

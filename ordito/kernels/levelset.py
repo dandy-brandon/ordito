@@ -4,6 +4,7 @@ import warp as wp
 from warp.geometry import IsoSurfaceMarchingCubes
 
 from ordito.constants import FLOAT32_INF_CONSTANT, TOLERANCE_MERGE, TOLERANCE_MERGE_CONSTANT
+from ordito.kernels import array as kernel_array
 from ordito.kernels.array import (
     CURVE_HILBERT,
     OverloadTable,
@@ -1589,6 +1590,723 @@ def shell_mesh(
         shell_face(faces, n_vertices, t - n_vertices, out_faces)
     else:
         shell_band(boundary_edges, n_vertices, 6 * n_faces, t - n_vertices - n_faces, out_faces)
+
+
+# -- level sets (``LevelSet``: marching tetrahedra on a body-centred cubic grid) -------------------
+# ``function_level_set``: its kernels build unfused, each in a module of its own (``fuse_fp`` is a
+# module option), so every vertex is Manifold's bit for bit.
+#
+# Grid points are ``(x, y, z, w)``: ``w = 1`` the cube corners, ``w = 0`` the centres half a cell
+# back. Each point owns seven of its fourteen edges (``level_set_neighbor`` 0-6, the rest their
+# opposites). The near-surface points go into Manifold's linear-probing hash table in index order
+# (one thread, as ``canParallel = false`` inserts them), and the edge vertices and triangles are
+# numbered in the table's slot order, as its serial loops number them.
+
+LEVEL_SET_OPEN = wp.uint64(0xFFFFFFFFFFFFFFFF)
+
+
+LEVEL_SET_KS = wp.float64(0.25)
+
+
+LEVEL_SET_KD = wp.float64(3.0)
+
+
+@wp.func
+def level_set_encode(p: wp.vec4i, pw: wp.vec3i) -> wp.uint64:
+    # ``EncodeIndex``: a negative coordinate wraps as Manifold's unsigned casts do.
+    return (
+        wp.uint64(p[3])
+        | (wp.uint64(p[2]) << wp.uint64(1))
+        | (wp.uint64(p[1]) << wp.uint64(1 + pw[2]))
+        | (wp.uint64(p[0]) << wp.uint64(1 + pw[2] + pw[1]))
+    )
+
+
+@wp.func
+def level_set_decode(index: wp.uint64, pw: wp.vec3i) -> wp.vec4i:
+    w = wp.int32(index & wp.uint64(1))
+    rest = index >> wp.uint64(1)
+    z = wp.int32(rest & ((wp.uint64(1) << wp.uint64(pw[2])) - wp.uint64(1)))
+    rest = rest >> wp.uint64(pw[2])
+    y = wp.int32(rest & ((wp.uint64(1) << wp.uint64(pw[1])) - wp.uint64(1)))
+    rest = rest >> wp.uint64(pw[1])
+    x = wp.int32(rest & ((wp.uint64(1) << wp.uint64(pw[0])) - wp.uint64(1)))
+    return wp.vec4i(x, y, z, w)
+
+
+@wp.func
+def level_set_neighbor(base: wp.vec4i, i: wp.int32) -> wp.vec4i:
+    # ``Neighbor``: the 14 neighbours, the first seven owned; ``w`` wrapping to the next cube.
+    o = wp.vec4i(0, 0, 0, 1)
+    if i == 1:
+        o = wp.vec4i(1, 0, 0, 0)
+    elif i == 2:
+        o = wp.vec4i(0, 1, 0, 0)
+    elif i == 3:
+        o = wp.vec4i(0, 0, 1, 0)
+    elif i == 4:
+        o = wp.vec4i(-1, 0, 0, 1)
+    elif i == 5:
+        o = wp.vec4i(0, -1, 0, 1)
+    elif i == 6:
+        o = wp.vec4i(0, 0, -1, 1)
+    elif i == 7:
+        o = wp.vec4i(-1, -1, -1, 1)
+    elif i == 8:
+        o = wp.vec4i(-1, 0, 0, 0)
+    elif i == 9:
+        o = wp.vec4i(0, -1, 0, 0)
+    elif i == 10:
+        o = wp.vec4i(0, 0, -1, 0)
+    elif i == 11:
+        o = wp.vec4i(0, -1, -1, 1)
+    elif i == 12:
+        o = wp.vec4i(-1, 0, -1, 1)
+    elif i == 13:
+        o = wp.vec4i(-1, -1, 0, 1)
+    n = base + o
+    if n[3] == 2:
+        n = n + wp.vec4i(1, 1, 1, 1)
+        n[3] = 0
+    return n
+
+
+@wp.func
+def level_set_position(g: wp.vec4i, origin: wp.vec3d, spacing: wp.vec3d) -> wp.vec3d:
+    off = wp.where(g[3] == 1, wp.float64(0.0), wp.float64(-0.5))
+    return wp.vec3d(
+        origin[0] + spacing[0] * (wp.float64(g[0]) + off),
+        origin[1] + spacing[1] * (wp.float64(g[1]) + off),
+        origin[2] + spacing[2] * (wp.float64(g[2]) + off),
+    )
+
+
+@wp.func
+def level_set_bound(p: wp.vec3d, origin: wp.vec3d, spacing: wp.vec3d, grid: wp.vec3i) -> wp.vec3d:
+    # ``Bound``: clamped into the grid's box.
+    out = wp.vec3d()
+    for k in range(3):
+        hi = origin[k] + spacing[k] * (wp.float64(grid[k]) - wp.float64(1.0))
+        v = p[k]
+        if v < origin[k]:
+            v = origin[k]
+        if hi < v:
+            v = hi
+        out[k] = v
+    return out
+
+
+@wp.func
+def level_set_bounded(
+    g: wp.vec4i,
+    origin: wp.vec3d,
+    spacing: wp.vec3d,
+    grid: wp.vec3i,
+    level: wp.float64,
+    sdf: wp.Function,
+) -> wp.float64:
+    # ``BoundedSDF``: zero outside the grid, never positive on its boundary.
+    lower = wp.min(wp.min(g[0], g[1]), g[2])
+    upper = wp.min(wp.min(grid[0] - g[0], grid[1] - g[1]), grid[2] - g[2])
+    bound_dist = wp.min(lower, upper - g[3])
+    if bound_dist < 0:
+        return wp.float64(0.0)
+    d = sdf(level_set_position(g, origin, spacing)) - level
+    if bound_dist == 0:
+        if wp.float64(0.0) < d:
+            return wp.float64(0.0)
+    return d
+
+
+@wp.func
+def level_set_find_surface(
+    p0_in: wp.vec3d,
+    d0_in: wp.float64,
+    p1_in: wp.vec3d,
+    d1_in: wp.float64,
+    tol: wp.float64,
+    level: wp.float64,
+    sdf: wp.Function,
+) -> wp.vec3d:
+    # ``FindSurface``: simplified ITP root finding along the edge, to within ``tol``.
+    p0 = p0_in
+    p1 = p1_in
+    d0 = d0_in
+    d1 = d1_in
+    if d0 == wp.float64(0.0):
+        return p0
+    if d1 == wp.float64(0.0):
+        return p1
+    k = wp.float64(0.1)
+    e = p0 - p1
+    check = wp.float64(2.0) * tol / wp.sqrt(e[0] * e[0] + e[1] * e[1] + e[2] * e[2])
+    frac = wp.float64(1.0)
+    bi_frac = wp.float64(1.0)
+    half = wp.float64(0.5)
+    while frac > check:
+        t = (d0 / (d0 - d1)) * (wp.float64(1.0) - k) + half * k
+        r = bi_frac / frac - half
+        x = t
+        if not (wp.abs(t - half) < r):
+            x = half - r * wp.where(t < half, wp.float64(1.0), wp.float64(-1.0))
+        mid = wp.lerp(p0, p1, x)
+        d = sdf(mid) - level
+        if (d > wp.float64(0.0)) == (d0 > wp.float64(0.0)):
+            d0 = d
+            p0 = mid
+            frac = frac * (wp.float64(1.0) - x)
+        else:
+            d1 = d
+            p1 = mid
+            frac = frac * x
+        bi_frac = bi_frac / wp.float64(2.0)
+    return wp.lerp(p0, p1, d0 / (d0 - d1))
+
+
+@wp.func
+def level_set_voxel(voxels: wp.array[wp.float64], g: wp.vec4i, pw: wp.vec3i) -> wp.float64:
+    return voxels[wp.int64(level_set_encode(g + wp.vec4i(1, 1, 1, 0), pw))]
+
+
+@wp.func
+def level_set_same_side(a: wp.float64, b: wp.float64) -> wp.bool:
+    return (a > wp.float64(0.0)) == (b > wp.float64(0.0))
+
+
+@wp.func
+def level_set_classify(
+    voxels: wp.array[wp.float64], g: wp.vec4i, pw: wp.vec3i, distance: wp.float64
+) -> wp.vec4i:
+    # ``NearSurface``'s scan of the owned edges: ``(crossing bits, keep, closest neighbour,
+    # opposed count)``; the closest neighbour's value is recomputed by ``level_set_closest_value``.
+    mask = wp.int32(0)
+    keep = wp.int32(0)
+    v_max = wp.float64(0.0)
+    closest = wp.int32(-1)
+    opposed = wp.int32(0)
+    for i in range(7):
+        val = level_set_voxel(voxels, level_set_neighbor(g, i), pw)
+        val_op = level_set_voxel(voxels, level_set_neighbor(g, i + 7), pw)
+        if not level_set_same_side(val, distance):
+            mask = mask | (1 << i)
+            keep = 1
+            if not level_set_same_side(val_op, distance):
+                opposed += 1
+            if wp.abs(val) > LEVEL_SET_KD * wp.abs(distance) and wp.abs(val) > wp.abs(v_max):
+                v_max = val
+                closest = i
+        elif (
+            not level_set_same_side(val_op, distance)
+            and wp.abs(val_op) > LEVEL_SET_KD * wp.abs(distance)
+            and wp.abs(val_op) > wp.abs(v_max)
+        ):
+            v_max = val_op
+            closest = i + 7
+    return wp.vec4i(mask, keep, closest, opposed)
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def level_set_insert(
+    keys_in: wp.array[wp.uint64],
+    n_entries: wp.int32,
+    size: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_slot_entry: wp.array[wp.int32],
+) -> None:
+    # The table as Manifold's serial ``Insert`` loop leaves it: each key in order into its hashed
+    # slot or the next open one. One thread.
+    mask = wp.uint64(size - 1)
+    for e in range(n_entries):
+        key = keys_in[e]
+        x = key
+        x = (x ^ (x >> wp.uint64(30))) * wp.uint64(0xBF58476D1CE4E5B9)
+        x = (x ^ (x >> wp.uint64(27))) * wp.uint64(0x94D049BB133111EB)
+        x = x ^ (x >> wp.uint64(31))
+        slot = wp.int32(x & mask)
+        while out_keys[slot] != LEVEL_SET_OPEN:
+            slot = (slot + 1) & (size - 1)
+        out_keys[slot] = key
+        out_slot_entry[slot] = e
+
+
+@wp.func
+def level_set_lookup(
+    keys: wp.array[wp.uint64], slot_entry: wp.array[wp.int32], key: wp.uint64
+) -> wp.int32:
+    # ``operator[]``: the entry under ``key``, or -1 (the empty slot's default ``GridVert``).
+    size = keys.shape[0]
+    x = key
+    x = (x ^ (x >> wp.uint64(30))) * wp.uint64(0xBF58476D1CE4E5B9)
+    x = (x ^ (x >> wp.uint64(27))) * wp.uint64(0x94D049BB133111EB)
+    x = x ^ (x >> wp.uint64(31))
+    slot = wp.int32(x & wp.uint64(size - 1))
+    while True:
+        k = keys[slot]
+        if k == key:
+            return slot_entry[slot]
+        if k == LEVEL_SET_OPEN:
+            return -1
+        slot = (slot + 1) & (size - 1)
+    return -1
+
+
+@wp.func
+def level_set_edge_target(
+    voxels: wp.array[wp.float64],
+    keys: wp.array[wp.uint64],
+    slot_entry: wp.array[wp.int32],
+    entry_distance: wp.array[wp.float64],
+    entry_moved: wp.array[wp.int32],
+    g: wp.vec4i,
+    i: wp.int32,
+    pw: wp.vec3i,
+    distance: wp.float64,
+) -> wp.vec2i:
+    # ``ComputeVerts`` for one owned edge: ``(0, _)`` for no vertex, ``(1, moved vertex)`` for the
+    # neighbour's snapped one, ``(2, _)`` for a new vertex on the edge.
+    n = level_set_neighbor(g, i)
+    e = level_set_lookup(keys, slot_entry, level_set_encode(n, pw))
+    val = wp.float64(0.0)
+    if e >= 0:
+        val = entry_distance[e]
+    else:
+        val = level_set_voxel(voxels, n, pw)
+    if level_set_same_side(val, distance):
+        return wp.vec2i(0, 0)
+    if e >= 0 and entry_moved[e] >= 0:
+        return wp.vec2i(1, entry_moved[e])
+    return wp.vec2i(2, 0)
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def level_set_count_verts(
+    voxels: wp.array[wp.float64],
+    keys: wp.array[wp.uint64],
+    slot_entry: wp.array[wp.int32],
+    entry_keys: wp.array[wp.uint64],
+    entry_distance: wp.array[wp.float64],
+    entry_moved: wp.array[wp.int32],
+    pw: wp.vec3i,
+    out_counts: wp.array[wp.int32],
+) -> None:
+    # Each slot's new edge vertices, numbered in slot order after the snapped ones.
+    slot = wp.int32(wp.tid())
+    e = slot_entry[slot]
+    count = wp.int32(0)
+    if e >= 0 and entry_moved[e] < 0:
+        g = level_set_decode(entry_keys[e], pw)
+        for i in range(7):
+            target = level_set_edge_target(
+                voxels, keys, slot_entry, entry_distance, entry_moved, g, i, pw, entry_distance[e]
+            )
+            if target[0] == 2:
+                count += 1
+    out_counts[slot] = count
+
+
+@wp.func
+def level_set_inside(entry_distance: wp.array[wp.float64], e: wp.int32) -> wp.int32:
+    # ``GridVert::Inside``: a missing point's NaN distance counts as outside.
+    if e >= 0 and entry_distance[e] > wp.float64(0.0):
+        return 1
+    return -1
+
+
+@wp.func
+def level_set_edge(edge_verts: wp.array[wp.int32], e: wp.int32, i: wp.int32) -> wp.int32:
+    if e < 0:
+        return -1
+    return edge_verts[7 * e + i]
+
+
+@wp.func
+def level_set_neighbor_inside(
+    entry_distance: wp.array[wp.float64], edge_verts: wp.array[wp.int32], e: wp.int32, i: wp.int32
+) -> wp.int32:
+    return level_set_inside(entry_distance, e) * wp.where(
+        level_set_edge(edge_verts, e, i) == -1, 1, -1
+    )
+
+
+@wp.func
+def tet_tri(table: wp.int32, i: wp.int32) -> wp.vec3i:
+    # ``TetTri0`` / ``TetTri1``: a tetrahedron's triangles by its corners' inside bits.
+    t = wp.vec3i(-1, -1, -1)
+    if table == 0:
+        if i == 1:
+            t = wp.vec3i(0, 3, 4)
+        elif i == 2:
+            t = wp.vec3i(0, 1, 5)
+        elif i == 3:
+            t = wp.vec3i(1, 5, 3)
+        elif i == 4:
+            t = wp.vec3i(1, 4, 2)
+        elif i == 5:
+            t = wp.vec3i(1, 0, 3)
+        elif i == 6:
+            t = wp.vec3i(2, 5, 0)
+        elif i == 7:
+            t = wp.vec3i(5, 3, 2)
+        elif i == 8:
+            t = wp.vec3i(2, 3, 5)
+        elif i == 9:
+            t = wp.vec3i(0, 5, 2)
+        elif i == 10:
+            t = wp.vec3i(3, 0, 1)
+        elif i == 11:
+            t = wp.vec3i(2, 4, 1)
+        elif i == 12:
+            t = wp.vec3i(3, 5, 1)
+        elif i == 13:
+            t = wp.vec3i(5, 1, 0)
+        elif i == 14:
+            t = wp.vec3i(4, 3, 0)
+    else:
+        if i == 3:
+            t = wp.vec3i(3, 4, 1)
+        elif i == 5:
+            t = wp.vec3i(3, 2, 1)
+        elif i == 6:
+            t = wp.vec3i(0, 4, 2)
+        elif i == 9:
+            t = wp.vec3i(2, 4, 0)
+        elif i == 10:
+            t = wp.vec3i(1, 2, 3)
+        elif i == 12:
+            t = wp.vec3i(1, 4, 3)
+    return t
+
+
+@wp.func
+def level_set_tet_tris(
+    tet: wp.vec4i,
+    edges_a: wp.vec3i,
+    edges_b: wp.vec3i,
+    out_tris: wp.array[wp.vec3i],
+    write: wp.int32,
+    at: wp.int32,
+) -> wp.int32:
+    # ``CreateTris``: up to two triangles over the tetrahedron's six edge vertices (``edges_a``
+    # then ``edges_b``), skipping a degenerate one; returns how many, written from ``at``.
+    i = wp.where(tet[0] > 0, 1, 0) + wp.where(tet[1] > 0, 2, 0)
+    i = i + wp.where(tet[2] > 0, 4, 0) + wp.where(tet[3] > 0, 8, 0)
+    n = wp.int32(0)
+    for table in range(2):
+        tri = tet_tri(table, i)
+        if tri[0] >= 0:
+            v = wp.vec3i(0, 0, 0)
+            for c in range(3):
+                j = tri[c]
+                v[c] = wp.where(j < 3, edges_a[j % 3], edges_b[j % 3])
+            if v[0] != v[1] and v[1] != v[2] and v[2] != v[0]:
+                if write != 0:
+                    out_tris[at + n] = v
+                n += 1
+    return n
+
+
+@wp.func
+def level_set_slot_tris(
+    keys: wp.array[wp.uint64],
+    slot_entry: wp.array[wp.int32],
+    entry_keys: wp.array[wp.uint64],
+    entry_distance: wp.array[wp.float64],
+    edge_verts: wp.array[wp.int32],
+    pw: wp.vec3i,
+    slot: wp.int32,
+    out_tris: wp.array[wp.vec3i],
+    write: wp.int32,
+    at: wp.int32,
+) -> wp.int32:
+    # ``BuildTris`` for one slot: the six tetrahedra around its point's (1, 1, 1) edge.
+    b = slot_entry[slot]
+    if b < 0:
+        return 0
+    base = level_set_decode(entry_keys[b], pw)
+    lead = base
+    if lead[3] == 0:
+        lead[3] = 1
+    else:
+        lead = lead + wp.vec4i(1, 1, 1, 1)
+        lead[3] = 0
+    tet = wp.vec4i(
+        level_set_neighbor_inside(entry_distance, edge_verts, b, 0),
+        level_set_inside(entry_distance, b),
+        -2,
+        -2,
+    )
+    this_index = base
+    this_index[0] = this_index[0] + 1
+    this_vert = level_set_lookup(keys, slot_entry, level_set_encode(this_index, pw))
+    tet[2] = level_set_neighbor_inside(entry_distance, edge_verts, b, 1)
+    n = wp.int32(0)
+    for i in range(3):
+        prev = (i + 2) % 3
+        nxt = (i + 1) % 3
+        this_index = lead
+        this_index[prev] = this_index[prev] - 1
+        next_vert = wp.int32(-1)
+        if this_index[prev] >= 0:
+            next_vert = level_set_lookup(keys, slot_entry, level_set_encode(this_index, pw))
+        tet[3] = level_set_neighbor_inside(entry_distance, edge_verts, b, prev + 4)
+        e0 = level_set_edge(edge_verts, b, 0)
+        e3 = level_set_edge(edge_verts, next_vert, prev + 1)
+        e5 = level_set_edge(edge_verts, b, prev + 4)
+        edges1_a = wp.vec3i(
+            e0, level_set_edge(edge_verts, b, i + 1), level_set_edge(edge_verts, next_vert, nxt + 4)
+        )
+        edges1_b = wp.vec3i(e3, level_set_edge(edge_verts, this_vert, i + 4), e5)
+        this_vert = next_vert
+        n += level_set_tet_tris(tet, edges1_a, edges1_b, out_tris, write, at + n)
+        this_index = base
+        this_index[nxt] = this_index[nxt] + 1
+        next_vert = level_set_lookup(keys, slot_entry, level_set_encode(this_index, pw))
+        tet[2] = tet[3]
+        tet[3] = level_set_neighbor_inside(entry_distance, edge_verts, b, nxt + 1)
+        edges2_a = wp.vec3i(e0, e5, level_set_edge(edge_verts, this_vert, i + 4))
+        edges2_b = wp.vec3i(
+            level_set_edge(edge_verts, next_vert, nxt + 4),
+            e3,
+            level_set_edge(edge_verts, b, nxt + 1),
+        )
+        this_vert = next_vert
+        n += level_set_tet_tris(tet, edges2_a, edges2_b, out_tris, write, at + n)
+        tet[2] = tet[3]
+    return n
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def level_set_count_tris(
+    keys: wp.array[wp.uint64],
+    slot_entry: wp.array[wp.int32],
+    entry_keys: wp.array[wp.uint64],
+    entry_distance: wp.array[wp.float64],
+    edge_verts: wp.array[wp.int32],
+    pw: wp.vec3i,
+    out_tris: wp.array[wp.vec3i],
+    out_counts: wp.array[wp.int32],
+) -> None:
+    slot = wp.int32(wp.tid())
+    out_counts[slot] = level_set_slot_tris(
+        keys, slot_entry, entry_keys, entry_distance, edge_verts, pw, slot, out_tris, 0, 0
+    )
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def level_set_write_tris(
+    keys: wp.array[wp.uint64],
+    slot_entry: wp.array[wp.int32],
+    entry_keys: wp.array[wp.uint64],
+    entry_distance: wp.array[wp.float64],
+    edge_verts: wp.array[wp.int32],
+    pw: wp.vec3i,
+    offsets: wp.array[wp.int32],
+    out_tris: wp.array[wp.vec3i],
+) -> None:
+    slot = wp.int32(wp.tid())
+    level_set_slot_tris(
+        keys,
+        slot_entry,
+        entry_keys,
+        entry_distance,
+        edge_verts,
+        pw,
+        slot,
+        out_tris,
+        1,
+        offsets[slot],
+    )
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def level_set_entries(
+    offsets: wp.array[wp.int32],
+    moved_flag: wp.array[wp.int32],
+    mask: wp.array[wp.int32],
+    out_keys: wp.array[wp.uint64],
+    out_moved: wp.array[wp.int32],
+    out_edge_verts: wp.array[wp.int32],
+) -> None:
+    # The kept points in index order (those whose scanned flag steps ``offsets``): key, snapped
+    # flag (numbered by the caller's scan), and their crossing edges marked -2.
+    idx = wp.int32(wp.tid())
+    e = offsets[idx]
+    if offsets[idx + 1] == e:
+        return
+    out_keys[e] = wp.uint64(idx)
+    out_moved[e] = moved_flag[idx]
+    for i in range(7):
+        out_edge_verts[7 * e + i] = wp.where((mask[idx] >> i) & 1 != 0, -2, -1)
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def level_set_number_moved(
+    moved_offsets: wp.array[wp.int32],
+    entry_keys: wp.array[wp.uint64],
+    voxels: wp.array[wp.float64],
+    pw: wp.vec3i,
+    moved_pos_dense: wp.array[wp.vec3d],
+    out_moved: wp.array[wp.int32],
+    out_distance: wp.array[wp.float64],
+    out_edge_verts: wp.array[wp.int32],
+    out_positions: wp.array[wp.vec3d],
+) -> None:
+    # Snapped points' vertex numbers (``NearSurface``'s serial counter), their crossing edges set
+    # to that vertex and the rest cleared; every entry's distance from the voxels.
+    e = wp.int32(wp.tid())
+    key = entry_keys[e]
+    g = level_set_decode(key, pw)
+    out_distance[e] = level_set_voxel(voxels, g, pw)
+    moved = wp.int32(-1)
+    if moved_offsets[e + 1] != moved_offsets[e]:
+        moved = moved_offsets[e]
+        out_positions[moved] = moved_pos_dense[wp.int32(key)]
+    out_moved[e] = moved
+    for i in range(7):
+        v = out_edge_verts[7 * e + i]
+        if moved >= 0 and v == -2:
+            out_edge_verts[7 * e + i] = moved
+        else:
+            out_edge_verts[7 * e + i] = -1
+
+
+_LEVEL_SET_KERNELS: dict[object, tuple[object, object, object]] = {}
+
+
+def level_set_kernels(sdf: object) -> tuple[object, object, object]:
+    """
+    Return the level set's kernels that evaluate ``sdf``.
+
+    Voxels, near-surface points and edge vertices: one unfused module per function, built on
+    first use.
+    """
+    cached = _LEVEL_SET_KERNELS.get(sdf)
+    if cached is not None:
+        return cached
+    tag = "".join(c if c.isalnum() else "_" for c in getattr(sdf, "key", "sdf"))
+
+    def voxels(
+        origin: wp.vec3d,
+        spacing: wp.vec3d,
+        grid: wp.vec3i,
+        pw: wp.vec3i,
+        level: wp.float64,
+        out_voxels: wp.array[wp.float64],
+    ) -> None:
+        # Every voxel's bounded value, the grid padded by one point each way.
+        idx = wp.int32(wp.tid())
+        g = level_set_decode(wp.uint64(idx), pw) - wp.vec4i(1, 1, 1, 0)
+        out_voxels[idx] = level_set_bounded(g, origin, spacing, grid, level, sdf)
+
+    def near_surface(
+        voxels: wp.array[wp.float64],
+        origin: wp.vec3d,
+        spacing: wp.vec3d,
+        grid: wp.vec3i,
+        pw: wp.vec3i,
+        level: wp.float64,
+        tol: wp.float64,
+        out_keep: wp.array[wp.int32],
+        out_moved: wp.array[wp.int32],
+        out_moved_pos: wp.array[wp.vec3d],
+        out_mask: wp.array[wp.int32],
+    ) -> None:
+        # ``NearSurface``: whether the point has a crossing edge, and whether it snaps onto the
+        # surface (taking every crossing edge's vertex) within a quarter cell.
+        idx = wp.int32(wp.tid())
+        g = level_set_decode(wp.uint64(idx), pw)
+        out_keep[idx] = 0
+        out_moved[idx] = 0
+        out_mask[idx] = 0
+        if g[0] > grid[0] or g[1] > grid[1] or g[2] > grid[2]:
+            return
+        distance = level_set_voxel(voxels, g, pw)
+        c = level_set_classify(voxels, g, pw, distance)
+        keep = c[1]
+        closest = c[2]
+        if closest >= 0 and c[3] <= 3:
+            grid_pos = level_set_position(g, origin, spacing)
+            n = level_set_neighbor(g, closest)
+            v_max = level_set_voxel(voxels, n, pw)
+            pos = level_set_find_surface(
+                grid_pos, distance, level_set_position(n, origin, spacing), v_max, tol, level, sdf
+            )
+            d = pos - grid_pos
+            if (
+                wp.abs(d[0]) < LEVEL_SET_KS * spacing[0]
+                and wp.abs(d[1]) < LEVEL_SET_KS * spacing[1]
+                and wp.abs(d[2]) < LEVEL_SET_KS * spacing[2]
+            ):
+                out_moved[idx] = 1
+                out_moved_pos[idx] = level_set_bound(pos, origin, spacing, grid)
+                keep = 1
+        out_keep[idx] = keep
+        out_mask[idx] = c[0]
+
+    def edge_verts(
+        voxels: wp.array[wp.float64],
+        keys: wp.array[wp.uint64],
+        slot_entry: wp.array[wp.int32],
+        entry_keys: wp.array[wp.uint64],
+        entry_distance: wp.array[wp.float64],
+        entry_moved: wp.array[wp.int32],
+        offsets: wp.array[wp.int32],
+        n_moved: wp.int32,
+        origin: wp.vec3d,
+        spacing: wp.vec3d,
+        grid: wp.vec3i,
+        pw: wp.vec3i,
+        level: wp.float64,
+        tol: wp.float64,
+        out_edge_verts: wp.array[wp.int32],
+        out_positions: wp.array[wp.vec3d],
+    ) -> None:
+        # ``ComputeVerts``: each unsnapped point's crossing edges take the neighbour's snapped
+        # vertex or a new one on the surface, numbered in slot order.
+        slot = wp.int32(wp.tid())
+        e = slot_entry[slot]
+        if e < 0 or entry_moved[e] >= 0:
+            return
+        g = level_set_decode(entry_keys[e], pw)
+        distance = entry_distance[e]
+        position = level_set_position(g, origin, spacing)
+        at = n_moved + offsets[slot]
+        for i in range(7):
+            target = level_set_edge_target(
+                voxels, keys, slot_entry, entry_distance, entry_moved, g, i, pw, distance
+            )
+            if target[0] == 1:
+                out_edge_verts[7 * e + i] = target[1]
+            elif target[0] == 2:
+                n = level_set_neighbor(g, i)
+                e2 = level_set_lookup(keys, slot_entry, level_set_encode(n, pw))
+                val = wp.float64(0.0)
+                if e2 >= 0:
+                    val = entry_distance[e2]
+                else:
+                    val = level_set_voxel(voxels, n, pw)
+                pos = level_set_find_surface(
+                    position, distance, level_set_position(n, origin, spacing), val, tol, level, sdf
+                )
+                out_positions[at] = level_set_bound(pos, origin, spacing, grid)
+                out_edge_verts[7 * e + i] = at
+                at += 1
+
+    options = {"fuse_fp": False}
+    built = tuple(
+        wp.kernel(
+            f,
+            name=f"level_set_{f.__name__}_{tag}",
+            enable_backward=False,
+            module="unique",
+            module_options=options,
+        )
+        for f in (voxels, near_surface, edge_verts)
+    )
+    for kernel in built:
+        kernel_array.USER_FUNCTION_MODULES.add(kernel.module.name)
+    _LEVEL_SET_KERNELS[sdf] = built
+    return built
 
 
 # The classic extraction's kernels at each field precision, keyed by the field's dtype: a

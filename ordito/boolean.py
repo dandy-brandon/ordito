@@ -33,7 +33,7 @@ from warp._src.codegen import StructInstance
 import ordito.typing as odt
 from ordito import _launch
 from ordito._common import offsets_buffer, read_array, read_values, require_same_device, scan_count
-from ordito._manifold import (
+from ordito._solid import (
     FLOAT32_EPSILON,
     Solid,
     empty_solid,
@@ -49,7 +49,7 @@ from ordito.graph import connected_component_labels_from_edges
 from ordito.halfedge import halfedge_twins
 from ordito.kernels import boolean as kernel_boolean
 from ordito.kernels import polyline as kernel_polyline
-from ordito.kernels.algorithms import manifold as kernel_manifold
+from ordito.kernels.algorithms import solid as kernel_solid
 
 _Operation = Literal["union", "intersection", "difference"]
 
@@ -789,7 +789,7 @@ def _compose(solids: list[Solid]) -> Solid:
     face_normals = _concatenate([solid.face_normals for solid in solids], wp.vec3d, device)
     face_mesh = _concatenate([solid.face_mesh for solid in solids], wp.int32, device)
     face_coplanar = _concatenate([solid.face_coplanar for solid in solids], wp.int32, device)
-    epsilon = max(max(solid.epsilon, kernel_manifold.PRECISION * solid.scale) for solid in solids)
+    epsilon = max(max(solid.epsilon, kernel_solid.PRECISION * solid.scale) for solid in solids)
     tolerance = max(solid.tolerance for solid in solids)
     lower = tuple(min(solid.lower[i] for solid in solids) for i in range(3))
     upper = tuple(max(solid.upper[i] for solid in solids) for i in range(3))
@@ -869,7 +869,7 @@ def _operand(solid: Solid) -> _Operand:
     lowers = _launch.empty(n_faces, dtype=wp.vec3, device=device)
     uppers = _launch.empty(n_faces, dtype=wp.vec3, device=device)
     _launch.launch(
-        kernel_manifold.operand_boxes,
+        kernel_solid.operand_boxes,
         dim=n_faces,
         inputs=[solid.positions, solid.faces, twins, 0.0],
         outputs=[lowers, uppers, first_halfedge, _launch.zeros(1, dtype=wp.int32, device=device)],
@@ -1573,7 +1573,7 @@ def _unit_cube_solid(mesh_id: int, device: wp.DeviceLike) -> Solid:
     positions = _launch.array(positions_np, dtype=wp.vec3d, device=device)
     faces = _launch.array(np.array(triangles, dtype=np.int32), dtype=wp.int32, device=device)
     # ``SetEpsilon()`` on a box of scale one: both tolerances ``kPrecision``.
-    epsilon = kernel_manifold.PRECISION
+    epsilon = kernel_solid.PRECISION
     box = ((-1.0, -1.0, -1.0), (1.0, 1.0, 1.0))
     return solid_from_positions(
         positions, faces, mesh_id, epsilon, epsilon, *box, "cube", sort_first=True
@@ -1893,7 +1893,7 @@ def _transformed_solid(solid: Solid, transform: _Affine) -> Solid:
     spectral = float(np.linalg.svd(linear, compute_uv=False)[0])
     scale = max(abs(x) for x in (*lower, *upper))
     # ``SetEpsilon(epsilon * SpectralNorm)``, the tolerance at least the new epsilon.
-    epsilon = max(solid.epsilon * spectral, kernel_manifold.PRECISION * scale)
+    epsilon = max(solid.epsilon * spectral, kernel_solid.PRECISION * scale)
     tolerance = max(solid.tolerance, epsilon)
     return Solid(
         _launch.array(moved, dtype=wp.vec3d, device=device),

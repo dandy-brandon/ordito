@@ -10,6 +10,12 @@ from ordito.kernels.adjacency import (
     write_face_edge_keys,
     write_face_edge_keys_and_order,
 )
+from ordito.kernels.algorithms.portable_trigonometry import (
+    portable_acos,
+    portable_cos,
+    portable_sin,
+)
+from ordito.kernels.algorithms.solid import same_face
 from ordito.kernels.array import (
     LOOP_CONDITION,
     LOOP_ROUND,
@@ -53,7 +59,7 @@ from ordito.kernels.grouping import (
     next_slot,
     sorted_run_of_length,
 )
-from ordito.kernels.halfedge import halfedge_endpoints, halfedge_next, halfedge_prev
+from ordito.kernels.halfedge import halfedge_endpoints, halfedge_next, halfedge_prev, next3
 from ordito.kernels.normals import accumulated_row_normal, add_to_face_corners
 from ordito.kernels.predicates import (
     delone_metrics,
@@ -62,6 +68,7 @@ from ordito.kernels.predicates import (
     is_unfold_quadrangle_convex,
     law_of_cosines_angle,
     mincircle_diameter_sq,
+    ordered_dot,
     orient2d,
     project_out_normal,
     triangle_aspect_ratio,
@@ -7225,6 +7232,1374 @@ def quadric_pass_tail(
             out_face_source,
             state,
         )
+
+
+# -- float64 vector helpers, in linalg's operation order -----------------------------------------
+# ``subdivide_smooth``: Manifold's ``Subdivide``, ``SmoothOut`` and ``InterpTri``. Its kernels build
+# unfused, each in a module of its own (``fuse_fp`` is a module option), so every vertex is
+# Manifold's bit for bit.
+# (linalg's ``dot`` is ``predicates.ordered_dot``; ``cross``, ``lerp``, ``*`` and ``/`` round as
+# linalg's and are Warp's own.)
+
+
+@wp.func
+def negated3(a: wp.vec3d) -> wp.vec3d:
+    return (a) * (wp.float64(-1.0))
+
+
+@wp.func
+def la_normalize(a: wp.vec3d) -> wp.vec3d:
+    # ``la::normalize``: divided by its length, NaN for zero.
+    return a / wp.sqrt(ordered_dot(a, a))
+
+
+@wp.func
+def safe_normalize(a: wp.vec3d) -> wp.vec3d:
+    # ``SafeNormalize``: zero where the division is not finite.
+    n = la_normalize(a)
+    if wp.isfinite(n[0]):
+        return n
+    return wp.vec3d()
+
+
+@wp.func
+def xyz(v: wp.vec4d) -> wp.vec3d:
+    return wp.vec3d(v[0], v[1], v[2])
+
+
+# -- refinement (``Subdivide``) --------------------------------------------------------------------
+#
+# A halfedge flagged ``inside`` is the diagonal of a quad (two triangles of one face): the quad is
+# refined as one face by its lower triangle, and the diagonal takes no vertices. Plain refinement
+# flags none.
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def forward_halfedge_flags(faces: wp.array[wp.int32], out_flags: wp.array[wp.int32]) -> None:
+    # ``CreateTmpEdges``: an edge is its forward halfedge, ranked in halfedge order.
+    h = wp.int32(wp.tid())
+    out_flags[h] = wp.where(faces[h] < faces[halfedge_next(h)], 1, 0)
+
+
+@wp.func
+def refine_edge_of(
+    faces: wp.array[wp.int32], twins: wp.array[wp.int32], ranks: wp.array[wp.int32], h: wp.int32
+) -> wp.int32:
+    # ``half2Edge``: the rank of the halfedge's forward copy.
+    forward = h
+    if faces[h] > faces[halfedge_next(h)]:
+        forward = twins[h]
+    return ranks[forward]
+
+
+@wp.func
+def quad_neighbor(inside: wp.array[wp.int32], tri: wp.int32) -> wp.int32:
+    # ``GetNeighbor``: the side shared with the quad's other triangle, -1 for none, -2 for two.
+    neighbor = wp.int32(-1)
+    for i in range(3):
+        if inside[3 * tri + i] != 0:
+            neighbor = wp.where(neighbor == -1, wp.int32(i), wp.int32(-2))
+    return neighbor
+
+
+@wp.func
+def face_halfedges(
+    inside: wp.array[wp.int32], twins: wp.array[wp.int32], tri: wp.int32
+) -> wp.vec4i:
+    # ``GetHalfedges``: a triangle's three halfedges and -1, a quad's four from its lower
+    # triangle, or all -1 for a quad's upper triangle.
+    halfedges = wp.vec4i(3 * tri, 3 * tri + 1, 3 * tri + 2, -1)
+    neighbor = quad_neighbor(inside, tri)
+    if neighbor >= 0:
+        pair = twins[3 * tri + neighbor]
+        if pair // 3 < tri:
+            return wp.vec4i(-1, -1, -1, -1)
+        h2 = halfedge_next(3 * tri + neighbor)
+        h0 = halfedge_next(pair)
+        halfedges = wp.vec4i(h0, halfedge_next(h0), h2, halfedge_next(h2))
+    return halfedges
+
+
+@wp.func
+def bary_indices(inside: wp.array[wp.int32], twins: wp.array[wp.int32], h: wp.int32) -> wp.vec3i:
+    # ``GetIndices``: the face (lower triangle for a quad) and the halfedge's start and end corner
+    # in it; -1s for a quad's diagonal.
+    tri = h // 3
+    idx = h % 3
+    neighbor = quad_neighbor(inside, tri)
+    if idx == neighbor:
+        return wp.vec3i(-1, -1, -1)
+    if neighbor < 0:
+        return wp.vec3i(tri, idx, next3(idx))
+    pair = twins[3 * tri + neighbor]
+    if pair // 3 < tri:
+        tri = pair // 3
+        idx = wp.where(next3(neighbor) == idx, 0, 1)
+    else:
+        idx = wp.where(next3(neighbor) == idx, 2, 3)
+    return wp.vec3i(tri, idx, (idx + 1) % 4)
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def refine_edge_added(
+    positions: wp.array[wp.vec3d],
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    inside: wp.array[wp.int32],
+    tangents: wp.array[wp.vec4d],
+    added: wp.int32,
+    length: wp.float64,
+    tolerance: wp.float64,
+    out_added: wp.array[wp.int32],
+    out_edge_halfedge: wp.array[wp.int32],
+) -> None:
+    # Each edge's added vertices, by a warp-uniform selector: ``Refine``'s ``n - 1``,
+    # ``RefineToLength``'s truncated ``length(edge) / length`` when ``length`` is positive, or
+    # ``RefineToTolerance``'s count from the tangents' bulge when ``tolerance`` is; none on a
+    # quad's diagonal.
+    h = wp.int32(wp.tid())
+    start = faces[h]
+    end = faces[halfedge_next(h)]
+    if start >= end:
+        return
+    e = ranks[h]
+    out_edge_halfedge[e] = h
+    if inside[h] != 0:
+        return
+    count = added
+    d = positions[start] - positions[end]
+    if length > wp.float64(0.0):
+        count = wp.int32(wp.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) / length)
+    elif tolerance > wp.float64(0.0):
+        edge_norm = la_normalize(d)
+        t_start = xyz(tangents[h])
+        t_end = xyz(tangents[twins[h]])
+        a = t_start - (edge_norm) * (ordered_dot(edge_norm, t_start))
+        b = t_end - (edge_norm) * (ordered_dot(edge_norm, t_end))
+        ab = a - b
+        bulge = wp.float64(0.5) * (
+            wp.sqrt(ordered_dot(a, a)) + wp.sqrt(ordered_dot(b, b))
+        ) + wp.sqrt(ordered_dot(ab, ab))
+        # A crease corner's ``0 / 0`` smoothness leaves NaN tangents, whose count Manifold
+        # converts without a check (undefined, and in practice unbounded); none are added here.
+        count = 0
+        if wp.isfinite(bulge):
+            count = wp.int32(wp.sqrt(wp.float64(3.0) * bulge / (wp.float64(4.0) * tolerance)))
+    out_added[e] = count
+
+
+@wp.func
+def interior_extra(
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    inside: wp.array[wp.int32],
+    added: wp.array[wp.int32],
+    h: wp.int32,
+    this_added: wp.int32,
+) -> wp.int32:
+    # ``Subdivide``'s ``Added``: the extra divisions a short side of ``h``'s triangle takes so a
+    # long side's strip has some thickness.
+    longest = wp.int32(0)
+    total = wp.int32(0)
+    current = h
+    for _ in range(3):
+        a = added[refine_edge_of(faces, twins, ranks, current)]
+        longest = wp.max(longest, a)
+        total = total + a
+        current = halfedge_next(current)
+        if inside[current] != 0:
+            longest = 0
+            total = 1
+            break
+    min_extra = wp.int32(wp.float64(longest) * wp.float64(0.2) + wp.float64(1.0))
+    extra = 2 * longest + min_extra - total
+    if longest == 0:
+        return 0
+    if extra > 0:
+        return (extra * (longest - this_added)) // longest
+    return 0
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def keep_interior_added(
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    inside: wp.array[wp.int32],
+    added: wp.array[wp.int32],
+    out_added: wp.array[wp.int32],
+) -> None:
+    # ``keepInterior``: each edge's count raised by the larger of its two triangles' extras.
+    h = wp.int32(wp.tid())
+    if faces[h] >= faces[halfedge_next(h)]:
+        return
+    e = ranks[h]
+    this_added = added[e]
+    if inside[h] != 0:
+        out_added[e] = this_added
+        return
+    extra = wp.max(
+        interior_extra(faces, twins, ranks, inside, added, h, this_added),
+        interior_extra(faces, twins, ranks, inside, added, twins[h], this_added),
+    )
+    out_added[e] = this_added + extra
+
+
+@wp.func
+def partition_sides(d: wp.vec4i) -> wp.vec4i:
+    # ``Partition::GetPartition``: which side each sorted division came from. A triangle's sides
+    # sort by divisions, largest first; a quad's rotate to start at its least side.
+    idx = wp.vec4i(0, 1, 2, 3)
+    if d[0] == 0:
+        return idx
+    if d[3] == 0:
+        s = wp.vec4i(d[0], d[1], d[2], 0)
+        if s[2] > s[1]:
+            t = s[2]
+            s[2] = s[1]
+            s[1] = t
+            t = idx[2]
+            idx[2] = idx[1]
+            idx[1] = t
+        if s[1] > s[0]:
+            t = s[1]
+            s[1] = s[0]
+            s[0] = t
+            t = idx[1]
+            idx[1] = idx[0]
+            idx[0] = t
+            if s[2] > s[1]:
+                t = s[2]
+                s[2] = s[1]
+                s[1] = t
+                t = idx[2]
+                idx[2] = idx[1]
+                idx[1] = t
+        return idx
+    min_idx = wp.int32(0)
+    least = d[0]
+    after = d[1]
+    for i in range(1, 4):
+        n = d[(i + 1) % 4]
+        if d[i] < least or (d[i] == least and n < after):
+            min_idx = i
+            least = d[i]
+            after = n
+    for i in range(4):
+        idx[i] = (i + min_idx) % 4
+    return idx
+
+
+@wp.func
+def refine_face_divisions(
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    added_offsets: wp.array[wp.int32],
+    halfedges: wp.vec4i,
+) -> wp.vec4i:
+    d = wp.vec4i(0, 0, 0, 0)
+    for i in range(4):
+        h = halfedges[i]
+        if h >= 0:
+            e = refine_edge_of(faces, twins, ranks, h)
+            d[i] = added_offsets[e + 1] - added_offsets[e] + 1
+    return d
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def refine_face_keys(
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    inside: wp.array[wp.int32],
+    added_offsets: wp.array[wp.int32],
+    out_keys: wp.array[wp.vec4i],
+) -> None:
+    # Each face's sorted divisions, the partition it takes (all zero for a quad's upper triangle).
+    f = wp.int32(wp.tid())
+    d = refine_face_divisions(faces, twins, ranks, added_offsets, face_halfedges(inside, twins, f))
+    idx = partition_sides(d)
+    out_keys[f] = wp.vec4i(d[idx[0]], d[idx[1]], d[idx[2]], d[idx[3]])
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def last_corner_halfedges(
+    faces: wp.array[wp.int32], inside: wp.array[wp.int32], out_last: wp.array[wp.int32]
+) -> None:
+    # ``FillRetainedVerts``: the last face through a vertex, by its halfedge, names the vertex's
+    # barycentric; a quad's diagonal names none.
+    h = wp.int32(wp.tid())
+    if inside[h] == 0:
+        wp.atomic_max(out_last, faces[h], h)
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def refine_retained_bary(
+    twins: wp.array[wp.int32],
+    inside: wp.array[wp.int32],
+    last: wp.array[wp.int32],
+    out_tri: wp.array[wp.int32],
+    out_uvw: wp.array[wp.vec4d],
+) -> None:
+    v = wp.int32(wp.tid())
+    indices = bary_indices(inside, twins, last[v])
+    uvw = wp.vec4d()
+    uvw[indices[1]] = wp.float64(1.0)
+    out_tri[v] = indices[0]
+    out_uvw[v] = uvw
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def refine_edge_bary(
+    twins: wp.array[wp.int32],
+    inside: wp.array[wp.int32],
+    edge_halfedge: wp.array[wp.int32],
+    added_offsets: wp.array[wp.int32],
+    n_vertices: wp.int32,
+    out_tri: wp.array[wp.int32],
+    out_uvw: wp.array[wp.vec4d],
+) -> None:
+    # An edge's added vertices, evenly along it from its forward halfedge's start.
+    e = wp.int32(wp.tid())
+    first = added_offsets[e]
+    n = added_offsets[e + 1] - first
+    indices = bary_indices(inside, twins, edge_halfedge[e])
+    if indices[0] < 0:
+        return
+    frac = wp.float64(1.0) / wp.float64(n + 1)
+    for i in range(n):
+        uvw = wp.vec4d()
+        uvw[indices[2]] = wp.float64(i + 1) * frac
+        uvw[indices[1]] = wp.float64(1.0) - uvw[indices[2]]
+        out_tri[n_vertices + first + i] = indices[0]
+        out_uvw[n_vertices + first + i] = uvw
+
+
+@wp.func
+def refine_local_vertex(
+    v: wp.int32,
+    n_corners: wp.int32,
+    corners: wp.vec4i,
+    sorted_divisions: wp.vec4i,
+    idx: wp.vec4i,
+    edge_offsets: wp.vec4i,
+    edge_forward: wp.vec4i,
+    interior_offset: wp.int32,
+) -> wp.int32:
+    # ``Partition::Reindex``'s ``newVerts``: the corners, each sorted side's added vertices in its
+    # direction, then the interior.
+    if v < n_corners:
+        return corners[v]
+    base = n_corners
+    for i in range(4):
+        n = sorted_divisions[i] - 1
+        if n > 0:
+            if v < base + n:
+                j = v - base
+                side = idx[i]
+                if edge_forward[side] != 0:
+                    return edge_offsets[side] + j
+                return edge_offsets[side] + n - 1 - j
+            base = base + n
+    return interior_offset + v - base
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def refine_faces(
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    inside: wp.array[wp.int32],
+    added_offsets: wp.array[wp.int32],
+    n_vertices: wp.int32,
+    face_key: wp.array[wp.int32],
+    key_triangles: wp.array[wp.int32],
+    key_vertices: wp.array[wp.int32],
+    partition_triangles: wp.array[wp.vec3i],
+    partition_bary: wp.array[wp.vec4d],
+    triangle_offsets: wp.array[wp.int32],
+    interior_offsets: wp.array[wp.int32],
+    face_normals: wp.array[wp.vec3d],
+    face_mesh: wp.array[wp.int32],
+    face_coplanar: wp.array[wp.int32],
+    out_faces: wp.array[wp.int32],
+    out_normals: wp.array[wp.vec3d],
+    out_mesh: wp.array[wp.int32],
+    out_coplanar: wp.array[wp.int32],
+    out_tri: wp.array[wp.int32],
+    out_uvw: wp.array[wp.vec4d],
+) -> None:
+    # ``Subdivide``'s per-face pass: the cached partition reindexed onto the face's corners,
+    # sides and interior, each sub-triangle inheriting the triangle's normal and reference, and
+    # the interior vertices' barycentrics in the face.
+    f = wp.int32(wp.tid())
+    halfedges = face_halfedges(inside, twins, f)
+    if halfedges[0] < 0:
+        return
+    d = refine_face_divisions(faces, twins, ranks, added_offsets, halfedges)
+    idx = partition_sides(d)
+    sorted_divisions = wp.vec4i(d[idx[0]], d[idx[1]], d[idx[2]], d[idx[3]])
+    corners = wp.vec4i(-1, -1, -1, -1)
+    edge_offsets = wp.vec4i(0, 0, 0, 0)
+    edge_forward = wp.vec4i(0, 0, 0, 0)
+    for i in range(4):
+        h = halfedges[i]
+        if h >= 0:
+            corners[i] = faces[h]
+            edge_offsets[i] = n_vertices + added_offsets[refine_edge_of(faces, twins, ranks, h)]
+            edge_forward[i] = wp.where(faces[h] < faces[halfedge_next(h)], 1, 0)
+    is_quad = halfedges[3] >= 0
+    n_corners = wp.where(is_quad, 4, 3)
+    tri_idx = idx
+    out0 = wp.int32(0)
+    out1 = wp.int32(1)
+    if (not is_quad) and idx[1] != next3(idx[0]):
+        tri_idx = wp.vec4i(idx[2], idx[0], idx[1], idx[3])
+        for i in range(4):
+            edge_forward[i] = 1 - edge_forward[i]
+        out0 = 1
+        out1 = 0
+    ordered = wp.vec4i(-1, -1, -1, -1)
+    k = wp.int32(0)
+    for i in range(4):
+        c = corners[tri_idx[i]]
+        if c >= 0:
+            ordered[k] = c
+            k = k + 1
+    key = face_key[f]
+    tri_first = key_triangles[key]
+    tri_count = key_triangles[key + 1] - tri_first
+    interior = interior_offsets[f]
+    out_first = triangle_offsets[f]
+    for j in range(tri_count):
+        local = partition_triangles[tri_first + j]
+        o = 3 * (out_first + j)
+        out_faces[o + out0] = refine_local_vertex(
+            local[0],
+            n_corners,
+            ordered,
+            sorted_divisions,
+            idx,
+            edge_offsets,
+            edge_forward,
+            interior,
+        )
+        out_faces[o + out1] = refine_local_vertex(
+            local[1],
+            n_corners,
+            ordered,
+            sorted_divisions,
+            idx,
+            edge_offsets,
+            edge_forward,
+            interior,
+        )
+        out_faces[o + 2] = refine_local_vertex(
+            local[2],
+            n_corners,
+            ordered,
+            sorted_divisions,
+            idx,
+            edge_offsets,
+            edge_forward,
+            interior,
+        )
+        out_normals[out_first + j] = face_normals[f]
+        out_mesh[out_first + j] = face_mesh[f]
+        out_coplanar[out_first + j] = face_coplanar[f]
+    v_idx = idx
+    if (not is_quad) and idx[1] != next3(idx[0]):
+        v_idx = wp.vec4i(idx[2], idx[0], idx[1], idx[3])
+    r_idx = wp.vec4i(0, 0, 0, 0)
+    for i in range(4):
+        r_idx[v_idx[i]] = i
+    vert_first = key_vertices[key]
+    vert_count = key_vertices[key + 1] - vert_first
+    boundary = sorted_divisions[0] + sorted_divisions[1] + sorted_divisions[2] + sorted_divisions[3]
+    for s in range(vert_count - boundary):
+        b = partition_bary[vert_first + boundary + s]
+        out_tri[interior + s] = f
+        out_uvw[interior + s] = wp.vec4d(b[r_idx[0]], b[r_idx[1]], b[r_idx[2]], b[r_idx[3]])
+
+
+# -- smoothing (``SmoothOut``'s tangents and ``InterpTri``) ----------------------------------------
+#
+# Manifold's own ``sin`` and ``cos`` (``include/manifold/math.h``, fdlibm's) for the rotations, and
+# exact negation (``-1 *``, where kernel-scope unary minus is ``0 - x`` and loses a negative zero).
+
+SMOOTH_PI = wp.float64(3.14159265358979323846264338327950288)
+
+
+SMOOTH_TWO_PI = wp.float64(6.28318530717958647692528676655900576)
+
+
+SMOOTH_PRECISION = wp.float64(1e-12)
+
+
+SMOOTH_DBL_EPSILON = wp.float64(2.220446049250313e-16)
+
+
+# A Bezier's homogeneous point and its cross tangent, as rows.
+mat24d = wp.types.matrix(shape=(2, 4), dtype=wp.float64)
+
+
+@wp.func
+def angle_between(a: wp.vec3d, b: wp.vec3d) -> wp.float64:
+    # ``AngleBetween`` of unit vectors.
+    d = ordered_dot(a, b)
+    if d >= wp.float64(1.0):
+        return wp.float64(0.0)
+    if d <= wp.float64(-1.0):
+        return SMOOTH_PI
+    return portable_acos(d)
+
+
+@wp.func
+def circular_tangent(tangent: wp.vec3d, edge: wp.vec3d) -> wp.vec4d:
+    # ``CircularTangent``: the weighted cubic Bezier tangent of a circular arc along ``edge``.
+    direction = safe_normalize(tangent)
+    weight = wp.max(wp.float64(0.5), ordered_dot(direction, safe_normalize(edge)))
+    bz2 = ((direction) * (wp.float64(0.5))) * (wp.sqrt(ordered_dot(edge, edge)))
+    t = wp.float64(2.0) / wp.float64(3.0)
+    bz3 = wp.lerp(
+        wp.vec4d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0), wp.float64(1.0)),
+        wp.vec4d(bz2[0], bz2[1], bz2[2], weight),
+        t,
+    )
+    return wp.vec4d(bz3[0] / bz3[3], bz3[1] / bz3[3], bz3[2] / bz3[3], bz3[3])
+
+
+@wp.func
+def is_inside_quad(
+    twins: wp.array[wp.int32], mesh: wp.array[wp.int32], coplanar: wp.array[wp.int32], h: wp.int32
+) -> wp.bool:
+    # ``IsInsideQuad`` before tangents: the halfedge joins two triangles of one face, and neither
+    # has another neighbour in it.
+    tri = h // 3
+    pair = twins[h]
+    pair_tri = pair // 3
+    if not same_face(mesh, coplanar, tri, pair_tri):
+        return False
+    n1 = halfedge_next(h)
+    if same_face(mesh, coplanar, tri, twins[n1] // 3):
+        return False
+    if same_face(mesh, coplanar, tri, twins[halfedge_next(n1)] // 3):
+        return False
+    m1 = halfedge_next(pair)
+    if same_face(mesh, coplanar, pair_tri, twins[m1] // 3):
+        return False
+    if same_face(mesh, coplanar, pair_tri, twins[halfedge_next(m1)] // 3):
+        return False
+    return True
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def flat_faces(
+    twins: wp.array[wp.int32],
+    mesh: wp.array[wp.int32],
+    coplanar: wp.array[wp.int32],
+    out_flat: wp.array[wp.int32],
+) -> None:
+    # ``FlatFaces``: a triangle with two or more neighbours in its face, and those neighbours.
+    tri = wp.int32(wp.tid())
+    count = wp.int32(0)
+    for j in range(3):
+        if same_face(mesh, coplanar, tri, twins[3 * tri + j] // 3):
+            count += 1
+    if count > 1:
+        out_flat[tri] = 1
+        for j in range(3):
+            other = twins[3 * tri + j] // 3
+            if same_face(mesh, coplanar, tri, other):
+                out_flat[other] = 1
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def smoothing_vertex_normals(
+    twins: wp.array[wp.int32],
+    mesh: wp.array[wp.int32],
+    coplanar: wp.array[wp.int32],
+    flat: wp.array[wp.int32],
+    first_halfedge: wp.array[wp.int32],
+    face_normals: wp.array[wp.vec3d],
+    vertex_normals: wp.array[wp.vec3d],
+    out_normals: wp.array[wp.vec3d],
+) -> None:
+    # ``VertFlatFace``: a vertex on one flat face only takes that face's normal (the face's
+    # first triangle in index order), otherwise its pseudo-normal.
+    v = wp.int32(wp.tid())
+    first = first_halfedge[v]
+    least = wp.int32(2147483647)
+    current = first
+    steps = wp.int32(0)
+    while steps < twins.shape[0]:
+        current = halfedge_next(twins[current])
+        if flat[current // 3] != 0:
+            least = wp.min(least, current // 3)
+        steps += 1
+        if current == first:
+            break
+    normal = vertex_normals[v]
+    if least < 2147483647:
+        one = wp.int32(1)
+        current = first
+        steps = wp.int32(0)
+        while steps < twins.shape[0]:
+            current = halfedge_next(twins[current])
+            tri = current // 3
+            if flat[tri] != 0 and not same_face(mesh, coplanar, tri, least):
+                one = 0
+            steps += 1
+            if current == first:
+                break
+        if one != 0:
+            normal = face_normals[least]
+    out_normals[v] = normal
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def initial_tangents(
+    positions: wp.array[wp.vec3d],
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    mesh: wp.array[wp.int32],
+    coplanar: wp.array[wp.int32],
+    face_normals: wp.array[wp.vec3d],
+    normals: wp.array[wp.vec3d],
+    out_tangents: wp.array[wp.vec4d],
+) -> None:
+    # A quad's diagonal is marked ``w = -1``; every other halfedge takes ``TangentFromNormal``:
+    # the circular arc leaving its start orthogonal to the vertex's normal.
+    h = wp.int32(wp.tid())
+    if is_inside_quad(twins, mesh, coplanar, h):
+        out_tangents[h] = wp.vec4d(
+            wp.float64(0.0), wp.float64(0.0), wp.float64(0.0), wp.float64(-1.0)
+        )
+        return
+    start = faces[h]
+    normal = normals[start]
+    edge = positions[faces[halfedge_next(h)]] - positions[start]
+    edge_normal = face_normals[h // 3] + face_normals[twins[h] // 3]
+    bi_tangent = wp.cross(normal, edge)
+    if ordered_dot(normal, edge_normal) < wp.float64(0.0):
+        bi_tangent = wp.cross(edge_normal, edge)
+    out_tangents[h] = circular_tangent(wp.cross(bi_tangent, normal), edge)
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def edge_smoothness(
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    mesh: wp.array[wp.int32],
+    coplanar: wp.array[wp.int32],
+    flat: wp.array[wp.int32],
+    face_normals: wp.array[wp.vec3d],
+    min_radians: wp.float64,
+    min_smoothness: wp.float64,
+    out_present: wp.array[wp.int32],
+    out_smoothness: wp.array[wp.vec2d],
+) -> None:
+    # ``SharpenEdges`` and ``CreateTangents``' edge map, per forward halfedge: whether the edge is
+    # sharpened, and each side's least smoothness (1 where none). An edge is sharp past the
+    # dihedral angle; a flat face's rim is sharp (0) on the face's side.
+    f = wp.int32(wp.tid())
+    if faces[f] > faces[halfedge_next(f)]:
+        return
+    p = twins[f]
+    tf = f // 3
+    tp = p // 3
+    present = wp.int32(0)
+    sf = wp.float64(1.0)
+    sp = wp.float64(1.0)
+    if angle_between(
+        face_normals[tf], face_normals[tp]
+    ) > min_radians and min_smoothness < wp.float64(1.0):
+        present = 1
+        sf = wp.min(sf, min_smoothness)
+        sp = wp.min(sp, min_smoothness)
+    same = same_face(mesh, coplanar, tf, tp)
+    if flat[tf] != 0 and (flat[tp] == 0 or not same):
+        present = 1
+        sf = wp.min(sf, wp.float64(0.0))
+    if flat[tp] != 0 and (flat[tf] == 0 or not same):
+        present = 1
+        sp = wp.min(sp, wp.float64(0.0))
+    out_present[f] = present
+    out_smoothness[f] = wp.vec2d(sf, sp)
+
+
+@wp.func
+def sharpen_tangent(tangents: wp.array[wp.vec4d], h: wp.int32, smoothness: wp.float64) -> None:
+    # ``SharpenTangent``: the tangent scaled, its weight zero only for zero smoothness.
+    t = tangents[h]
+    w = t[3]
+    if smoothness == wp.float64(0.0):
+        w = wp.float64(0.0)
+    tangents[h] = wp.vec4d(smoothness * t[0], smoothness * t[1], smoothness * t[2], w)
+
+
+@wp.func
+def forward_of(faces: wp.array[wp.int32], twins: wp.array[wp.int32], h: wp.int32) -> wp.int32:
+    if faces[h] < faces[halfedge_next(h)]:
+        return h
+    return twins[h]
+
+
+@wp.func
+def outgoing_smoothness(
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    smoothness: wp.array[wp.vec2d],
+    h: wp.int32,
+) -> wp.vec2d:
+    # The edge's smoothness on the side of outgoing ``h``, then the other side.
+    f = forward_of(faces, twins, h)
+    s = smoothness[f]
+    if f == h:
+        return s
+    return wp.vec2d(s[1], s[0])
+
+
+@wp.func
+def next_sharp_outgoing(
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    present: wp.array[wp.int32],
+    first: wp.int32,
+    after: wp.int32,
+) -> wp.int32:
+    # The outgoing halfedge around the vertex whose sharpened edge has the least forward index
+    # above ``after`` (the order of ``vertTangents``), or -1.
+    best = wp.int32(-1)
+    best_edge = wp.int32(2147483647)
+    current = first
+    steps = wp.int32(0)
+    while steps < twins.shape[0]:
+        current = halfedge_next(twins[current])
+        f = forward_of(faces, twins, current)
+        if present[f] != 0 and f > after and f < best_edge:
+            best = current
+            best_edge = f
+        steps += 1
+        if current == first:
+            break
+    return best
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def sharpen_vertex_tangents(
+    positions: wp.array[wp.vec3d],
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    flat: wp.array[wp.int32],
+    first_halfedge: wp.array[wp.int32],
+    present: wp.array[wp.int32],
+    smoothness: wp.array[wp.vec2d],
+    tangents: wp.array[wp.vec4d],
+    fixed: wp.array[wp.int32],
+) -> None:
+    # ``CreateTangents``' vertex pass over its sharpened edges in edge order: none fixes the
+    # vertex's first halfedge; two make the crease continuous and sharpen the tangents between
+    # them; three or more sharpen every tangent uniformly. Each vertex writes only its own
+    # outgoing halfedges.
+    v = wp.int32(wp.tid())
+    first = first_halfedge[v]
+    if first >= faces.shape[0]:
+        return
+    h0 = next_sharp_outgoing(faces, twins, present, first, -1)
+    if h0 < 0:
+        fixed[first] = 1
+        return
+    h1 = next_sharp_outgoing(faces, twins, present, first, forward_of(faces, twins, h0))
+    if h1 < 0:
+        return
+    h2 = next_sharp_outgoing(faces, twins, present, first, forward_of(faces, twins, h1))
+    s0 = outgoing_smoothness(faces, twins, smoothness, h0)
+    s1 = outgoing_smoothness(faces, twins, smoothness, h1)
+    if h2 < 0:
+        fixed[h0] = 1
+        fixed[h1] = 1
+        new_tangent = la_normalize(xyz(tangents[h0]) - xyz(tangents[h1]))
+        pos = positions[faces[h0]]
+        tangents[h0] = circular_tangent(new_tangent, positions[faces[halfedge_next(h0)]] - pos)
+        tangents[h1] = circular_tangent(
+            negated3(new_tangent), positions[faces[halfedge_next(h1)]] - pos
+        )
+        s = (s0[1] + s1[0]) / wp.float64(2.0)
+        current = h0
+        steps = wp.int32(0)
+        while steps < twins.shape[0]:
+            current = halfedge_next(twins[current])
+            if current == h1:
+                s = (s1[1] + s0[0]) / wp.float64(2.0)
+            elif current != h0 and tangents[current][3] >= wp.float64(0.0):
+                sharpen_tangent(tangents, current, s)
+            steps += 1
+            if current == h0:
+                break
+        return
+    total = wp.float64(0.0)
+    denom = wp.float64(0.0)
+    h = h0
+    while h >= 0:
+        sides = outgoing_smoothness(faces, twins, smoothness, h)
+        total = total + sides[0]
+        total = total + sides[1]
+        denom = denom + wp.where(sides[0] == wp.float64(0.0), wp.float64(0.0), wp.float64(1.0))
+        denom = denom + wp.where(sides[1] == wp.float64(0.0), wp.float64(0.0), wp.float64(1.0))
+        h = next_sharp_outgoing(faces, twins, present, first, forward_of(faces, twins, h))
+    total = total / denom
+    current = h0
+    steps = wp.int32(0)
+    while steps < twins.shape[0]:
+        current = halfedge_next(twins[current])
+        if tangents[current][3] >= wp.float64(0.0):
+            uniform = total
+            if flat[current // 3] != 0 or flat[twins[current] // 3] != 0:
+                uniform = wp.float64(0.0)
+            sharpen_tangent(tangents, current, uniform)
+        steps += 1
+        if current == h0:
+            break
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def linearize_flat_tangents(
+    positions: wp.array[wp.vec3d],
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    tangents: wp.array[wp.vec4d],
+) -> None:
+    # ``LinearizeFlatTangents``: an edge with a zero-weight end becomes a straight segment there.
+    h = wp.int32(wp.tid())
+    if faces[h] > faces[halfedge_next(h)]:
+        return
+    p = twins[h]
+    t = tangents[h]
+    o = tangents[p]
+    flat0 = t[3] == wp.float64(0.0)
+    flat1 = o[3] == wp.float64(0.0)
+    if not flat0 and not flat1:
+        return
+    edge = positions[faces[halfedge_next(h)]] - positions[faces[h]]
+    one = wp.float64(1.0)
+    if flat0 and flat1:
+        e = (edge) / (wp.float64(3.0))
+        tangents[h] = wp.vec4d(e[0], e[1], e[2], one)
+        n = (negated3(edge)) / (wp.float64(3.0))
+        tangents[p] = wp.vec4d(n[0], n[1], n[2], one)
+    elif flat0:
+        e = (edge + xyz(o)) / (wp.float64(2.0))
+        tangents[h] = wp.vec4d(e[0], e[1], e[2], one)
+    else:
+        e = (negated3(edge) + xyz(t)) / (wp.float64(2.0))
+        tangents[p] = wp.vec4d(e[0], e[1], e[2], one)
+
+
+@wp.func
+def wrap_angle(radians: wp.float64) -> wp.float64:
+    if radians < wp.float64(-1.0) * SMOOTH_PI:
+        return radians + SMOOTH_TWO_PI
+    if radians > SMOOTH_PI:
+        return radians - SMOOTH_TWO_PI
+    return radians
+
+
+@wp.func
+def qrot(q: wp.vec4d, v: wp.vec3d) -> wp.vec3d:
+    # ``la::qrot``: ``qxdir * v.x + qydir * v.y + qzdir * v.z``.
+    two = wp.float64(2.0)
+    x = wp.vec3d(
+        q[3] * q[3] + q[0] * q[0] - q[1] * q[1] - q[2] * q[2],
+        (q[0] * q[1] + q[2] * q[3]) * two,
+        (q[2] * q[0] - q[1] * q[3]) * two,
+    )
+    y = wp.vec3d(
+        (q[0] * q[1] - q[2] * q[3]) * two,
+        q[3] * q[3] - q[0] * q[0] + q[1] * q[1] - q[2] * q[2],
+        (q[1] * q[2] + q[0] * q[3]) * two,
+    )
+    z = wp.vec3d(
+        (q[2] * q[0] + q[1] * q[3]) * two,
+        (q[1] * q[2] - q[0] * q[3]) * two,
+        q[3] * q[3] - q[0] * q[0] - q[1] * q[1] + q[2] * q[2],
+    )
+    return (x) * (v[0]) + (y) * (v[1]) + (z) * (v[2])
+
+
+@wp.func
+def axis_angle_quat(axis: wp.vec3d, angle: wp.float64) -> wp.vec4d:
+    # ``rotation_quat(axis, angle)``.
+    s = portable_sin(angle / wp.float64(2.0))
+    return wp.vec4d(axis[0] * s, axis[1] * s, axis[2] * s, portable_cos(angle / wp.float64(2.0)))
+
+
+@wp.func
+def distribute_step(
+    positions: wp.array[wp.vec3d],
+    faces: wp.array[wp.int32],
+    tangents: wp.array[wp.vec4d],
+    current: wp.int32,
+    center: wp.vec3d,
+) -> wp.vec3d:
+    return safe_normalize(positions[faces[halfedge_next(current)]] - center)
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def distribute_tangents(
+    positions: wp.array[wp.vec3d],
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    vertex_normals: wp.array[wp.vec3d],
+    fixed: wp.array[wp.int32],
+    tangents: wp.array[wp.vec4d],
+) -> None:
+    # ``DistributeTangents``: from each fixed halfedge to the next, rotate the free tangents so
+    # their angles share the ratios of the triangle angles between their edges. With one fixed
+    # halfedge the whole circle turns to an average offset. The arcs are disjoint.
+    h = wp.int32(wp.tid())
+    if fixed[h] == 0 or tangents[h][3] < wp.float64(0.0):
+        return
+    approx_normal = vertex_normals[faces[h]]
+    center = positions[faces[h]]
+    first_tangent = safe_normalize(xyz(tangents[h]))
+    # First walk: the normal, the count, and the last current and desired angles.
+    normal = wp.vec3d()
+    last_edge = distribute_step(positions, faces, tangents, h, center)
+    last_tangent = first_tangent
+    desired = wp.float64(0.0)
+    current_angle = wp.float64(0.0)
+    count = wp.int32(0)
+    current = h
+    steps = wp.int32(0)
+    while steps < twins.shape[0]:
+        current = halfedge_next(twins[current])
+        if tangents[current][3] >= wp.float64(0.0):
+            this_edge = distribute_step(positions, faces, tangents, current, center)
+            this_tangent = safe_normalize(xyz(tangents[current]))
+            normal = normal + wp.cross(this_tangent, last_tangent)
+            desired = angle_between(this_edge, last_edge) + desired
+            if current == h:
+                current_angle = SMOOTH_TWO_PI
+            else:
+                current_angle = angle_between(this_tangent, first_tangent)
+                if ordered_dot(approx_normal, wp.cross(this_tangent, first_tangent)) < wp.float64(
+                    0.0
+                ):
+                    current_angle = SMOOTH_TWO_PI - current_angle
+            count += 1
+            last_edge = this_edge
+            last_tangent = this_tangent
+        steps += 1
+        if fixed[current] != 0:
+            break
+    if count == 1 or ordered_dot(normal, normal) == wp.float64(0.0):
+        return
+    end = current
+    scale = current_angle / desired
+    offset = wp.float64(0.0)
+    if end == h:
+        # Second walk: the average offset.
+        last_edge = distribute_step(positions, faces, tangents, h, center)
+        desired = wp.float64(0.0)
+        current = h
+        steps = wp.int32(0)
+        while steps < twins.shape[0]:
+            current = halfedge_next(twins[current])
+            if tangents[current][3] >= wp.float64(0.0):
+                this_edge = distribute_step(positions, faces, tangents, current, center)
+                this_tangent = safe_normalize(xyz(tangents[current]))
+                desired = angle_between(this_edge, last_edge) + desired
+                angle = SMOOTH_TWO_PI
+                if current != h:
+                    angle = angle_between(this_tangent, first_tangent)
+                    if ordered_dot(
+                        approx_normal, wp.cross(this_tangent, first_tangent)
+                    ) < wp.float64(0.0):
+                        angle = SMOOTH_TWO_PI - angle
+                offset = offset + wrap_angle(angle - scale * desired)
+                last_edge = this_edge
+            steps += 1
+            if fixed[current] != 0:
+                break
+        offset = offset / wp.float64(count)
+    axis = la_normalize(normal)
+    # Third walk: rotate, the desired angles scaled and clamped against their neighbours. Each
+    # entry's current angle and raw cumulative desired angle are recomputed from the tangents
+    # as they were, the next entry's looked up one step ahead.
+    last_edge = distribute_step(positions, faces, tangents, h, center)
+    raw = wp.float64(0.0)
+    previous = wp.float64(0.0)
+    i = wp.int32(0)
+    current = h
+    steps = wp.int32(0)
+    while steps < twins.shape[0]:
+        current = halfedge_next(twins[current])
+        if current != h and fixed[current] != 0:
+            break
+        if tangents[current][3] >= wp.float64(0.0):
+            this_edge = distribute_step(positions, faces, tangents, current, center)
+            tangent = xyz(tangents[current])
+            this_tangent = safe_normalize(tangent)
+            raw = angle_between(this_edge, last_edge) + raw
+            angle_now = SMOOTH_TWO_PI
+            if current != h:
+                angle_now = angle_between(this_tangent, first_tangent)
+                if ordered_dot(approx_normal, wp.cross(this_tangent, first_tangent)) < wp.float64(
+                    0.0
+                ):
+                    angle_now = SMOOTH_TWO_PI - angle_now
+            d = raw * scale
+            if d - previous > SMOOTH_PI:
+                d = previous + SMOOTH_PI
+            elif i + 1 < count:
+                # The next entry's raw cumulative angle.
+                look = current
+                look_steps = wp.int32(0)
+                next_raw = raw
+                while look_steps < twins.shape[0]:
+                    look = halfedge_next(twins[look])
+                    if tangents[look][3] >= wp.float64(0.0):
+                        next_raw = (
+                            angle_between(
+                                distribute_step(positions, faces, tangents, look, center), this_edge
+                            )
+                            + raw
+                        )
+                        break
+                    look_steps += 1
+                if scale * next_raw - d > SMOOTH_PI:
+                    d = scale * next_raw - SMOOTH_PI
+            angle = angle_now - d - offset
+            q = axis_angle_quat(axis, angle)
+            rotated = qrot(q, tangent)
+            tangents[current] = wp.vec4d(rotated[0], rotated[1], rotated[2], tangents[current][3])
+            previous = d
+            last_edge = this_edge
+            i += 1
+        steps += 1
+        if fixed[current] != 0:
+            break
+
+
+@wp.func
+def homogeneous4(v: wp.vec4d) -> wp.vec4d:
+    return wp.vec4d(v[0] * v[3], v[1] * v[3], v[2] * v[3], v[3])
+
+
+@wp.func
+def homogeneous3(v: wp.vec3d) -> wp.vec4d:
+    return wp.vec4d(v[0], v[1], v[2], wp.float64(1.0))
+
+
+@wp.func
+def h_normalize(v: wp.vec4d) -> wp.vec3d:
+    if v[3] == wp.float64(0.0):
+        return xyz(v)
+    return wp.vec3d(v[0] / v[3], v[1] / v[3], v[2] / v[3])
+
+
+@wp.func
+def bezier_control(point: wp.vec3d, tangent: wp.vec4d) -> wp.vec4d:
+    # ``Bezier``: ``Homogeneous(vec4(point, 0) + tangent)``.
+    return homogeneous4(
+        wp.vec4d(
+            point[0] + tangent[0],
+            point[1] + tangent[1],
+            point[2] + tangent[2],
+            wp.float64(0.0) + tangent[3],
+        )
+    )
+
+
+@wp.func
+def cubic_first(p0: wp.vec4d, p1: wp.vec4d, p2: wp.vec4d, x: wp.float64) -> wp.vec4d:
+    # ``CubicBezier2Linear``'s first point: ``lerp(lerp(p0, p1, x), lerp(p1, p2, x), x)``.
+    return wp.lerp(wp.lerp(p0, p1, x), wp.lerp(p1, p2, x), x)
+
+
+@wp.func
+def cubic_second(p1: wp.vec4d, p2: wp.vec4d, p3: wp.vec4d, x: wp.float64) -> wp.vec4d:
+    return wp.lerp(wp.lerp(p1, p2, x), wp.lerp(p2, p3, x), x)
+
+
+@wp.func
+def orthogonal_to(v: wp.vec3d, alt: wp.vec3d, ref: wp.vec3d) -> wp.vec3d:
+    # ``OrthogonalTo``.
+    out = v - (ref) * (ordered_dot(v, ref))
+    if ordered_dot(out, out) < SMOOTH_PRECISION * ordered_dot(v, v):
+        out = alt - (ref) * (ordered_dot(alt, ref))
+    return safe_normalize(out)
+
+
+@wp.func
+def matrix_quat(cx: wp.vec3d, cy: wp.vec3d, cz: wp.vec3d) -> wp.vec4d:
+    # ``rotation_quat(mat3)`` of the matrix with columns ``cx``, ``cy``, ``cz``.
+    q = wp.vec4d(
+        cx[0] - cy[1] - cz[2], cy[1] - cx[0] - cz[2], cz[2] - cx[0] - cy[1], cx[0] + cy[1] + cz[2]
+    )
+    j = wp.int32(0)
+    for i in range(1, 4):
+        if q[i] > q[j]:
+            j = i
+    one = wp.float64(1.0)
+    s = wp.vec4d(one, cx[1] + cy[0], cz[0] + cx[2], cy[2] - cz[1])
+    if j == 1:
+        s = wp.vec4d(cx[1] + cy[0], one, cy[2] + cz[1], cz[0] - cx[2])
+    elif j == 2:
+        s = wp.vec4d(cx[2] + cz[0], cy[2] + cz[1], one, cx[1] - cy[0])
+    elif j == 3:
+        s = wp.vec4d(cy[2] - cz[1], cz[0] - cx[2], cx[1] - cy[0], one)
+    r = wp.vec4d(
+        wp.sqrt(wp.max(wp.float64(0.0), one + q[0])),
+        wp.sqrt(wp.max(wp.float64(0.0), one + q[1])),
+        wp.sqrt(wp.max(wp.float64(0.0), one + q[2])),
+        wp.sqrt(wp.max(wp.float64(0.0), one + q[3])),
+    )
+    length = wp.sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2] + r[3] * r[3])
+    return wp.vec4d(
+        wp.copysign(r[0] / length, s[0]),
+        wp.copysign(r[1] / length, s[1]),
+        wp.copysign(r[2] / length, s[2]),
+        wp.copysign(r[3] / length, s[3]),
+    )
+
+
+@wp.func
+def qmul(a: wp.vec4d, b: wp.vec4d) -> wp.vec4d:
+    return wp.vec4d(
+        a[0] * b[3] + a[3] * b[0] + a[1] * b[2] - a[2] * b[1],
+        a[1] * b[3] + a[3] * b[1] + a[2] * b[0] - a[0] * b[2],
+        a[2] * b[3] + a[3] * b[2] + a[0] * b[1] - a[1] * b[0],
+        a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+    )
+
+
+@wp.func
+def qconj(q: wp.vec4d) -> wp.vec4d:
+    m = wp.float64(-1.0)
+    return wp.vec4d(m * q[0], m * q[1], m * q[2], q[3])
+
+
+@wp.func
+def qxdir(q: wp.vec4d) -> wp.vec3d:
+    two = wp.float64(2.0)
+    return wp.vec3d(
+        q[3] * q[3] + q[0] * q[0] - q[1] * q[1] - q[2] * q[2],
+        (q[0] * q[1] + q[2] * q[3]) * two,
+        (q[2] * q[0] - q[1] * q[3]) * two,
+    )
+
+
+@wp.func
+def vector_quat(orig: wp.vec3d, dest: wp.vec3d) -> wp.vec4d:
+    # ``rotation_quat(orig, dest)``: the shortest rotation between unit vectors.
+    cos_theta = ordered_dot(orig, dest)
+    if cos_theta >= wp.float64(1.0) - SMOOTH_DBL_EPSILON:
+        return wp.vec4d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0), wp.float64(1.0))
+    if cos_theta < wp.float64(-1.0) + SMOOTH_DBL_EPSILON:
+        axis = wp.cross(wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(1.0)), orig)
+        if ordered_dot(axis, axis) < SMOOTH_DBL_EPSILON:
+            axis = wp.cross(wp.vec3d(wp.float64(1.0), wp.float64(0.0), wp.float64(0.0)), orig)
+        return axis_angle_quat(la_normalize(axis), SMOOTH_PI)
+    axis = wp.cross(orig, dest)
+    s = wp.sqrt((wp.float64(1.0) + cos_theta) * wp.float64(2.0))
+    return wp.vec4d(
+        axis[0] * (wp.float64(1.0) / s),
+        axis[1] * (wp.float64(1.0) / s),
+        axis[2] * (wp.float64(1.0) / s),
+        s * wp.float64(0.5),
+    )
+
+
+@wp.func
+def slerp(x: wp.vec4d, y: wp.vec4d, a: wp.float64, long_way: wp.bool) -> wp.vec4d:
+    z = y
+    cos_theta = x[0] * y[0] + x[1] * y[1] + x[2] * y[2] + x[3] * y[3]
+    if (cos_theta < wp.float64(0.0)) != long_way:
+        m = wp.float64(-1.0)
+        z = wp.vec4d(m * y[0], m * y[1], m * y[2], m * y[3])
+        cos_theta = m * cos_theta
+    if wp.abs(cos_theta) > wp.float64(1.0) - SMOOTH_DBL_EPSILON:
+        return wp.lerp(x, z, a)
+    angle = portable_acos(cos_theta)
+    sa = portable_sin((wp.float64(1.0) - a) * angle)
+    sb = portable_sin(a * angle)
+    sc = portable_sin(angle)
+    return wp.vec4d(
+        (sa * x[0] + sb * z[0]) / sc,
+        (sa * x[1] + sb * z[1]) / sc,
+        (sa * x[2] + sb * z[2]) / sc,
+        (sa * x[3] + sb * z[3]) / sc,
+    )
+
+
+@wp.func
+def rotate_from_to(v: wp.vec3d, start: wp.vec4d, end: wp.vec4d) -> wp.vec3d:
+    return qrot(end, qrot(qconj(start), v))
+
+
+@wp.func
+def bezier_to_bezier(
+    c0: wp.vec3d,
+    c1: wp.vec3d,
+    tx0: wp.vec4d,
+    tx1: wp.vec4d,
+    ty0: wp.vec4d,
+    ty1: wp.vec4d,
+    x: wp.float64,
+    anchor: wp.vec3d,
+) -> mat24d:
+    # ``Bezier2Bezier``: the point at ``x`` along the edge's Bezier (homogeneous) and the
+    # cross tangent there, rotated between the ends' frames; rows of the result.
+    p0 = homogeneous3(c0)
+    p1 = bezier_control(c0, tx0)
+    p2 = bezier_control(c1, tx1)
+    p3 = homogeneous3(c1)
+    b0 = cubic_first(p0, p1, p2, x)
+    b1 = cubic_second(p1, p2, p3, x)
+    end = h_normalize(wp.lerp(b0, b1, x))
+    tangent = safe_normalize(h_normalize(b1) - h_normalize(b0))
+    n0 = safe_normalize(xyz(tx0))
+    n1 = negated3(safe_normalize(xyz(tx1)))
+    bi0 = orthogonal_to(xyz(ty0), anchor - c0, n0)
+    bi1 = orthogonal_to(xyz(ty1), anchor - c1, n1)
+    q0 = matrix_quat(n0, bi0, wp.cross(n0, bi0))
+    q1 = matrix_quat(n1, bi1, wp.cross(n1, bi1))
+    edge = c1 - c0
+    long_way = ordered_dot(n0, edge) + ordered_dot(n1, edge) < wp.float64(0.0)
+    q_tmp = slerp(q0, q1, x, long_way)
+    q = qmul(vector_quat(qxdir(q_tmp), tangent), q_tmp)
+    delta = wp.lerp(rotate_from_to(xyz(ty0), q0, q), rotate_from_to(xyz(ty1), q1, q), x)
+    delta_w = wp.lerp(ty0[3], ty1[3], x)
+    e = homogeneous3(end)
+    return mat24d(e[0], e[1], e[2], e[3], delta[0], delta[1], delta[2], delta_w)
+
+
+@wp.func
+def row4(m: mat24d, i: wp.int32) -> wp.vec4d:
+    return wp.vec4d(m[i, 0], m[i, 1], m[i, 2], m[i, 3])
+
+
+@wp.func
+def bezier_2d(
+    c0: wp.vec3d,
+    c1: wp.vec3d,
+    c2: wp.vec3d,
+    c3: wp.vec3d,
+    tx0: wp.vec4d,
+    tx1: wp.vec4d,
+    tx2: wp.vec4d,
+    tx3: wp.vec4d,
+    ty0: wp.vec4d,
+    ty1: wp.vec4d,
+    ty2: wp.vec4d,
+    ty3: wp.vec4d,
+    x: wp.float64,
+    y: wp.float64,
+    centroid: wp.vec3d,
+) -> wp.vec3d:
+    # ``Bezier2D``: a quad's point, Bezier across between its two opposite edges' Beziers.
+    bez0 = bezier_to_bezier(c0, c1, tx0, tx1, ty0, ty1, x, centroid)
+    bez1 = bezier_to_bezier(c2, c3, tx2, tx3, ty2, ty3, wp.float64(1.0) - x, centroid)
+    a0 = row4(bez0, 0)
+    a3 = row4(bez1, 0)
+    a1 = bezier_control(xyz(a0), row4(bez0, 1))
+    a2 = bezier_control(xyz(a3), row4(bez1, 1))
+    return h_normalize(wp.lerp(cubic_first(a0, a1, a2, y), cubic_second(a1, a2, a3, y), y))
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def interp_tri_positions(
+    positions: wp.array[wp.vec3d],
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    inside: wp.array[wp.int32],
+    tangents: wp.array[wp.vec4d],
+    bary_tri: wp.array[wp.int32],
+    bary_uvw: wp.array[wp.vec4d],
+    out_positions: wp.array[wp.vec3d],
+) -> None:
+    # ``InterpTri``: a refined vertex on the smooth surface the tangents define over its face.
+    v = wp.int32(wp.tid())
+    halfedges = face_halfedges(inside, twins, bary_tri[v])
+    uvw = bary_uvw[v]
+    c = wp.mat44d()
+    for i in range(4):
+        if halfedges[i] >= 0:
+            p = positions[faces[halfedges[i]]]
+            c[i, 0] = p[0]
+            c[i, 1] = p[1]
+            c[i, 2] = p[2]
+    for i in range(4):
+        if uvw[i] == wp.float64(1.0):
+            out_positions[v] = wp.vec3d(c[i, 0], c[i, 1], c[i, 2])
+            return
+    c0 = wp.vec3d(c[0, 0], c[0, 1], c[0, 2])
+    c1 = wp.vec3d(c[1, 0], c[1, 1], c[1, 2])
+    c2 = wp.vec3d(c[2, 0], c[2, 1], c[2, 2])
+    c3 = wp.vec3d(c[3, 0], c[3, 1], c[3, 2])
+    pos_h = wp.vec4d()
+    if halfedges[3] < 0:
+        third = wp.float64(1.0) / wp.float64(3.0)
+        centroid = (c0) * (third) + (c1) * (third) + (c2) * (third)
+        for i in range(3):
+            j = next3(i)
+            k = (i + 2) % 3
+            ci = wp.vec3d(c[i, 0], c[i, 1], c[i, 2])
+            cj = wp.vec3d(c[j, 0], c[j, 1], c[j, 2])
+            ck = wp.vec3d(c[k, 0], c[k, 1], c[k, 2])
+            # tangentR[m] = T[h_m], tangentL[m] = T[pair(h_{m-1})].
+            r_i = tangents[halfedges[i]]
+            r_j = tangents[halfedges[j]]
+            r_k = tangents[halfedges[k]]
+            l_i = tangents[twins[halfedges[(i + 2) % 3]]]
+            l_j = tangents[twins[halfedges[(j + 2) % 3]]]
+            l_k = tangents[twins[halfedges[(k + 2) % 3]]]
+            x = uvw[k] / (wp.float64(1.0) - uvw[i])
+            bez = bezier_to_bezier(cj, ck, r_j, l_k, l_j, r_k, x, centroid)
+            b0 = row4(bez, 0)
+            b1 = bezier_control(xyz(b0), row4(bez, 1))
+            b2 = bezier_control(ci, wp.lerp(r_i, l_i, x))
+            b3 = homogeneous3(ci)
+            p = h_normalize(
+                wp.lerp(cubic_first(b0, b1, b2, uvw[i]), cubic_second(b1, b2, b3, uvw[i]), uvw[i])
+            )
+            pos_h = pos_h + homogeneous4(wp.vec4d(p[0], p[1], p[2], uvw[j] * uvw[k]))
+    else:
+        quarter = wp.float64(0.25)
+        centroid = (c0) * (quarter) + (c1) * (quarter) + (c2) * (quarter)
+        centroid = centroid + (c3) * (quarter)
+        tx0 = tangents[halfedges[0]]
+        tx1 = tangents[twins[halfedges[0]]]
+        tx2 = tangents[halfedges[2]]
+        tx3 = tangents[twins[halfedges[2]]]
+        ty0 = tangents[twins[halfedges[3]]]
+        ty1 = tangents[halfedges[1]]
+        ty2 = tangents[twins[halfedges[1]]]
+        ty3 = tangents[halfedges[3]]
+        x = uvw[1] + uvw[2]
+        y = uvw[2] + uvw[3]
+        px = bezier_2d(c0, c1, c2, c3, tx0, tx1, tx2, tx3, ty0, ty1, ty2, ty3, x, y, centroid)
+        py = bezier_2d(
+            c1, c2, c3, c0, ty1, ty2, ty3, ty0, tx1, tx2, tx3, tx0, y, wp.float64(1.0) - x, centroid
+        )
+        pos_h = pos_h + homogeneous4(wp.vec4d(px[0], px[1], px[2], x * (wp.float64(1.0) - x)))
+        pos_h = pos_h + homogeneous4(wp.vec4d(py[0], py[1], py[2], y * (wp.float64(1.0) - y)))
+    pos = h_normalize(pos_h)
+    if not (wp.isfinite(pos[0]) and wp.isfinite(pos[1]) and wp.isfinite(pos[2])):
+        pos = c0
+    out_positions[v] = pos
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def quad_diagonal_flags(tangents: wp.array[wp.vec4d], out_inside: wp.array[wp.int32]) -> None:
+    # ``IsMarkedInsideQuad``: a negative tangent weight marks a quad's diagonal.
+    h = wp.int32(wp.tid())
+    out_inside[h] = wp.where(tangents[h][3] < wp.float64(0.0), 1, 0)
 
 
 # The scale attribute's sum: ``float32`` in arrival order, ``float64`` exact under the

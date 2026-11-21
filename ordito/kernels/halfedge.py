@@ -50,6 +50,16 @@ def halfedge_prev(h: wp.int32) -> wp.int32:
 
 
 @wp.func
+def next3(i: wp.int32) -> wp.int32:
+    return wp.where(i == 2, wp.int32(0), i + 1)
+
+
+@wp.func
+def prev3(k: wp.int32) -> wp.int32:
+    return wp.where(k == 0, 2, k - 1)
+
+
+@wp.func
 def rotate_to_boundary_halfedge(
     faces: wp.array[wp.int32], table: wp.array[wp.int32], h: wp.int32, twin_of: wp.Function
 ) -> wp.int32:

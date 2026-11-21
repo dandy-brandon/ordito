@@ -7,6 +7,7 @@ from ordito.kernels.array import (
     map_probe,
     map_probe_single,
 )
+from ordito.kernels.predicates import shadow_edge_face
 
 wp.set_module_options({"enable_backward": False})
 
@@ -187,6 +188,199 @@ def longest_ray_distance(
         if t_offset >= max_t:
             break
     return wp.inf
+
+
+# -- segment casts (``Impl::RayCast``) -------------------------------------------------------------
+# ``segment_hits``: Manifold's ``RayCast``, through ``predicates.shadow_edge_face``. Its kernels
+# build unfused, each in a module of its own (``fuse_fp`` is a module option), so every hit is
+# Manifold's bit for bit.
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def segment_edge_mesh(
+    origins: wp.array[wp.vec3],
+    endpoints: wp.array[wp.vec3],
+    out_positions: wp.array[wp.vec3d],
+    out_faces: wp.array[wp.int32],
+    out_mates: wp.array[wp.int32],
+    out_normals: wp.array[wp.vec3d],
+) -> None:
+    # ``RayCast``'s one-edge mesh a segment: halfedge ``3 s`` runs origin -> endpoint, ``3 s + 1``
+    # back, the third closes the storage; every normal zero, so the segment perturbs nothing.
+    s = wp.int32(wp.tid())
+    out_positions[2 * s] = wp.vec3d(origins[s])
+    out_positions[2 * s + 1] = wp.vec3d(endpoints[s])
+    out_faces[3 * s] = 2 * s
+    out_faces[3 * s + 1] = 2 * s + 1
+    out_faces[3 * s + 2] = 2 * s
+    out_mates[3 * s] = 3 * s + 1
+    out_mates[3 * s + 1] = 3 * s
+    out_mates[3 * s + 2] = -1
+    out_normals[2 * s] = wp.vec3d()
+    out_normals[2 * s + 1] = wp.vec3d()
+
+
+@wp.func
+def segment_hit(
+    s: wp.int32,
+    face: wp.int32,
+    ray_faces: wp.array[wp.int32],
+    ray_pos: wp.array[wp.vec3d],
+    ray_normals: wp.array[wp.vec3d],
+    ray_mates: wp.array[wp.int32],
+    faces_b: wp.array[wp.int32],
+    pos_b: wp.array[wp.vec3d],
+    vnormal_b: wp.array[wp.vec3d],
+    fnormal_b: wp.array[wp.vec3d],
+    mates_b: wp.array[wp.int32],
+) -> tuple[wp.bool, wp.float64, wp.vec3d]:
+    # Whether segment ``s`` crosses ``face``, its parameter there in [0, 1] along the segment's
+    # dominant axis, and the crossing: ``Kernel12`` of the segment's forward halfedge.
+    x12, v12 = shadow_edge_face(
+        3 * s,
+        face,
+        ray_faces,
+        ray_pos,
+        ray_normals,
+        ray_normals,
+        ray_mates,
+        faces_b,
+        pos_b,
+        vnormal_b,
+        fnormal_b,
+        mates_b,
+        0,
+        1,
+    )
+    if x12 == 0 or not wp.isfinite(v12[0]):
+        return False, wp.float64(0.0), v12
+    origin = ray_pos[2 * s]
+    direction = ray_pos[2 * s + 1] - origin
+    a = wp.vec3d(wp.abs(direction[0]), wp.abs(direction[1]), wp.abs(direction[2]))
+    axis = wp.int32(2)
+    if a[0] > a[1] and a[0] > a[2]:
+        axis = wp.int32(0)
+    elif a[1] > a[2]:
+        axis = wp.int32(1)
+    t = (v12[axis] - origin[axis]) / direction[axis]
+    return t >= wp.float64(0.0) and t <= wp.float64(1.0), t, v12
+
+
+@wp.func
+def segment_direction(ray_pos: wp.array[wp.vec3d], s: wp.int32) -> wp.vec3:
+    return wp.vec3(ray_pos[2 * s + 1]) - wp.vec3(ray_pos[2 * s])
+
+
+# The ray walks' reach, in segment lengths: a little past the endpoint, so the walk's ``float32``
+# rounding never drops a face the exact predicate would keep.
+SEGMENT_REACH = wp.float32(1.0001)
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def count_segment_hits(
+    ray_faces: wp.array[wp.int32],
+    ray_pos: wp.array[wp.vec3d],
+    ray_normals: wp.array[wp.vec3d],
+    ray_mates: wp.array[wp.int32],
+    faces_b: wp.array[wp.int32],
+    pos_b: wp.array[wp.vec3d],
+    vnormal_b: wp.array[wp.vec3d],
+    fnormal_b: wp.array[wp.vec3d],
+    mates_b: wp.array[wp.int32],
+    bvh_b: wp.uint64,
+    pad: wp.float32,
+    out_counts: wp.array[wp.int32],
+) -> None:
+    # How many faces each segment crosses within its length.
+    s = wp.int32(wp.tid())
+    # The faces whose boxes (padded past ``float32`` rounding) the segment passes through; the
+    # exact predicate decides.
+    query = wp.bvh_query_ray(bvh_b, wp.vec3(ray_pos[2 * s]), segment_direction(ray_pos, s))
+    face = wp.int32(0)
+    count = wp.int32(0)
+    while wp.bvh_query_next(query, face, SEGMENT_REACH + wp.float32(0.0)):
+        hit, _t, _point = segment_hit(
+            s,
+            face,
+            ray_faces,
+            ray_pos,
+            ray_normals,
+            ray_mates,
+            faces_b,
+            pos_b,
+            vnormal_b,
+            fnormal_b,
+            mates_b,
+        )
+        if hit:
+            count += 1
+    out_counts[s] = count
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def write_segment_hits(
+    ray_faces: wp.array[wp.int32],
+    ray_pos: wp.array[wp.vec3d],
+    ray_normals: wp.array[wp.vec3d],
+    ray_mates: wp.array[wp.int32],
+    faces_b: wp.array[wp.int32],
+    pos_b: wp.array[wp.vec3d],
+    vnormal_b: wp.array[wp.vec3d],
+    fnormal_b: wp.array[wp.vec3d],
+    mates_b: wp.array[wp.int32],
+    bvh_b: wp.uint64,
+    pad: wp.float32,
+    offsets: wp.array[wp.int32],
+    face_to_input: wp.array[wp.int32],
+    out_faces: wp.array[wp.int32],
+    out_parameters: wp.array[wp.float64],
+    out_points: wp.array[wp.vec3],
+    out_normals: wp.array[wp.vec3],
+) -> None:
+    # Each segment's hits in order along it, ties by the face's input index: the face (as the
+    # caller numbered it), the parameter, the crossing and the face's normal.
+    s = wp.int32(wp.tid())
+    first = offsets[s]
+    stop = offsets[s + 1]
+    if first == stop:
+        return
+    query = wp.bvh_query_ray(bvh_b, wp.vec3(ray_pos[2 * s]), segment_direction(ray_pos, s))
+    face = wp.int32(0)
+    slot = first
+    while wp.bvh_query_next(query, face, SEGMENT_REACH + wp.float32(0.0)):
+        if slot >= stop:
+            continue
+        hit, t, point = segment_hit(
+            s,
+            face,
+            ray_faces,
+            ray_pos,
+            ray_normals,
+            ray_mates,
+            faces_b,
+            pos_b,
+            vnormal_b,
+            fnormal_b,
+            mates_b,
+        )
+        if not hit:
+            continue
+        index = face_to_input[face]
+        at = slot
+        while at > first and (
+            out_parameters[at - 1] > t
+            or (out_parameters[at - 1] == t and out_faces[at - 1] > index)
+        ):
+            out_faces[at] = out_faces[at - 1]
+            out_parameters[at] = out_parameters[at - 1]
+            out_points[at] = out_points[at - 1]
+            out_normals[at] = out_normals[at - 1]
+            at -= 1
+        out_faces[at] = index
+        out_parameters[at] = t
+        out_points[at] = wp.vec3(point)
+        out_normals[at] = wp.vec3(fnormal_b[face])
+        slot += 1
 
 
 def _declare_map_kernels() -> None:

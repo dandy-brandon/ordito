@@ -56,7 +56,7 @@ from ordito._common import (
     scan_count,
     scatter_normal_sums,
 )
-from ordito._manifold import (
+from ordito._solid import (
     Solid,
     compacted,
     empty_solid,
@@ -74,8 +74,8 @@ from ordito.kernels import normals as kernel_normals
 from ordito.kernels import proximity as kernel_proximity
 from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels.algorithms import dual_marching_cubes as kernel_dmc
-from ordito.kernels.algorithms import manifold as kernel_manifold
 from ordito.kernels.algorithms import marching_cubes_33 as kernel_mc33
+from ordito.kernels.algorithms import solid as kernel_solid
 
 # Bounds on the automatic ``voxel_size``, both expressed as a sample count across a span, and both
 # load-bearing rather than defensive. The spans differ, which is the part to read carefully: the
@@ -1744,7 +1744,7 @@ def _solid_level_set(
 ) -> Solid:
     """``CreateLevelSet``: sample, find the near-surface points, build, then finish the solid."""
     voxels_kernel, near_kernel, edge_kernel = (
-        cast(odt.Kernel, k) for k in kernel_manifold.level_set_kernels(sdf)
+        cast(odt.Kernel, k) for k in kernel_levelset.level_set_kernels(sdf)
     )
     tol = tolerance if tolerance > 0 else math.inf
     origin = wp.vec3d(*grid.origin)
@@ -1778,7 +1778,7 @@ def _solid_level_set(
     moved_offsets, moved_flags = offsets_buffer(n_entries, device)
     edge_verts = _launch.empty(7 * n_entries, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_manifold.level_set_entries,
+        kernel_levelset.level_set_entries,
         dim=m,
         inputs=[keep_offsets, moved_dense, mask],
         outputs=[entry_keys, moved_flags, edge_verts],
@@ -1789,7 +1789,7 @@ def _solid_level_set(
     entry_distance = _launch.empty(n_entries, dtype=wp.float64, device=device)
     moved_positions = _launch.empty(max(n_moved, 1), dtype=wp.vec3d, device=device)
     _launch.launch(
-        kernel_manifold.level_set_number_moved,
+        kernel_levelset.level_set_number_moved,
         dim=n_entries,
         inputs=[moved_offsets, entry_keys, voxels, pw, moved_pos_dense],
         outputs=[entry_moved, entry_distance, edge_verts, moved_positions],
@@ -1802,17 +1802,17 @@ def _solid_level_set(
     insert_inputs: list[object] = [entry_keys, n_entries, table_size]
     if device.is_cpu:
         _launch.launch(
-            kernel_manifold.level_set_insert,
+            kernel_levelset.level_set_insert,
             dim=1,
             inputs=insert_inputs,
             outputs=[keys, slot_entry],
             device=device,
         )
     else:
-        launch_on_host(kernel_manifold.level_set_insert, insert_inputs, [keys, slot_entry])
+        launch_on_host(kernel_levelset.level_set_insert, insert_inputs, [keys, slot_entry])
     vert_offsets, vert_counts = offsets_buffer(table_size, device)
     _launch.launch(
-        kernel_manifold.level_set_count_verts,
+        kernel_levelset.level_set_count_verts,
         dim=table_size,
         inputs=[voxels, keys, slot_entry, entry_keys, entry_distance, entry_moved, pw],
         outputs=[vert_counts],
@@ -1849,7 +1849,7 @@ def _solid_level_set(
     scratch_tris = _launch.empty(1, dtype=wp.vec3i, device=device)
     table = [keys, slot_entry, entry_keys, entry_distance, edge_verts, pw]
     _launch.launch(
-        kernel_manifold.level_set_count_tris,
+        kernel_levelset.level_set_count_tris,
         dim=table_size,
         inputs=[*table, scratch_tris],
         outputs=[tri_counts],
@@ -1860,7 +1860,7 @@ def _solid_level_set(
         return empty_solid(device)
     tris = _launch.empty(n_tris, dtype=wp.vec3i, device=device)
     _launch.launch(
-        kernel_manifold.level_set_write_tris,
+        kernel_levelset.level_set_write_tris,
         dim=table_size,
         inputs=[*table, tri_offsets],
         outputs=[tris],
@@ -1946,7 +1946,7 @@ def _level_set_solid(
         return empty_solid(device)
     kept_positions, faces = kept[0], kept[1]
     lower, upper = positions_box(kept_positions)
-    epsilon = kernel_manifold.PRECISION * max(abs(x) for x in (*lower, *upper))
+    epsilon = kernel_solid.PRECISION * max(abs(x) for x in (*lower, *upper))
     return solid_from_positions(
         kept_positions, faces, 0, epsilon, epsilon, lower, upper, "level set", sort_first=True
     )

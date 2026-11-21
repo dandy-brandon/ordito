@@ -45,7 +45,7 @@ from ordito._common import (
     scan_count,
     scatter_normal_sums,
 )
-from ordito._manifold import (
+from ordito._solid import (
     Solid,
     coplanar_groups,
     finish_solid,
@@ -66,7 +66,7 @@ from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import remesh as kernel_remesh
 from ordito.kernels import scatter as kernel_scatter
-from ordito.kernels.algorithms import manifold as kernel_manifold
+from ordito.kernels.algorithms import solid as kernel_solid
 from ordito.laplacian import mollify_intrinsic
 
 # ``cluster_decimate(method="meshlib")``'s most cells along one axis: a finer ``voxel_size``
@@ -7117,7 +7117,7 @@ def _solid_smooth_out(
     tangents = _smoothing_tangents(solid, twins, min_sharp_angle, min_smoothness)
     inside = _launch.empty(n_h, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_manifold.quad_diagonal_flags,
+        kernel_remesh.quad_diagonal_flags,
         dim=n_h,
         inputs=[tangents],
         outputs=[inside],
@@ -7126,7 +7126,7 @@ def _solid_smooth_out(
     sub = _subdivide(solid, twins, inside, n - 1, length, tangents, tolerance)
     positions = _launch.empty(sub.bary_tri.size, dtype=wp.vec3d, device=device)
     _launch.launch(
-        kernel_manifold.interp_tri_positions,
+        kernel_remesh.interp_tri_positions,
         dim=sub.bary_tri.size,
         inputs=[solid.positions, solid.faces, twins, inside, tangents, sub.bary_tri, sub.bary_uvw],
         outputs=[positions],
@@ -7152,7 +7152,7 @@ def _smoothing_tangents(
     n_t = solid.n_faces
     first = _launch.full(n_v, 2147483647, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_manifold.least_outgoing_halfedges,
+        kernel_solid.least_outgoing_halfedges,
         dim=n_h,
         inputs=[solid.faces],
         outputs=[first],
@@ -7160,7 +7160,7 @@ def _smoothing_tangents(
     )
     flat = _launch.zeros(n_t, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_manifold.flat_faces,
+        kernel_remesh.flat_faces,
         dim=n_t,
         inputs=[twins, solid.face_mesh, solid.face_coplanar],
         outputs=[flat],
@@ -7168,7 +7168,7 @@ def _smoothing_tangents(
     )
     normals = _launch.empty(n_v, dtype=wp.vec3d, device=device)
     _launch.launch(
-        kernel_manifold.smoothing_vertex_normals,
+        kernel_remesh.smoothing_vertex_normals,
         dim=n_v,
         inputs=[
             twins,
@@ -7184,7 +7184,7 @@ def _smoothing_tangents(
     )
     tangents = _launch.empty(n_h, dtype=wp.vec4d, device=device)
     _launch.launch(
-        kernel_manifold.initial_tangents,
+        kernel_remesh.initial_tangents,
         dim=n_h,
         inputs=[
             solid.positions,
@@ -7202,7 +7202,7 @@ def _smoothing_tangents(
     smoothness = _launch.empty(n_h, dtype=wp.vec2d, device=device)
     min_radians = max(min_sharp_angle, 1e-4) * math.pi / 180
     _launch.launch(
-        kernel_manifold.edge_smoothness,
+        kernel_remesh.edge_smoothness,
         dim=n_h,
         inputs=[
             solid.faces,
@@ -7219,21 +7219,21 @@ def _smoothing_tangents(
     )
     fixed = _launch.zeros(n_h, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_manifold.sharpen_vertex_tangents,
+        kernel_remesh.sharpen_vertex_tangents,
         dim=n_v,
         inputs=[solid.positions, solid.faces, twins, flat, first, present, smoothness],
         outputs=[tangents, fixed],
         device=device,
     )
     _launch.launch(
-        kernel_manifold.linearize_flat_tangents,
+        kernel_remesh.linearize_flat_tangents,
         dim=n_h,
         inputs=[solid.positions, solid.faces, twins],
         outputs=[tangents],
         device=device,
     )
     _launch.launch(
-        kernel_manifold.distribute_tangents,
+        kernel_remesh.distribute_tangents,
         dim=n_h,
         inputs=[solid.positions, solid.faces, twins, solid.vertex_normals, fixed],
         outputs=[tangents],
@@ -7275,7 +7275,7 @@ def _subdivide(
     n_t = solid.n_faces
     ranks, forward = offsets_buffer(n_h, device)
     _launch.launch(
-        kernel_manifold.forward_halfedge_flags,
+        kernel_remesh.forward_halfedge_flags,
         dim=n_h,
         inputs=[solid.faces],
         outputs=[forward],
@@ -7292,7 +7292,7 @@ def _subdivide(
     if tolerance > 0.0:
         raw = _launch.zeros(n_edges, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_manifold.refine_edge_added,
+        kernel_remesh.refine_edge_added,
         dim=n_h,
         inputs=[
             solid.positions,
@@ -7310,7 +7310,7 @@ def _subdivide(
     )
     if tolerance > 0.0:
         _launch.launch(
-            kernel_manifold.keep_interior_added,
+            kernel_remesh.keep_interior_added,
             dim=n_h,
             inputs=[solid.faces, twins, ranks, inside, raw],
             outputs=[added_counts],
@@ -7319,7 +7319,7 @@ def _subdivide(
     n_added = scan_count(added_counts)
     keys = _launch.empty(n_t, dtype=wp.vec4i, device=device)
     _launch.launch(
-        kernel_manifold.refine_face_keys,
+        kernel_remesh.refine_face_keys,
         dim=n_t,
         inputs=[solid.faces, twins, ranks, inside, added_offsets],
         outputs=[keys],
@@ -7352,21 +7352,21 @@ def _subdivide(
     bary_uvw = _launch.empty(n_new_v, dtype=wp.vec4d, device=device)
     last = _launch.full(n_v, -1, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_manifold.last_corner_halfedges,
+        kernel_remesh.last_corner_halfedges,
         dim=n_h,
         inputs=[solid.faces, inside],
         outputs=[last],
         device=device,
     )
     _launch.launch(
-        kernel_manifold.refine_retained_bary,
+        kernel_remesh.refine_retained_bary,
         dim=n_v,
         inputs=[twins, inside, last],
         outputs=[bary_tri, bary_uvw],
         device=device,
     )
     _launch.launch(
-        kernel_manifold.refine_edge_bary,
+        kernel_remesh.refine_edge_bary,
         dim=n_edges,
         inputs=[twins, inside, edge_halfedge, added_offsets, n_v],
         outputs=[bary_tri, bary_uvw],
@@ -7377,7 +7377,7 @@ def _subdivide(
     face_mesh = _launch.empty(n_new_t, dtype=wp.int32, device=device)
     face_coplanar = _launch.empty(n_new_t, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_manifold.refine_faces,
+        kernel_remesh.refine_faces,
         dim=n_t,
         inputs=[
             solid.faces,
@@ -7656,7 +7656,7 @@ def _regrouped_solid(solid: Solid, tolerance: float) -> Solid:
     twins = halfedge_twins(solid.faces, solid.n_vertices, validate=False)
     face_normals = _launch.empty(n_faces, dtype=wp.vec3d, device=device)
     _launch.launch(
-        kernel_manifold.mesh_face_normals,
+        kernel_solid.mesh_face_normals,
         dim=n_faces,
         inputs=[solid.positions, solid.faces],
         outputs=[face_normals],
@@ -7665,7 +7665,7 @@ def _regrouped_solid(solid: Solid, tolerance: float) -> Solid:
     coplanar = coplanar_groups(solid.positions, solid.faces, twins, face_normals, tolerance)
     first_halfedge = _launch.full(solid.n_vertices, 2147483647, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_manifold.operand_boxes,
+        kernel_solid.operand_boxes,
         dim=n_faces,
         inputs=[solid.positions, solid.faces, twins, 0.0],
         outputs=[
@@ -7678,7 +7678,7 @@ def _regrouped_solid(solid: Solid, tolerance: float) -> Solid:
     )
     vertex_normals = _launch.empty(solid.n_vertices, dtype=wp.vec3d, device=device)
     _launch.launch(
-        kernel_manifold.vertex_pseudo_normals,
+        kernel_solid.vertex_pseudo_normals,
         dim=solid.n_vertices,
         inputs=[solid.faces, twins, solid.positions, face_normals, first_halfedge],
         outputs=[vertex_normals],

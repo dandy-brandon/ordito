@@ -40,6 +40,7 @@ from ordito.kernels.array import (
     map_probe,
     sort3,
 )
+from ordito.kernels.halfedge import halfedge_next, next3
 
 wp.set_module_options({"enable_backward": False})
 
@@ -1352,6 +1353,404 @@ def orient2d_sign(
     if sign == 0:
         sign = orient2d_exact(ax, ay, bx, by, cx, cy)
     return sign
+
+
+# -- exact predicates with symbolic perturbation (Manifold's ``boolean3.cpp``, ``shared.h``) -------
+# Whether a vertex, edge or face of one closed mesh lies beyond one of another, a tie broken by a
+# symbolic perturbation along the vertex and face normals, so that every crossing is decided
+# consistently with every other (the Booleans, ``ray.segment_hits``). They compare interpolated
+# coordinates for exact equality: call them only from kernels that build unfused (``fuse_fp``).
+
+
+@wp.func
+def shadows(p: wp.float64, q: wp.float64, direction: wp.float64) -> wp.bool:
+    # ``Shadows``: p < q, a tie decided by the sign of the perturbation's direction.
+    if p == q:
+        return direction < wp.float64(0.0)
+    return p < q
+
+
+@wp.func
+def with_sign(positive: wp.int32, v: wp.float64) -> wp.float64:
+    return wp.where(positive != 0, v, wp.float64(0.0) - v)
+
+
+@wp.func
+def shadow_step(flag: wp.bool) -> wp.int32:
+    return wp.where(flag, wp.int32(1), wp.int32(0))
+
+
+@wp.func
+def interpolate(a_left: wp.vec3d, a_right: wp.vec3d, x: wp.float64) -> wp.vec2d:
+    # ``Interpolate``: the (y, z) of segment a_left-a_right at x, from the nearer end.
+    dx_left = x - a_left[0]
+    dx_right = x - a_right[0]
+    use_left = wp.abs(dx_left) < wp.abs(dx_right)
+    d = a_right - a_left
+    lam = wp.where(use_left, dx_left, dx_right) / d[0]
+    if not (wp.isfinite(lam) and wp.isfinite(d[1]) and wp.isfinite(d[2])):
+        return wp.vec2d(a_left[1], a_left[2])
+    y = lam * d[1] + wp.where(use_left, a_left[1], a_right[1])
+    z = lam * d[2] + wp.where(use_left, a_left[2], a_right[2])
+    return wp.vec2d(y, z)
+
+
+@wp.func
+def intersect(a_left: wp.vec3d, a_right: wp.vec3d, b_left: wp.vec3d, b_right: wp.vec3d) -> wp.vec4d:
+    # ``Intersect``: where segments a and b, given over the same two x, cross in y; their z there.
+    dy_left = b_left[1] - a_left[1]
+    dy_right = b_right[1] - a_right[1]
+    use_left = wp.abs(dy_left) < wp.abs(dy_right)
+    dx = a_right[0] - a_left[0]
+    lam = wp.where(use_left, dy_left, dy_right) / (dy_left - dy_right)
+    if not wp.isfinite(lam):
+        lam = wp.float64(0.0)
+    x = lam * dx + wp.where(use_left, a_left[0], a_right[0])
+    a_dy = a_right[1] - a_left[1]
+    b_dy = b_right[1] - b_left[1]
+    use_a = wp.abs(a_dy) < wp.abs(b_dy)
+    y0 = wp.where(use_a, a_left[1], b_left[1])
+    y1 = wp.where(use_a, a_right[1], b_right[1])
+    y = lam * wp.where(use_a, a_dy, b_dy) + wp.where(use_left, y0, y1)
+    z = lam * (a_right[2] - a_left[2]) + wp.where(use_left, a_left[2], a_right[2])
+    w = lam * (b_right[2] - b_left[2]) + wp.where(use_left, b_left[2], b_right[2])
+    return wp.vec4d(x, y, z, w)
+
+
+@wp.func
+def face_edge(
+    faces: wp.array[wp.int32], mates: wp.array[wp.int32], tri: wp.int32, i: wp.int32
+) -> wp.vec4i:
+    # ``LoadFaceEdges``: edge ``i`` of ``tri`` as (forward halfedge, lower vertex, upper vertex,
+    # whether the face's own halfedge is the forward one).
+    h = 3 * tri + i
+    start = faces[h]
+    end = faces[3 * tri + next3(i)]
+    if start < end:
+        return wp.vec4i(h, start, end, 1)
+    return wp.vec4i(mates[h], end, start, 0)
+
+
+@wp.func
+def shadow_vertex_edge(
+    a0: wp.int32,
+    b1: wp.int32,
+    b1s: wp.int32,
+    b1e: wp.int32,
+    pos_a: wp.array[wp.vec3d],
+    vnormal_a: wp.array[wp.vec3d],
+    pos_b: wp.array[wp.vec3d],
+    vnormal_b: wp.array[wp.vec3d],
+    fnormal_b: wp.array[wp.vec3d],
+    mates_b: wp.array[wp.int32],
+    expand: wp.int32,
+    forward: wp.int32,
+) -> tuple[wp.int32, wp.vec2d, wp.bool]:
+    # ``Shadow01``: whether vertex a0 shadows edge b1 (in x, then y), and the edge's (y, z) at the
+    # vertex's x. The flag is Manifold's "yz01 is finite": the vertex's x lies within the edge's.
+    a0x = pos_a[a0][0]
+    b1sx = pos_b[b1s][0]
+    b1ex = pos_b[b1e][0]
+    a0xp = vnormal_a[a0][0]
+    b1sxp = vnormal_b[b1s][0]
+    b1exp = vnormal_b[b1e][0]
+    s01 = wp.int32(0)
+    if forward != 0:
+        s01 = shadow_step(shadows(a0x, b1ex, with_sign(expand, a0xp) - b1exp)) - shadow_step(
+            shadows(a0x, b1sx, with_sign(expand, a0xp) - b1sxp)
+        )
+    else:
+        s01 = shadow_step(shadows(b1sx, a0x, with_sign(expand, b1sxp) - a0xp)) - shadow_step(
+            shadows(b1ex, a0x, with_sign(expand, b1exp) - a0xp)
+        )
+    yz = wp.vec2d(wp.float64(0.0), wp.float64(0.0))
+    valid = wp.bool(False)
+    if s01 != 0:
+        valid = True
+        yz = interpolate(pos_b[b1s], pos_b[b1e], a0x)
+        direction = fnormal_b[b1 // 3][1] + fnormal_b[mates_b[b1] // 3][1]
+        if forward != 0:
+            if not shadows(pos_a[a0][1], yz[0], wp.float64(0.0) - direction):
+                s01 = wp.int32(0)
+        else:
+            if not shadows(yz[0], pos_a[a0][1], with_sign(expand, direction)):
+                s01 = wp.int32(0)
+    return s01, yz, valid
+
+
+@wp.func
+def shadow_edge_edge(
+    p1: wp.int32,
+    p1s: wp.int32,
+    p1e: wp.int32,
+    q1: wp.int32,
+    q1s: wp.int32,
+    q1e: wp.int32,
+    pos_p: wp.array[wp.vec3d],
+    vnormal_p: wp.array[wp.vec3d],
+    fnormal_p: wp.array[wp.vec3d],
+    mates_p: wp.array[wp.int32],
+    pos_q: wp.array[wp.vec3d],
+    vnormal_q: wp.array[wp.vec3d],
+    fnormal_q: wp.array[wp.vec3d],
+    mates_q: wp.array[wp.int32],
+    expand: wp.int32,
+) -> tuple[wp.int32, wp.vec4d, wp.bool]:
+    # ``Kernel11``: whether edge p1 of P passes above or below edge q1 of Q where they cross in the
+    # xy projection, and the crossing (x, y, z of p1, z of q1).
+    k = wp.int32(0)
+    s11 = wp.int32(0)
+    flag = wp.bool(False)
+    p_left = wp.vec3d()
+    p_right = wp.vec3d()
+    q_left = wp.vec3d()
+    q_right = wp.vec3d()
+    for i in range(2):
+        p0 = wp.where(i == 0, p1s, p1e)
+        s01, yz, ok = shadow_vertex_edge(
+            p0, q1, q1s, q1e, pos_p, vnormal_p, pos_q, vnormal_q, fnormal_q, mates_q, expand, 1
+        )
+        if ok:
+            s11 += s01 * wp.where(i == 0, wp.int32(-1), wp.int32(1))
+            if k < 2 and (k == 0 or (s01 != 0) != flag):
+                flag = s01 != 0
+                p = pos_p[p0]
+                q = wp.vec3d(p[0], yz[0], yz[1])
+                if k == 0:
+                    p_left = p
+                    q_left = q
+                else:
+                    p_right = p
+                    q_right = q
+                k += 1
+    for i in range(2):
+        q0 = wp.where(i == 0, q1s, q1e)
+        s10, yz, ok = shadow_vertex_edge(
+            q0, p1, p1s, p1e, pos_q, vnormal_q, pos_p, vnormal_p, fnormal_p, mates_p, expand, 0
+        )
+        if ok:
+            s11 += s10 * wp.where(i == 0, wp.int32(-1), wp.int32(1))
+            if k < 2 and (k == 0 or (s10 != 0) != flag):
+                flag = s10 != 0
+                q = pos_q[q0]
+                p = wp.vec3d(q[0], yz[0], yz[1])
+                if k == 0:
+                    p_left = p
+                    q_left = q
+                else:
+                    p_right = p
+                    q_right = q
+                k += 1
+    xyzz = wp.vec4d()
+    if s11 == 0:
+        return s11, xyzz, False
+    xyzz = intersect(p_left, p_right, q_left, q_right)
+    dir_p = fnormal_p[p1 // 3][2] + fnormal_p[mates_p[p1] // 3][2]
+    dir_q = fnormal_q[q1 // 3][2] + fnormal_q[mates_q[q1] // 3][2]
+    if not shadows(xyzz[2], xyzz[3], with_sign(expand, dir_p) - dir_q):
+        s11 = wp.int32(0)
+    return s11, xyzz, True
+
+
+@wp.func
+def shadow_vertex_face(
+    a0: wp.int32,
+    b2: wp.int32,
+    pos_a: wp.array[wp.vec3d],
+    vnormal_a: wp.array[wp.vec3d],
+    faces_b: wp.array[wp.int32],
+    pos_b: wp.array[wp.vec3d],
+    vnormal_b: wp.array[wp.vec3d],
+    fnormal_b: wp.array[wp.vec3d],
+    mates_b: wp.array[wp.int32],
+    expand: wp.int32,
+    forward: wp.int32,
+) -> tuple[wp.int32, wp.float64, wp.bool]:
+    # ``Kernel02``: whether vertex a0 lies below (forward) or above face b2 in z, and the face's z
+    # under the vertex.
+    k = wp.int32(0)
+    s02 = wp.int32(0)
+    flag = wp.bool(False)
+    yzz_left = wp.vec3d()
+    yzz_right = wp.vec3d()
+    for i in range(3):
+        edge = face_edge(faces_b, mates_b, b2, i)
+        s01, yz, ok = shadow_vertex_edge(
+            a0,
+            edge[0],
+            edge[1],
+            edge[2],
+            pos_a,
+            vnormal_a,
+            pos_b,
+            vnormal_b,
+            fnormal_b,
+            mates_b,
+            expand,
+            forward,
+        )
+        if ok:
+            same = (forward != 0) == (edge[3] != 0)
+            s02 += s01 * wp.where(same, wp.int32(-1), wp.int32(1))
+            if k < 2 and (k == 0 or (s01 != 0) != flag):
+                flag = s01 != 0
+                yzz = wp.vec3d(yz[0], yz[1], yz[1])
+                if k == 0:
+                    yzz_left = yzz
+                else:
+                    yzz_right = yzz
+                k += 1
+    if s02 == 0:
+        return s02, wp.float64(0.0), False
+    a = pos_a[a0]
+    z02 = interpolate(yzz_left, yzz_right, a[1])[1]
+    if forward != 0:
+        if not shadows(a[2], z02, wp.float64(0.0) - fnormal_b[b2][2]):
+            s02 = wp.int32(0)
+    else:
+        if not shadows(z02, a[2], with_sign(expand, fnormal_b[b2][2])):
+            s02 = wp.int32(0)
+    return s02, z02, True
+
+
+@wp.func
+def shadow_edge_face(
+    a1: wp.int32,
+    b2: wp.int32,
+    faces_a: wp.array[wp.int32],
+    pos_a: wp.array[wp.vec3d],
+    vnormal_a: wp.array[wp.vec3d],
+    fnormal_a: wp.array[wp.vec3d],
+    mates_a: wp.array[wp.int32],
+    faces_b: wp.array[wp.int32],
+    pos_b: wp.array[wp.vec3d],
+    vnormal_b: wp.array[wp.vec3d],
+    fnormal_b: wp.array[wp.vec3d],
+    mates_b: wp.array[wp.int32],
+    expand: wp.int32,
+    forward: wp.int32,
+) -> tuple[wp.int32, wp.vec3d]:
+    # ``Kernel12``: the signed crossing of edge a1 (its forward halfedge) with face b2, and where.
+    # A is P and B is Q when ``forward``, the other way round otherwise. Zero is no crossing.
+    k = wp.int32(0)
+    x12 = wp.int32(0)
+    flag = wp.bool(False)
+    lr0_left = wp.vec3d()
+    lr0_right = wp.vec3d()
+    lr1_left = wp.vec3d()
+    lr1_right = wp.vec3d()
+    edge_start = faces_a[a1]
+    edge_end = faces_a[halfedge_next(a1)]
+    for j in range(2):
+        vert = wp.where(j == 0, edge_start, edge_end)
+        s, z, ok = shadow_vertex_face(
+            vert,
+            b2,
+            pos_a,
+            vnormal_a,
+            faces_b,
+            pos_b,
+            vnormal_b,
+            fnormal_b,
+            mates_b,
+            expand,
+            forward,
+        )
+        if ok:
+            x12 += s * wp.where((j == 0) == (forward != 0), wp.int32(1), wp.int32(-1))
+            if k < 2 and (k == 0 or (s != 0) != flag):
+                flag = s != 0
+                p = pos_a[vert]
+                l0 = wp.vec3d(p[0], p[2], p[1])
+                l1 = wp.vec3d(p[0], z, p[1])
+                if k == 0:
+                    lr0_left = l0
+                    lr1_left = l1
+                else:
+                    lr0_right = l0
+                    lr1_right = l1
+                k += 1
+    for i in range(3):
+        edge = face_edge(faces_b, mates_b, b2, i)
+        s = wp.int32(0)
+        xyzz = wp.vec4d()
+        ok = wp.bool(False)
+        if forward != 0:
+            s, xyzz, ok = shadow_edge_edge(
+                a1,
+                edge_start,
+                edge_end,
+                edge[0],
+                edge[1],
+                edge[2],
+                pos_a,
+                vnormal_a,
+                fnormal_a,
+                mates_a,
+                pos_b,
+                vnormal_b,
+                fnormal_b,
+                mates_b,
+                expand,
+            )
+        else:
+            s, xyzz, ok = shadow_edge_edge(
+                edge[0],
+                edge[1],
+                edge[2],
+                a1,
+                edge_start,
+                edge_end,
+                pos_b,
+                vnormal_b,
+                fnormal_b,
+                mates_b,
+                pos_a,
+                vnormal_a,
+                fnormal_a,
+                mates_a,
+                expand,
+            )
+        if ok:
+            x12 -= s * wp.where(edge[3] != 0, wp.int32(1), wp.int32(-1))
+            if k < 2 and (k == 0 or (s != 0) != flag):
+                flag = s != 0
+                z0 = xyzz[2]
+                z1 = xyzz[3]
+                if forward == 0:
+                    z0 = xyzz[3]
+                    z1 = xyzz[2]
+                l0 = wp.vec3d(xyzz[0], z0, xyzz[1])
+                l1 = wp.vec3d(xyzz[0], z1, xyzz[1])
+                if k == 0:
+                    lr0_left = l0
+                    lr1_left = l1
+                else:
+                    lr0_right = l0
+                    lr1_right = l1
+                k += 1
+    v12 = wp.vec3d()
+    if x12 != 0:
+        xzyy = intersect(lr0_left, lr0_right, lr1_left, lr1_right)
+        v12 = wp.vec3d(xzyy[0], xzyy[2], xzyy[1])
+    return x12, v12
+
+
+@wp.func
+def project(normal: wp.vec3d, p: wp.vec3d) -> wp.vec2d:
+    # ``GetAxisAlignedProjection``: drop the normal's dominant axis, keeping the polygon CCW.
+    a = wp.vec3d(wp.abs(normal[0]), wp.abs(normal[1]), wp.abs(normal[2]))
+    r = wp.vec2d(p[1], p[2])
+    m = normal[0]
+    if a[2] > a[0] and a[2] > a[1]:
+        r = wp.vec2d(p[0], p[1])
+        m = normal[2]
+    elif a[1] > a[0]:
+        r = wp.vec2d(p[2], p[0])
+        m = normal[1]
+    if m < wp.float64(0.0):
+        r = wp.vec2d(wp.float64(0.0) - r[0], r[1])
+    return r
 
 
 def _declare_map_kernels() -> None:

@@ -72,6 +72,7 @@ import warp as wp
 
 from ordito.kernels import array as kernel_array
 from ordito.kernels import predicates as kernel_predicates
+from ordito.kernels.halfedge import next3, prev3
 
 wp.set_module_options({"enable_backward": False})
 
@@ -131,16 +132,6 @@ KERNEL_WEIGHTS_FALLBACK = wp.vec4d(0.25, 0.25, 0.25, 0.25)
 @wp.func
 def point_d(points: wp.array[wp.vec3], index: wp.int32) -> wp.vec3d:
     return kernel_array.to_vec3d(points[index])
-
-
-@wp.func
-def next3(k: wp.int32) -> wp.int32:
-    return wp.where(k == 2, 0, k + 1)
-
-
-@wp.func
-def prev3(k: wp.int32) -> wp.int32:
-    return wp.where(k == 0, 2, k - 1)
 
 
 @wp.func
