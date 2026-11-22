@@ -67,6 +67,7 @@ if TYPE_CHECKING:
     Array2dFloat32: TypeAlias = wp.array[wp.float32, Literal[2]]
     Array2dFloat64: TypeAlias = wp.array[wp.float64, Literal[2]]
     Array2dVec3: TypeAlias = wp.array[wp.vec3, Literal[2]]
+    Array2dVec3d: TypeAlias = wp.array[wp.vec3d, Literal[2]]
     Array3dFloat32: TypeAlias = wp.array[wp.float32, Literal[3]]
     Array3dFloat64: TypeAlias = wp.array[wp.float64, Literal[3]]
     Array3dBool: TypeAlias = wp.array[wp.bool, Literal[3]]
@@ -131,6 +132,7 @@ else:
     Array2dFloat32 = wp.array
     Array2dFloat64 = wp.array
     Array2dVec3 = wp.array
+    Array2dVec3d = wp.array
     Array3dFloat32 = wp.array
     Array3dFloat64 = wp.array
     Array3dBool = wp.array

@@ -24,6 +24,7 @@ import ordito.config as od_config
 import ordito.creation as od_creation
 import ordito.equality as od_equality
 import ordito.grouping as od_grouping
+import ordito.heat as od_heat
 import ordito.neighbors as od_neighbors
 import ordito.points as od
 import ordito.repair as od_repair
@@ -1344,6 +1345,35 @@ def test_local_triangulation_matches_potpourri3d(
     )
 
 
+@pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parametrize("given_normals", [False, True])
+def test_local_triangulation_takes_the_frames_it_would_form(
+    request: pytest.FixtureRequest, mesh_name: str, given_normals: bool
+) -> None:
+    """
+    Ordito against ordito: the stars built in given frames are those built in the estimated ones.
+
+    ``PointCloudHeatSolver`` forms each point's ``float64`` frame and hands it to
+    ``local_triangulation(frames=)``; that must give the stars the function forms from its own
+    frames, which the potpourri3d comparison above pins, both with the normals estimated and
+    given. Non-vacuity: every point has a star.
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    points_wp = mesh_wp.points
+    normals_wp = None
+    if given_normals:
+        normals_wp = points_to_warp(
+            np.asarray(mesh_wp.points.numpy(), dtype=np.float64) - 0.5, points_wp.device
+        )
+    neighbor_idx_wp, _ = od_neighbors.query_nearest(points_wp, points_wp, k=31)
+    solver = od_heat.PointCloudHeatSolver(points_wp, normals=normals_wp)
+    frames_wp = solver._frames64  # pyright: ignore[reportPrivateUsage]
+    framed_np = od.local_triangulation(points_wp, neighbor_idx_wp, frames=frames_wp).numpy()
+    own_np = od.local_triangulation(points_wp, neighbor_idx_wp, normals_wp).numpy()
+    assert np.unique(framed_np.reshape(-1, 3)[:, 0]).shape[0] == points_wp.shape[0]
+    assert np.array_equal(framed_np, own_np)
+
+
 def test_local_triangulation_skips_a_point_on_its_neighbours(device: str) -> None:
     """
     Not a library comparison: a point whose neighbours all lie on it has no star.
@@ -1367,7 +1397,8 @@ def test_local_triangulation_refuses_a_wide_table(device: str) -> None:
     Not a library comparison: a table wider than the stars' scratch, or misfit normals, raise.
 
     A star's rows hold 64 neighbours, so a 66-column table is refused rather than truncated; a
-    normal table must hold one normal per point.
+    normal table must hold one normal per point; frames carry their own normals, so both at once
+    are refused, and frames must have three rows a point.
     """
     points_wp = points_to_warp(_random_points(100, 0), device)
     neighbor_idx_wp, _ = od_neighbors.query_nearest(points_wp, points_wp, k=66)
@@ -1376,6 +1407,12 @@ def test_local_triangulation_refuses_a_wide_table(device: str) -> None:
     neighbor_idx_wp, _ = od_neighbors.query_nearest(points_wp, points_wp, k=31)
     with pytest.raises(ValueError, match="normals"):
         od.local_triangulation(points_wp, neighbor_idx_wp, points_to_warp(np.ones((3, 3)), device))
+    frames_wp = odt.as_array2d(wp.zeros((100, 3), dtype=wp.vec3d, device=device), wp.vec3d)
+    with pytest.raises(ValueError, match="not both"):
+        od.local_triangulation(points_wp, neighbor_idx_wp, points_wp, frames=frames_wp)
+    narrow_wp = odt.as_array2d(wp.zeros((100, 2), dtype=wp.vec3d, device=device), wp.vec3d)
+    with pytest.raises(ValueError, match="frames"):
+        od.local_triangulation(points_wp, neighbor_idx_wp, frames=narrow_wp)
 
 
 @pytest.mark.parametrize("max_gap", [math.pi / 2.0, 0.75 * math.pi])

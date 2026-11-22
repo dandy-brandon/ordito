@@ -22,6 +22,12 @@ from the one matching its tag — so prose sections do not belong between them.
 
 ## [Unreleased]
 
+### Added
+
+- `points.local_triangulation` takes `frames=`: `(n, 3)` `float64` tangent frames to build the
+  stars in, in place of the ones it estimates. `heat.PointCloudHeatSolver` hands it the frames it
+  keeps, so they are formed once.
+
 ### Changed
 
 - `remesh.flip_to_delaunay` flips on the local Delaunay test of a surface (the two angles

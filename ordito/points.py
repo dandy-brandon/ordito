@@ -1609,6 +1609,8 @@ def local_triangulation(
     points: wp.array[wp.vec3],
     neighbor_idx: odt.Array2dInt32,
     normals: wp.array[wp.vec3] | None = None,
+    *,
+    frames: odt.Array2dVec3d | None = None,
 ) -> wp.array[wp.int32]:
     """
     Each point's star in the Delaunay triangulation of its neighbourhood, as one triangle buffer.
@@ -1638,6 +1640,12 @@ def local_triangulation(
         direction the point's neighbours' offsets from it spread least along (their smallest
         singular vector, uncentred: geometry-central's estimate), signed toward the side at least
         half the offsets lie on.
+    frames
+        ``(n, 3)`` ``float64`` tangent frames to build the stars in, each row
+        ``(basis_x, basis_y, normal)`` orthonormal, in place of the frames estimated from
+        ``normals`` (or the neighbours). The stars are geometry-central's only in its frames:
+        those [`PointCloudHeatSolver`][ordito.heat.PointCloudHeatSolver] keeps, which it hands
+        here so they are formed once.
 
     Returns
     -------
@@ -1651,10 +1659,11 @@ def local_triangulation(
     Raises
     ------
     ValueError
-        If ``neighbor_idx`` or ``normals`` does not have one row per point, or ``neighbor_idx``
-        has more than 65 columns.
+        If ``neighbor_idx``, ``normals`` or ``frames`` does not have one row per point,
+        ``neighbor_idx`` has more than 65 columns, ``frames`` is not ``(n, 3)`` ``wp.vec3d``, or
+        both ``normals`` and ``frames`` are given.
     RuntimeError
-        If ``points``, ``neighbor_idx`` and ``normals`` are not all on one device.
+        If ``points``, ``neighbor_idx``, ``normals`` and ``frames`` are not all on one device.
 
     Notes
     -----
@@ -1686,13 +1695,22 @@ def local_triangulation(
     print(int(counts.min()), int(counts.max()))  # 5 6
     ```
     """
-    require_same_device(points=points, neighbor_idx=neighbor_idx, normals=normals)
+    require_same_device(points=points, neighbor_idx=neighbor_idx, normals=normals, frames=frames)
     odt.ensure_ndim(neighbor_idx, 2, dtype=wp.int32)
     device = points.device
     n = points.size
     _require_point_rows(n, neighbor_idx=neighbor_idx)
     if normals is not None:
         _require_point_rows(n, normals=normals)
+    if frames is not None:
+        if normals is not None:
+            raise ValueError("pass normals or frames, not both: frames carry their own normals")
+        odt.ensure_ndim(frames, 2, dtype=wp.vec3d)
+        _require_point_rows(n, frames=frames)
+        if int(frames.shape[1]) != 3:
+            raise ValueError(
+                f"frames must be (n, 3) rows (basis_x, basis_y, normal), got {frames.shape}"
+            )
     width = int(neighbor_idx.shape[1])
     if width - 1 > kernel_points.LOCAL_TRIANGULATION_MAX_NEIGHBORS:
         raise ValueError(
@@ -1704,18 +1722,19 @@ def local_triangulation(
         return _launch.empty(0, dtype=wp.int32, device=device)
     # A star has at most one triangle per neighbour it keeps, and it keeps at most ``width - 1``.
     rows = width - 1
-    frames = odt.empty_2d((n, 3), wp.vec3d, device=device)
-    _launch.launch(
-        kernel_points.cloud_frames,
-        dim=n,
-        inputs=[
-            points,
-            neighbor_idx,
-            _launch.empty(0, dtype=wp.vec3, device=device) if normals is None else normals,
-        ],
-        outputs=[frames],
-        device=device,
-    )
+    if frames is None:
+        frames = odt.empty_2d((n, 3), wp.vec3d, device=device)
+        _launch.launch(
+            kernel_points.cloud_frames,
+            dim=n,
+            inputs=[
+                points,
+                neighbor_idx,
+                _launch.empty(0, dtype=wp.vec3, device=device) if normals is None else normals,
+            ],
+            outputs=[frames],
+            device=device,
+        )
     stars = _launch.empty(3 * n * rows, dtype=wp.int32, device=device).reshape((n, rows, 3))
     counts = _launch.empty(n, dtype=wp.int32, device=device)
     if (

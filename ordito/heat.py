@@ -4596,7 +4596,7 @@ class PointCloudHeatSolver:
         self._frames = (basis_x, basis_y, frame_normals)
         # The frames every solve reads, ``float64`` rows ``(basis_x, basis_y, normal)``.
         self._frames64 = frames
-        faces = od.points.local_triangulation(points, neighbor_idx, normals)
+        faces = od.points.local_triangulation(points, neighbor_idx, frames=frames)
         # The stars as a mesh, so the cover, its operators and their factorizations are a
         # ``HeatSolver``'s, kept with it.
         self._mesh = Trimesh(points, faces)
