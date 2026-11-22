@@ -6397,11 +6397,12 @@ and return a closed, consistently wound mesh; <a class="autorefs autorefs-intern
 <a class="autorefs autorefs-internal" title="split_by_mesh" href="./#ordito.boolean.split_by_mesh"><code>split_by_mesh</code></a>, <a class="autorefs autorefs-internal" title="split_by_plane" href="./#ordito.boolean.split_by_plane"><code>split_by_plane</code></a>
 and <a class="autorefs autorefs-internal" title="trim_by_plane" href="./#ordito.boolean.trim_by_plane"><code>trim_by_plane</code></a> cut a solid into capped parts. Mirrors
 <code>trimesh.boolean</code>, and gives the answers of its default engine, the Manifold library, whose
-Boolean this module ports: the same meshes, vertex and triangle order included, on the meshes
-Manifold itself operates on. Manifold cleans a mesh as it builds a solid from it, collapsing edges
-shorter than its precision and swapping away degenerate triangles; ordito takes the mesh as given.
-On an input with such triangles (a scan often has a few hundred), the two agree from Manifold's
-cleaned mesh, <code>Manifold(mesh).to_mesh()</code>, not from the raw one.</p>
+Boolean this module ports: the same meshes, vertex and triangle order included.</p>
+<p>Each input is cleaned first, as Manifold cleans a mesh it builds a solid from: a triangle naming
+one vertex twice is dropped, a vertex where two fans of faces meet is split, edges shorter than
+the mesh's precision are collapsed, degenerate triangles' long edges are swapped and unused
+vertices are dropped. A clean mesh is left as it is; a scan with degenerate triangles is repaired
+the way Manifold repairs it, so the answers agree on the raw scan.</p>
 <p>Every crossing of an edge of one mesh with a face of the other, and every vertex's winding number
 with respect to the other mesh, is decided exactly from the <code>float32</code> coordinates. Ties --
 surfaces that touch, overlap in a plane or coincide -- are broken by one consistent symbolic
@@ -6410,9 +6411,9 @@ the slivers such contacts leave are collapsed afterwards.</p>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 6 places</summary>
+      <summary>Referenced by 7 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span></p>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="./#ordito.boolean">boolean</a> › <a href="./#ordito.boolean.union">union</a></span></p>
         <p><span class="ordito-backlinks-section">Concepts</span>
 <span class="ordito-backlink"><a href="../../../concepts/#concepts">Concepts</a> › <a href="../../../concepts/#solids-are-checked-and-decided-exactly">Solids are checked, and decided exactly</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
@@ -6730,10 +6731,9 @@ consistently wound.</p>
   <p>A port of the Boolean of Manifold (https://github.com/elalish/manifold, Apache-2.0), the
 engine <a class="autorefs autorefs-external" href="https://trimesh.org/trimesh.boolean.html#trimesh.boolean.union"><code>trimesh.boolean.union</code></a> calls by default: the same exact predicates and symbolic
 perturbation, the same polygon triangulation and the same topology cleanup, so on the same
-<code>float32</code> inputs the two return the same mesh up to vertex numbering and face order. Inputs
-are the same when they have no degenerate triangles: Manifold collapses and swaps those away as
-it builds its solids, and ordito does not, so on such an input it matches Manifold run on
-Manifold's own cleaned mesh (<code>Manifold(mesh).to_mesh()</code>).</p>
+<code>float32</code> inputs the two return the same mesh up to vertex numbering and face order. The
+inputs are cleaned as Manifold cleans the meshes it builds its solids from (see
+<a class="autorefs autorefs-internal" title="ordito.boolean" href="./#ordito.boolean"><code>ordito.boolean</code></a>), so this holds for inputs with degenerate triangles too.</p>
 </details>
 
 <p><span class="doc-section-title">Examples:</span></p>
@@ -6748,9 +6748,9 @@ Manifold's own cleaned mesh (<code>Manifold(mesh).to_mesh()</code>).</p>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 11 places</summary>
+      <summary>Referenced by 10 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="./#ordito.boolean">boolean</a></span> · <span class="ordito-backlink"><a href="./#ordito.boolean">boolean</a> › <a href="./#ordito.boolean.difference">difference</a></span> · <span class="ordito-backlink"><a href="./#ordito.boolean">boolean</a> › <a href="./#ordito.boolean.intersection">intersection</a></span> · <span class="ordito-backlink"><a href="./#ordito.boolean">boolean</a> › <a href="./#ordito.boolean.split_by_plane">split_by_plane</a></span> · <span class="ordito-backlink"><a href="./#ordito.boolean">boolean</a> › <a href="./#ordito.boolean.union_all">union_all</a></span> · <span class="ordito-backlink"><a href="../remesh/#ordito.remesh">remesh</a> › <a href="../remesh/#ordito.remesh.subdivide_smooth">subdivide_smooth</a></span></p>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="./#ordito.boolean">boolean</a></span> · <span class="ordito-backlink"><a href="./#ordito.boolean">boolean</a> › <a href="./#ordito.boolean.difference">difference</a></span> · <span class="ordito-backlink"><a href="./#ordito.boolean">boolean</a> › <a href="./#ordito.boolean.intersection">intersection</a></span> · <span class="ordito-backlink"><a href="./#ordito.boolean">boolean</a> › <a href="./#ordito.boolean.union_all">union_all</a></span> · <span class="ordito-backlink"><a href="../remesh/#ordito.remesh">remesh</a> › <a href="../remesh/#ordito.remesh.subdivide_smooth">subdivide_smooth</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
 <span class="ordito-backlink"><a href="../../../examples/solids/#solids-and-booleans">Solids and Booleans</a> › <a href="../../../examples/solids/#b1">Union, intersection and difference</a></span></p>
         <p><span class="ordito-backlinks-section">Migrating from another library</span>
@@ -6760,9 +6760,7 @@ Manifold's own cleaned mesh (<code>Manifold(mesh).to_mesh()</code>).</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/boolean.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 84</span>
-<span class="normal"> 85</span>
-<span class="normal"> 86</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 86</span>
 <span class="normal"> 87</span>
 <span class="normal"> 88</span>
 <span class="normal"> 89</span>
@@ -6831,7 +6829,8 @@ Manifold's own cleaned mesh (<code>Manifold(mesh).to_mesh()</code>).</p>
 <span class="normal">152</span>
 <span class="normal">153</span>
 <span class="normal">154</span>
-<span class="normal">155</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">union</span><span class="p">(</span>
+<span class="normal">155</span>
+<span class="normal">156</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">union</span><span class="p">(</span>
     <span class="n">vertices_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">vertices_b</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
@@ -6882,10 +6881,9 @@ Manifold's own cleaned mesh (<code>Manifold(mesh).to_mesh()</code>).</p>
 <span class="sd">    A port of the Boolean of Manifold (https://github.com/elalish/manifold, Apache-2.0), the</span>
 <span class="sd">    engine [`trimesh.boolean.union`][] calls by default: the same exact predicates and symbolic</span>
 <span class="sd">    perturbation, the same polygon triangulation and the same topology cleanup, so on the same</span>
-<span class="sd">    ``float32`` inputs the two return the same mesh up to vertex numbering and face order. Inputs</span>
-<span class="sd">    are the same when they have no degenerate triangles: Manifold collapses and swaps those away as</span>
-<span class="sd">    it builds its solids, and ordito does not, so on such an input it matches Manifold run on</span>
-<span class="sd">    Manifold's own cleaned mesh (``Manifold(mesh).to_mesh()``).</span>
+<span class="sd">    ``float32`` inputs the two return the same mesh up to vertex numbering and face order. The</span>
+<span class="sd">    inputs are cleaned as Manifold cleans the meshes it builds its solids from (see</span>
+<span class="sd">    [`ordito.boolean`][ordito.boolean]), so this holds for inputs with degenerate triangles too.</span>
 
 <span class="sd">    Examples</span>
 <span class="sd">    --------</span>
@@ -7131,8 +7129,7 @@ consistently wound.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/boolean.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">158</span>
-<span class="normal">159</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">159</span>
 <span class="normal">160</span>
 <span class="normal">161</span>
 <span class="normal">162</span>
@@ -7198,7 +7195,8 @@ consistently wound.</p>
 <span class="normal">222</span>
 <span class="normal">223</span>
 <span class="normal">224</span>
-<span class="normal">225</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">intersection</span><span class="p">(</span>
+<span class="normal">225</span>
+<span class="normal">226</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">intersection</span><span class="p">(</span>
     <span class="n">vertices_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">vertices_b</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
@@ -7494,8 +7492,7 @@ consistently wound.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/boolean.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">228</span>
-<span class="normal">229</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">229</span>
 <span class="normal">230</span>
 <span class="normal">231</span>
 <span class="normal">232</span>
@@ -7561,7 +7558,8 @@ consistently wound.</p>
 <span class="normal">292</span>
 <span class="normal">293</span>
 <span class="normal">294</span>
-<span class="normal">295</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">difference</span><span class="p">(</span>
+<span class="normal">295</span>
+<span class="normal">296</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">difference</span><span class="p">(</span>
     <span class="n">vertices_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">vertices_b</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
@@ -7841,8 +7839,7 @@ consistently wound.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/boolean.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">298</span>
-<span class="normal">299</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">299</span>
 <span class="normal">300</span>
 <span class="normal">301</span>
 <span class="normal">302</span>
@@ -7905,7 +7902,8 @@ consistently wound.</p>
 <span class="normal">359</span>
 <span class="normal">360</span>
 <span class="normal">361</span>
-<span class="normal">362</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_by_mesh</span><span class="p">(</span>
+<span class="normal">362</span>
+<span class="normal">363</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_by_mesh</span><span class="p">(</span>
     <span class="n">vertices_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">vertices_b</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
@@ -8158,8 +8156,7 @@ consistently wound, or if <code>normal</code> is zero or not finite.</p>
 <details class="note" open>
   <summary>Notes</summary>
   <p>Manifold's <code>Manifold.split_by_plane</code>, whose half-space this builds the same way: the
-answers are the same meshes, from an input with no degenerate triangles (see
-<a class="autorefs autorefs-internal" title="union" href="./#ordito.boolean.union"><code>union</code></a>).</p>
+answers are the same meshes.</p>
 </details>
 
 <p><span class="doc-section-title">Examples:</span></p>
@@ -8185,8 +8182,7 @@ answers are the same meshes, from an input with no degenerate triangles (see
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/boolean.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">365</span>
-<span class="normal">366</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">366</span>
 <span class="normal">367</span>
 <span class="normal">368</span>
 <span class="normal">369</span>
@@ -8301,8 +8297,7 @@ answers are the same meshes, from an input with no degenerate triangles (see
 <span class="sd">    Notes</span>
 <span class="sd">    -----</span>
 <span class="sd">    Manifold's ``Manifold.split_by_plane``, whose half-space this builds the same way: the</span>
-<span class="sd">    answers are the same meshes, from an input with no degenerate triangles (see</span>
-<span class="sd">    [`union`][ordito.boolean.union]).</span>
+<span class="sd">    answers are the same meshes.</span>
 
 <span class="sd">    Examples</span>
 <span class="sd">    --------</span>
@@ -8784,8 +8779,7 @@ faces, or is not consistently wound.</p>
 <details class="note" open>
   <summary>Notes</summary>
   <p>Manifold's <code>Manifold.batch_boolean</code> with <code>OpType.Add</code>: the same grouping of disjoint
-meshes and the same order of unions, so the same mesh, from inputs with no degenerate
-triangles (see <a class="autorefs autorefs-internal" title="union" href="./#ordito.boolean.union"><code>union</code></a>).</p>
+meshes and the same order of unions, so the same mesh.</p>
 </details>
 
 <p><span class="doc-section-title">Examples:</span></p>
@@ -8871,8 +8865,7 @@ triangles (see <a class="autorefs autorefs-internal" title="union" href="./#ordi
 <span class="normal">553</span>
 <span class="normal">554</span>
 <span class="normal">555</span>
-<span class="normal">556</span>
-<span class="normal">557</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">union_all</span><span class="p">(</span>
+<span class="normal">556</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">union_all</span><span class="p">(</span>
     <span class="n">meshes</span><span class="p">:</span> <span class="n">Sequence</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]],</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -8911,8 +8904,7 @@ triangles (see <a class="autorefs autorefs-internal" title="union" href="./#ordi
 <span class="sd">    Notes</span>
 <span class="sd">    -----</span>
 <span class="sd">    Manifold's ``Manifold.batch_boolean`` with ``OpType.Add``: the same grouping of disjoint</span>
-<span class="sd">    meshes and the same order of unions, so the same mesh, from inputs with no degenerate</span>
-<span class="sd">    triangles (see [`union`][ordito.boolean.union]).</span>
+<span class="sd">    meshes and the same order of unions, so the same mesh.</span>
 
 <span class="sd">    Examples</span>
 <span class="sd">    --------</span>
@@ -9087,7 +9079,8 @@ faces, or is not consistently wound.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/boolean.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">560</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">559</span>
+<span class="normal">560</span>
 <span class="normal">561</span>
 <span class="normal">562</span>
 <span class="normal">563</span>
@@ -9135,8 +9128,7 @@ faces, or is not consistently wound.</p>
 <span class="normal">605</span>
 <span class="normal">606</span>
 <span class="normal">607</span>
-<span class="normal">608</span>
-<span class="normal">609</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">intersection_all</span><span class="p">(</span>
+<span class="normal">608</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">intersection_all</span><span class="p">(</span>
     <span class="n">meshes</span><span class="p">:</span> <span class="n">Sequence</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]],</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -9348,7 +9340,8 @@ faces, or is not consistently wound.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/boolean.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">612</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">611</span>
+<span class="normal">612</span>
 <span class="normal">613</span>
 <span class="normal">614</span>
 <span class="normal">615</span>
@@ -9405,8 +9398,7 @@ faces, or is not consistently wound.</p>
 <span class="normal">666</span>
 <span class="normal">667</span>
 <span class="normal">668</span>
-<span class="normal">669</span>
-<span class="normal">670</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">difference_all</span><span class="p">(</span>
+<span class="normal">669</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">difference_all</span><span class="p">(</span>
     <span class="n">meshes</span><span class="p">:</span> <span class="n">Sequence</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]],</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
