@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Down-sample, sample, estimate normals, remove outliers, interpolate and compute exact convex hulls of point clouds on the GPU in Python.">
+        <meta name="description" content="Down-sample, sample, estimate and orient normals, smooth, cluster, remove outliers, find boundary and visible points, and compute exact convex hulls of point clouds on the GPU in Python.">
       
       
       
@@ -67,7 +67,7 @@
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="ordito">
   <meta property="og:title" content="Point cloud processing on the GPU in Python - ordito">
-  <meta property="og:description" content="Down-sample, sample, estimate normals, remove outliers, interpolate and compute exact convex hulls of point clouds on the GPU in Python.">
+  <meta property="og:description" content="Down-sample, sample, estimate and orient normals, smooth, cluster, remove outliers, find boundary and visible points, and compute exact convex hulls of point clouds on the GPU in Python.">
   <meta property="og:url" content="https://lucagrementieri.github.io/ordito/dev/examples/points/">
   <meta property="og:image" content="https://lucagrementieri.github.io/ordito/dev/assets/og-image.png">
   <meta property="og:image:type" content="image/png">
@@ -76,7 +76,7 @@
   <meta property="og:image:alt" content="ordito: GPU mesh processing in Python">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Point cloud processing on the GPU in Python - ordito">
-  <meta name="twitter:description" content="Down-sample, sample, estimate normals, remove outliers, interpolate and compute exact convex hulls of point clouds on the GPU in Python.">
+  <meta name="twitter:description" content="Down-sample, sample, estimate and orient normals, smooth, cluster, remove outliers, find boundary and visible points, and compute exact convex hulls of point clouds on the GPU in Python.">
   <meta name="twitter:image" content="https://lucagrementieri.github.io/ordito/dev/assets/og-image.png">
 
   </head>
@@ -316,6 +316,8 @@
       
         
       
+        
+      
     
     
     
@@ -356,6 +358,8 @@
       
         
       
+        
+      
     
     
     
@@ -382,6 +386,8 @@
       
         
           
+        
+      
         
       
         
@@ -696,6 +702,8 @@
       
         
           
+        
+      
         
       
         
@@ -1061,6 +1069,33 @@
   
   
     <li class="md-nav__item">
+      <a href="../solids/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Solids and Booleans
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../queries/" class="md-nav__link">
         
   
@@ -1272,6 +1307,72 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#pc10" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Orienting and smoothing normals
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pc11" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Smoothing a noisy cloud
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pc12" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        DBSCAN clustering
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pc13" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Boundary points of a scan
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pc14" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Points visible from a viewpoint
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pc15" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Local frames and surface variation
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1354,6 +1455,8 @@
       
         
           
+        
+      
         
       
         
@@ -1563,6 +1666,33 @@
   
   
     <li class="md-nav__item">
+      <a href="../../migrating-from/manifold3d/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  manifold3d
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../migrating-from/pytorch3d/" class="md-nav__link">
         
   
@@ -1602,6 +1732,8 @@
       
         
           
+        
+      
         
       
         
@@ -2323,6 +2455,8 @@
       
         
       
+        
+      
     
     
     
@@ -2463,6 +2597,33 @@
     
   
   combine
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../benchmarks/boolean/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  boolean
 
     
   </span>
@@ -3435,12 +3596,6 @@
       
         
       
-        
-      
-        
-      
-        
-      
     
     
     
@@ -3464,7 +3619,7 @@
   <span class="md-ellipsis">
     
   
-  Arrays & infrastructure
+  Attributes & I/O
 
     
   </span>
@@ -3477,6 +3632,103 @@
         
           <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_11_label" aria-expanded="false">
             <label class="md-nav__title" for="__nav_6_11">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Attributes & I/O
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../benchmarks/texture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  texture
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_12" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_12" id="__nav_6_12_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Arrays & infrastructure
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_12_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_6_12">
               <span class="md-nav__icon md-icon"></span>
               
   
@@ -6138,6 +6390,72 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#pc10" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Orienting and smoothing normals
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pc11" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Smoothing a noisy cloud
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pc12" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        DBSCAN clustering
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pc13" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Boundary points of a scan
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pc14" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Points visible from a viewpoint
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pc15" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Local frames and surface variation
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -6159,8 +6477,9 @@
 
 
 <h1 id="point-clouds">Point clouds</h1>
-<p>Down-sampling, surface sampling, normal estimation, outlier removal, interpolation and exact
-convex hulls.</p>
+<p>Down-sampling, surface sampling, normal estimation and orientation, outlier removal,
+interpolation, exact convex hulls, smoothing, DBSCAN clustering, boundary and visible points, and
+local frames.</p>
 <h2 id="pc1">Down-sampling: voxel grid, farthest point and blue noise</h2>
 <p>Three ways to thin the dragon's 437 000 vertices to a few thousand points.
 <a class="autorefs autorefs-internal" title="voxel_down_sample" href="../../api/ordito/voxels/#ordito.voxels.voxel_down_sample"><code>voxel_down_sample</code></a> averages the points in each occupied
@@ -6494,6 +6813,237 @@ slab: 4750 points, 179 hull vertices, same as qhull: True
   as there is no volume to bound.</li>
 </ul>
 <p class="ordito-credits">Modelled on: <a href="https://trimesh.org/trimesh.convex.html">trimesh: convex</a></p>
+<h2 id="pc10">Orienting and smoothing normals</h2>
+<p><a class="autorefs autorefs-internal" title="estimate_normals" href="../../api/ordito/points/#ordito.points.estimate_normals"><code>estimate_normals</code></a> fits each normal's direction but
+can only guess its sign locally, so some normals point inward (<a href="#pc3">PC3</a>).
+<a class="autorefs autorefs-internal" title="orient_normals" href="../../api/ordito/points/#ordito.points.orient_normals"><code>orient_normals</code></a> makes the signs agree across the whole
+cloud: it builds the minimum spanning tree of the neighbour graph, weighting each edge by how
+far its two normals are from parallel, and flips every normal to agree with its parent's,
+Hoppe's propagation as Open3D's <code>orient_normals_consistent_tangent_plane</code> runs it. On a
+closed surface every normal then faces one side.
+<a class="autorefs autorefs-internal" title="smooth_normals" href="../../api/ordito/points/#ordito.points.smooth_normals"><code>smooth_normals</code></a>
+averages each normal over its neighbours, sign-aligned to its own, which takes out the
+noise of the plane fits. The cloud below is the bunny sample of <a href="#pc3">PC3</a> jittered by
+scanner-like noise, scored against the exact normals of the surface it was sampled from.</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">examples</span><span class="w"> </span><span class="kn">import</span> <span class="n">data</span>
+
+<span class="n">clean</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">arrays</span><span class="p">(</span><span class="s2">"bunny_cloud"</span><span class="p">)[</span><span class="mi">0</span><span class="p">]</span>
+<span class="n">truth</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">cloud_normals</span><span class="p">(</span><span class="s2">"bunny_cloud"</span><span class="p">)</span>  <span class="c1"># the exact normals of the sampled surface</span>
+<span class="n">jitter</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">default_rng</span><span class="p">(</span><span class="mi">3</span><span class="p">)</span><span class="o">.</span><span class="n">normal</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0008</span><span class="p">,</span> <span class="n">clean</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span>  <span class="c1"># a noisy scan</span>
+<span class="n">points</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">clean</span> <span class="o">+</span> <span class="n">jitter</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+<span class="n">neighbours</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">neighbors</span><span class="o">.</span><span class="n">query_nearest</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">points</span><span class="p">,</span> <span class="n">k</span><span class="o">=</span><span class="mi">16</span><span class="p">)</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">report</span><span class="p">(</span><span class="n">name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">normals</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+    <span class="n">cosine</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">normals</span> <span class="o">*</span> <span class="n">truth</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+    <span class="n">angle</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">degrees</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">arccos</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">clip</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">abs</span><span class="p">(</span><span class="n">cosine</span><span class="p">),</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)))</span>
+    <span class="n">outward</span> <span class="o">=</span> <span class="p">(</span><span class="n">cosine</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">)</span><span class="o">.</span><span class="n">mean</span><span class="p">()</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">name</span><span class="si">:</span><span class="s2">&gt;9</span><span class="si">}</span><span class="s2">: outward </span><span class="si">{</span><span class="n">outward</span><span class="si">:</span><span class="s2">6.1%</span><span class="si">}</span><span class="s2">, median angle </span><span class="si">{</span><span class="n">np</span><span class="o">.</span><span class="n">median</span><span class="p">(</span><span class="n">angle</span><span class="p">)</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2"> degrees"</span><span class="p">)</span>
+
+<span class="n">estimated</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">points</span><span class="o">.</span><span class="n">estimate_normals</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">neighbours</span><span class="p">)</span>
+<span class="n">oriented</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">points</span><span class="o">.</span><span class="n">orient_normals</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">estimated</span><span class="p">,</span> <span class="n">neighbours</span><span class="p">)</span>
+<span class="n">smoothed</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">points</span><span class="o">.</span><span class="n">smooth_normals</span><span class="p">(</span><span class="n">oriented</span><span class="p">,</span> <span class="n">neighbours</span><span class="p">,</span> <span class="n">iterations</span><span class="o">=</span><span class="mi">2</span><span class="p">)</span>
+<span class="n">report</span><span class="p">(</span><span class="s2">"estimated"</span><span class="p">,</span> <span class="n">estimated</span><span class="o">.</span><span class="n">numpy</span><span class="p">())</span>
+<span class="n">report</span><span class="p">(</span><span class="s2">"oriented"</span><span class="p">,</span> <span class="n">oriented</span><span class="o">.</span><span class="n">numpy</span><span class="p">())</span>
+<span class="n">report</span><span class="p">(</span><span class="s2">"smoothed"</span><span class="p">,</span> <span class="n">smoothed</span><span class="o">.</span><span class="n">numpy</span><span class="p">())</span>
+</code></pre></div>
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code>estimated: outward  46.1%, median angle 13.68 degrees
+ oriented: outward  99.7%, median angle 13.68 degrees
+ smoothed: outward  99.7%, median angle 9.01 degrees
+</code></pre></div>
+<p><a class="glightbox" data-type="image" href="../../assets/examples/pc10.webp"><img alt="Orienting and smoothing normals" src="../../assets/examples/pc10.webp" /></a></p>
+<p class="ordito-credits">Modelled on: <a href="https://www.open3d.org/docs/release/tutorial/geometry/pointcloud.html">Open3D: normal orientation</a> · <a href="https://pcl.readthedocs.io/projects/tutorials/en/latest/normal_estimation.html">PCL: normal estimation</a></p>
+<h2 id="pc11">Smoothing a noisy cloud</h2>
+<p>Four ways to take the noise out of a scan without a mesh, scored by each point's distance to
+the surface the clean cloud was sampled from.
+<a class="autorefs autorefs-internal" title="smooth_points" href="../../api/ordito/points/#ordito.points.smooth_points"><code>smooth_points</code></a> moves each point towards the mean of its
+neighbours (Laplacian steps, which also shrink the cloud) or, given <code>mu</code>, alternates a
+step out (Taubin's filter, which does not);
+<a class="autorefs autorefs-internal" title="smooth_points_mls" href="../../api/ordito/points/#ordito.points.smooth_points_mls"><code>smooth_points_mls</code></a> projects each point onto the plane
+fitted to its neighbourhood, a moving least squares step that also returns normals; and
+<a class="autorefs autorefs-internal" title="smooth_points_bilateral" href="../../api/ordito/points/#ordito.points.smooth_points_bilateral"><code>smooth_points_bilateral</code></a> averages with weights that
+fall off along the normal, so it spares creases. All four are Open3D's point-cloud filters,
+run over a fixed neighbour table.</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">examples</span><span class="w"> </span><span class="kn">import</span> <span class="n">data</span>
+
+<span class="n">clean</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">arrays</span><span class="p">(</span><span class="s2">"bunny_cloud"</span><span class="p">)[</span><span class="mi">0</span><span class="p">]</span>
+<span class="n">rng</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">default_rng</span><span class="p">(</span><span class="mi">3</span><span class="p">)</span>
+<span class="n">noisy</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">clean</span> <span class="o">+</span> <span class="n">rng</span><span class="o">.</span><span class="n">normal</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0008</span><span class="p">,</span> <span class="n">clean</span><span class="o">.</span><span class="n">shape</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+<span class="n">bunny</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"bunny"</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+<span class="n">neighbours</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">neighbors</span><span class="o">.</span><span class="n">query_nearest</span><span class="p">(</span><span class="n">noisy</span><span class="p">,</span> <span class="n">noisy</span><span class="p">,</span> <span class="n">k</span><span class="o">=</span><span class="mi">16</span><span class="p">)</span>
+<span class="n">normals</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">points</span><span class="o">.</span><span class="n">estimate_normals</span><span class="p">(</span><span class="n">noisy</span><span class="p">,</span> <span class="n">neighbours</span><span class="p">)</span>
+
+<span class="n">smoothed</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s2">"noisy"</span><span class="p">:</span> <span class="n">noisy</span><span class="p">,</span>
+    <span class="s2">"Laplacian"</span><span class="p">:</span> <span class="n">od</span><span class="o">.</span><span class="n">points</span><span class="o">.</span><span class="n">smooth_points</span><span class="p">(</span><span class="n">noisy</span><span class="p">,</span> <span class="n">neighbours</span><span class="p">,</span> <span class="n">iterations</span><span class="o">=</span><span class="mi">5</span><span class="p">),</span>
+    <span class="s2">"Taubin"</span><span class="p">:</span> <span class="n">od</span><span class="o">.</span><span class="n">points</span><span class="o">.</span><span class="n">smooth_points</span><span class="p">(</span><span class="n">noisy</span><span class="p">,</span> <span class="n">neighbours</span><span class="p">,</span> <span class="n">iterations</span><span class="o">=</span><span class="mi">5</span><span class="p">,</span> <span class="n">mu</span><span class="o">=-</span><span class="mf">0.53</span><span class="p">),</span>
+    <span class="s2">"MLS"</span><span class="p">:</span> <span class="n">od</span><span class="o">.</span><span class="n">points</span><span class="o">.</span><span class="n">smooth_points_mls</span><span class="p">(</span><span class="n">noisy</span><span class="p">,</span> <span class="n">neighbours</span><span class="p">)[</span><span class="mi">0</span><span class="p">],</span>
+    <span class="s2">"bilateral"</span><span class="p">:</span> <span class="n">od</span><span class="o">.</span><span class="n">points</span><span class="o">.</span><span class="n">smooth_points_bilateral</span><span class="p">(</span>
+        <span class="n">noisy</span><span class="p">,</span> <span class="n">normals</span><span class="p">,</span> <span class="n">neighbours</span><span class="p">,</span> <span class="n">sigma_s</span><span class="o">=</span><span class="mf">0.003</span><span class="p">,</span> <span class="n">sigma_r</span><span class="o">=</span><span class="mf">0.001</span>
+    <span class="p">),</span>
+<span class="p">}</span>
+<span class="k">for</span> <span class="n">name</span><span class="p">,</span> <span class="n">points</span> <span class="ow">in</span> <span class="n">smoothed</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+    <span class="n">_</span><span class="p">,</span> <span class="n">distance</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">proximity</span><span class="o">.</span><span class="n">closest_point_on_mesh</span><span class="p">(</span><span class="o">*</span><span class="n">bunny</span><span class="p">,</span> <span class="n">points</span><span class="p">)</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">name</span><span class="si">:</span><span class="s2">&gt;9</span><span class="si">}</span><span class="s2">: median distance to the surface </span><span class="si">{</span><span class="n">np</span><span class="o">.</span><span class="n">median</span><span class="p">(</span><span class="n">distance</span><span class="o">.</span><span class="n">numpy</span><span class="p">())</span><span class="si">:</span><span class="s2">.6f</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+</code></pre></div>
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code>    noisy: median distance to the surface 0.000536
+Laplacian: median distance to the surface 0.000217
+   Taubin: median distance to the surface 0.000246
+      MLS: median distance to the surface 0.000205
+bilateral: median distance to the surface 0.000272
+</code></pre></div>
+<p><a class="glightbox" data-type="image" href="../../assets/examples/pc11.webp"><img alt="Smoothing a noisy cloud" src="../../assets/examples/pc11.webp" /></a></p>
+<p class="ordito-credits">Modelled on: <a href="https://www.open3d.org/docs/release/python_api/open3d.geometry.PointCloud.html">Open3D: point cloud filters</a> · <a href="https://pcl.readthedocs.io/projects/tutorials/en/latest/resampling.html">PCL: moving least squares</a></p>
+<h2 id="pc12">DBSCAN clustering</h2>
+<p><a class="autorefs autorefs-internal" title="cluster_labels" href="../../api/ordito/points/#ordito.points.cluster_labels"><code>cluster_labels</code></a> labels each point with its DBSCAN cluster:
+a point with at least <code>min_points</code> others within <code>radius</code> is a core point, core points
+within reach of each other share a cluster, the points they reach join it, and the rest are
+noise (<code>-1</code>). The labels are Open3D's <code>cluster_dbscan</code> labels, cluster numbers included, not
+only the same partition. Here a scan of six separate parts, with 400 stray points in their
+bounding box. The parts come out as five clusters: the box and the torus pass within 2 mm
+of each other, closer than the radius, and DBSCAN rightly joins them, while the sphere and
+the cone, 4 cm apart, stay separate. Most strays come out as noise; the rest landed within
+the radius of a part, where they are border points of its cluster.</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">open3d</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">o3d</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">examples</span><span class="w"> </span><span class="kn">import</span> <span class="n">data</span>
+
+<span class="n">samples</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">sample_points</span><span class="p">(</span><span class="s2">"parts"</span><span class="p">,</span> <span class="mi">120_000</span><span class="p">,</span> <span class="n">seed</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
+<span class="n">rng</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">default_rng</span><span class="p">(</span><span class="mi">5</span><span class="p">)</span>
+<span class="n">strays</span> <span class="o">=</span> <span class="n">rng</span><span class="o">.</span><span class="n">uniform</span><span class="p">(</span><span class="n">samples</span><span class="o">.</span><span class="n">min</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">),</span> <span class="n">samples</span><span class="o">.</span><span class="n">max</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">),</span> <span class="p">(</span><span class="mi">400</span><span class="p">,</span> <span class="mi">3</span><span class="p">))</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
+<span class="n">cloud</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">vstack</span><span class="p">([</span><span class="n">samples</span><span class="p">,</span> <span class="n">strays</span><span class="p">])</span>
+<span class="n">points</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">cloud</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+
+<span class="n">labels</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">points</span><span class="o">.</span><span class="n">cluster_labels</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">radius</span><span class="o">=</span><span class="mf">0.025</span><span class="p">,</span> <span class="n">min_points</span><span class="o">=</span><span class="mi">8</span><span class="p">)</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">labels</span><span class="o">.</span><span class="n">max</span><span class="p">()</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="mi">1</span><span class="si">}</span><span class="s2"> clusters, </span><span class="si">{</span><span class="n">np</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">labels</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="o">-</span><span class="mi">1</span><span class="p">)</span><span class="si">}</span><span class="s2"> noise points"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"strays labelled noise: </span><span class="si">{</span><span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">labels</span><span class="p">[</span><span class="nb">len</span><span class="p">(</span><span class="n">samples</span><span class="p">)</span><span class="w"> </span><span class="p">:]</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="o">-</span><span class="mi">1</span><span class="p">)</span><span class="si">:</span><span class="s2">.0%</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+
+<span class="n">reference</span> <span class="o">=</span> <span class="n">o3d</span><span class="o">.</span><span class="n">geometry</span><span class="o">.</span><span class="n">PointCloud</span><span class="p">(</span><span class="n">o3d</span><span class="o">.</span><span class="n">utility</span><span class="o">.</span><span class="n">Vector3dVector</span><span class="p">(</span><span class="n">cloud</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">float64</span><span class="p">)))</span>
+<span class="n">labels_o3d</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">reference</span><span class="o">.</span><span class="n">cluster_dbscan</span><span class="p">(</span><span class="n">eps</span><span class="o">=</span><span class="mf">0.025</span><span class="p">,</span> <span class="n">min_points</span><span class="o">=</span><span class="mi">8</span><span class="p">))</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"same labels as Open3D: </span><span class="si">{</span><span class="n">np</span><span class="o">.</span><span class="n">array_equal</span><span class="p">(</span><span class="n">labels</span><span class="p">,</span><span class="w"> </span><span class="n">labels_o3d</span><span class="p">)</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+</code></pre></div>
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code>5 clusters, 339 noise points
+strays labelled noise: 85%
+same labels as Open3D: True
+</code></pre></div>
+<p><a class="glightbox" data-type="image" href="../../assets/examples/pc12.webp"><img alt="DBSCAN clustering" src="../../assets/examples/pc12.webp" /></a></p>
+<p class="ordito-credits">Modelled on: <a href="https://www.open3d.org/docs/release/tutorial/geometry/pointcloud.html">Open3D: DBSCAN clustering</a> · <a href="https://scikit-learn.org/stable/modules/clustering.html#dbscan">scikit-learn: DBSCAN</a></p>
+<h2 id="pc13">Boundary points of a scan</h2>
+<p><a class="autorefs autorefs-internal" title="point_boundary_mask" href="../../api/ordito/points/#ordito.points.point_boundary_mask"><code>point_boundary_mask</code></a> finds the rim of a sampled
+surface without meshing it: each point's neighbours are projected into its tangent plane,
+and a point with an empty wedge wider than <code>max_gap</code> around it is on the boundary, PCL's
+boundary estimation as Open3D's <code>compute_boundary_points</code> runs it. The cloud below samples
+the bunny with its holes cut open; the flagged points trace the holes' rims, and nearly all
+of them lie within a few spacings of a rim of the mesh the cloud came from. The
+neighbourhood must be wide enough that random sampling gaps do not look like an edge: with
+16 neighbours many interior points of this area-uniform sample have an empty wedge.</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">examples</span><span class="w"> </span><span class="kn">import</span> <span class="n">data</span>
+
+<span class="n">samples</span><span class="p">,</span> <span class="n">sample_normals</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">sample_points</span><span class="p">(</span><span class="s2">"holey_bunny"</span><span class="p">,</span> <span class="mi">60_000</span><span class="p">,</span> <span class="n">seed</span><span class="o">=</span><span class="mi">6</span><span class="p">)</span>
+<span class="n">points</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">samples</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+<span class="n">normals</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">sample_normals</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+<span class="n">neighbours</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">neighbors</span><span class="o">.</span><span class="n">query_nearest</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">points</span><span class="p">,</span> <span class="n">k</span><span class="o">=</span><span class="mi">40</span><span class="p">)</span>
+<span class="n">on_rim</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">points</span><span class="o">.</span><span class="n">point_boundary_mask</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">normals</span><span class="p">,</span> <span class="n">neighbours</span><span class="p">)</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">on_rim</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span><span class="si">}</span><span class="s2"> of </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">samples</span><span class="p">)</span><span class="si">}</span><span class="s2"> points flagged as boundary"</span><span class="p">)</span>
+
+<span class="c1"># Check against the rims of the mesh the cloud was sampled from.</span>
+<span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"holey_bunny"</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+<span class="n">loops</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">boundary</span><span class="o">.</span><span class="n">boundary_loops</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
+<span class="n">rim</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">vstack</span><span class="p">([</span><span class="n">vertices</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[</span><span class="n">loop</span><span class="o">.</span><span class="n">numpy</span><span class="p">()]</span> <span class="k">for</span> <span class="n">loop</span> <span class="ow">in</span> <span class="n">loops</span><span class="p">])</span>
+<span class="n">_</span><span class="p">,</span> <span class="n">distance</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">neighbors</span><span class="o">.</span><span class="n">query_nearest</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">rim</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span> <span class="n">points</span><span class="p">)</span>
+<span class="n">spacing</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">median</span><span class="p">(</span><span class="n">od</span><span class="o">.</span><span class="n">neighbors</span><span class="o">.</span><span class="n">nearest_neighbor_distance</span><span class="p">(</span><span class="n">points</span><span class="p">)</span><span class="o">.</span><span class="n">numpy</span><span class="p">())</span>
+<span class="n">near</span> <span class="o">=</span> <span class="n">distance</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[</span><span class="n">on_rim</span><span class="p">]</span> <span class="o">&lt;</span> <span class="mi">6</span> <span class="o">*</span> <span class="n">spacing</span>
+<span class="nb">print</span><span class="p">(</span>
+    <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">loops</span><span class="p">)</span><span class="si">}</span><span class="s2"> rims in the mesh; "</span>
+    <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">near</span><span class="o">.</span><span class="n">mean</span><span class="p">()</span><span class="si">:</span><span class="s2">.1%</span><span class="si">}</span><span class="s2"> of flagged points within 6 spacings of one"</span>
+<span class="p">)</span>
+</code></pre></div>
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code>801 of 60000 points flagged as boundary
+11 rims in the mesh; 92.6% of flagged points within 6 spacings of one
+</code></pre></div>
+<p><a class="glightbox" data-type="image" href="../../assets/examples/pc13.webp"><img alt="Boundary points of a scan" src="../../assets/examples/pc13.webp" /></a></p>
+<p class="ordito-credits">Modelled on: <a href="https://www.open3d.org/docs/release/python_api/open3d.t.geometry.PointCloud.html">Open3D: boundary points</a> · <a href="https://pointclouds.org/documentation/classpcl_1_1_boundary_estimation.html">PCL: boundary estimation</a></p>
+<h2 id="pc14">Points visible from a viewpoint</h2>
+<p><a class="autorefs autorefs-internal" title="point_visible_mask" href="../../api/ordito/points/#ordito.points.point_visible_mask"><code>point_visible_mask</code></a> keeps the points a camera would
+see, from the points alone: Katz, Tal and Basri's hidden point removal flips the cloud
+about a large sphere centred on the camera, and the points whose images lie on the convex
+hull of the flipped cloud are the visible ones. The hull is
+<a class="autorefs autorefs-internal" title="convex_hull" href="../../api/ordito/points/#ordito.points.convex_hull"><code>convex_hull</code></a>'s, exact. To check it, each point is also tested
+by casting a ray from the camera at the bunny mesh the cloud was sampled from: a point is
+visible when the first hit is (within a small distance) the point itself.</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
+
+<span class="n">points</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">load_points</span><span class="p">(</span><span class="s2">"bunny_cloud"</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+<span class="n">cloud</span> <span class="o">=</span> <span class="n">points</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+<span class="n">diameter</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">linalg</span><span class="o">.</span><span class="n">norm</span><span class="p">(</span><span class="n">cloud</span><span class="o">.</span><span class="n">max</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span> <span class="o">-</span> <span class="n">cloud</span><span class="o">.</span><span class="n">min</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">)))</span>
+<span class="n">camera</span> <span class="o">=</span> <span class="n">cloud</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span> <span class="o">+</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.05</span><span class="p">,</span> <span class="mf">0.4</span><span class="p">])</span>
+<span class="n">visible</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">points</span><span class="o">.</span><span class="n">point_visible_mask</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="o">*</span><span class="n">camera</span><span class="p">),</span> <span class="n">radius</span><span class="o">=</span><span class="mi">100</span> <span class="o">*</span> <span class="n">diameter</span><span class="p">)</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">visible</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span><span class="si">}</span><span class="s2"> of </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">cloud</span><span class="p">)</span><span class="si">}</span><span class="s2"> points visible"</span><span class="p">)</span>
+
+<span class="c1"># Reference: a ray from the camera to each point, against the bunny mesh.</span>
+<span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"bunny"</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+<span class="n">mesh</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">(</span><span class="n">points</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">indices</span><span class="o">=</span><span class="n">faces</span><span class="p">)</span>
+<span class="n">origins</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">repeat</span><span class="p">([</span><span class="n">camera</span><span class="p">],</span> <span class="nb">len</span><span class="p">(</span><span class="n">cloud</span><span class="p">),</span> <span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+<span class="n">directions</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">cloud</span> <span class="o">-</span> <span class="n">camera</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+<span class="n">hit</span><span class="p">,</span> <span class="n">index</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">ray</span><span class="o">.</span><span class="n">intersects_location</span><span class="p">(</span><span class="n">mesh</span><span class="p">,</span> <span class="n">origins</span><span class="p">,</span> <span class="n">directions</span><span class="p">)</span>
+<span class="n">first</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">full</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">cloud</span><span class="p">),</span> <span class="n">np</span><span class="o">.</span><span class="n">inf</span><span class="p">)</span>
+<span class="n">reach</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">linalg</span><span class="o">.</span><span class="n">norm</span><span class="p">(</span><span class="n">hit</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span> <span class="o">-</span> <span class="n">camera</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+<span class="n">np</span><span class="o">.</span><span class="n">minimum</span><span class="o">.</span><span class="n">at</span><span class="p">(</span><span class="n">first</span><span class="p">,</span> <span class="n">index</span><span class="o">.</span><span class="n">numpy</span><span class="p">(),</span> <span class="n">reach</span><span class="p">)</span>
+<span class="n">seen</span> <span class="o">=</span> <span class="n">first</span> <span class="o">&gt;</span> <span class="n">np</span><span class="o">.</span><span class="n">linalg</span><span class="o">.</span><span class="n">norm</span><span class="p">(</span><span class="n">cloud</span> <span class="o">-</span> <span class="n">camera</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span> <span class="o">-</span> <span class="mf">0.001</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"agreement with ray casting: </span><span class="si">{</span><span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">visible</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="n">seen</span><span class="p">)</span><span class="si">:</span><span class="s2">.1%</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+</code></pre></div>
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code>8720 of 30000 points visible
+agreement with ray casting: 87.5%
+</code></pre></div>
+<p><a class="glightbox" data-type="image" href="../../assets/examples/pc14.webp"><img alt="Points visible from a viewpoint" src="../../assets/examples/pc14.webp" /></a></p>
+<p>The flip radius sets how generous the test is: larger radii count more grazing points as
+visible. Katz et al. suggest about a hundred times the cloud's size, used here.</p>
+<p class="ordito-credits">Modelled on: <a href="https://www.open3d.org/docs/release/tutorial/geometry/pointcloud.html">Open3D: hidden point removal</a></p>
+<h2 id="pc15">Local frames and surface variation</h2>
+<p><a class="autorefs autorefs-internal" title="point_frames" href="../../api/ordito/points/#ordito.points.point_frames"><code>point_frames</code></a> gives every point the principal axes of its
+neighbourhood, widest first, as the rows of a rotation, together with the spreads along
+them: the eigen-decomposition of <a class="autorefs autorefs-internal" title="point_covariances" href="../../api/ordito/points/#ordito.points.point_covariances"><code>point_covariances</code></a>, with
+the axes' signs fixed by the SHOT rule as pytorch3d's
+<code>estimate_pointcloud_local_coord_frames</code> fixes them. The smallest spread over their sum, the
+<em>surface variation</em>, is near zero on flat patches and rises at creases and corners, a
+curvature proxy that needs no mesh: here it picks out the sharp edges of a machined part.</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">examples</span><span class="w"> </span><span class="kn">import</span> <span class="n">data</span>
+
+<span class="n">samples</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">sample_points</span><span class="p">(</span><span class="s2">"cad_part"</span><span class="p">,</span> <span class="mi">50_000</span><span class="p">,</span> <span class="n">seed</span><span class="o">=</span><span class="mi">7</span><span class="p">)</span>
+<span class="n">points</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">samples</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+<span class="n">neighbours</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">neighbors</span><span class="o">.</span><span class="n">query_nearest</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">points</span><span class="p">,</span> <span class="n">k</span><span class="o">=</span><span class="mi">24</span><span class="p">)</span>
+<span class="n">frames</span><span class="p">,</span> <span class="n">spreads</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">points</span><span class="o">.</span><span class="n">point_frames</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">neighbours</span><span class="p">)</span>
+
+<span class="n">spread</span> <span class="o">=</span> <span class="n">spreads</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+<span class="n">variation</span> <span class="o">=</span> <span class="n">spread</span><span class="p">[:,</span> <span class="mi">2</span><span class="p">]</span> <span class="o">/</span> <span class="n">spread</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+<span class="n">normals</span> <span class="o">=</span> <span class="n">frames</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[:,</span> <span class="mi">2</span><span class="p">]</span>  <span class="c1"># the last row is the fitted normal</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"surface variation: median </span><span class="si">{</span><span class="n">np</span><span class="o">.</span><span class="n">median</span><span class="p">(</span><span class="n">variation</span><span class="p">)</span><span class="si">:</span><span class="s2">.4f</span><span class="si">}</span><span class="s2">, max </span><span class="si">{</span><span class="n">variation</span><span class="o">.</span><span class="n">max</span><span class="p">()</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"points on a crease (variation &gt; 0.02): </span><span class="si">{</span><span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">variation</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mf">0.02</span><span class="p">)</span><span class="si">:</span><span class="s2">.1%</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+</code></pre></div>
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code>surface variation: median 0.0000, max 0.201
+points on a crease (variation &gt; 0.02): 13.7%
+</code></pre></div>
+<p><a class="glightbox" data-type="image" href="../../assets/examples/pc15.webp"><img alt="Local frames and surface variation" src="../../assets/examples/pc15.webp" /></a></p>
+<p class="ordito-credits">Modelled on: <a href="https://pytorch3d.readthedocs.io/en/latest/modules/ops.html">pytorch3d: local coordinate frames</a> · <a href="https://www.open3d.org/docs/release/python_api/open3d.geometry.PointCloud.html">Open3D: covariances</a></p>
 
 
 

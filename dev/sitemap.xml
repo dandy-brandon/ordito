@@ -181,6 +181,9 @@
         <loc>https://lucagrementieri.github.io/ordito/dev/benchmarks/array/</loc>
       </url>
       <url>
+        <loc>https://lucagrementieri.github.io/ordito/dev/benchmarks/boolean/</loc>
+      </url>
+      <url>
         <loc>https://lucagrementieri.github.io/ordito/dev/benchmarks/boundary/</loc>
       </url>
       <url>
@@ -295,6 +298,9 @@
         <loc>https://lucagrementieri.github.io/ordito/dev/benchmarks/tangent_space/</loc>
       </url>
       <url>
+        <loc>https://lucagrementieri.github.io/ordito/dev/benchmarks/texture/</loc>
+      </url>
+      <url>
         <loc>https://lucagrementieri.github.io/ordito/dev/benchmarks/transform/</loc>
       </url>
       <url>
@@ -355,6 +361,9 @@
         <loc>https://lucagrementieri.github.io/ordito/dev/examples/smoothing/</loc>
       </url>
       <url>
+        <loc>https://lucagrementieri.github.io/ordito/dev/examples/solids/</loc>
+      </url>
+      <url>
         <loc>https://lucagrementieri.github.io/ordito/dev/examples/trimesh-object/</loc>
       </url>
       <url>
@@ -368,6 +377,9 @@
       </url>
       <url>
         <loc>https://lucagrementieri.github.io/ordito/dev/migrating-from/igl/</loc>
+      </url>
+      <url>
+        <loc>https://lucagrementieri.github.io/ordito/dev/migrating-from/manifold3d/</loc>
       </url>
       <url>
         <loc>https://lucagrementieri.github.io/ordito/dev/migrating-from/meshlab/</loc>

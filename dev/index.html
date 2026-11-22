@@ -318,6 +318,8 @@
       
         
       
+        
+      
     
     
     
@@ -358,6 +360,8 @@
       
         
       
+        
+      
     
     
     
@@ -384,6 +388,8 @@
       
         
           
+        
+      
         
       
         
@@ -609,10 +615,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#one-gpu-library-instead-of-nine" class="md-nav__link">
+  <a href="#one-gpu-library-instead-of-ten" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        One GPU library instead of nine
+        One GPU library instead of ten
       </span>
     </span>
   </a>
@@ -794,6 +800,8 @@
       
         
           
+        
+      
         
       
         
@@ -1156,6 +1164,33 @@
   
   
     <li class="md-nav__item">
+      <a href="./examples/solids/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Solids and Booleans
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="./examples/queries/" class="md-nav__link">
         
   
@@ -1303,6 +1338,8 @@
       
         
           
+        
+      
         
       
         
@@ -1512,6 +1549,33 @@
   
   
     <li class="md-nav__item">
+      <a href="./migrating-from/manifold3d/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  manifold3d
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="./migrating-from/pytorch3d/" class="md-nav__link">
         
   
@@ -1551,6 +1615,8 @@
       
         
           
+        
+      
         
       
         
@@ -2272,6 +2338,8 @@
       
         
       
+        
+      
     
     
     
@@ -2412,6 +2480,33 @@
     
   
   combine
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./benchmarks/boolean/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  boolean
 
     
   </span>
@@ -3384,12 +3479,6 @@
       
         
       
-        
-      
-        
-      
-        
-      
     
     
     
@@ -3413,7 +3502,7 @@
   <span class="md-ellipsis">
     
   
-  Arrays & infrastructure
+  Attributes & I/O
 
     
   </span>
@@ -3426,6 +3515,103 @@
         
           <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_11_label" aria-expanded="false">
             <label class="md-nav__title" for="__nav_6_11">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Attributes & I/O
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./benchmarks/texture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  texture
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_12" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_12" id="__nav_6_12_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Arrays & infrastructure
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_12_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_6_12">
               <span class="md-nav__icon md-icon"></span>
               
   
@@ -6018,10 +6204,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#one-gpu-library-instead-of-nine" class="md-nav__link">
+  <a href="#one-gpu-library-instead-of-ten" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        One GPU library instead of nine
+        One GPU library instead of ten
       </span>
     </span>
   </a>
@@ -6112,13 +6298,13 @@ and falls back to CPU otherwise, with the same code.</p>
 <li><strong>Optional <code>Trimesh</code> object.</strong> A frozen mesh class with lazily cached derived quantities
   (normals, adjacency, boundary loops, manifoldness and watertightness predicates, BVH) for when
   an object API is more convenient than free functions.</li>
-<li><strong>Exact where it matters.</strong> <a href="examples/points/#pc8">Convex hulls</a> and other topological
-  decisions take exact orientation signs, so the answer does not depend on a tolerance or on the
-  device.</li>
+<li><strong>Exact where it matters.</strong> <a href="examples/solids/#b1">Mesh Booleans</a>,
+  <a href="examples/points/#pc8">convex hulls</a> and other topological decisions take exact orientation
+  signs, so the answer does not depend on a tolerance or on the device.</li>
 <li><strong>Reproducible on demand.</strong> One switch, <code>od.set_deterministic(True)</code>, makes results repeat bit
   for bit on CUDA; see <a href="reproducibility/">Reproducible results</a>.</li>
-<li><strong>Fully typed</strong> (<code>py.typed</code>) and validated function-by-function against eleven reference
-  implementations — nine established geometry-processing libraries plus SciPy and NumPy, all
+<li><strong>Fully typed</strong> (<code>py.typed</code>) and validated function-by-function against twelve reference
+  implementations — ten established geometry-processing libraries plus SciPy and NumPy, all
   listed below.</li>
 </ul>
 <h2 id="install">Install</h2>
@@ -6161,13 +6347,14 @@ repair-then-remesh pipeline on a realistically broken mesh), or jump straight to
   nontrivial.</li>
 <li><strong><a href="examples/">Examples</a></strong> — a gallery of runnable examples, each with the image it
   produces: creation, inspection, curvature, geodesics, parametrization, smoothing, remeshing,
-  repair, voxels, queries, cutting, point clouds, reconstruction and registration.</li>
+  repair, voxels, solids and Booleans, queries, cutting, point clouds, reconstruction and
+  registration.</li>
 <li><strong><a href="migrating-from/">Migrating from another library</a></strong> — already know trimesh, libigl,
-  Open3D, MeshLab, potpourri3d, or PyTorch3D? Start here.</li>
+  Open3D, MeshLab, potpourri3d, manifold3d, or PyTorch3D? Start here.</li>
 <li><strong><a href="benchmarks/">Benchmarks</a></strong> — a curated set of ordito-vs-reference comparisons, rendered as
   charts, each library named by its own logo.</li>
 </ul>
-<h2 id="one-gpu-library-instead-of-nine">One GPU library instead of nine</h2>
+<h2 id="one-gpu-library-instead-of-ten">One GPU library instead of ten</h2>
 <p>Mesh processing in Python has long meant stitching together several excellent — but mostly
 CPU-bound and stylistically different — libraries. ordito consolidates the functionality it needs
 from each of them behind a single GPU-accelerated API:</p>
@@ -6192,7 +6379,7 @@ from each of them behind a single GPU-accelerated API:</p>
 </tr>
 <tr>
 <td><a href="https://www.open3d.org/">Open3D</a></td>
-<td>Point clouds, registration, and surface reconstruction: ICP, screened Poisson, ball pivoting</td>
+<td>Point clouds, registration, and surface reconstruction: normal estimation and orientation, smoothing, DBSCAN clustering, hidden point removal, ICP, screened Poisson, ball pivoting</td>
 <td><code>points</code>, <code>registration</code>, <code>reconstruction</code></td>
 </tr>
 <tr>
@@ -6217,8 +6404,13 @@ from each of them behind a single GPU-accelerated API:</p>
 </tr>
 <tr>
 <td><a href="https://github.com/nmwsharp/potpourri3d">potpourri3d</a> (geometry-central)</td>
-<td>The heat-method family: vector heat, parallel transport, log maps, signed distance, tangent frames</td>
-<td><code>heat</code>, <code>tangent_space</code></td>
+<td>The heat-method family on meshes and point clouds: vector heat, parallel transport, log maps, signed distance, tangent frames, local triangulations</td>
+<td><code>heat</code>, <code>tangent_space</code>, <code>points</code></td>
+</tr>
+<tr>
+<td><a href="https://github.com/elalish/manifold">manifold3d</a> (Manifold)</td>
+<td>Exact Booleans of solids, batch Booleans, capped plane cuts, level sets of functions, smooth refinement, simplification, polygon triangulation, exact segment crossings</td>
+<td><code>boolean</code>, <code>levelset</code>, <code>remesh</code>, <code>polyline</code>, <code>ray</code></td>
 </tr>
 <tr>
 <td><a href="https://pytorch3d.org/">PyTorch3D</a></td>
@@ -6229,7 +6421,7 @@ from each of them behind a single GPU-accelerated API:</p>
 </table>
 <p><a href="https://scipy.org/">SciPy</a>'s <code>spatial.KDTree</code> and <code>sparse.csgraph</code> (covered by <code>neighbors</code>,
 <code>graph</code> and <code>proximity</code>) and NumPy's array primitives (<code>array</code>, <code>reduce</code>, <code>grouping</code>, <code>linalg</code>)
-round the set out to the eleven reference implementations the suite measures against.</p>
+round the set out to the twelve reference implementations the suite measures against.</p>
 <p>These libraries are not runtime dependencies; they are <strong>test oracles</strong>. Wherever one of them
 computes the same quantity as an ordito function, a regression test compares the two outputs
 value by value. A parity gate in the test suite fails the build if any library the benchmarks

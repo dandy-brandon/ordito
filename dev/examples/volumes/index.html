@@ -17,7 +17,7 @@
         <link rel="prev" href="../repair/">
       
       
-        <link rel="next" href="../queries/">
+        <link rel="next" href="../solids/">
       
       
         
@@ -316,6 +316,8 @@
       
         
       
+        
+      
     
     
     
@@ -356,6 +358,8 @@
       
         
       
+        
+      
     
     
     
@@ -382,6 +386,8 @@
       
         
           
+        
+      
         
       
         
@@ -696,6 +702,8 @@
       
         
           
+        
+      
         
       
         
@@ -1185,6 +1193,33 @@
   
   
     <li class="md-nav__item">
+      <a href="../solids/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Solids and Booleans
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../queries/" class="md-nav__link">
         
   
@@ -1332,6 +1367,8 @@
       
         
           
+        
+      
         
       
         
@@ -1541,6 +1578,33 @@
   
   
     <li class="md-nav__item">
+      <a href="../../migrating-from/manifold3d/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  manifold3d
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../migrating-from/pytorch3d/" class="md-nav__link">
         
   
@@ -1580,6 +1644,8 @@
       
         
           
+        
+      
         
       
         
@@ -2301,6 +2367,8 @@
       
         
       
+        
+      
     
     
     
@@ -2441,6 +2509,33 @@
     
   
   combine
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../benchmarks/boolean/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  boolean
 
     
   </span>
@@ -3413,12 +3508,6 @@
       
         
       
-        
-      
-        
-      
-        
-      
     
     
     
@@ -3442,7 +3531,7 @@
   <span class="md-ellipsis">
     
   
-  Arrays & infrastructure
+  Attributes & I/O
 
     
   </span>
@@ -3455,6 +3544,103 @@
         
           <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_11_label" aria-expanded="false">
             <label class="md-nav__title" for="__nav_6_11">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Attributes & I/O
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../benchmarks/texture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  texture
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_12" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_12" id="__nav_6_12_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Arrays & infrastructure
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_12_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_6_12">
               <span class="md-nav__icon md-icon"></span>
               
   
@@ -6258,14 +6444,17 @@ closing: 14855 voxels
 <p><a class="glightbox" data-type="image" href="../../assets/examples/v5.webp"><img alt="Voxel morphology" src="../../assets/examples/v5.webp" /></a></p>
 <p class="ordito-credits">Modelled on: <a href="https://trimesh.org/trimesh.voxel.morphology.html">trimesh: voxel morphology</a></p>
 <h2 id="v6">Voxel CSG (approximate booleans)</h2>
-<p>ordito has no exact mesh booleans. What it has is set algebra on voxels: both solids are
-voxelized on one lattice with <a class="autorefs autorefs-internal" title="voxelize_mesh" href="../../api/ordito/voxels/#ordito.voxels.voxelize_mesh"><code>voxelize_mesh</code></a>, combined
-cell by cell with <a class="autorefs autorefs-internal" title="union" href="../../api/ordito/voxels/#ordito.voxels.union"><code>union</code></a>,
+<p>Set algebra on voxels: both solids are voxelized on one lattice with
+<a class="autorefs autorefs-internal" title="voxelize_mesh" href="../../api/ordito/voxels/#ordito.voxels.voxelize_mesh"><code>voxelize_mesh</code></a>, combined cell by cell with
+<a class="autorefs autorefs-internal" title="union" href="../../api/ordito/voxels/#ordito.voxels.union"><code>union</code></a>,
 <a class="autorefs autorefs-internal" title="intersection" href="../../api/ordito/voxels/#ordito.voxels.intersection"><code>intersection</code></a> and <a class="autorefs autorefs-internal" title="difference" href="../../api/ordito/voxels/#ordito.voxels.difference"><code>difference</code></a>,
 and meshed back through <a class="autorefs autorefs-internal" title="to_field" href="../../api/ordito/voxels/#ordito.voxels.to_field"><code>to_field</code></a> and
 <a class="autorefs autorefs-internal" title="marching_cubes" href="../../api/ordito/levelset/#ordito.levelset.marching_cubes"><code>marching_cubes</code></a>. The result is only as accurate as the
 voxel size: sharp edges are rounded off at that scale and the output is resampled
-everywhere, not just near the intersection curve.</p>
+everywhere, not just near the intersection curve. For closed meshes the exact Booleans of
+<a class="autorefs autorefs-internal" title="ordito.boolean" href="../../api/ordito/boolean/#ordito.boolean"><code>ordito.boolean</code></a> keep every input triangle away from the intersection
+curve (<a href="../solids/#b1">B1</a>); the voxel route remains for inputs that are not closed solids,
+and for results that should be resampled anyway.</p>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>

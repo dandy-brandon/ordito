@@ -314,6 +314,8 @@
       
         
       
+        
+      
     
     
     
@@ -356,6 +358,8 @@
       
         
       
+        
+      
     
     
     
@@ -382,6 +386,8 @@
       
         
           
+        
+      
         
       
         
@@ -694,6 +700,8 @@
       
         
           
+        
+      
         
       
         
@@ -1056,6 +1064,33 @@
   
   
     <li class="md-nav__item">
+      <a href="../../examples/solids/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Solids and Booleans
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../examples/queries/" class="md-nav__link">
         
   
@@ -1205,6 +1240,8 @@
       
         
           
+        
+      
         
       
         
@@ -1519,6 +1556,33 @@
   
   
     <li class="md-nav__item">
+      <a href="../manifold3d/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  manifold3d
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../pytorch3d/" class="md-nav__link">
         
   
@@ -1558,6 +1622,8 @@
       
         
           
+        
+      
         
       
         
@@ -2279,6 +2345,8 @@
       
         
       
+        
+      
     
     
     
@@ -2419,6 +2487,33 @@
     
   
   combine
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../benchmarks/boolean/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  boolean
 
     
   </span>
@@ -3391,12 +3486,6 @@
       
         
       
-        
-      
-        
-      
-        
-      
     
     
     
@@ -3420,7 +3509,7 @@
   <span class="md-ellipsis">
     
   
-  Arrays & infrastructure
+  Attributes & I/O
 
     
   </span>
@@ -3433,6 +3522,103 @@
         
           <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_11_label" aria-expanded="false">
             <label class="md-nav__title" for="__nav_6_11">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Attributes & I/O
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../benchmarks/texture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  texture
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_12" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_12" id="__nav_6_12_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Arrays & infrastructure
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_12_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_6_12">
               <span class="md-nav__icon md-icon"></span>
               
   
@@ -6089,7 +6275,39 @@ filters, where ordito functions take arrays and return new arrays.</p>
 <tbody>
 <tr>
 <td><code>pcd.estimate_normals()</code></td>
-<td><a class="autorefs autorefs-internal" title="estimate_normals" href="../../api/ordito/points/#ordito.points.estimate_normals"><code>points.estimate_normals(points, neighbor_idx)</code></a> (neighbourhood built explicitly via <a class="autorefs autorefs-internal" title="query_nearest" href="../../api/ordito/neighbors/#ordito.neighbors.query_nearest"><code>neighbors.query_nearest</code></a>; normals oriented away from the cloud's centroid, where Open3D leaves the sign arbitrary until an <code>orient_normals_*</code> call)</td>
+<td><a class="autorefs autorefs-internal" title="estimate_normals" href="../../api/ordito/points/#ordito.points.estimate_normals"><code>points.estimate_normals(points, neighbor_idx)</code></a> (neighbourhood built explicitly via <a class="autorefs autorefs-internal" title="query_nearest" href="../../api/ordito/neighbors/#ordito.neighbors.query_nearest"><code>neighbors.query_nearest</code></a>; each sign follows its neighbourhood by default, or points away from the centroid with <code>orientation="centroid"</code>, where Open3D leaves the sign arbitrary until an <code>orient_normals_*</code> call)</td>
+</tr>
+<tr>
+<td><code>pcd.orient_normals_consistent_tangent_plane(k)</code></td>
+<td><a class="autorefs autorefs-internal" title="orient_normals" href="../../api/ordito/points/#ordito.points.orient_normals"><code>points.orient_normals(points, normals, neighbor_idx)</code></a> (the same minimum-spanning-tree propagation, over the table you pass)</td>
+</tr>
+<tr>
+<td><code>pcd.estimate_covariances(search)</code></td>
+<td><a class="autorefs autorefs-internal" title="point_covariances" href="../../api/ordito/points/#ordito.points.point_covariances"><code>points.point_covariances</code></a>; principal frames and spreads from <a class="autorefs autorefs-internal" title="point_frames" href="../../api/ordito/points/#ordito.points.point_frames"><code>points.point_frames</code></a></td>
+</tr>
+<tr>
+<td><code>pcd.smooth_laplacian(...)</code>, <code>pcd.smooth_taubin(...)</code> (fixed neighbourhoods)</td>
+<td><a class="autorefs autorefs-internal" title="smooth_points" href="../../api/ordito/points/#ordito.points.smooth_points"><code>points.smooth_points</code></a> (<code>mu=</code> for Taubin)</td>
+</tr>
+<tr>
+<td><code>pcd.smooth_mls(search)</code></td>
+<td><a class="autorefs autorefs-internal" title="smooth_points_mls" href="../../api/ordito/points/#ordito.points.smooth_points_mls"><code>points.smooth_points_mls</code></a> (also returns the fitted normals)</td>
+</tr>
+<tr>
+<td><code>pcd.smooth_bilateral(search, sigma_s, sigma_r)</code></td>
+<td><a class="autorefs autorefs-internal" title="smooth_points_bilateral" href="../../api/ordito/points/#ordito.points.smooth_points_bilateral"><code>points.smooth_points_bilateral</code></a></td>
+</tr>
+<tr>
+<td><code>pcd.cluster_dbscan(eps, min_points)</code></td>
+<td><a class="autorefs autorefs-internal" title="cluster_labels" href="../../api/ordito/points/#ordito.points.cluster_labels"><code>points.cluster_labels(points, radius, min_points)</code></a> (the same labels, cluster numbers included)</td>
+</tr>
+<tr>
+<td><code>pcd.hidden_point_removal(camera, radius)</code></td>
+<td><a class="autorefs autorefs-internal" title="point_visible_mask" href="../../api/ordito/points/#ordito.points.point_visible_mask"><code>points.point_visible_mask(points, camera, radius)</code></a> (a mask, where Open3D returns a mesh and indices)</td>
+</tr>
+<tr>
+<td><code>o3d.t.geometry.PointCloud.compute_boundary_points(radius, max_nn)</code></td>
+<td><a class="autorefs autorefs-internal" title="point_boundary_mask" href="../../api/ordito/points/#ordito.points.point_boundary_mask"><code>points.point_boundary_mask(points, normals, neighbor_idx)</code></a> (the angle threshold in radians, <code>max_gap</code>)</td>
 </tr>
 <tr>
 <td><code>pcd.remove_radius_outlier(nb_points, radius)</code></td>
@@ -6216,6 +6434,12 @@ filters, where ordito functions take arrays and return new arrays.</p>
   <code>self</code> after mutating in place (<code>.remove_duplicated_vertices()</code>, <code>.compute_vertex_normals()</code>,
   ...) is a ordito function returning a new array, e.g.
   <a class="autorefs autorefs-internal" title="remove_duplicated_vertices" href="../../api/ordito/repair/#ordito.repair.remove_duplicated_vertices"><code>repair.remove_duplicated_vertices</code></a>.</li>
+<li><strong>Neighbourhoods are an argument, not a search parameter.</strong> Where an Open3D filter takes a
+  <code>KDTreeSearchParam*</code> and searches on every call, ordito's point filters take the <code>(n, k)</code>
+  neighbour table <a class="autorefs autorefs-internal" title="query_nearest" href="../../api/ordito/neighbors/#ordito.neighbors.query_nearest"><code>neighbors.query_nearest</code></a> returns, so one
+  search serves normals, orientation, smoothing and boundary detection alike. A radius or hybrid
+  search is <code>query_nearest(points, points, k, max_radius=radius)</code>; Open3D's search includes the
+  point itself, as a self-query's table does.</li>
 <li><strong>Legacy vs. tensor API distinction doesn't apply.</strong> ordito has one API; there's no separate
   <code>o3d.t.geometry</code> GPU path to choose — every function already runs on whatever device its input
   arrays are on.</li>

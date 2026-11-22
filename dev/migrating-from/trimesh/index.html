@@ -314,6 +314,8 @@
       
         
       
+        
+      
     
     
     
@@ -356,6 +358,8 @@
       
         
       
+        
+      
     
     
     
@@ -382,6 +386,8 @@
       
         
           
+        
+      
         
       
         
@@ -694,6 +700,8 @@
       
         
           
+        
+      
         
       
         
@@ -1056,6 +1064,33 @@
   
   
     <li class="md-nav__item">
+      <a href="../../examples/solids/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Solids and Booleans
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../examples/queries/" class="md-nav__link">
         
   
@@ -1205,6 +1240,8 @@
       
         
           
+        
+      
         
       
         
@@ -1374,6 +1411,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#booleans-and-capped-cuts" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Booleans and capped cuts
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#whats-different-not-just-renamed" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -1508,6 +1556,33 @@
   
   
     <li class="md-nav__item">
+      <a href="../manifold3d/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  manifold3d
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../pytorch3d/" class="md-nav__link">
         
   
@@ -1547,6 +1622,8 @@
       
         
           
+        
+      
         
       
         
@@ -2268,6 +2345,8 @@
       
         
       
+        
+      
     
     
     
@@ -2408,6 +2487,33 @@
     
   
   combine
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../benchmarks/boolean/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  boolean
 
     
   </span>
@@ -3380,12 +3486,6 @@
       
         
       
-        
-      
-        
-      
-        
-      
     
     
     
@@ -3409,7 +3509,7 @@
   <span class="md-ellipsis">
     
   
-  Arrays & infrastructure
+  Attributes & I/O
 
     
   </span>
@@ -3422,6 +3522,103 @@
         
           <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_11_label" aria-expanded="false">
             <label class="md-nav__title" for="__nav_6_11">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Attributes & I/O
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../benchmarks/texture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  texture
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_12" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_12" id="__nav_6_12_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Arrays & infrastructure
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_12_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_6_12">
               <span class="md-nav__icon md-icon"></span>
               
   
@@ -6018,6 +6215,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#booleans-and-capped-cuts" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Booleans and capped cuts
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#whats-different-not-just-renamed" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -6211,8 +6419,58 @@ the underlying quantity is the same — so most of this migration is a mechanica
 <td><code>mesh.simplify_quadric_decimation</code></td>
 <td><a class="autorefs autorefs-internal" title="quadric_decimate" href="../../api/ordito/remesh/#ordito.remesh.quadric_decimate"><code>remesh.quadric_decimate</code></a></td>
 </tr>
+<tr>
+<td><code>trimesh.creation.triangulate_polygon(polygon)</code></td>
+<td><a class="autorefs autorefs-internal" title="triangulate_polygons" href="../../api/ordito/polyline/#ordito.polyline.triangulate_polygons"><code>polyline.triangulate_polygons(loops)</code></a> (outer loops counter-clockwise, holes clockwise; no Shapely, no Triangle)</td>
+</tr>
+<tr>
+<td><code>trimesh.creation.extrude_triangulation</code></td>
+<td><a class="autorefs autorefs-internal" title="extrude_triangulation" href="../../api/ordito/creation/#ordito.creation.extrude_triangulation"><code>creation.extrude_triangulation</code></a></td>
+</tr>
 </tbody>
 </table>
+<h2 id="booleans-and-capped-cuts">Booleans and capped cuts</h2>
+<p><a class="autorefs autorefs-internal" title="ordito.boolean" href="../../api/ordito/boolean/#ordito.boolean"><code>ordito.boolean</code></a> ports Manifold, the engine <code>trimesh.boolean</code> calls by default,
+so the answers are the meshes trimesh gets back from it, computed on the GPU.</p>
+<table>
+<thead>
+<tr>
+<th>trimesh</th>
+<th>ordito</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mesh_a.union(mesh_b)</code>, <code>trimesh.boolean.union([a, b])</code></td>
+<td><a class="autorefs autorefs-internal" title="union" href="../../api/ordito/boolean/#ordito.boolean.union"><code>boolean.union(*a, *b)</code></a></td>
+</tr>
+<tr>
+<td><code>mesh_a.intersection(mesh_b)</code></td>
+<td><a class="autorefs autorefs-internal" title="intersection" href="../../api/ordito/boolean/#ordito.boolean.intersection"><code>boolean.intersection</code></a></td>
+</tr>
+<tr>
+<td><code>mesh_a.difference(mesh_b)</code></td>
+<td><a class="autorefs autorefs-internal" title="difference" href="../../api/ordito/boolean/#ordito.boolean.difference"><code>boolean.difference</code></a></td>
+</tr>
+<tr>
+<td><code>trimesh.boolean.union(meshes)</code> (a list)</td>
+<td><a class="autorefs autorefs-internal" title="union_all" href="../../api/ordito/boolean/#ordito.boolean.union_all"><code>boolean.union_all(meshes)</code></a>, likewise <a class="autorefs autorefs-internal" title="intersection_all" href="../../api/ordito/boolean/#ordito.boolean.intersection_all"><code>intersection_all</code></a>, <a class="autorefs autorefs-internal" title="difference_all" href="../../api/ordito/boolean/#ordito.boolean.difference_all"><code>difference_all</code></a></td>
+</tr>
+<tr>
+<td><code>mesh.slice_plane(origin, normal, cap=True)</code></td>
+<td><a class="autorefs autorefs-internal" title="trim_by_plane" href="../../api/ordito/boolean/#ordito.boolean.trim_by_plane"><code>boolean.trim_by_plane(vertices, faces, normal, offset)</code></a> (exact, closed result); <a class="autorefs autorefs-internal" title="slice_mesh_with_plane" href="../../api/ordito/intersection/#ordito.intersection.slice_mesh_with_plane"><code>intersection.slice_mesh_with_plane</code></a> for an open cut of any surface (<code>cap=False</code>)</td>
+</tr>
+<tr>
+<td>two <code>slice_plane(..., cap=True)</code> calls, one per side</td>
+<td><a class="autorefs autorefs-internal" title="split_by_plane" href="../../api/ordito/boolean/#ordito.boolean.split_by_plane"><code>boolean.split_by_plane</code></a> (both sides in one call)</td>
+</tr>
+<tr>
+<td><code>mesh.ray.intersects_location</code> counted for parity</td>
+<td><a class="autorefs autorefs-internal" title="segment_hits" href="../../api/ordito/ray/#ordito.ray.segment_hits"><code>ray.segment_hits</code></a> (exact at edges and vertices: a crossing there counts once)</td>
+</tr>
+</tbody>
+</table>
+<p>The <a href="../../examples/solids/">Solids and Booleans</a> gallery shows each of them at work.</p>
 <h2 id="whats-different-not-just-renamed">What's different, not just renamed</h2>
 <ul>
 <li><strong>Face buffers are flat.</strong> <code>mesh.faces</code> in trimesh is <code>(n_faces, 3)</code>; the ordito equivalent is
@@ -6223,6 +6481,12 @@ the underlying quantity is the same — so most of this migration is a mechanica
 <li><strong>No in-place mutation.</strong> <code>mesh.remove_duplicate_faces()</code> and similar trimesh calls mutate the
   object; ordito functions always return new arrays (e.g.
   <a class="autorefs autorefs-internal" title="resolve_duplicated_faces" href="../../api/ordito/repair/#ordito.repair.resolve_duplicated_faces"><code>repair.resolve_duplicated_faces</code></a>).</li>
+<li><strong>Booleans take solids, and a plane is a normal and an offset.</strong> Like trimesh's Manifold
+  engine, <a class="autorefs autorefs-internal" title="ordito.boolean" href="../../api/ordito/boolean/#ordito.boolean"><code>ordito.boolean</code></a> requires closed, consistently wound inputs
+  (<code>mesh.is_volume</code>) and raises <code>ValueError</code> otherwise, where trimesh may hand back an empty mesh;
+  <a class="autorefs autorefs-internal" title="make_solid" href="../../api/ordito/repair/#ordito.repair.make_solid"><code>repair.make_solid</code></a> repairs one first. Plane cuts take the plane as
+  a normal and its signed offset from the origin along the unit normal (<code>dot(x, n) == offset</code>),
+  not as a point on it: <code>offset = dot(origin, normal / |normal|)</code>.</li>
 <li><strong><code>isotropic_remesh</code> is a superset of trimesh's <code>subdivide_to_size</code>.</strong> trimesh's crack-free
   <code>remesh.subdivide_to_size</code> only splits; ordito's
   <a class="autorefs autorefs-internal" title="isotropic_remesh" href="../../api/ordito/remesh/#ordito.remesh.isotropic_remesh"><code>remesh.isotropic_remesh</code></a> also collapses, flips, and smooths

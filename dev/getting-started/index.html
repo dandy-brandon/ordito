@@ -316,6 +316,8 @@
       
         
       
+        
+      
     
     
     
@@ -356,6 +358,8 @@
       
         
       
+        
+      
     
     
     
@@ -382,6 +386,8 @@
       
         
           
+        
+      
         
       
         
@@ -867,6 +873,8 @@
       
         
       
+        
+      
     
     
     
@@ -1197,6 +1205,33 @@
   
   
     <li class="md-nav__item">
+      <a href="../examples/solids/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Solids and Booleans
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../examples/queries/" class="md-nav__link">
         
   
@@ -1344,6 +1379,8 @@
       
         
           
+        
+      
         
       
         
@@ -1553,6 +1590,33 @@
   
   
     <li class="md-nav__item">
+      <a href="../migrating-from/manifold3d/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  manifold3d
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../migrating-from/pytorch3d/" class="md-nav__link">
         
   
@@ -1592,6 +1656,8 @@
       
         
           
+        
+      
         
       
         
@@ -2313,6 +2379,8 @@
       
         
       
+        
+      
     
     
     
@@ -2453,6 +2521,33 @@
     
   
   combine
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../benchmarks/boolean/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  boolean
 
     
   </span>
@@ -3425,12 +3520,6 @@
       
         
       
-        
-      
-        
-      
-        
-      
     
     
     
@@ -3454,7 +3543,7 @@
   <span class="md-ellipsis">
     
   
-  Arrays & infrastructure
+  Attributes & I/O
 
     
   </span>
@@ -3467,6 +3556,103 @@
         
           <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_11_label" aria-expanded="false">
             <label class="md-nav__title" for="__nav_6_11">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Attributes & I/O
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../benchmarks/texture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  texture
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_12" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_12" id="__nav_6_12_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Arrays & infrastructure
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_12_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_6_12">
               <span class="md-nav__icon md-icon"></span>
               
   
@@ -6177,7 +6363,7 @@ much of it is <em>verified</em>, not how much of it is meant to work.</p>
 <tbody>
 <tr>
 <td><strong>Linux + CUDA</strong></td>
-<td>The developed and measured target. Every performance figure in these docs is this configuration, and the full test suite plus the eleven-library comparison suite run here on every release.</td>
+<td>The developed and measured target. Every performance figure in these docs is this configuration, and the full test suite plus the twelve-library comparison suite run here on every release.</td>
 </tr>
 <tr>
 <td><strong>Linux, CPU only</strong></td>
@@ -6339,14 +6525,15 @@ ordito on its tensors directly:</p>
 </code></pre></div>
 <h2 id="where-to-next">Where to next</h2>
 <ul>
-<li><strong><a href="../concepts/">Concepts</a></strong> — the four ideas worth understanding before writing anything
-  nontrivial: arrays in/arrays out, the device follows the data, host syncs are budgeted, and
-  everything is measured rather than assumed.</li>
+<li><strong><a href="../concepts/">Concepts</a></strong> — the five ideas worth understanding before writing anything
+  nontrivial: arrays in/arrays out, the device follows the data, host syncs are budgeted, solids
+  are checked and decided exactly, and everything is measured rather than assumed.</li>
 <li><strong><a href="../examples/">Examples</a></strong> — a gallery of runnable examples with the images they
   produce: cleaning a scan, point clouds to watertight surfaces, geodesic distance fields,
   aligning two scans, and many more.</li>
 <li><strong><a href="../migrating-from/">Migrating from another library</a></strong> — already know trimesh, libigl,
-  Open3D, MeshLab, potpourri3d, or PyTorch3D? Start here for a function-by-function map.</li>
+  Open3D, MeshLab, potpourri3d, manifold3d, or PyTorch3D? Start here for a function-by-function
+  map.</li>
 <li><strong><a href="../reference/">API Reference</a></strong> — a task index and a map of every module; each module page
   documents every function with a runnable example.</li>
 </ul>

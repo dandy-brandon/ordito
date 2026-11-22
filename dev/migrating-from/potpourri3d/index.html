@@ -17,7 +17,7 @@
         <link rel="prev" href="../meshlab/">
       
       
-        <link rel="next" href="../pytorch3d/">
+        <link rel="next" href="../manifold3d/">
       
       
         
@@ -314,6 +314,8 @@
       
         
       
+        
+      
     
     
     
@@ -356,6 +358,8 @@
       
         
       
+        
+      
     
     
     
@@ -382,6 +386,8 @@
       
         
           
+        
+      
         
       
         
@@ -694,6 +700,8 @@
       
         
           
+        
+      
         
       
         
@@ -1056,6 +1064,33 @@
   
   
     <li class="md-nav__item">
+      <a href="../../examples/solids/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Solids and Booleans
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../examples/queries/" class="md-nav__link">
         
   
@@ -1205,6 +1240,8 @@
       
         
           
+        
+      
         
       
         
@@ -1486,6 +1523,33 @@
   
   
     <li class="md-nav__item">
+      <a href="../manifold3d/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  manifold3d
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../pytorch3d/" class="md-nav__link">
         
   
@@ -1525,6 +1589,8 @@
       
         
           
+        
+      
         
       
         
@@ -2246,6 +2312,8 @@
       
         
       
+        
+      
     
     
     
@@ -2386,6 +2454,33 @@
     
   
   combine
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../benchmarks/boolean/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  boolean
 
     
   </span>
@@ -3358,12 +3453,6 @@
       
         
       
-        
-      
-        
-      
-        
-      
     
     
     
@@ -3387,7 +3476,7 @@
   <span class="md-ellipsis">
     
   
-  Arrays & infrastructure
+  Attributes & I/O
 
     
   </span>
@@ -3400,6 +3489,103 @@
         
           <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_11_label" aria-expanded="false">
             <label class="md-nav__title" for="__nav_6_11">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Attributes & I/O
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../benchmarks/texture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  texture
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_12" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_12" id="__nav_6_12_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Arrays & infrastructure
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_12_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_6_12">
               <span class="md-nav__icon md-icon"></span>
               
   
@@ -6053,6 +6239,14 @@ functions and it keeps their operators and factorizations (its
 <td><a class="autorefs autorefs-internal" title="ordito.geodesic_walk" href="../../api/ordito/geodesic_walk/#ordito.geodesic_walk"><code>geodesic_walk</code></a> (straightest geodesics: walk a given distance in a given direction, batched over many walks)</td>
 </tr>
 <tr>
+<td><code>pp3d.PointCloudHeatSolver(P)</code> then <code>.compute_distance(source)</code>, <code>.extend_scalar</code>, <code>.transport_tangent_vector</code>, <code>.compute_log_map</code>, <code>.compute_signed_distance</code></td>
+<td><a class="autorefs autorefs-internal" title="PointCloudHeatSolver" href="../../api/ordito/heat/#ordito.heat.PointCloudHeatSolver"><code>heat.PointCloudHeatSolver(points)</code></a> then <a class="autorefs autorefs-internal" title="distance" href="../../api/ordito/heat/#ordito.heat.PointCloudHeatSolver.distance"><code>.distance</code></a>, <a class="autorefs autorefs-internal" title="extend_scalar" href="../../api/ordito/heat/#ordito.heat.PointCloudHeatSolver.extend_scalar"><code>.extend_scalar</code></a>, <a class="autorefs autorefs-internal" title="transport_tangent_vectors" href="../../api/ordito/heat/#ordito.heat.PointCloudHeatSolver.transport_tangent_vectors"><code>.transport_tangent_vectors</code></a>, <a class="autorefs autorefs-internal" title="log_map" href="../../api/ordito/heat/#ordito.heat.PointCloudHeatSolver.log_map"><code>.log_map</code></a>, <a class="autorefs autorefs-internal" title="signed_distance" href="../../api/ordito/heat/#ordito.heat.PointCloudHeatSolver.signed_distance"><code>.signed_distance</code></a> (a stateful solver here too, as on a cloud there is no mesh to keep the state)</td>
+</tr>
+<tr>
+<td><code>pp3d.PointCloudLocalTriangulation(P).get_local_triangulation()</code></td>
+<td><a class="autorefs autorefs-internal" title="local_triangulation" href="../../api/ordito/points/#ordito.points.local_triangulation"><code>points.local_triangulation(points, neighbor_idx)</code></a></td>
+</tr>
+<tr>
 <td>Tangent frames used internally by the solvers</td>
 <td><a class="autorefs autorefs-internal" title="vertex_tangent_frames" href="../../api/ordito/tangent_space/#ordito.tangent_space.vertex_tangent_frames"><code>tangent_space.vertex_tangent_frames</code></a> / <a class="autorefs autorefs-internal" title="face_tangent_frames" href="../../api/ordito/tangent_space/#ordito.tangent_space.face_tangent_frames"><code>face_tangent_frames</code></a> (public and directly inspectable in ordito)</td>
 </tr>
@@ -6093,11 +6287,17 @@ method is more accurate at every resolution measured.</p>
 </div>
 </li>
 <li>
-<p><strong>Isolines come back as points, not mesh elements.</strong> potpourri3d's <code>marching_triangles</code>
+<p><strong>Point-cloud normals fix the stars' winding.</strong> <code>PointCloudHeatSolver</code> estimates each
+  tangent plane from the neighbours when no <code>normals</code> are given, which fixes the plane but not
+  its sign, so its stars, and the fields, differ from potpourri3d's by a fraction of a per cent;
+  pass oriented normals (a scanner's, or <a class="autorefs autorefs-internal" title="orient_normals" href="../../api/ordito/points/#ordito.points.orient_normals"><code>points.orient_normals</code></a>'
+  output) to get potpourri3d's answer. Tangent vectors in and out are in geometry-central's
+  frames, as the class docstring spells out.</p>
+</li>
+<li><strong>Isolines come back as points, not mesh elements.</strong> potpourri3d's <code>marching_triangles</code>
   reports each isoline point as a geometry-central element index plus barycentric coordinates;
   ordito's <a class="autorefs autorefs-internal" title="marching_triangles" href="../../api/ordito/intersection/#ordito.intersection.marching_triangles"><code>intersection.marching_triangles</code></a> returns 3D
-  positions directly.</p>
-</li>
+  positions directly.</li>
 </ul>
 
 
