@@ -460,7 +460,7 @@
  "benchmarks/test_boolean.py::test_split_by_plane[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 141,
-   "alloc": 199,
+   "alloc": 201,
    "h2h": 18,
    "readback": 45,
    "scan": 29,
@@ -470,7 +470,7 @@
  "benchmarks/test_boolean.py::test_trim_by_plane[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 98,
-   "alloc": 141,
+   "alloc": 142,
    "h2h": 13,
    "readback": 28,
    "scan": 17,

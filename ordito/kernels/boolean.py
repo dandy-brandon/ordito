@@ -945,6 +945,173 @@ def assemble_loops(
     return n_loops
 
 
+# Sorted lookups for a face of many sides (the heavy pass, ``_HEAVY_FACE_SIDES`` sides or more):
+# ``assemble_loops`` and ``write_result_halfedges``' two pairings scan the face for every side or
+# triangle halfedge, quadratic in its sides. Each picks the first match in index order among the
+# remaining entries with given keys, so entries sorted by ``(keys, index)`` give the same match as
+# the first remaining one of the keys' run, found by binary search: a cap of thousands of sides
+# then costs ``n log n`` (2026-11-22, a 1.3 M-face sphere's plane cut: the halfedge pass 48 -> 4 ms,
+# the loop assembly 13 -> ~1 ms, ``split_by_plane`` 0.63x; byte-identical). The light pass keeps
+# its scans, a face's few sides. ``SIDE_KEYS`` orders a face's sides by ``(start, end)``,
+# ``TRIANGLE_KEYS`` triangle halfedges by ``(start, start of the next)``; a taken entry is stored
+# complemented (``~e``).
+SIDE_KEYS = wp.int32(0)
+TRIANGLE_KEYS = wp.int32(1)
+
+
+@wp.func
+def sort_key(
+    mode: wp.int32, a: wp.array[wp.int32], b: wp.array[wp.int32], offset: wp.int32, e: wp.int32
+) -> wp.vec2i:
+    if mode == SIDE_KEYS:
+        return wp.vec2i(a[offset + e], b[offset + e])
+    return wp.vec2i(a[e], a[halfedge_next(e)])
+
+
+@wp.func
+def sorted_entry(stored: wp.int32) -> wp.int32:
+    # An entry of a sorted run, taken (complemented) or not.
+    return wp.where(stored >= 0, stored, ~stored)
+
+
+@wp.func
+def key_before(ka: wp.vec2i, ea: wp.int32, kb: wp.vec2i, eb: wp.int32) -> wp.bool:
+    if ka[0] != kb[0]:
+        return ka[0] < kb[0]
+    if ka[1] != kb[1]:
+        return ka[1] < kb[1]
+    return ea < eb
+
+
+@wp.func
+def sift_down_keys(
+    entries: wp.array[wp.int32],
+    base: wp.int32,
+    root: wp.int32,
+    size: wp.int32,
+    mode: wp.int32,
+    a: wp.array[wp.int32],
+    b: wp.array[wp.int32],
+    offset: wp.int32,
+):
+    r = root
+    while 2 * r + 1 < size:
+        child = 2 * r + 1
+        ec = entries[base + child]
+        kc = sort_key(mode, a, b, offset, ec)
+        if child + 1 < size:
+            en = entries[base + child + 1]
+            kn = sort_key(mode, a, b, offset, en)
+            if key_before(kc, ec, kn, en):
+                child += 1
+                ec = en
+                kc = kn
+        er = entries[base + r]
+        if not key_before(sort_key(mode, a, b, offset, er), er, kc, ec):
+            break
+        entries[base + r] = ec
+        entries[base + child] = er
+        r = child
+
+
+@wp.func
+def heap_sort_keys(
+    entries: wp.array[wp.int32],
+    base: wp.int32,
+    count: wp.int32,
+    mode: wp.int32,
+    a: wp.array[wp.int32],
+    b: wp.array[wp.int32],
+    offset: wp.int32,
+):
+    # ``entries[base:base + count]`` sorted by ``(sort_key, entry)``, in place.
+    root = count // 2 - 1
+    while root >= 0:
+        sift_down_keys(entries, base, root, count, mode, a, b, offset)
+        root -= 1
+    end = count - 1
+    while end > 0:
+        top = entries[base]
+        entries[base] = entries[base + end]
+        entries[base + end] = top
+        sift_down_keys(entries, base, 0, end, mode, a, b, offset)
+        end -= 1
+
+
+@wp.func
+def lower_bound_keys(
+    entries: wp.array[wp.int32],
+    base: wp.int32,
+    count: wp.int32,
+    mode: wp.int32,
+    a: wp.array[wp.int32],
+    b: wp.array[wp.int32],
+    offset: wp.int32,
+    key: wp.vec2i,
+) -> wp.int32:
+    # The first sorted position whose keys are not below ``key``.
+    lo = wp.int32(0)
+    hi = count
+    while lo < hi:
+        mid = (lo + hi) // 2
+        k = sort_key(mode, a, b, offset, sorted_entry(entries[base + mid]))
+        if k[0] < key[0] or (k[0] == key[0] and k[1] < key[1]):
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+
+
+@wp.func
+def assemble_loops_sorted(
+    starts: wp.array[wp.int32],
+    ends: wp.array[wp.int32],
+    first: wp.int32,
+    n: wp.int32,
+    sorted_sides: wp.array[wp.int32],
+    order: wp.array[wp.int32],
+    loop_heads: wp.array[wp.int32],
+) -> wp.int32:
+    # ``assemble_loops`` over the face's sides sorted by ``(start, end, index)`` in
+    # ``sorted_sides[first:]``: the least remaining side is the first untaken sorted entry, and a
+    # loop's next side the first untaken entry of its end vertex's run. The same loops, in
+    # ``n log n``.
+    for i in range(n):
+        sorted_sides[first + i] = i
+    heap_sort_keys(sorted_sides, first, n, SIDE_KEYS, starts, ends, first)
+    placed = wp.int32(0)
+    n_loops = wp.int32(0)
+    cursor = wp.int32(0)
+    while placed < n:
+        while sorted_sides[first + cursor] < 0:
+            cursor += 1
+        current = sorted_sides[first + cursor]
+        position = cursor
+        loop_heads[first + n_loops] = placed
+        n_loops += 1
+        loop_vertex = starts[first + current]
+        while current >= 0:
+            sorted_sides[first + position] = ~current
+            order[first + placed] = current
+            placed += 1
+            want = ends[first + current]
+            current = wp.int32(-1)
+            if want != loop_vertex:
+                k = lower_bound_keys(
+                    sorted_sides, first, n, SIDE_KEYS, starts, ends, first, wp.vec2i(want, -1)
+                )
+                while k < n:
+                    stored = sorted_sides[first + k]
+                    if starts[first + sorted_entry(stored)] != want:
+                        break
+                    if stored >= 0:
+                        current = stored
+                        position = k
+                        break
+                    k += 1
+    return n_loops
+
+
 @wp.kernel
 def triangulate_faces(
     face_offsets: wp.array[wp.int32],
@@ -987,7 +1154,11 @@ def triangulate_faces(
             normal = wp.vec3d() - normal
     base = tri_offsets[f]
     cap = tri_offsets[f + 1] - base
-    n_loops = assemble_loops(starts, ends, first, n, used, order, loop_heads)
+    n_loops = wp.int32(0)
+    if heavy_pass != 0:
+        n_loops = assemble_loops_sorted(starts, ends, first, n, used, order, loop_heads)
+    else:
+        n_loops = assemble_loops(starts, ends, first, n, used, order, loop_heads)
     if n == 3 and n_loops == 1:
         ec.tris[base] = wp.vec3i(
             starts[first + order[first]],
@@ -1093,7 +1264,7 @@ def list_heavy_faces(
     capacity: wp.int32,
     out_list: wp.array[wp.int32],
 ) -> None:
-    # Faces of ``heavy_sides`` or more polygon sides, whose quadratic passes go to the CPU: their
+    # Faces of ``heavy_sides`` or more polygon sides, whose serial passes go to the CPU: their
     # count in ``out_list[0]`` and, for the first ``capacity`` in arrival order, each face's index,
     # side range and triangle range as five entries from ``out_list[1 + 5 slot]``. The order decides
     # nothing: each face is triangulated alone.
@@ -1130,6 +1301,8 @@ def write_result_halfedges(
     heavy_sides: wp.int32,
     heavy_pass: wp.int32,
     listed: wp.array[wp.int32],
+    sorted_sides: wp.array[wp.int32],
+    sorted_diagonals: wp.array[wp.int32],
     slot_halfedge: wp.array[wp.int32],
     out_start: wp.array[wp.int32],
     out_pair: wp.array[wp.int32],
@@ -1165,6 +1338,14 @@ def write_result_halfedges(
         normal = fnormal_q[f - n_faces_p]
         if invert_q != 0:
             normal = wp.vec3d() - normal
+    # A pass given sorted scratch (the heavy one) finds each match by binary search
+    # (``SIDE_KEYS``, ``TRIANGLE_KEYS``); the light pass scans the face's few sides. Both take the
+    # first remaining match in index order.
+    by_keys = sorted_sides.shape[0] > 0
+    if by_keys:
+        for i in range(n):
+            sorted_sides[first + i] = i
+        heap_sort_keys(sorted_sides, first, n, SIDE_KEYS, starts, ends, first)
     for t in range(n_tris):
         tri = tris[src + t]
         # ``ReorderHalfedges``: each triangle starts at its least vertex.
@@ -1181,29 +1362,76 @@ def write_result_halfedges(
             out_pair[h] = -1
             u = tri[i]
             v = tri[next3(i)]
-            for k in range(n):
-                if slot_halfedge[first + k] < 0 and starts[first + k] == u and ends[first + k] == v:
-                    slot_halfedge[first + k] = h
-                    out_pair[h] = -2
-                    break
+            if by_keys:
+                k = lower_bound_keys(
+                    sorted_sides, first, n, SIDE_KEYS, starts, ends, first, wp.vec2i(u, v)
+                )
+                while k < n:
+                    side = sorted_sides[first + k]
+                    if starts[first + side] != u or ends[first + side] != v:
+                        break
+                    if slot_halfedge[first + side] < 0:
+                        slot_halfedge[first + side] = h
+                        out_pair[h] = -2
+                        break
+                    k += 1
+            else:
+                for k in range(n):
+                    if (
+                        slot_halfedge[first + k] < 0
+                        and starts[first + k] == u
+                        and ends[first + k] == v
+                    ):
+                        slot_halfedge[first + k] = h
+                        out_pair[h] = -2
+                        break
     # Diagonals: pair each with its reverse among the face's other unpaired halfedges.
     h0 = 3 * dst
     h1 = 3 * (dst + n_tris)
+    base = 3 * src
+    count = wp.int32(0)
+    if by_keys:
+        for h in range(h0, h1):
+            if out_pair[h] == -1:
+                sorted_diagonals[base + count] = h
+                count += 1
+        heap_sort_keys(sorted_diagonals, base, count, TRIANGLE_KEYS, out_start, out_start, 0)
     for h in range(h0, h1):
         if out_pair[h] != -1:
             continue
         u = out_start[h]
         v = out_start[halfedge_next(h)]
-        for g in range(h0, h1):
-            if (
-                g != h
-                and out_pair[g] == -1
-                and out_start[g] == v
-                and out_start[halfedge_next(g)] == u
-            ):
-                out_pair[h] = g
-                out_pair[g] = h
-                break
+        if by_keys:
+            k = lower_bound_keys(
+                sorted_diagonals,
+                base,
+                count,
+                TRIANGLE_KEYS,
+                out_start,
+                out_start,
+                0,
+                wp.vec2i(v, u),
+            )
+            while k < count:
+                g = sorted_diagonals[base + k]
+                if out_start[g] != v or out_start[halfedge_next(g)] != u:
+                    break
+                if g != h and out_pair[g] == -1:
+                    out_pair[h] = g
+                    out_pair[g] = h
+                    break
+                k += 1
+        else:
+            for g in range(h0, h1):
+                if (
+                    g != h
+                    and out_pair[g] == -1
+                    and out_start[g] == v
+                    and out_start[halfedge_next(g)] == u
+                ):
+                    out_pair[h] = g
+                    out_pair[g] = h
+                    break
 
 
 @wp.kernel

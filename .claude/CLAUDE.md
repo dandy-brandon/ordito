@@ -1453,14 +1453,14 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `offset_mesh(method="meshlib")` against MeshLib's `offsetMesh`, whose extraction is ported
   (`marching_cubes(method="openvdb")`, Class A) and whose OpenVDB `meshToLevelSet` band field is
   not. Scoped, with source availability and licensing, in `reference/component-status.md` (16.0b).
-- **`boolean`'s heavy faces past a few thousand sides** (2026-11-21): a plane cut of a 1.3 M-face
-  sphere spends 112 of its 300 ms (manifold3d 229 ms) in the cap's host passes, whose loop
-  assembly (`assemble_loops`) and polygon-slot and diagonal pairing (`write_result_halfedges`)
-  are quadratic in the face's sides; a sort of each face's halfedges by `(start, end, index)`
-  makes the same choices in `n log n`. The same cut's 540 collapses around the cap's
-  high-valence vertices cost ~148 us each in one GPU thread (80 ms a pass), and the CPU's round
-  trip of the 8 M-halfedge prefixes about as much (`_solid._SERIAL_DEVICE_BASE`): a pass that
-  moves only the halfedges it touches would serve both.
+- **`boolean`'s ear clipper on a nearly cocircular cap** (2026-11-22): a plane cut of a round
+  body leaves a cap whose near-tied ears are clipped in a fan-like order, so the late ears' boxes
+  hold ~490 live vertices each on a 1 482-gon (8.7 M box tests for 17 760 ear costs): ~60 of the
+  91 ms of a 1.3 M-face sphere's `split_by_plane`, quadratic in the cap's sides (1 450 / 2 900 /
+  5 800 points 8.3 / 31 / 124 ms on the CPU). No box index finds fewer vertices; a bound pruning
+  far ones (an outside vertex contributes `-eps - scale d^2`) must respect `ec_signed_dist`'s
+  fallback to a vertex's neighbours within `eps` of an edge line. The triangles must stay
+  manifold3d's (Class A).
 - **`reconstruction.local_fan` walks its dropped `-1` slots** with `cycle_next` / `cycle_prev`
   (2026-11-22): `points.local_triangulation`'s stars took a register mask of kept slots (two bit
   scans a neighbour, no scratch row), which removes the objection a linked ring was declined for

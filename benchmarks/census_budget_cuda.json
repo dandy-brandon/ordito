@@ -489,7 +489,7 @@
  "benchmarks/test_boolean.py::test_split_by_plane[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 149,
-   "alloc": 246,
+   "alloc": 248,
    "memset": 49,
    "d2d": 6,
    "h2d": 42,
@@ -502,7 +502,7 @@
  "benchmarks/test_boolean.py::test_trim_by_plane[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 106,
-   "alloc": 167,
+   "alloc": 168,
    "memset": 37,
    "d2d": 4,
    "h2d": 24,

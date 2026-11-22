@@ -59,7 +59,7 @@ _MAX_UNION_SIZE = 1000
 
 
 # A result face of this many polygon sides or more is triangulated and paired on the CPU, whose
-# one thread runs those quadratic passes far faster than a GPU thread (2026-11-21: an 82 k-face
+# one thread runs those serial passes far faster than a GPU thread (2026-11-21: an 82 k-face
 # sphere's plane cut, whose cap is one polygon, 433 + 136 -> 13 + 6 ms; the copies are prefixes).
 # Swept over icospheres of 3 to 6 subdivisions cut by a plane, 16-32 sides best at every size
 # (5 k faces 45 -> 8.6 ms against 256); 64 lost the smallest cap. Many-sided faces come only from
@@ -1292,7 +1292,7 @@ def _result(
     _launch.launch(
         kernel_boolean.write_result_halfedges,
         dim=n_faces,
-        inputs=[*write_inputs, 0, unlisted, slot_halfedge],
+        inputs=[*write_inputs, 0, unlisted, unlisted, unlisted, slot_halfedge],
         outputs=write_outputs,
         device=device,
     )
@@ -1300,19 +1300,35 @@ def _result(
         _launch.launch(
             kernel_boolean.write_result_halfedges,
             dim=heavy_dim,
-            inputs=[*write_inputs, 1, listed, slot_halfedge],
+            inputs=[
+                *write_inputs,
+                1,
+                listed,
+                scratch_arrays[0],
+                _sorted_diagonals(n_capacity, device),
+                slot_halfedge,
+            ],
             outputs=write_outputs,
             device=device,
         )
     elif held is not None:
-        _write_heavy_on_host(held, write_inputs, slot_halfedge, n_triangles, write_outputs)
+        _write_heavy_on_host(
+            held, write_inputs, slot_halfedge, n_capacity, n_triangles, write_outputs
+        )
     elif heavy > 0:
         # Only the written prefixes travel: the result's halfedges and triangles so far.
         n_written = 3 * n_triangles
         _launch_heavy_faces(
             kernel_boolean.write_result_halfedges,
             n_faces,
-            [*write_inputs, 1, unlisted, slot_halfedge],
+            [
+                *write_inputs,
+                1,
+                unlisted,
+                scratch_arrays[0],
+                _sorted_diagonals(n_capacity, device),
+                slot_halfedge,
+            ],
             [],
             None,
             [
@@ -1621,6 +1637,7 @@ class _HeavyHost(NamedTuple):
     listed: wp.array[wp.int32]
     inputs: list[object]
     triangles: wp.array[wp.vec3i]
+    scratch: wp.array[wp.int32]
 
 
 def _triangulate_heavy_on_host(
@@ -1634,7 +1651,7 @@ def _triangulate_heavy_on_host(
     """
     Triangulate the listed heavy faces on the CPU, moving only what they read and write.
 
-    A face of many polygon sides costs its thread time quadratic in them, which one CPU thread
+    A face of many polygon sides is one long serial walk (the ear clipper), which one CPU thread
     runs far faster than one GPU thread. Host arrays as large as the device's take only the
     listed faces' entries (and every position, which their sides name); their counts and
     triangles go back.
@@ -1672,16 +1689,11 @@ def _triangulate_heavy_on_host(
     listed = _launch.array([face[0] for face in faces], dtype=wp.int32, device=host)
     state, h_triangles = _ear_clip_state(max(n_capacity, 1), host)
     h_counts = _launch.empty(counts.size, dtype=wp.int32, device=host)
+    host_scratch = [_launch.empty(scratch, dtype=wp.int32, device=host) for _ in range(3)]
     _launch.launch(
         kernel_boolean.triangulate_faces,
         dim=len(faces),
-        inputs=[
-            *host_inputs,
-            1,
-            listed,
-            *[_launch.empty(scratch, dtype=wp.int32, device=host) for _ in range(3)],
-            state,
-        ],
+        inputs=[*host_inputs, 1, listed, *host_scratch, state],
         outputs=[h_counts],
         device=host,
     )
@@ -1689,13 +1701,14 @@ def _triangulate_heavy_on_host(
         _copy_range(counts, h_counts, f, 1)
         # Host read: the face's triangle count, on the CPU.
         _copy_range(triangles, h_triangles, base, int(read_values(h_counts, f, 1)[0]))
-    return _HeavyHost(faces, listed, host_inputs, h_triangles)
+    return _HeavyHost(faces, listed, host_inputs, h_triangles, host_scratch[0])
 
 
 def _write_heavy_on_host(
     held: _HeavyHost,
     inputs: list[object],
     slot_halfedge: wp.array[wp.int32],
+    n_capacity: int,
     n_triangles: int,
     outputs: list[object],
 ) -> None:
@@ -1751,6 +1764,8 @@ def _write_heavy_on_host(
             *inputs[12:],
             1,
             held.listed,
+            held.scratch,
+            _sorted_diagonals(n_capacity, host),
             h_slots,
         ],
         outputs=h_outputs,
@@ -1764,6 +1779,15 @@ def _write_heavy_on_host(
         for array, h_array in zip((tri_mesh, tri_coplanar, tri_normal), h_outputs[2:], strict=True):
             _copy_range(array, h_array, dst, stop - dst)
         _copy_range(slot_halfedge, h_slots, first, end - first)
+
+
+def _sorted_diagonals(n_capacity: int, device: wp.DeviceLike) -> wp.array[wp.int32]:
+    """
+    Allocate the heavy halfedge pass's sorted diagonals, three slots a triangle.
+
+    Its sorted sides take the triangulation's first scratch row, spent by then.
+    """
+    return _launch.empty(3 * max(n_capacity, 1), dtype=wp.int32, device=device)
 
 
 def _copy_range(dest: odt.ArrayNd, src: odt.ArrayNd, start: int, count: int) -> None:
@@ -1783,7 +1807,7 @@ def _launch_heavy_faces(
     """
     Run a per-face kernel's heavy pass on the CPU, over the arrays the CUDA pass left.
 
-    A face of many polygon sides costs its thread time quadratic in them, which one CPU thread
+    A face of many polygon sides is one long serial walk (the ear clipper), which one CPU thread
     runs far faster than one GPU thread. Every array goes to the host and back whole: the heavy
     pass writes only its faces' ranges, so the rest come back as they were. ``struct`` (the ear
     clipper's scratch, allocated on the host) follows the inputs, and ``paired`` gives the device

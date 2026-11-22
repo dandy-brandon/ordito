@@ -584,14 +584,18 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # circular lists and work lists live in ``ec``, cut at each face's offset; the coplanar flood
     # grows ``coplanar`` and rewrites the grouped faces' ``face_normals`` in place, walking its
     # ``stack``; ``slot_halfedge`` maps each polygon edge to its triangle halfedge for the pairing
-    # pass after; the topology cleanup edits the halfedge structure ``m`` in place.
+    # pass after, and the heavy pass sorts a face's sides and diagonals in ``sorted_sides`` /
+    # ``sorted_diagonals`` for its lookups; the topology cleanup edits the halfedge structure ``m``
+    # in place.
     ("boolean", "emit_partial_edges"): frozenset({"record_rank"}),
     ("boolean", "emit_new_edges"): frozenset({"item_rank"}),
     ("boolean", "triangulate_faces"): frozenset({"ec"}),
     ("polyline", "triangulate_polygon_set"): frozenset({"ec"}),
     ("algorithms.solid", "flood_coplanar"): frozenset({"coplanar", "face_normals", "stack"}),
     ("algorithms.solid", "own_coplanar_groups"): frozenset({"coplanar"}),
-    ("boolean", "write_result_halfedges"): frozenset({"slot_halfedge"}),
+    ("boolean", "write_result_halfedges"): frozenset(
+        {"slot_halfedge", "sorted_sides", "sorted_diagonals"}
+    ),
     ("algorithms.solid_topology", "split_pinched_fans"): frozenset({"m"}),
     # The smoothing passes refine each halfedge's ``tangents`` in place, in ``CreateTangents``'
     # order; the vertex pass marks the ``fixed`` halfedges the distribution pass turns between.
