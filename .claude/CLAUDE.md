@@ -1461,8 +1461,3 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   far ones (an outside vertex contributes `-eps - scale d^2`) must respect `ec_signed_dist`'s
   fallback to a vertex's neighbours within `eps` of an edge line. The triangles must stay
   manifold3d's (Class A).
-- **`reconstruction.local_fan` walks its dropped `-1` slots** with `cycle_next` / `cycle_prev`
-  (2026-11-22): `points.local_triangulation`'s stars took a register mask of kept slots (two bit
-  scans a neighbour, no scratch row), which removes the objection a linked ring was declined for
-  there (0.91x on `rebuild_grown_local_triangulations`, for its extra row); the grown fans'
-  128 slots need a two-word mask. Not priced.

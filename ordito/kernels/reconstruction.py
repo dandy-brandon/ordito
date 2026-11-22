@@ -25,7 +25,9 @@ from ordito.kernels.array import (
     cube_corner_offset,
     declare_block_dims,
     device_is_cpu,
+    highest_bit64,
     is_positive_finite,
+    lowest_bit64,
     next_up,
     ordered_float_bits,
     pack_triangle_key,
@@ -415,47 +417,87 @@ def tris_angle_profit(
     return vector_angle(dir_abc, dir_acd) - crit_ang
 
 
+# A fan's live slots as a 128-bit mask (``live``: slots 0-63 in word 0, 64-127 in word 1), beside
+# the ``-1`` its removed slots hold: the slot after or before ``i`` in the ring is a bit scan,
+# where a walk over the dead slots made each step O(m). A linked ``prev`` / ``next`` pair was
+# priced here first (2026-10-27, ``rebuild_grown_local_triangulations`` 6.7 -> 6.1 ms) and
+# declined for its extra scratch row; the mask needs none.
 @wp.func
-def cycle_step(nbr: wp.array[wp.int32], m: wp.int32, i: wp.int32, step: wp.int32) -> wp.int32:
-    # Walk the ring of ``m`` fan slots from ``i`` in direction ``step`` until a live neighbour
-    # (``nbr[j] >= 0``) is found; return ``i`` if the whole ring is dead. One function with an
-    # explicit direction rather than a ``+1`` and a ``-1`` copy that differed only in their wrap
-    # guard -- the fan optimizer removes slots as it goes, so both directions have to skip holes
-    # and the skipping is the whole body.
-    #
-    # This is called from `edge_removal_weight` inside `build_local_triangulations`'s O(m) x O(m)
-    # greedy removal loop, so an adversarial removal order (long runs of dead slots) makes one call
-    # O(m) and the whole loop O(m^3) against the O(m^2) shape it otherwise implies -- an
-    # incrementally-maintained doubly-linked `prev`/`next` pair would cap it at O(1)/O(m^2).
-    # Measured instead of assumed, sweeping `num_neighbours` at a fixed point count: the kernel's
-    # own cost scales with the O(m^2) shape the loop nominally has, not the O(m^3) worst case, so on
-    # an ordinary point cloud the walk is not hitting long dead-slot runs and the doubly-linked
-    # rewrite would buy little. `m` is capped at `MAX_NEIGHBOURS` regardless, bounding the absolute
-    # worst case. Declined; re-measure before reopening this if a future caller's removal pattern
-    # looks different (e.g. a very anisotropic or highly clustered cloud). Re-measured once the
-    # removal weights were cached (2026-10-27, crown clouds' grown fans of ~55 neighbours): a
-    # linked ring took ``rebuild_grown_local_triangulations`` 6.7 -> 6.1 ms (CUDA 13.4) and
-    # 20.0 -> 19.2 ms (CUDA 12.9), identical output; still declined for the extra scratch row.
-    j = i
-    for _ in range(m):
-        j = j + step
-        if j >= m:
-            j = 0
-        elif j < 0:
-            j = m - 1
-        if nbr[j] >= 0:
-            return j
-    return i
+def ring_after(live: wp.vec2ul, i: wp.int32) -> wp.int32:
+    # The first live slot above ``i`` (``-1`` for the first of all), ``-1`` when none.
+    if i < 64:
+        above = wp.uint64(0)
+        if i >= 0:
+            above = (live[0] >> wp.uint64(i)) >> wp.uint64(1)
+        else:
+            above = live[0]
+        if above != wp.uint64(0):
+            return i + 1 + lowest_bit64(above)
+        if live[1] != wp.uint64(0):
+            return 64 + lowest_bit64(live[1])
+        return wp.int32(-1)
+    above = (live[1] >> wp.uint64(i - 64)) >> wp.uint64(1)
+    if above != wp.uint64(0):
+        return i + 1 + lowest_bit64(above)
+    return wp.int32(-1)
 
 
 @wp.func
-def cycle_next(nbr: wp.array[wp.int32], m: wp.int32, i: wp.int32) -> wp.int32:
-    return cycle_step(nbr, m, i, wp.int32(1))
+def ring_before(live: wp.vec2ul, i: wp.int32) -> wp.int32:
+    # The last live slot below ``i`` (``128`` for the last of all), ``-1`` when none.
+    if i >= 64:
+        below = live[1]
+        if i < 128:
+            below = live[1] & ((wp.uint64(1) << wp.uint64(i - 64)) - wp.uint64(1))
+        if below != wp.uint64(0):
+            return 64 + highest_bit64(below)
+        if live[0] != wp.uint64(0):
+            return highest_bit64(live[0])
+        return wp.int32(-1)
+    below = live[0] & ((wp.uint64(1) << wp.uint64(i)) - wp.uint64(1))
+    if below != wp.uint64(0):
+        return highest_bit64(below)
+    return wp.int32(-1)
 
 
 @wp.func
-def cycle_prev(nbr: wp.array[wp.int32], m: wp.int32, i: wp.int32) -> wp.int32:
-    return cycle_step(nbr, m, i, wp.int32(-1))
+def cycle_next(live: wp.vec2ul, i: wp.int32) -> wp.int32:
+    # The live slot after ``i`` in the ring, wrapping; ``i`` when no other is live.
+    after = ring_after(live, i)
+    if after < 0:
+        after = ring_after(live, wp.int32(-1))
+    return wp.where(after >= 0, after, i)
+
+
+@wp.func
+def cycle_prev(live: wp.vec2ul, i: wp.int32) -> wp.int32:
+    # The live slot before ``i`` in the ring, wrapping; ``i`` when no other is live.
+    before = ring_before(live, i)
+    if before < 0:
+        before = ring_before(live, wp.int32(128))
+    return wp.where(before >= 0, before, i)
+
+
+@wp.func
+def ring_cleared(live: wp.vec2ul, i: wp.int32) -> wp.vec2ul:
+    # ``live`` with slot ``i`` removed.
+    if i < 64:
+        return wp.vec2ul(live[0] & ~(wp.uint64(1) << wp.uint64(i)), live[1])
+    return wp.vec2ul(live[0], live[1] & ~(wp.uint64(1) << wp.uint64(i - 64)))
+
+
+@wp.func
+def ring_of(m: wp.int32) -> wp.vec2ul:
+    # Slots ``0 .. m - 1`` live (``m <= 128``).
+    low = wp.min(m, 64)
+    high = wp.max(m - 64, 0)
+    word0 = ~wp.uint64(0)
+    if low < 64:
+        word0 = (wp.uint64(1) << wp.uint64(low)) - wp.uint64(1)
+    word1 = ~wp.uint64(0)
+    if high < 64:
+        word1 = (wp.uint64(1) << wp.uint64(high)) - wp.uint64(1)
+    return wp.vec2ul(word0, word1)
 
 
 # --------------------------------------------------------------------------------------
@@ -475,7 +517,7 @@ def neighbour_normal(n_center: wp.vec3, n: wp.vec3, oriented: wp.int32) -> wp.ve
 def edge_removal_weight(
     center: wp.int32,
     i: wp.int32,
-    m: wp.int32,
+    live: wp.vec2ul,
     border: wp.int32,
     crit_angle: wp.float32,
     normalizer_sq: wp.float32,
@@ -487,8 +529,8 @@ def edge_removal_weight(
 ) -> wp.vec2:
     # Returns (weight, stable) with stable encoded as result[1] > 0.5.
     stable = wp.vec2(0.0, 1.0)
-    prev = cycle_prev(nbr, m, i)
-    nxt = cycle_next(nbr, m, i)
+    prev = cycle_prev(live, i)
+    nxt = cycle_next(live, i)
 
     a = points[center]
     n_center = normals[center]
@@ -608,6 +650,7 @@ def grown_radius(
     points: wp.array[wp.vec3],
     nbr: wp.array[wp.int32],
     m: wp.int32,
+    ring: wp.vec2ul,
     live: wp.int32,
     border: wp.int32,
     base_radius: wp.float32,
@@ -624,7 +667,7 @@ def grown_radius(
         for i in range(m):
             if nbr[i] < 0:
                 continue
-            nxt = cycle_next(nbr, m, i)
+            nxt = cycle_next(ring, i)
             b = points[nbr[i]]
             c = points[nbr[nxt]]
             diameter_sq = circumcircle_diameter_sq(a, b, c)
@@ -773,6 +816,7 @@ def local_fan(
     for i in range(m):
         weights[i] = FAN_WEIGHT_DIRTY
     current = m  # inherits m's dynamic-variable type (m is already mutable)
+    live = ring_of(m)
     for _step in range(m):
         best_w = wp.float32(-FLOAT32_INF_CONSTANT)  # the constructor keeps this mutable
         best_pos = wp.int32(-1)
@@ -781,7 +825,17 @@ def local_fan(
                 continue
             if weights[i] == FAN_WEIGHT_DIRTY:
                 res = edge_removal_weight(
-                    v, i, m, border, crit_angle, normalizer_sq, nbr, ang, points, normals, oriented
+                    v,
+                    i,
+                    live,
+                    border,
+                    crit_angle,
+                    normalizer_sq,
+                    nbr,
+                    ang,
+                    points,
+                    normals,
+                    oriented,
                 )
                 weights[i] = wp.where(res[1] > 0.5, FAN_WEIGHT_STABLE, res[0])
             if weights[i] == FAN_WEIGHT_STABLE:
@@ -790,16 +844,18 @@ def local_fan(
         if best_pos < 0:
             break
         old = nbr[best_pos]
-        prv = cycle_prev(nbr, m, best_pos)
+        prv = cycle_prev(live, best_pos)
         nbr[best_pos] = -1
+        live = ring_cleared(live, best_pos)
         current -= 1
         if old == border:
             border = nbr[prv]
         weights[prv] = FAN_WEIGHT_DIRTY
-        weights[cycle_next(nbr, m, prv)] = FAN_WEIGHT_DIRTY
+        weights[cycle_next(live, prv)] = FAN_WEIGHT_DIRTY
         if current < 2:
             for i in range(m):
                 nbr[i] = -1
+            live = wp.vec2ul(wp.uint64(0), wp.uint64(0))
             break
 
     # --- emit fan triangles between consecutive surviving neighbours ---
@@ -809,10 +865,10 @@ def local_fan(
             continue
         if border >= 0 and nbr[i] == border:
             continue  # boundary gap: no triangle here
-        nxt = cycle_next(nbr, m, i)
+        nxt = cycle_next(live, i)
         if nxt == i:
             continue
-        if border < 0 and nbr[i] > nbr[nxt] and cycle_prev(nbr, m, i) == nxt:
+        if border < 0 and nbr[i] > nbr[nxt] and cycle_prev(live, i) == nxt:
             # No boundary gap and exactly two live neighbours remain: the ring is a 2-cycle, so
             # ``prev(i) == next(i)`` and this wedge and (nxt, i)'s wedge describe the identical
             # triangle (there is no third live neighbour to make them distinct). Emit it once, from
@@ -830,7 +886,7 @@ def local_fan(
             out_tris[v, slot, 1] = bidx
             out_tris[v, slot, 2] = cidx
             slot += 1
-    return slot, grown_radius(a, points, nbr, m, current, border, base_radius)
+    return slot, grown_radius(a, points, nbr, m, live, current, border, base_radius)
 
 
 @wp.kernel(enable_backward=False)
