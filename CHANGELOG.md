@@ -32,7 +32,10 @@ from the one matching its tag — so prose sections do not belong between them.
   one symbolic perturbation for touching and coplanar inputs, so every result is closed and
   manifold, and the same mesh Manifold returns, vertex and triangle order included.
   `collapse_collinear=False` keeps the crossing vertices an exact-arithmetic Boolean (libigl's,
-  PyMeshLab's) keeps along straight creases.
+  PyMeshLab's) keeps along straight creases. Each input is cleaned as Manifold cleans a mesh it
+  builds a solid from (triangles naming a vertex twice dropped, pinched vertices split, edges
+  shorter than the precision collapsed, degenerate triangles swapped, unused vertices dropped),
+  so a raw scan gives Manifold's answer too; a clean mesh is left as it is.
 - `levelset.function_level_set`: the closed solid where a `@wp.func` of position is positive,
   meshed from a body-centred cubic lattice with no grid to allocate (Manifold's `level_set`).
 - `remesh.subdivide_smooth`: refinement onto a smooth surface through the vertices that keeps
@@ -70,6 +73,12 @@ from the one matching its tag — so prose sections do not belong between them.
   unchanged; on a curved mesh every edge a flip can reach now ends locally Delaunay, as
   `igl.is_intrinsic_delaunay` reads it, and the pass settles in fewer rounds. Edges whose flip
   would duplicate an existing edge (around a valence-3 vertex) are still left as they are.
+
+### Fixed
+
+- `equality.meshes_allclose` and `points_allclose` compare inputs that hold one place twice (an
+  unwelded seam, a triangle soup, duplicate points): they returned `False` even for identical
+  arrays, since every copy matched the same copy of the other side.
 
 ## [0.4.0] - 2026-11-20
 

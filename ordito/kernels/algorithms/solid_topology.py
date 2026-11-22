@@ -33,6 +33,9 @@ class HalfedgeMesh:
     tri_mesh: wp.array[wp.int32]
     tri_coplanar: wp.array[wp.int32]
     tri_normal: wp.array[wp.vec3d]
+    # Each triangle's face in the mesh a solid was built from (Manifold's ``triRef.faceID`` as
+    # ordito uses it), or empty where nothing reads it back.
+    tri_source: wp.array[wp.int32]
     pos: wp.array[wp.vec3d]
     # [halfedge count, vertex count, halfedge capacity, vertex capacity]
     sizes: wp.array[wp.int32]
@@ -41,6 +44,13 @@ class HalfedgeMesh:
 @wp.func
 def hm_end(m: HalfedgeMesh, h: wp.int32) -> wp.int32:
     return m.start[halfedge_next(h)]
+
+
+@wp.func
+def hm_copy_source(m: HalfedgeMesh, to_tri: wp.int32, from_tri: wp.int32) -> None:
+    # A triangle taking another's ``triRef`` takes its source face too, where sources are kept.
+    if m.tri_source.shape[0] > 0:
+        m.tri_source[to_tri] = m.tri_source[from_tri]
 
 
 @wp.func
@@ -290,6 +300,7 @@ def hm_dedupe_edge(m: HalfedgeMesh, edge: wp.int32):
             m.tri_mesh[n_h // 3] = m.tri_mesh[old_face]
             m.tri_coplanar[n_h // 3] = m.tri_coplanar[old_face]
             m.tri_normal[n_h // 3] = m.tri_normal[old_face]
+            hm_copy_source(m, n_h // 3, old_face)
             n2 = n_h + 3
             old_face = opposite // 3
             outside = m.start[opposite]
@@ -305,6 +316,7 @@ def hm_dedupe_edge(m: HalfedgeMesh, edge: wp.int32):
             m.tri_mesh[n2 // 3] = m.tri_mesh[old_face]
             m.tri_coplanar[n2 // 3] = m.tri_coplanar[old_face]
             m.tri_normal[n2 // 3] = m.tri_normal[old_face]
+            hm_copy_source(m, n2 // 3, old_face)
             m.sizes[0] = n_h + 6
             break
         current = m.pair[halfedge_next(current)]
@@ -362,6 +374,7 @@ def hm_swap_edge(m: HalfedgeMesh, t0: wp.vec3i, t1: wp.vec3i) -> wp.bool:
     m.tri_normal[tri0] = m.tri_normal[tri1]
     m.tri_mesh[tri0] = m.tri_mesh[tri1]
     m.tri_coplanar[tri0] = m.tri_coplanar[tri1]
+    hm_copy_source(m, tri0, tri1)
     current = m.pair[t1[0]]
     end_vert = hm_end(m, t1[1])
     limit = m.sizes[0]
@@ -476,6 +489,14 @@ def flag_pinched_fans(
         wp.atomic_min(out_vertex_min, m.start[h], h)
 
 
+@wp.func
+def hm_pinched_fan(
+    m: HalfedgeMesh, fan_min: wp.array[wp.int32], vertex_min: wp.array[wp.int32], h: wp.int32
+) -> wp.bool:
+    # A fan that is its vertex's second or later, in index order, takes a vertex of its own.
+    return fan_min[h] == h and vertex_min[m.start[h]] != h
+
+
 @wp.kernel
 def count_pinched_fans(
     m: HalfedgeMesh,
@@ -483,11 +504,8 @@ def count_pinched_fans(
     vertex_min: wp.array[wp.int32],
     out_flags: wp.array[wp.int32],
 ) -> None:
-    # A fan that is its vertex's second or later, in index order, takes a vertex of its own.
     h = wp.int32(wp.tid())
-    out_flags[h] = wp.where(
-        fan_min[h] == h and vertex_min[m.start[h]] != h, wp.int32(1), wp.int32(0)
-    )
+    out_flags[h] = wp.where(hm_pinched_fan(m, fan_min, vertex_min, h), wp.int32(1), wp.int32(0))
 
 
 @wp.kernel
@@ -537,6 +555,25 @@ def flag_duplicate_edges(m: HalfedgeMesh, out_flags: wp.array[wp.int32]) -> None
             break
 
 
+@wp.func
+def hm_short_edge(
+    m: HalfedgeMesh, h: wp.int32, first_new_vert: wp.int32, tol: wp.float64, eps: wp.float64
+) -> wp.bool:
+    # ``CollapseShortEdges``' test: a paired edge touching a new vertex, shorter than ``eps`` (or
+    # ``tol`` where it ends at an old vertex).
+    if m.pair[h] < 0:
+        return False
+    start = m.start[h]
+    end = hm_end(m, h)
+    if start < first_new_vert and end < first_new_vert:
+        return False
+    delta = m.pos[end] - m.pos[start]
+    max_len = eps * eps
+    if end < first_new_vert:
+        max_len = tol * tol
+    return wp.dot(delta, delta) < max_len
+
+
 @wp.kernel
 def flag_short_edges(
     m: HalfedgeMesh,
@@ -545,22 +582,8 @@ def flag_short_edges(
     eps: wp.float64,
     out_flags: wp.array[wp.int32],
 ) -> None:
-    # ``CollapseShortEdges``' test.
     h = wp.int32(wp.tid())
-    out_flags[h] = 0
-    pair = m.pair[h]
-    if pair < 0:
-        return
-    start = m.start[h]
-    end = hm_end(m, h)
-    if start < first_new_vert and end < first_new_vert:
-        return
-    delta = m.pos[end] - m.pos[start]
-    max_len = eps * eps
-    if end < first_new_vert:
-        max_len = tol * tol
-    if wp.dot(delta, delta) < max_len:
-        out_flags[h] = 1
+    out_flags[h] = wp.where(hm_short_edge(m, h, first_new_vert, tol, eps), 1, 0)
 
 
 @wp.kernel
@@ -596,37 +619,108 @@ def flag_colinear_edges(
     out_flags[edge] = 1
 
 
-@wp.kernel
-def flag_swappable_edges(
-    m: HalfedgeMesh, first_new_vert: wp.int32, tolerance: wp.float64, out_flags: wp.array[wp.int32]
-) -> None:
-    # ``SwapDegenerates``' test: the long edge of a degenerate triangle touching a new vertex.
-    edge = wp.int32(wp.tid())
-    out_flags[edge] = 0
-    pair = m.pair[edge]
-    if pair < 0:
-        return
-    t0 = wp.vec3i(edge, halfedge_next(edge), halfedge_next(halfedge_next(edge)))
-    t1 = wp.vec3i(pair, halfedge_next(pair), halfedge_next(halfedge_next(pair)))
-    if (
-        m.start[t0[0]] < first_new_vert
-        and m.start[t0[1]] < first_new_vert
-        and m.start[t0[2]] < first_new_vert
-        and m.start[t1[2]] < first_new_vert
-    ):
-        return
-    tri = edge // 3
-    a0 = hm_project(m, tri, m.pos[m.start[t0[0]]])
-    a1 = hm_project(m, tri, m.pos[m.start[t0[1]]])
-    a2 = hm_project(m, tri, m.pos[m.start[t0[2]]])
+@wp.func
+def hm_swappable_projected(
+    m: HalfedgeMesh, edge: wp.int32, a0: wp.vec2d, a1: wp.vec2d, a2: wp.vec2d, tolerance: wp.float64
+) -> wp.bool:
+    # ``SwapDegenerates``' test past its new-vertex gate, given ``edge``'s triangle's corners from
+    # ``edge``'s start on projected onto its plane: the long edge of a degenerate triangle whose
+    # neighbour across it is not degenerate the same way.
     if kernel_polyline.ccw(a0, a1, a2, tolerance) > 0 or not is01_longest(a0, a1, a2):
-        return
+        return False
+    pair = m.pair[edge]
+    t1 = wp.vec3i(pair, halfedge_next(pair), halfedge_next(halfedge_next(pair)))
     ptri = pair // 3
     b0 = hm_project(m, ptri, m.pos[m.start[t1[0]]])
     b1 = hm_project(m, ptri, m.pos[m.start[t1[1]]])
     b2 = hm_project(m, ptri, m.pos[m.start[t1[2]]])
-    if kernel_polyline.ccw(b0, b1, b2, tolerance) > 0 or is01_longest(b0, b1, b2):
-        out_flags[edge] = 1
+    return kernel_polyline.ccw(b0, b1, b2, tolerance) > 0 or is01_longest(b0, b1, b2)
+
+
+@wp.func
+def hm_swappable_edge(
+    m: HalfedgeMesh, edge: wp.int32, first_new_vert: wp.int32, tolerance: wp.float64
+) -> wp.bool:
+    # ``SwapDegenerates``' test: the long edge of a degenerate triangle touching a new vertex.
+    pair = m.pair[edge]
+    if pair < 0:
+        return False
+    t0 = wp.vec3i(edge, halfedge_next(edge), halfedge_next(halfedge_next(edge)))
+    if (
+        m.start[t0[0]] < first_new_vert
+        and m.start[t0[1]] < first_new_vert
+        and m.start[t0[2]] < first_new_vert
+        and m.start[halfedge_next(halfedge_next(pair))] < first_new_vert
+    ):
+        return False
+    tri = edge // 3
+    a0 = hm_project(m, tri, m.pos[m.start[t0[0]]])
+    a1 = hm_project(m, tri, m.pos[m.start[t0[1]]])
+    a2 = hm_project(m, tri, m.pos[m.start[t0[2]]])
+    return hm_swappable_projected(m, edge, a0, a1, a2, tolerance)
+
+
+@wp.kernel
+def flag_swappable_edges(
+    m: HalfedgeMesh, first_new_vert: wp.int32, tolerance: wp.float64, out_flags: wp.array[wp.int32]
+) -> None:
+    edge = wp.int32(wp.tid())
+    out_flags[edge] = wp.where(hm_swappable_edge(m, edge, first_new_vert, tolerance), 1, 0)
+
+
+@wp.kernel
+def flag_cleanup_candidates(
+    m: HalfedgeMesh,
+    first_halfedge: wp.array[wp.int32],
+    outgoing: wp.array[wp.int32],
+    tol: wp.float64,
+    eps: wp.float64,
+    out_found: wp.array[wp.int32],
+) -> None:
+    # Whether the ``MeshGL`` constructor's cleanup has anything to do on a freshly paired mesh
+    # (every ``first_new_vert`` is 0). Thread ``i`` tests vertex ``i``: unused (no outgoing
+    # halfedge, ``RemoveUnreferencedVerts``) or pinched (the fan from its least outgoing halfedge
+    # holds fewer than its ``outgoing`` count, the test ``count_pinched_fans`` makes fan by fan);
+    # and face ``i``: an edge ``CollapseShortEdges`` or ``SwapDegenerates`` would flag, its
+    # corners projected once for all three. A plain store, every writer storing 1.
+    i = wp.int32(wp.tid())
+    found = False
+    if i < first_halfedge.shape[0]:
+        h = first_halfedge[i]
+        if h == 2147483647:
+            found = True
+        else:
+            fan = wp.int32(1)
+            current = halfedge_next(m.pair[h])
+            while current != h and fan <= outgoing[i]:
+                fan += 1
+                current = halfedge_next(m.pair[current])
+            found = fan != outgoing[i]
+    if i < m.start.shape[0] // 3:
+        tri = i
+        c = wp.vec3i(3 * tri, 3 * tri + 1, 3 * tri + 2)
+        p0 = hm_project(m, tri, m.pos[m.start[c[0]]])
+        p1 = hm_project(m, tri, m.pos[m.start[c[1]]])
+        p2 = hm_project(m, tri, m.pos[m.start[c[2]]])
+        if hm_short_edge(m, c[0], 0, tol, eps) or hm_short_edge(m, c[1], 0, tol, eps):
+            found = True
+        elif hm_short_edge(m, c[2], 0, tol, eps):
+            found = True
+        elif hm_swappable_projected(m, c[0], p0, p1, p2, tol):
+            found = True
+        elif hm_swappable_projected(m, c[1], p1, p2, p0, tol):
+            found = True
+        elif hm_swappable_projected(m, c[2], p2, p0, p1, tol):
+            found = True
+    if found:
+        out_found[0] = 1
+
+
+@wp.kernel
+def count_outgoing_halfedges(m: HalfedgeMesh, out_outgoing: wp.array[wp.int32]) -> None:
+    # Each vertex's outgoing halfedges, for ``flag_cleanup_candidates``' pinch test.
+    h = wp.int32(wp.tid())
+    wp.atomic_add(out_outgoing, m.start[h], 1)
 
 
 @wp.kernel
@@ -710,7 +804,9 @@ def write_kept_faces(
     out_face_normals: wp.array[wp.vec3d],
     out_face_mesh: wp.array[wp.int32],
     out_face_coplanar: wp.array[wp.int32],
+    out_face_source: wp.array[wp.int32],
 ) -> None:
+    # ``out_face_source`` is ``None`` where the mesh carries no sources.
     t = wp.int32(wp.tid())
     r = tri_ranks[t]
     if tri_ranks[t + 1] == r:
@@ -720,6 +816,8 @@ def write_kept_faces(
     out_face_normals[r] = m.tri_normal[t]
     out_face_mesh[r] = m.tri_mesh[t]
     out_face_coplanar[r] = m.tri_coplanar[t]
+    if out_face_source.shape[0] > 0:
+        out_face_source[r] = m.tri_source[t]
 
 
 @wp.kernel

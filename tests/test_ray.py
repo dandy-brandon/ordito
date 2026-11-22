@@ -813,3 +813,27 @@ def test_segment_hits_rejects_unpaired_segments(device: str) -> None:
     endpoints = points_to_warp(np.ones((3, 3)), device)
     with pytest.raises(ValueError, match="must match in length"):
         od.ray.segment_hits(vertices, faces, origins, endpoints)
+
+
+def test_segment_hits_name_the_callers_faces(device: str) -> None:
+    """
+    Crossings name the caller's faces even where building the solid dropped one before them.
+
+    Not a library comparison: Manifold reports the faces of the solid it built, not of the mesh
+    it was handed. A face naming one vertex twice, listed first, is dropped as the solid is built,
+    so every other face's index shifts by one inside it; the crossings must still name the box's
+    faces as the caller numbered them, the same faces as on the box alone, one later.
+    """
+    box_tm = tm.creation.box()
+    faces_np = np.asarray(box_tm.faces)
+    padded_np = np.vstack([[[0, 0, 1]], faces_np])
+    origins = points_to_warp(np.array([[-1.0, 0.1, 0.2], [0.1, -1.0, -0.3]]), device)
+    endpoints = points_to_warp(np.array([[1.0, 0.1, 0.2], [0.1, 1.0, -0.3]]), device)
+    hit_faces_wp = od.ray.segment_hits(
+        *numpy_to_warp(box_tm.vertices, faces_np, device), origins, endpoints
+    )[0]
+    padded_faces_wp = od.ray.segment_hits(
+        *numpy_to_warp(box_tm.vertices, padded_np, device), origins, endpoints
+    )[0]
+    assert hit_faces_wp.size == 4
+    assert np.array_equal(padded_faces_wp.numpy(), hit_faces_wp.numpy() + 1)

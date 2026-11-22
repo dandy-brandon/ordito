@@ -21,6 +21,7 @@ import warp as wp
 from ordito.kernels.algorithms.portable_trigonometry import portable_acos
 from ordito.kernels.halfedge import halfedge_next
 from ordito.kernels.reduce import block_chunk, block_max, block_min
+from ordito.kernels.triangles import corner_triple, write_corner_triple
 
 wp.set_module_options({"enable_backward": False, "fuse_fp": False})
 
@@ -137,6 +138,32 @@ def renumber_faces(
         out_face_normals[f] = face_normals[old]
         out_face_mesh[f] = face_mesh[old]
         out_face_coplanar[f] = face_coplanar[old]
+
+
+@wp.kernel
+def distinct_corner_flags(faces: wp.array[wp.int32], out_flags: wp.array[wp.int32]) -> None:
+    # Whether face ``f`` names three different vertices: the ``MeshGL`` constructor drops one that
+    # names a vertex twice before pairing halfedges.
+    f = wp.int32(wp.tid())
+    a, b, c = corner_triple(faces, f)
+    out_flags[f] = wp.where(a != b and b != c and c != a, wp.int32(1), wp.int32(0))
+
+
+@wp.kernel
+def compact_distinct_faces(
+    faces: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    out_faces: wp.array[wp.int32],
+    out_source: wp.array[wp.int32],
+) -> None:
+    # The kept faces in order, each with its index in ``faces``.
+    f = wp.int32(wp.tid())
+    r = offsets[f]
+    if offsets[f + 1] == r:
+        return
+    a, b, c = corner_triple(faces, f)
+    write_corner_triple(out_faces, r, a, b, c)
+    out_source[r] = f
 
 
 @wp.kernel

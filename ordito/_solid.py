@@ -18,7 +18,8 @@ import warp as wp
 
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import offsets_buffer, read_array, read_values, scan_count
+from ordito._common import offsets_buffer, read_array, read_scalar, read_values, scan_count
+from ordito.array import gather
 from ordito.halfedge import halfedge_twins
 from ordito.kernels import array as kernel_array
 from ordito.kernels import scatter as kernel_scatter
@@ -103,6 +104,7 @@ class _HalfedgeMesh(Protocol):
     tri_mesh: wp.array[wp.int32]
     tri_coplanar: wp.array[wp.int32]
     tri_normal: wp.array[wp.vec3d]
+    tri_source: wp.array[wp.int32]
     pos: wp.array[wp.vec3d]
     sizes: wp.array[wp.int32]
 
@@ -127,6 +129,15 @@ def solid_from_mesh(
     """
     Build a solid from a ``float32`` mesh, as Manifold's ``MeshGL`` constructor does.
 
+    The positions widened to ``float64`` and the tolerances set from their box (``SetEpsilon``);
+    a triangle naming one vertex twice dropped; then ``CleanupTopology`` (pinched vertices split),
+    ``SetNormalsAndCoplanar``, ``RemoveDegenerates`` (edges shorter than the precision collapsed,
+    degenerate triangles' long edges swapped), ``RemoveUnreferencedVerts`` and ``SortGeometry`` in
+    the input's box. ``face_source`` names each face's triangle of the caller's mesh: the one it
+    was cut from, or whose reference it took in a swap. A mesh with none of those defects, which
+    one pass over its halfedges finds, is the one ``solid_from_positions`` builds, and the cleanup
+    does not run.
+
     Raises
     ------
     ValueError
@@ -149,7 +160,171 @@ def solid_from_mesh(
     epsilon = kernel_solid.PRECISION * scale
     # ``SetEpsilon(-1, useSingle=true)``: a single-precision mesh's tolerance.
     tolerance = max(epsilon, FLOAT32_EPSILON * scale)
-    return solid_from_positions(widened, faces, mesh_id, epsilon, tolerance, lower, upper, name)
+    twins, first_halfedge, defects = _paired_halfedges(widened, faces)
+    source: wp.array[wp.int32] | None = None
+    if any(defects):
+        # A triangle naming a vertex twice pairs none of its halfedges; Manifold drops it before
+        # pairing. Looked for only once the pairing fails, so a clean mesh pays nothing for it.
+        distinct = _faces_with_distinct_corners(faces)
+        if distinct is not None:
+            faces, source = distinct
+            if faces.size == 0:
+                return empty_solid(device)
+            twins, first_halfedge, defects = _paired_halfedges(widened, faces)
+        _require_closed(defects, name)
+    face_normals, coplanar = _normals_and_coplanar(widened, faces, twins, tolerance)
+    paired = (widened, faces, twins, first_halfedge, face_normals, coplanar)
+    if source is None and not _needs_cleanup(paired, epsilon, tolerance):
+        return _paired_solid(paired, mesh_id, epsilon, tolerance, lower, upper)
+    return _cleaned_solid(
+        widened, faces, twins, source, mesh_id, epsilon, tolerance, (lower, upper)
+    )
+
+
+def _needs_cleanup(
+    paired: tuple[
+        wp.array[wp.vec3d],
+        wp.array[wp.int32],
+        wp.array[wp.int32],
+        wp.array[wp.int32],
+        wp.array[wp.vec3d],
+        wp.array[wp.int32],
+    ],
+    epsilon: float,
+    tolerance: float,
+) -> bool:
+    """
+    Whether the ``MeshGL`` constructor's cleanup would change the paired mesh at all.
+
+    A pinched vertex, an edge shorter than ``epsilon``, a degenerate triangle's long edge to swap
+    (projected on its coplanar group's normal) or a vertex no face uses; none of them, and the
+    cleanup leaves the mesh as ``solid_from_positions`` builds it.
+    """
+    positions, faces, twins, first_halfedge, face_normals, coplanar = paired
+    device = positions.device
+    nothing = _launch.empty(0, dtype=wp.int32, device=device)
+    view = cast(_HalfedgeMesh, kernel_solid_topology.HalfedgeMesh())
+    view.start = faces
+    view.pair = twins
+    view.tri_mesh = nothing
+    view.tri_coplanar = coplanar
+    view.tri_normal = face_normals
+    view.tri_source = nothing
+    view.pos = positions
+    view.sizes = nothing
+    outgoing = _launch.zeros(first_halfedge.size, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_solid_topology.count_outgoing_halfedges,
+        dim=faces.size,
+        inputs=[view],
+        outputs=[outgoing],
+        device=device,
+    )
+    found = _launch.zeros(1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_solid_topology.flag_cleanup_candidates,
+        dim=max(faces.size // 3, first_halfedge.size),
+        inputs=[view, first_halfedge, outgoing, tolerance, epsilon],
+        outputs=[found],
+        device=device,
+    )
+    # Host readback: whether the cleanup's passes run at all.
+    return int(read_scalar(found, 0)) != 0
+
+
+def _cleaned_solid(
+    positions: wp.array[wp.vec3d],
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    source: wp.array[wp.int32] | None,
+    mesh_id: int,
+    epsilon: float,
+    tolerance: float,
+    box: tuple[tuple[float, float, float], tuple[float, float, float]],
+) -> Solid:
+    """
+    ``CleanupTopology`` through ``SortGeometry``, as the ``MeshGL`` constructor runs them.
+
+    ``source`` names each face's triangle of the caller's mesh where faces were dropped first
+    (``None``: the identity).
+    """
+    device = positions.device
+    n_faces = faces.size // 3
+    n_vertices = int(positions.shape[0])
+    mesh = halfedge_mesh(n_faces, n_vertices, positions, device, with_source=True)
+    _launch.copy(mesh.start, faces, count=3 * n_faces)
+    _launch.copy(mesh.pair, twins, count=3 * n_faces)
+    _launch.view(mesh.tri_mesh, 0, n_faces).fill_(mesh_id)
+    # ``coplanarID`` starts as the triangle's index; ``SetNormalsAndCoplanar`` replaces it.
+    _launch.launch(
+        kernel_array.ARANGE[wp.int32],
+        dim=n_faces,
+        outputs=[_launch.view(mesh.tri_coplanar, 0, n_faces)],
+        device=device,
+    )
+    if source is None:
+        _launch.launch(
+            kernel_array.ARANGE[wp.int32],
+            dim=n_faces,
+            outputs=[_launch.view(mesh.tri_source, 0, n_faces)],
+            device=device,
+        )
+    else:
+        _launch.copy(mesh.tri_source, source, count=n_faces)
+    n_h, n_v = simplify_topology(
+        mesh, (3 * n_faces, n_vertices), 0, epsilon, tolerance, device, cleanup_only=True
+    )
+    # ``SetNormalsAndCoplanar`` on the cleaned triangles, written into the mesh's own rows.
+    n_t = n_h // 3
+    cleaned_faces = _launch.view(mesh.start, 0, n_h)
+    cleaned_positions = _launch.view(mesh.pos, 0, n_v)
+    face_normals = _launch.view(mesh.tri_normal, 0, n_t)
+    _launch.launch(
+        kernel_solid.mesh_face_normals,
+        dim=n_t,
+        inputs=[cleaned_positions, cleaned_faces],
+        outputs=[face_normals],
+        device=device,
+    )
+    coplanar = coplanar_groups(
+        cleaned_positions, cleaned_faces, _launch.view(mesh.pair, 0, n_h), face_normals, tolerance
+    )
+    _launch.copy(mesh.tri_coplanar, coplanar, count=n_t)
+    # ``RemoveDegenerates``, whose own ``CleanupTopology`` the call above has just done.
+    sizes = simplify_topology(
+        mesh, (n_h, n_v), 0, epsilon, tolerance, device, colinear=False, cleanup=False
+    )
+    return finish_solid(mesh, sizes, epsilon, tolerance, device, box)
+
+
+def _faces_with_distinct_corners(
+    faces: wp.array[wp.int32],
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]] | None:
+    """Return the faces whose corners differ, with each one's index; ``None`` if all do."""
+    device = faces.device
+    n_faces = faces.size // 3
+    offsets, flags = offsets_buffer(n_faces, device)
+    _launch.launch(
+        kernel_solid.distinct_corner_flags,
+        dim=n_faces,
+        inputs=[faces],
+        outputs=[flags],
+        device=device,
+    )
+    # Host readback: the kept count sizes the compacted faces.
+    n_kept = scan_count(flags)
+    if n_kept == n_faces:
+        return None
+    kept = _launch.empty(3 * n_kept, dtype=wp.int32, device=device)
+    source = _launch.empty(n_kept, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_solid.compact_distinct_faces,
+        dim=n_faces,
+        inputs=[faces, offsets],
+        outputs=[kept, source],
+        device=device,
+    )
+    return kept, source
 
 
 def solid_from_positions(
@@ -177,40 +352,61 @@ def solid_from_positions(
     ValueError
         If the mesh is not closed, edge-manifold and consistently wound.
     """
-    device = positions.device
-    n_vertices = int(positions.shape[0])
-    n_faces = faces.size // 3
     if sort_first:
         positions, faces, _, _, _, _, _ = _morton_sorted(positions, faces, lower, upper)
-    defects = _launch.zeros(3, dtype=wp.int32, device=device)
-    twins = halfedge_twins(faces, n_vertices, defect_counts=defects)
-    first_halfedge = _launch.full(n_vertices, 2147483647, dtype=wp.int32, device=device)
-    lowers = _launch.empty(n_faces, dtype=wp.vec3, device=device)
-    uppers = _launch.empty(n_faces, dtype=wp.vec3, device=device)
-    _launch.launch(
-        kernel_solid.operand_boxes,
-        dim=n_faces,
-        inputs=[positions, faces, twins, 0.0],
-        outputs=[lowers, uppers, first_halfedge, _launch.view(defects, 2, 3)],
-        device=device,
-    )
-    # Host readback: whether the mesh is closed and paired decides whether there is a Boolean.
-    non_manifold, inconsistent, boundary = read_values(defects, 0, 3)
-    if non_manifold or inconsistent or boundary:
-        raise ValueError(
-            f"mesh {name} must be closed, edge-manifold and consistently wound: {boundary} "
-            f"boundary halfedges, {non_manifold} edges with three or more faces, {inconsistent} "
-            "edges whose faces wind the same way"
-        )
-    face_normals = _launch.empty(n_faces, dtype=wp.vec3d, device=device)
+    twins, first_halfedge, defects = _paired_halfedges(positions, faces)
+    _require_closed(defects, name)
+    face_normals, coplanar = _normals_and_coplanar(positions, faces, twins, tolerance)
+    paired = (positions, faces, twins, first_halfedge, face_normals, coplanar)
+    return _paired_solid(paired, mesh_id, epsilon, tolerance, lower, upper, sorted_=not sort_first)
+
+
+def _normals_and_coplanar(
+    positions: wp.array[wp.vec3d],
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    tolerance: float,
+) -> tuple[wp.array[wp.vec3d], wp.array[wp.int32]]:
+    """``SetNormalsAndCoplanar``'s face half: each face's normal and coplanar group."""
+    n_faces = faces.size // 3
+    face_normals = _launch.empty(n_faces, dtype=wp.vec3d, device=positions.device)
     _launch.launch(
         kernel_solid.mesh_face_normals,
         dim=n_faces,
         inputs=[positions, faces],
         outputs=[face_normals],
-        device=device,
+        device=positions.device,
     )
     coplanar = coplanar_groups(positions, faces, twins, face_normals, tolerance)
+    return face_normals, coplanar
+
+
+def _paired_solid(
+    paired: tuple[
+        wp.array[wp.vec3d],
+        wp.array[wp.int32],
+        wp.array[wp.int32],
+        wp.array[wp.int32],
+        wp.array[wp.vec3d],
+        wp.array[wp.int32],
+    ],
+    mesh_id: int,
+    epsilon: float,
+    tolerance: float,
+    lower: tuple[float, float, float],
+    upper: tuple[float, float, float],
+    *,
+    sorted_: bool = True,
+) -> Solid:
+    """
+    Return the solid of paired faces: vertex pseudo-normals, then the Morton order.
+
+    ``paired`` holds the positions, faces, twins, each vertex's least outgoing halfedge, the face
+    normals and the coplanar groups; without ``sorted_`` the order is kept.
+    """
+    positions, faces, twins, first_halfedge, face_normals, coplanar = paired
+    device = positions.device
+    n_vertices = int(positions.shape[0])
     vertex_normals = _launch.empty(n_vertices, dtype=wp.vec3d, device=device)
     _launch.launch(
         kernel_solid.vertex_pseudo_normals,
@@ -219,8 +415,8 @@ def solid_from_positions(
         outputs=[vertex_normals],
         device=device,
     )
-    face_mesh = _launch.full(n_faces, mesh_id, dtype=wp.int32, device=device)
-    if sort_first:
+    face_mesh = _launch.full(faces.size // 3, mesh_id, dtype=wp.int32, device=device)
+    if not sorted_:
         return Solid(
             positions,
             faces,
@@ -245,6 +441,53 @@ def solid_from_positions(
         lower,
         upper,
     )
+
+
+def _paired_halfedges(
+    positions: wp.array[wp.vec3d], faces: wp.array[wp.int32]
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32], tuple[int, int, int]]:
+    """
+    Return the halfedges' twins, each vertex's least outgoing halfedge, and the defects.
+
+    The defects are the counts of edges with three or more faces, of edges whose faces wind the
+    same way, and of unpaired halfedges.
+    """
+    device = positions.device
+    n_vertices = int(positions.shape[0])
+    n_faces = faces.size // 3
+    defects = _launch.zeros(3, dtype=wp.int32, device=device)
+    twins = halfedge_twins(faces, n_vertices, defect_counts=defects)
+    first_halfedge = _launch.full(n_vertices, 2147483647, dtype=wp.int32, device=device)
+    lowers = _launch.empty(n_faces, dtype=wp.vec3, device=device)
+    uppers = _launch.empty(n_faces, dtype=wp.vec3, device=device)
+    _launch.launch(
+        kernel_solid.operand_boxes,
+        dim=n_faces,
+        inputs=[positions, faces, twins, 0.0],
+        outputs=[lowers, uppers, first_halfedge, _launch.view(defects, 2, 3)],
+        device=device,
+    )
+    # Host readback: whether the mesh is closed and paired decides whether there is a solid.
+    non_manifold, inconsistent, boundary = read_values(defects, 0, 3)
+    return twins, first_halfedge, (int(non_manifold), int(inconsistent), int(boundary))
+
+
+def _require_closed(defects: tuple[int, int, int], name: str) -> None:
+    """
+    Raise unless the pairing found no defect.
+
+    Raises
+    ------
+    ValueError
+        If the mesh is not closed, edge-manifold and consistently wound.
+    """
+    non_manifold, inconsistent, boundary = defects
+    if non_manifold or inconsistent or boundary:
+        raise ValueError(
+            f"mesh {name} must be closed, edge-manifold and consistently wound: {boundary} "
+            f"boundary halfedges, {non_manifold} edges with three or more faces, {inconsistent} "
+            "edges whose faces wind the same way"
+        )
 
 
 def empty_solid(device: wp.DeviceLike) -> Solid:
@@ -572,9 +815,19 @@ def _morton_sorted(
 
 
 def halfedge_mesh(
-    n_triangles: int, n_vertices: int, positions: wp.array[wp.vec3d], device: wp.DeviceLike
+    n_triangles: int,
+    n_vertices: int,
+    positions: wp.array[wp.vec3d],
+    device: wp.DeviceLike,
+    *,
+    with_source: bool = False,
 ) -> _HalfedgeMesh:
-    """Allocate the result's halfedges with room for the simplification to grow them."""
+    """
+    Allocate the result's halfedges with room for the simplification to grow them.
+
+    With ``with_source``, room for each triangle's source face (``tri_source``) too; without, it is
+    empty and the passes keep none.
+    """
     n_halfedges = 3 * n_triangles
     capacity = 2 * n_halfedges + 64
     start = _launch.empty(capacity, dtype=wp.int32, device=device)
@@ -582,6 +835,7 @@ def halfedge_mesh(
     tri_mesh = _launch.empty(capacity // 3, dtype=wp.int32, device=device)
     tri_coplanar = _launch.empty(capacity // 3, dtype=wp.int32, device=device)
     tri_normal = _launch.empty(capacity // 3, dtype=wp.vec3d, device=device)
+    tri_source = _launch.empty(capacity // 3 if with_source else 0, dtype=wp.int32, device=device)
     # The simplification appends vertices too: at most two a collapse or split, fewer than the
     # halfedges.
     pos = _launch.empty(n_vertices + capacity, dtype=wp.vec3d, device=device)
@@ -597,6 +851,7 @@ def halfedge_mesh(
     struct.tri_mesh = tri_mesh
     struct.tri_coplanar = tri_coplanar
     struct.tri_normal = tri_normal
+    struct.tri_source = tri_source
     struct.pos = pos
     struct.sizes = sizes
     return cast(_HalfedgeMesh, struct)
@@ -612,6 +867,7 @@ def simplify_topology(
     *,
     colinear: bool = True,
     cleanup_only: bool = False,
+    cleanup: bool = True,
 ) -> tuple[int, int]:
     """
     ``SimplifyTopology(firstNewVert)`` on the result's halfedges, in place.
@@ -619,7 +875,8 @@ def simplify_topology(
     ``sizes`` are the halfedge and vertex counts the mesh holds (its ``sizes``' first two
     entries); the counts it holds afterwards are returned. Without ``colinear``,
     ``RemoveDegenerates``: the same less the collinear-edge collapses. With ``cleanup_only``,
-    ``CleanupTopology`` alone: pinched vertices split, duplicate edges removed.
+    ``CleanupTopology`` alone: pinched vertices split, duplicate edges removed. Without
+    ``cleanup``, the passes after it alone.
     """
     mesh = result
     capacity = result.start.size
@@ -684,41 +941,43 @@ def simplify_topology(
             )
         return count
 
-    # ``CleanupTopology``: split pinched vertices, then duplicate edges until none is left.
-    n_h, n_v = known
-    fan_min = _launch.empty(capacity, dtype=wp.int32, device=device)
-    vertex_min = _launch.full(result.pos.shape[0], 2147483647, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_solid_topology.flag_pinched_fans,
-        dim=n_h,
-        inputs=[mesh],
-        outputs=[fan_min, vertex_min],
-        device=device,
-    )
-    _launch.launch(
-        kernel_solid_topology.count_pinched_fans,
-        dim=n_h,
-        inputs=[mesh, fan_min, vertex_min],
-        outputs=[flags],
-        device=device,
-    )
-    n_pinched = scan_count(_launch.view(flags, 0, n_h))
-    if n_pinched > 0:
+    # ``CleanupTopology``: split pinched vertices, then duplicate edges until none is left; skipped
+    # (``cleanup=False``) right after a ``cleanup_only`` call, which leaves nothing to find.
+    if cleanup:
+        n_h, n_v = known
+        fan_min = _launch.empty(capacity, dtype=wp.int32, device=device)
+        vertex_min = _launch.full(result.pos.shape[0], 2147483647, dtype=wp.int32, device=device)
         _launch.launch(
-            kernel_solid_topology.split_pinched_fans,
+            kernel_solid_topology.flag_pinched_fans,
             dim=n_h,
-            inputs=[mesh, _launch.view(flags_offsets, 0, n_h + 1), n_v],
+            inputs=[mesh],
+            outputs=[fan_min, vertex_min],
             device=device,
         )
-        _launch.copy(
-            result.sizes, _launch.array([n_v + n_pinched], dtype=wp.int32, device=device), 1
+        _launch.launch(
+            kernel_solid_topology.count_pinched_fans,
+            dim=n_h,
+            inputs=[mesh, fan_min, vertex_min],
+            outputs=[flags],
+            device=device,
         )
-        known[1] = n_v + n_pinched
-    while True:
-        count = flag(kernel_solid_topology.flag_duplicate_edges, [])
-        if count == 0:
-            break
-        serial(kernel_solid_topology.dedupe_flagged, [_HostIn(flagged, count), count], [])
+        n_pinched = scan_count(_launch.view(flags, 0, n_h))
+        if n_pinched > 0:
+            _launch.launch(
+                kernel_solid_topology.split_pinched_fans,
+                dim=n_h,
+                inputs=[mesh, _launch.view(flags_offsets, 0, n_h + 1), n_v],
+                device=device,
+            )
+            _launch.copy(
+                result.sizes, _launch.array([n_v + n_pinched], dtype=wp.int32, device=device), 1
+            )
+            known[1] = n_v + n_pinched
+        while True:
+            count = flag(kernel_solid_topology.flag_duplicate_edges, [])
+            if count == 0:
+                break
+            serial(kernel_solid_topology.dedupe_flagged, [_HostIn(flagged, count), count], [])
     if cleanup_only:
         return known[0], known[1]
     # ``CollapseShortEdges`` (to ``tolerance`` only past the new vertices: everywhere it is
@@ -785,13 +1044,14 @@ def _launch_serial(
         "tri_mesh": n_h // 3,
         "tri_coplanar": n_h // 3,
         "tri_normal": n_h // 3,
+        "tri_source": n_h // 3,
         "pos": n_v,
     }
     host_fields: dict[str, odt.ArrayNd] = {}
     for name, count in prefixes.items():
         array = getattr(result, name)
         copy = _launch.empty(array.shape[0], dtype=array.dtype, device=host)
-        if count > 0:
+        if count > 0 and array.shape[0] > 0:
             _launch.copy(copy, array, count=count)
         setattr(struct, name, copy)
         host_fields[name] = copy
@@ -821,7 +1081,7 @@ def _launch_serial(
         k: (n_h if k in ("start", "pair") else n_v if k == "pos" else n_h // 3) for k in prefixes
     }
     for name, count in prefixes.items():
-        if count > 0:
+        if count > 0 and host_fields[name].shape[0] > 0:
             _launch.copy(getattr(result, name), host_fields[name], count=count)
     _launch.copy(result.sizes, host_sizes)
     for array, copy in zip(outputs, host_outputs, strict=True):
@@ -920,9 +1180,9 @@ def finish_solid(
     kept = compacted(result, vertex_normals, n_t, n_v)
     if kept is None:
         return empty_solid(device)
-    positions, faces, kept_normals, face_normals, face_mesh, face_coplanar = kept
+    positions, faces, kept_normals, face_normals, face_mesh, face_coplanar, source = kept
     lower, upper = positions_box(positions) if box is None else box
-    return _sorted_solid(
+    solid = _sorted_solid(
         positions,
         faces,
         kept_normals,
@@ -934,6 +1194,10 @@ def finish_solid(
         lower,
         upper,
     )
+    if source is None or solid.face_source is None:
+        return solid
+    # Each sorted face's source: the kept face it was, read through the kept faces' sources.
+    return solid._replace(face_source=gather(source, solid.face_source))
 
 
 def compacted(
@@ -946,14 +1210,16 @@ def compacted(
         wp.array[wp.vec3d],
         wp.array[wp.int32],
         wp.array[wp.int32],
+        wp.array[wp.int32] | None,
     ]
     | None
 ):
     """
     ``RemoveUnreferencedVerts`` with the removed triangles, order kept.
 
-    Returns the kept positions, faces, vertex normals and each face's normal, mesh and coplanar
-    group, or ``None`` when no triangle is left.
+    Returns the kept positions, faces, vertex normals and each face's normal, mesh, coplanar
+    group and source face (``None`` where the mesh keeps no sources), or ``None`` when no triangle
+    is left.
     """
     mesh = result
     device = result.start.device
@@ -974,11 +1240,16 @@ def compacted(
     face_normals = _launch.empty(n_kept, dtype=wp.vec3d, device=device)
     face_mesh = _launch.empty(n_kept, dtype=wp.int32, device=device)
     face_coplanar = _launch.empty(n_kept, dtype=wp.int32, device=device)
+    face_source = (
+        _launch.empty(n_kept, dtype=wp.int32, device=device)
+        if mesh.tri_source.shape[0] > 0
+        else None
+    )
     _launch.launch(
         kernel_solid_topology.write_kept_faces,
         dim=n_t,
         inputs=[mesh, tri_offsets, vert_offsets],
-        outputs=[faces, face_normals, face_mesh, face_coplanar],
+        outputs=[faces, face_normals, face_mesh, face_coplanar, face_source],
         device=device,
     )
     positions = _launch.empty(n_used, dtype=wp.vec3d, device=device)
@@ -990,7 +1261,7 @@ def compacted(
         outputs=[positions, kept_normals],
         device=device,
     )
-    return positions, faces, kept_normals, face_normals, face_mesh, face_coplanar
+    return positions, faces, kept_normals, face_normals, face_mesh, face_coplanar, face_source
 
 
 def _sorted_solid(

@@ -629,6 +629,91 @@ def test_batch_booleans_reject_an_empty_list() -> None:
         od.boolean.union_all([])
 
 
+def _defective_box(case: str) -> tm.Trimesh:
+    """
+    Return a unit box with one defect Manifold's solid constructor repairs, unprocessed.
+
+    ``pinched``: a second box sharing one corner vertex; ``collinear``: an edge split at its
+    midpoint on one side only, closed by a zero-area triangle; ``short_edge``: an edge split in
+    both its faces at a point on one of its ends; ``repeated_index``: a face naming a vertex twice,
+    listed first; ``unused_vertex``: a vertex no face names.
+    """
+    box_tm = _box([0, 0, 0], [1, 1, 1])
+    vertices_np = np.asarray(box_tm.vertices, dtype=np.float32)
+    faces_np = np.asarray(box_tm.faces, dtype=np.int64)
+    a = int(np.flatnonzero((vertices_np == 0.0).all(axis=1))[0])
+    b = int(np.flatnonzero((vertices_np == [1.0, 0.0, 0.0]).all(axis=1))[0])
+    if case == "pinched":
+        other_tm = _box([1, 1, 1], [2, 2, 2])
+        other_np = np.asarray(other_tm.vertices, dtype=np.float32)
+        shared = int(np.flatnonzero((other_np == 1.0).all(axis=1))[0])
+        keep = np.arange(len(other_np)) != shared
+        index_np = np.cumsum(keep) - 1 + len(vertices_np)
+        index_np[shared] = int(np.flatnonzero((vertices_np == 1.0).all(axis=1))[0])
+        vertices_np = np.vstack([vertices_np, other_np[keep]])
+        faces_np = np.vstack([faces_np, index_np[np.asarray(other_tm.faces)]])
+    elif case in ("collinear", "short_edge"):
+        m = len(vertices_np)
+        point = [0.5, 0.0, 0.0] if case == "collinear" else vertices_np[a]
+        vertices_np = np.vstack([vertices_np, [point]]).astype(np.float32)
+        rows: list[list[int]] = []
+        for face in faces_np.tolist():
+            for k in range(3):
+                p, q, r = face[k], face[(k + 1) % 3], face[(k + 2) % 3]
+                if (p, q) == (a, b):
+                    rows += [[a, m, r], [m, b, r]]
+                    break
+                if (p, q) == (b, a) and case == "short_edge":
+                    rows += [[b, m, r], [m, a, r]]
+                    break
+                if (p, q) == (b, a):
+                    rows += [face, [b, m, a]]
+                    break
+            else:
+                rows.append(face)
+        faces_np = np.asarray(rows)
+    elif case == "repeated_index":
+        faces_np = np.vstack([[[a, a, b]], faces_np])
+    else:
+        vertices_np = np.vstack([vertices_np, [[5.0, 5.0, 5.0]]]).astype(np.float32)
+    return tm.Trimesh(vertices_np, faces_np, process=False)
+
+
+_DEFECTS = ["pinched", "collinear", "short_edge", "repeated_index", "unused_vertex"]
+
+
+@pytest.mark.parity("union_all", "manifold3d")
+@pytest.mark.parity("boolean_difference", "manifold3d")
+@pytest.mark.parametrize("case", _DEFECTS)
+def test_solids_are_cleaned_as_manifold3d_cleans_them(device: str, case: str) -> None:
+    """
+    A mesh with a defect Manifold's solid constructor repairs gives Manifold's answers.
+
+    Class A, array for array. Manifold drops a triangle naming a vertex twice, splits a pinched
+    vertex, collapses a zero-length edge, swaps degenerate triangles and drops unused vertices as
+    it builds a solid, and ordito builds its solids the same way: the solid alone (a one-mesh
+    ``union_all``) and its difference with a ball. The case's own counts are asserted so each
+    repair is seen to happen (or, for the collinear triangle, Manifold to keep it).
+    """
+    mesh_tm = _defective_box(case)
+    ball_tm = float32_trimesh(tm.creation.icosphere(subdivisions=2, radius=0.6))
+    ball_tm.apply_translation([0.5, 0.0, 0.5])
+    built_m3 = trimesh_to_manifold3d(mesh_tm)
+    difference_m3 = built_m3 - trimesh_to_manifold3d(ball_tm)
+    expected = {
+        "pinched": (16, 24),
+        "collinear": (9, 14),
+        "short_edge": (8, 12),
+        "repeated_index": (8, 12),
+        "unused_vertex": (8, 12),
+    }[case]
+    assert (built_m3.num_vert(), built_m3.num_tri()) == expected
+    mesh_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
+    ball_wp = numpy_to_warp(ball_tm.vertices, ball_tm.faces, device)
+    assert_same_as_manifold3d(od.boolean.union_all([mesh_wp]), built_m3)
+    assert_same_as_manifold3d(od.boolean.difference(*mesh_wp, *ball_wp), difference_m3)
+
+
 @pytest.mark.parametrize(("name", "operation"), OPERATIONS, ids=_OPERATION_IDS)
 def test_boolean_with_an_empty_operand(device: str, name: str, operation: Operation) -> None:
     """
