@@ -19,12 +19,18 @@ from ordito.kernels.array import (
     declare_block_dims,
     declare_lazy_kernels,
     declare_map_signatures,
+    device_is_cpu,
+    highest_bit64,
     leading_point,
+    lowest_bit64,
     map_probe,
     map_probe_single,
     mat33_column,
+    ordered_double_bits,
     ordered_float_bits,
     pack_farthest_key,
+    popcount32,
+    popcount_below,
     to_vec3,
     to_vec3d,
     unpack_ranked_index,
@@ -54,6 +60,12 @@ from ordito.kernels.reduce import (
     store_block_total,
     store_block_total_divided,
     store_sum_and_count,
+    warp_ballot,
+    warp_broadcast,
+    warp_broadcast_float,
+    warp_broadcast_uint64,
+    warp_broadcast_vec3,
+    warp_lowest_lane,
     write_block_value,
 )
 
@@ -460,7 +472,9 @@ def point_frames(
 # ``PointPositionGeometry`` (``potpourri3d.PointCloudLocalTriangulation`` and
 # ``PointCloudHeatSolver``): each point's ``k`` nearest others, a normal from their offsets, a
 # tangent frame from the normal, and the point's star in its local Delaunay triangulation of the
-# offsets projected onto that frame. Everything is formed in ``float64``, as the reference does.
+# offsets projected onto that frame. Everything is formed in ``float64``, as the reference does;
+# the drop loop's tests are decided in ``float32`` only where a bound proves the ``float64`` sign
+# (``star_drop_filtered``).
 
 # The neighbours a star's scratch rows hold: ``points.local_triangulation`` refuses a wider
 # table. geometry-central takes 30.
@@ -540,200 +554,571 @@ def cloud_frame(
     return basis_x, wp.normalize(basis_y), normal
 
 
+@wp.kernel(enable_backward=False)
+def cloud_frames(
+    points: wp.array[wp.vec3],
+    neighbor_idx: wp.array2d[wp.int32],
+    normals: wp.array[wp.vec3],
+    out_frames: wp.array2d[wp.vec3d],
+) -> None:
+    # Each point's tangent frame (``cloud_frame``) as ``float64`` rows ``(basis_x, basis_y,
+    # normal)``, the frames the stars are built in. A pass of its own: the frame's ``float64``
+    # ``svd3`` is one long chain a point, which a warp-a-point star kernel would run on every
+    # lane (masked lanes still issue it: twice the thread-a-point pass on 2 562 points).
+    p = wp.int32(wp.tid())
+    basis_x, basis_y, normal = cloud_frame(points, neighbor_idx, normals, p)
+    out_frames[p, 0] = basis_x
+    out_frames[p, 1] = basis_y
+    out_frames[p, 2] = normal
+
+
 @wp.func
-def star_gap(
-    xs: wp.array[wp.float64], ys: wp.array[wp.float64], a: wp.int32, b: wp.int32
-) -> wp.bool:
+def star_offset(
+    points: wp.array[wp.vec3], frames: wp.array2d[wp.vec3d], p: wp.int32, q: wp.int32
+) -> tuple[wp.float64, wp.float64]:
+    # Neighbour ``q``'s offset from point ``p`` projected onto the normal's plane, in ``p``'s
+    # tangent frame.
+    normal = frames[p, 2]
+    offset = wp.vec3d(points[q]) - wp.vec3d(points[p])
+    offset = offset - wp.dot(offset, normal) * normal
+    return wp.dot(frames[p, 0], offset), wp.dot(frames[p, 1], offset)
+
+
+@wp.func
+def star_slot(
+    x: wp.float64, y: wp.float64, slot: wp.int32, m: wp.int32, near: wp.float64
+) -> tuple[wp.float64, wp.float64, wp.float64, wp.uint64]:
+    # Slot ``slot`` of ``m`` kept neighbours at tangent offset ``(x, y)``: the offset, pushed out
+    # along its direction (or one spread by the slot) to its own radius when within ``near`` of
+    # the point, so neighbours on the point are not cocircular; its length; and its polar angle
+    # as an ``ordered_double_bits`` key (``STAR_BAD_ANGLE`` when not finite), which orders and ties
+    # as the angles do and compares on the integer units, not the ``float64`` pipe.
+    length = wp.sqrt(x * x + y * y)
+    px = x
+    py = y
+    if length < near:
+        dx = x / length
+        dy = y / length
+        if not (wp.isfinite(dx) and wp.isfinite(dy)):
+            theta = STAR_TWO_PI * wp.float64(slot) / wp.float64(m)
+            dx = wp.cos(theta)
+            dy = wp.sin(theta)
+        radius = (wp.float64(1.0) + wp.float64(slot) / wp.float64(m)) * near * wp.float64(10.0)
+        px = radius * dx
+        py = radius * dy
+        length = wp.sqrt(px * px + py * py)
+    angle = wp.atan2(py / length, px / length)
+    key = ordered_double_bits(wp.where(wp.isfinite(angle), angle, STAR_BAD_ANGLE))
+    return px, py, length, key
+
+
+# ``a * b - c * d`` and ``a * b + c * d`` with both products rounded, as the CPU forms them: nvcc
+# otherwise fuses one product into the sum, and which one it picks follows the code around it,
+# so a duplicated neighbour's cross product with its twin (exactly zero, rounded or not) came out
+# a rounding error of either sign by kernel shape and the star kept or dropped the sliver between
+# them by it.
+_ROUNDED_PRODUCT_DIFFERENCE = """
+#if defined(__CUDA_ARCH__)
+return __dsub_rn(__dmul_rn(a, b), __dmul_rn(c, d));
+#else
+const double left = a * b;
+const double right = c * d;
+return left - right;
+#endif
+"""
+
+_ROUNDED_PRODUCT_SUM = """
+#if defined(__CUDA_ARCH__)
+return __dadd_rn(__dmul_rn(a, b), __dmul_rn(c, d));
+#else
+const double left = a * b;
+const double right = c * d;
+return left + right;
+#endif
+"""
+
+
+@wp.func_native(_ROUNDED_PRODUCT_DIFFERENCE)
+def rounded_product_difference(
+    a: wp.float64, b: wp.float64, c: wp.float64, d: wp.float64
+) -> wp.float64: ...
+
+
+@wp.func_native(_ROUNDED_PRODUCT_SUM)
+def rounded_product_sum(
+    a: wp.float64, b: wp.float64, c: wp.float64, d: wp.float64
+) -> wp.float64: ...
+
+
+@wp.func
+def star_gap(xa: wp.float64, ya: wp.float64, xb: wp.float64, yb: wp.float64) -> wp.bool:
     # Whether no triangle spans neighbours ``a`` then ``b`` of the angular order: they are half a
     # turn or more apart (geometry-central's ``isBoundary``).
-    return xs[a] * ys[b] - ys[a] * xs[b] <= wp.float64(0.0)
+    return rounded_product_difference(xa, yb, ya, xb) <= wp.float64(0.0)
 
 
 @wp.func
 def star_collinear(
-    xs: wp.array[wp.float64],
-    ys: wp.array[wp.float64],
-    a: wp.int32,
-    b: wp.int32,
-    length_a: wp.float64,
-    length_b: wp.float64,
+    xa: wp.float64, ya: wp.float64, la: wp.float64, xb: wp.float64, yb: wp.float64, lb: wp.float64
 ) -> wp.bool:
-    # Whether neighbours ``a`` and ``b`` lie on one ray from the point, to the degeneracy
-    # heuristic's tolerance.
-    cross = xs[a] * ys[b] - ys[a] * xs[b]
-    dot = xs[a] * xs[b] + ys[a] * ys[b]
-    return wp.abs(cross) < length_a * length_b * STAR_DEGENERATE and dot > wp.float64(0.0)
+    # Whether neighbours ``a`` and ``b``, of lengths ``la`` and ``lb``, lie on one ray from the
+    # point, to the degeneracy heuristic's tolerance.
+    cross = rounded_product_difference(xa, yb, ya, xb)
+    dot = rounded_product_sum(xa, xb, ya, yb)
+    return wp.abs(cross) < la * lb * STAR_DEGENERATE and dot > wp.float64(0.0)
 
 
 @wp.func
-def star_keeps(
-    xs: wp.array[wp.float64],
-    ys: wp.array[wp.float64],
-    prev: wp.int32,
-    curr: wp.int32,
-    nxt: wp.int32,
-) -> wp.bool:
-    # Whether ``curr`` stays in the star between ``prev`` and ``nxt``: it lies strictly inside the
-    # circle through the point, ``prev`` and ``nxt`` (geometry-central's ``inCircleTest`` with the
-    # point at the origin, whose 4 x 4 determinant is minus this 3 x 3 one).
-    ax = xs[prev]
-    ay = ys[prev]
+def star_drop(
+    prev_x: wp.float64,
+    prev_y: wp.float64,
+    prev_length: wp.float64,
+    curr_x: wp.float64,
+    curr_y: wp.float64,
+    curr_length: wp.float64,
+    next_x: wp.float64,
+    next_y: wp.float64,
+    next_length: wp.float64,
+) -> wp.int32:
+    # ``1`` when ``curr`` leaves the star between its kept neighbours ``prev`` and ``next``, else
+    # ``0``: of neighbours on one ray from the point only the nearest stays; a neighbour half a
+    # turn or more from either stays; otherwise it stays only strictly inside the circle through
+    # the point, ``prev`` and ``next`` (geometry-central's ``inCircleTest`` with the point at the
+    # origin, whose 4 x 4 determinant is minus this 3 x 3 one). ``star_drop_filtered`` decides the
+    # same rule in ``float32`` wherever it can.
+    if star_collinear(curr_x, curr_y, curr_length, next_x, next_y, next_length):
+        if curr_length > next_length:
+            return 1
+    if star_collinear(curr_x, curr_y, curr_length, prev_x, prev_y, prev_length):
+        if curr_length > prev_length:
+            return 1
+    if star_gap(prev_x, prev_y, curr_x, curr_y) or star_gap(curr_x, curr_y, next_x, next_y):
+        return 0
+    ax = prev_x
+    ay = prev_y
     az = ax * ax + ay * ay
-    bx = xs[nxt]
-    by = ys[nxt]
+    bx = next_x
+    by = next_y
     bz = bx * bx + by * by
-    cx = xs[curr]
-    cy = ys[curr]
+    cx = curr_x
+    cy = curr_y
     cz = cx * cx + cy * cy
     det = ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx)
-    return -det > wp.float64(0.0)
+    return wp.where(-det > wp.float64(0.0), 0, 1)
+
+
+# ``star_drop``'s rule in ``float32`` with rigorous error bounds (``star_drop_filtered``): the
+# ``float64`` pipe runs at 1/64 of the ``float32`` rate here, and the drop loop's in-circle,
+# collinear and gap tests were its largest share. Each slot carries its offset and length scaled
+# by the neighbourhood's radius into ``float32`` (``|x| <= 1``, so nothing overflows, and an
+# underflow costs at most ``STAR_FILTER_FLOOR``), and a test decides only where its ``float32``
+# value clears a bound on its distance from the exact value of the ``float64`` inputs, which
+# bounds the ``float64`` evaluation's distance too: the decided sign is the one ``star_drop``
+# computes, so the stars are its stars bit for bit. A cross product of rounded inputs is within
+# ``~4 u`` of its two products' magnitude and the in-circle determinant within ``~12 u`` of its
+# permanent (``u = 2**-24``); the bounds take twice to three times that. Anything closer is
+# ``STAR_UNDECIDED`` and takes ``star_drop``.
+STAR_FILTER_CROSS = wp.float32(8.0 * 2.0**-24)
+STAR_FILTER_CIRCLE = wp.float32(32.0 * 2.0**-24)
+STAR_FILTER_FLOOR = wp.float32(1e-30)
+# Twice ``STAR_DEGENERATE``: a pair whose ``float32`` cross product clears this is certainly not
+# collinear.
+STAR_FILTER_COLLINEAR = wp.float32(2e-7)
+STAR_UNDECIDED = wp.int32(2)
+
+
+@wp.func
+def star_cross_sign(ax: wp.float32, ay: wp.float32, bx: wp.float32, by: wp.float32) -> wp.int32:
+    # The sign of ``a x b`` for the scaled ``float32`` offsets, ``0`` when within the filter's
+    # bound of zero.
+    left = ax * by
+    right = ay * bx
+    cross = left - right
+    bound = (wp.abs(left) + wp.abs(right)) * STAR_FILTER_CROSS + STAR_FILTER_FLOOR
+    if cross > bound:
+        return 1
+    if cross < -bound:
+        return -1
+    return 0
+
+
+@wp.func
+def star_not_collinear(
+    ax: wp.float32, ay: wp.float32, la: wp.float32, bx: wp.float32, by: wp.float32, lb: wp.float32
+) -> wp.bool:
+    # Whether scaled neighbours ``a`` and ``b`` are certainly not ``star_collinear``.
+    left = ax * by
+    right = ay * bx
+    bound = (wp.abs(left) + wp.abs(right)) * STAR_FILTER_CROSS + STAR_FILTER_FLOOR
+    return wp.abs(left - right) - bound > la * lb * STAR_FILTER_COLLINEAR
+
+
+@wp.func
+def star_drop_filtered(
+    prev_x: wp.float32,
+    prev_y: wp.float32,
+    prev_length: wp.float32,
+    curr_x: wp.float32,
+    curr_y: wp.float32,
+    curr_length: wp.float32,
+    next_x: wp.float32,
+    next_y: wp.float32,
+    next_length: wp.float32,
+) -> wp.int32:
+    # ``star_drop`` on the scaled ``float32`` offsets and lengths, or ``STAR_UNDECIDED``. A
+    # ``float32`` length is the ``float64`` one rounded, so ``curr_length < next_length`` here
+    # means it is not longer there and the collinear rule cannot drop it.
+    if curr_length >= next_length:
+        if not star_not_collinear(curr_x, curr_y, curr_length, next_x, next_y, next_length):
+            return STAR_UNDECIDED
+    if curr_length >= prev_length:
+        if not star_not_collinear(curr_x, curr_y, curr_length, prev_x, prev_y, prev_length):
+            return STAR_UNDECIDED
+    before = star_cross_sign(prev_x, prev_y, curr_x, curr_y)
+    after = star_cross_sign(curr_x, curr_y, next_x, next_y)
+    if before < 0 or after < 0:
+        return 0
+    if before == 0 or after == 0:
+        return STAR_UNDECIDED
+    ax = prev_x
+    ay = prev_y
+    az = ax * ax + ay * ay
+    bx = next_x
+    by = next_y
+    bz = bx * bx + by * by
+    cx = curr_x
+    cy = curr_y
+    cz = cx * cx + cy * cy
+    det = ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx)
+    permanent = (
+        wp.abs(ax) * (wp.abs(by * cz) + wp.abs(bz * cy))
+        + wp.abs(ay) * (wp.abs(bx * cz) + wp.abs(bz * cx))
+        + az * (wp.abs(bx * cy) + wp.abs(by * cx))
+    )
+    bound = permanent * STAR_FILTER_CIRCLE + STAR_FILTER_FLOOR
+    if det < -bound:
+        return 0
+    if det > bound:
+        return 1
+    return STAR_UNDECIDED
+
+
+@wp.func
+def star_prev_slot(kept: wp.uint64, slot: wp.int32) -> wp.int32:
+    # The kept slot before ``slot`` in the cyclic angular order (``slot`` itself when alone).
+    below = kept & ((wp.uint64(1) << wp.uint64(slot)) - wp.uint64(1))
+    return highest_bit64(wp.where(below != wp.uint64(0), below, kept))
+
+
+@wp.func
+def star_next_slot(kept: wp.uint64, slot: wp.int32) -> wp.int32:
+    # The kept slot after ``slot`` in the cyclic angular order (``slot`` itself when alone).
+    above = (kept >> wp.uint64(slot)) >> wp.uint64(1)
+    if above != wp.uint64(0):
+        return slot + 1 + lowest_bit64(above)
+    return lowest_bit64(kept)
+
+
+@wp.func
+def star_scaled(x: wp.float64, y: wp.float64, length: wp.float64, inverse: wp.float64) -> wp.vec3:
+    # A slot's offset and length scaled by the neighbourhood's inverse radius into ``float32``,
+    # the filter's inputs.
+    return wp.vec3(wp.float32(x * inverse), wp.float32(y * inverse), wp.float32(length * inverse))
+
+
+def _local_triangulation_kernel(rows: int, name: str) -> wp.Kernel:
+    # Point ``p``'s star in the local Delaunay triangulation of its neighbours, as
+    # geometry-central's ``buildLocalTriangulations`` (with its degeneracy heuristic) builds it,
+    # one thread a point, in ``p``'s frame (``cloud_frames``): triangles ``(p, a, b)`` into
+    # ``out_stars[p, :count]``, counter-clockwise about the normal, in the angular order from the
+    # smallest polar angle. The neighbours are sorted by angle in the tangent plane, and a
+    # neighbour is dropped (``star_drop``) while the diamond it closes with its kept predecessor
+    # and successor is not Delaunay, visiting the slots in angular order and repeating until a
+    # pass drops none. The kept slots of the angular order are bits of a register mask, so a
+    # slot's kept neighbours are two bit scans.
+    #
+    # The CPU device and CUDA tables of more than ``WARP_STAR_COLUMNS`` columns take it; CUDA's
+    # narrower tables take ``local_triangulation_stars_warp``, which forms the same stars a warp a
+    # point. Kernel-scope ``wp.zeros`` rows of ``rows`` slots, every access a runtime index; they
+    # are zero-filled, so a table of at most 33 columns takes the 32-slot kernel
+    # (``LOCAL_TRIANGULATION_KERNELS``). The CPU decides every test in ``float64``
+    # (``star_drop``), where the ``float32`` filter cost it 1.02-1.09x.
+    def _kernel(
+        points: wp.array[wp.vec3],
+        neighbor_idx: wp.array2d[wp.int32],
+        frames: wp.array2d[wp.vec3d],
+        out_stars: wp.array3d[wp.int32],
+        out_counts: wp.array[wp.int32],
+    ) -> None:
+        p = wp.int32(wp.tid())
+        ids = wp.zeros(shape=rows, dtype=wp.int32)
+        xs = wp.zeros(shape=rows, dtype=wp.float64)
+        ys = wp.zeros(shape=rows, dtype=wp.float64)
+        lengths = wp.zeros(shape=rows, dtype=wp.float64)
+        keys = wp.zeros(shape=rows, dtype=wp.uint64)
+        scaled = wp.zeros(shape=rows, dtype=wp.vec3)
+        order = wp.zeros(shape=rows, dtype=wp.int32)
+        m = wp.int32(0)
+        scale_sq = wp.float64(0.0)
+        for j in range(neighbor_idx.shape[1]):
+            q = cloud_neighbor(neighbor_idx, p, p, j, m)
+            if q >= 0:
+                x, y = star_offset(points, frames, p, q)
+                ids[m] = q
+                xs[m] = x
+                ys[m] = y
+                scale_sq = wp.max(scale_sq, x * x + y * y)
+                m += 1
+        out_counts[p] = 0
+        scale = wp.sqrt(scale_sq)
+        if not (wp.isfinite(scale) and scale > wp.float64(0.0)):
+            # Hopelessly degenerate (every neighbour on the point): no triangles, as the reference.
+            return
+        near = scale * STAR_DEGENERATE
+        inverse = wp.float64(1.0) / scale
+        for i in range(m):
+            x, y, length, key = star_slot(xs[i], ys[i], i, m, near)
+            xs[i] = x
+            ys[i] = y
+            lengths[i] = length
+            keys[i] = key
+            scaled[i] = star_scaled(x, y, length, inverse)
+            # Insertion sort by angle, stable among ties.
+            slot = i
+            while slot > 0:
+                if keys[order[slot - 1]] <= key:
+                    break
+                order[slot] = order[slot - 1]
+                slot -= 1
+            order[slot] = i
+        # Every bad angle sorts first and is dropped.
+        bad = ordered_double_bits(STAR_BAD_ANGLE)
+        kept = wp.uint64(0)
+        for i in range(m):
+            if keys[order[i]] != bad:
+                kept = kept | (wp.uint64(1) << wp.uint64(i))
+
+        changed = wp.int32(1)
+        while changed != 0:
+            changed = wp.int32(0)
+            for middle in range(m):
+                if (kept >> wp.uint64(middle)) & wp.uint64(1) == wp.uint64(0):
+                    continue
+                before = star_prev_slot(kept, middle)
+                after = star_next_slot(kept, middle)
+                if before == middle or after == middle or before == after:
+                    continue
+                prev = order[before]
+                curr = order[middle]
+                nxt = order[after]
+                drop = STAR_UNDECIDED + wp.int32(0)
+                if device_is_cpu() == 0:
+                    sp = scaled[prev]
+                    sc = scaled[curr]
+                    sn = scaled[nxt]
+                    drop = star_drop_filtered(
+                        sp[0], sp[1], sp[2], sc[0], sc[1], sc[2], sn[0], sn[1], sn[2]
+                    )
+                if drop == STAR_UNDECIDED:
+                    drop = star_drop(
+                        xs[prev],
+                        ys[prev],
+                        lengths[prev],
+                        xs[curr],
+                        ys[curr],
+                        lengths[curr],
+                        xs[nxt],
+                        ys[nxt],
+                        lengths[nxt],
+                    )
+                if drop != 0:
+                    kept = kept & ~(wp.uint64(1) << wp.uint64(middle))
+                    changed = wp.int32(1)
+
+        count = wp.int32(0)
+        for i in range(m):
+            if (kept >> wp.uint64(i)) & wp.uint64(1) == wp.uint64(0):
+                continue
+            after = star_next_slot(kept, i)
+            if after == i:
+                continue
+            a = order[i]
+            b = order[after]
+            sign = wp.int32(0)
+            if device_is_cpu() == 0:
+                sign = star_cross_sign(scaled[a][0], scaled[a][1], scaled[b][0], scaled[b][1])
+            if sign == 0:
+                sign = wp.where(star_gap(xs[a], ys[a], xs[b], ys[b]), -1, 1)
+            if sign > 0:
+                out_stars[p, count, 0] = p
+                out_stars[p, count, 1] = ids[a]
+                out_stars[p, count, 2] = ids[b]
+                count += 1
+        out_counts[p] = count
+
+    return wp.kernel(_kernel, name=name)
+
+
+LOCAL_TRIANGULATION_KERNELS = {
+    rows: _local_triangulation_kernel(rows, f"local_triangulation_stars_row{rows}")
+    for rows in (32, LOCAL_TRIANGULATION_MAX_NEIGHBORS)
+}
+
+# The widest table ``local_triangulation_stars_warp`` takes: a column a lane.
+WARP_STAR_COLUMNS = 32
 
 
 @wp.kernel(enable_backward=False)
-def local_triangulation_stars(
+def local_triangulation_stars_warp(
     points: wp.array[wp.vec3],
     neighbor_idx: wp.array2d[wp.int32],
-    normals: wp.array[wp.vec3],
+    frames: wp.array2d[wp.vec3d],
     out_stars: wp.array3d[wp.int32],
     out_counts: wp.array[wp.int32],
 ) -> None:
-    # Point ``p``'s star in the local Delaunay triangulation of its neighbours, as
-    # geometry-central's ``buildLocalTriangulations`` (with its degeneracy heuristic) builds it:
-    # triangles ``(p, a, b)`` into ``out_stars[p, :count]``, counter-clockwise about the normal,
-    # in the angular order from the smallest polar angle. The neighbours are sorted by angle in the
-    # tangent plane, and a neighbour is dropped while the diamond it closes with its kept
-    # predecessor and successor is not Delaunay, until a pass drops none. Kernel-scope ``wp.zeros``
-    # rows, as ``reconstruction.build_local_triangulations`` holds its fans: every access is a
-    # runtime index.
-    p = wp.int32(wp.tid())
-    basis_x, basis_y, normal = cloud_frame(points, neighbor_idx, normals, p)
-    ids = wp.zeros(shape=LOCAL_TRIANGULATION_MAX_NEIGHBORS, dtype=wp.int32)
-    xs = wp.zeros(shape=LOCAL_TRIANGULATION_MAX_NEIGHBORS, dtype=wp.float64)
-    ys = wp.zeros(shape=LOCAL_TRIANGULATION_MAX_NEIGHBORS, dtype=wp.float64)
-    angles = wp.zeros(shape=LOCAL_TRIANGULATION_MAX_NEIGHBORS, dtype=wp.float64)
-    lengths = wp.zeros(shape=LOCAL_TRIANGULATION_MAX_NEIGHBORS, dtype=wp.float64)
-    order = wp.zeros(shape=LOCAL_TRIANGULATION_MAX_NEIGHBORS, dtype=wp.int32)
-    following = wp.zeros(shape=LOCAL_TRIANGULATION_MAX_NEIGHBORS, dtype=wp.int32)
-    preceding = wp.zeros(shape=LOCAL_TRIANGULATION_MAX_NEIGHBORS, dtype=wp.int32)
-    center = wp.vec3d(points[p])
-    m = wp.int32(0)
-    scale_sq = wp.float64(0.0)
-    for j in range(neighbor_idx.shape[1]):
-        q = cloud_neighbor(neighbor_idx, p, p, j, m)
-        if q >= 0:
-            offset = wp.vec3d(points[q]) - center
-            offset = offset - wp.dot(offset, normal) * normal
-            x = wp.dot(basis_x, offset)
-            y = wp.dot(basis_y, offset)
-            ids[m] = q
-            xs[m] = x
-            ys[m] = y
-            scale_sq = wp.max(scale_sq, x * x + y * y)
-            m += 1
-    out_counts[p] = 0
+    # ``LOCAL_TRIANGULATION_KERNELS``' stars a warp a point, column ``lane`` of a table of at most
+    # ``WARP_STAR_COLUMNS`` columns a lane, CUDA only (``dim = 32 n``). A thread a point is one
+    # long ``float64`` chain held in local rows: here each lane projects, pushes out and keys its
+    # own neighbour, ranks it by counting the smaller keys (lower lanes first among ties, the
+    # insertion sort's stable order) and takes the slot of that rank by shuffle, so lane ``r``
+    # holds angular slot ``r`` in registers. The drop loop then replays the serial passes
+    # exactly: a pass visits the kept slots in order, each against its kept neighbours of the
+    # moment, so with every slot's decision formed against the current mask, every slot from the
+    # cursor up to the first that drops decides as the serial visit would, and the first drop
+    # is the serial pass's next one. A round takes that drop by ballot and moves the cursor past
+    # it; a slot re-forms its decision only when its neighbours changed (a decision depends on
+    # the three slots alone, so it holds across passes too). A pass ends with no drop past the
+    # cursor and the loop with a pass that dropped none. Rounds number the drops plus the passes,
+    # where the thread visits every kept slot every pass. Decisions are ``star_drop_filtered``,
+    # the undecided ones ``star_drop`` after one more shuffle round. Bit for bit the thread
+    # kernel's stars; with the frame pass, 0.25x the one-thread-a-point kernel it replaced on
+    # 2 562 points, 0.37x on 437 k, 0.44x on 14 M, and 0.30-0.67x the thread kernel above.
+    t = wp.int32(wp.tid())
+    p = t >> 5
+    lane = t & 31
+    width = neighbor_idx.shape[1]
+    # Column ``lane`` is kept as ``cloud_neighbor`` keeps it: valid, and fewer than ``width - 1``
+    # valid columns before it.
+    q = wp.int32(-1)
+    if lane < width:
+        q = neighbor_idx[p, lane]
+    valid = q >= 0 and q != p
+    valid_lanes = wp.uint32(warp_ballot(-1, wp.where(valid, 1, 0)))
+    slot = popcount_below(valid_lanes, lane)
+    holds = valid and slot < width - 1
+    held = wp.uint32(warp_ballot(-1, wp.where(holds, 1, 0)))
+    m = popcount32(held)
+    x = wp.float64(0.0)
+    y = wp.float64(0.0)
+    if holds:
+        x, y = star_offset(points, frames, p, q)
+    scale_sq = x * x + y * y
+    for step in range(5):
+        scale_sq = wp.max(scale_sq, warp_broadcast_float(-1, scale_sq, lane ^ (1 << step)))
     scale = wp.sqrt(scale_sq)
     if not (wp.isfinite(scale) and scale > wp.float64(0.0)):
         # Hopelessly degenerate (every neighbour on the point): no triangles, as the reference.
+        if lane == 0:
+            out_counts[p] = 0
         return
-    # Neighbours on the point are pushed out along their direction (or one spread by their index),
-    # each to its own radius so they are not cocircular.
-    near = scale * STAR_DEGENERATE
-    for i in range(m):
-        length = wp.sqrt(xs[i] * xs[i] + ys[i] * ys[i])
-        if length < near:
-            dx = xs[i] / length
-            dy = ys[i] / length
-            if not (wp.isfinite(dx) and wp.isfinite(dy)):
-                theta = STAR_TWO_PI * wp.float64(i) / wp.float64(m)
-                dx = wp.cos(theta)
-                dy = wp.sin(theta)
-            radius = (wp.float64(1.0) + wp.float64(i) / wp.float64(m)) * near * wp.float64(10.0)
-            xs[i] = radius * dx
-            ys[i] = radius * dy
-    for i in range(m):
-        length = wp.sqrt(xs[i] * xs[i] + ys[i] * ys[i])
-        lengths[i] = length
-        angle = wp.atan2(ys[i] / length, xs[i] / length)
-        angles[i] = wp.where(wp.isfinite(angle), angle, STAR_BAD_ANGLE)
-        # Insertion sort by angle, stable among ties.
-        slot = i
-        while slot > 0:
-            if angles[order[slot - 1]] <= angles[i]:
-                break
-            order[slot] = order[slot - 1]
-            slot -= 1
-        order[slot] = i
-    # The kept slots of the angular order as a cyclic doubly linked list (``following`` /
-    # ``preceding``), so a slot's kept neighbours are one read and a drop unlinks it, where a walk
-    # over the dropped slots made each pass quadratic in the row.
-    first = wp.int32(-1)
-    last = wp.int32(-1)
-    for i in range(m):
-        if angles[order[i]] == STAR_BAD_ANGLE:
-            order[i] = wp.int32(-1)
-        else:
-            if first < 0:
-                first = i
-            else:
-                following[last] = i
-                preceding[i] = last
-            last = i
-    if first >= 0:
-        following[last] = first
-        preceding[first] = last
+    length = wp.float64(0.0)
+    key = ~wp.uint64(0)
+    if holds:
+        x, y, length, key = star_slot(x, y, slot, m, scale * STAR_DEGENERATE)
+    rank = wp.int32(0)
+    for k in range(32):
+        other_key = warp_broadcast_uint64(-1, key, k)
+        if (held >> wp.uint32(k)) & wp.uint32(1) != wp.uint32(0):
+            if other_key < key or (other_key == key and k < lane):
+                rank += 1
+    source = wp.int32(0)
+    for k in range(32):
+        if (held >> wp.uint32(k)) & wp.uint32(1) != wp.uint32(0):
+            if warp_broadcast(-1, rank, k) == lane:
+                source = k
+    # Lane ``r`` from here on holds angular slot ``r``.
+    x = warp_broadcast_float(-1, x, source)
+    y = warp_broadcast_float(-1, y, source)
+    length = warp_broadcast_float(-1, length, source)
+    key = warp_broadcast_uint64(-1, key, source)
+    q = warp_broadcast(-1, q, source)
+    own = star_scaled(x, y, length, wp.float64(1.0) / scale)
+    # Every bad angle sorts first and is dropped.
+    real = lane < m and key != ordered_double_bits(STAR_BAD_ANGLE)
+    kept = wp.uint32(warp_ballot(-1, wp.where(real, 1, 0)))
 
+    formed_prev = wp.int32(-1)
+    formed_next = wp.int32(-1)
+    decision = wp.int32(0)
     changed = wp.int32(1)
     while changed != 0:
         changed = wp.int32(0)
-        for middle in range(m):
-            curr = order[middle]
-            if curr < 0:
-                continue
-            before = preceding[middle]
-            after = following[middle]
-            prev = order[before]
-            nxt = order[after]
-            if curr == prev or curr == nxt or prev == nxt:
-                continue
-            # Of neighbours on one ray from the point, only the nearest stays.
-            length_prev = lengths[prev]
-            length_curr = lengths[curr]
-            length_next = lengths[nxt]
-            if (
-                star_collinear(xs, ys, curr, nxt, length_curr, length_next)
-                and length_curr > length_next
-            ) or (
-                star_collinear(xs, ys, curr, prev, length_curr, length_prev)
-                and length_curr > length_prev
-            ):
-                order[middle] = wp.int32(-1)
-                following[before] = after
-                preceding[after] = before
-                changed = wp.int32(1)
-                continue
-            if star_gap(xs, ys, prev, curr) or star_gap(xs, ys, curr, nxt):
-                continue
-            if not star_keeps(xs, ys, prev, curr, nxt):
-                order[middle] = wp.int32(-1)
-                following[before] = after
-                preceding[after] = before
+        cursor = wp.int32(0)
+        while cursor < m:
+            mine = (kept >> wp.uint32(lane)) & wp.uint32(1) != wp.uint32(0) and lane >= cursor
+            before = lane
+            after = lane
+            if mine:
+                before = star_prev_slot(wp.uint64(kept), lane)
+                after = star_next_slot(wp.uint64(kept), lane)
+            fresh = mine and (before != formed_prev or after != formed_next)
+            if warp_ballot(-1, wp.where(fresh, 1, 0)) != 0:
+                a = warp_broadcast_vec3(-1, own, before)
+                c = warp_broadcast_vec3(-1, own, after)
+                if fresh:
+                    formed_prev = before
+                    formed_next = after
+                    decision = wp.int32(0)
+                    if before != lane and after != lane and before != after:
+                        decision = star_drop_filtered(
+                            a[0], a[1], a[2], own[0], own[1], own[2], c[0], c[1], c[2]
+                        )
+                hard = fresh and decision == STAR_UNDECIDED
+                if warp_ballot(-1, wp.where(hard, 1, 0)) != 0:
+                    prev_x = warp_broadcast_float(-1, x, before)
+                    prev_y = warp_broadcast_float(-1, y, before)
+                    prev_length = warp_broadcast_float(-1, length, before)
+                    next_x = warp_broadcast_float(-1, x, after)
+                    next_y = warp_broadcast_float(-1, y, after)
+                    next_length = warp_broadcast_float(-1, length, after)
+                    if hard:
+                        decision = star_drop(
+                            prev_x, prev_y, prev_length, x, y, length, next_x, next_y, next_length
+                        )
+            drops = warp_ballot(-1, wp.where(mine and decision == 1, 1, 0))
+            if drops == 0:
+                cursor = m
+            else:
+                first = warp_lowest_lane(drops)
+                kept = kept & ~(wp.uint32(1) << wp.uint32(first))
+                cursor = first + 1
                 changed = wp.int32(1)
 
-    count = wp.int32(0)
-    for i in range(m):
-        a = order[i]
-        if a < 0:
-            continue
-        after = following[i]
-        if after == i:
-            continue
-        b = order[after]
-        if not star_gap(xs, ys, a, b):
-            out_stars[p, count, 0] = p
-            out_stars[p, count, 1] = ids[a]
-            out_stars[p, count, 2] = ids[b]
-            count += 1
-    out_counts[p] = count
+    mine = (kept >> wp.uint32(lane)) & wp.uint32(1) != wp.uint32(0)
+    after = lane
+    if mine:
+        after = star_next_slot(wp.uint64(kept), lane)
+    c = warp_broadcast_vec3(-1, own, after)
+    other = warp_broadcast(-1, q, after)
+    writes = mine and after != lane
+    sign = wp.int32(0)
+    if writes:
+        sign = star_cross_sign(own[0], own[1], c[0], c[1])
+    hard = writes and sign == 0
+    if warp_ballot(-1, wp.where(hard, 1, 0)) != 0:
+        next_x = warp_broadcast_float(-1, x, after)
+        next_y = warp_broadcast_float(-1, y, after)
+        if hard:
+            sign = wp.where(star_gap(x, y, next_x, next_y), -1, 1)
+    emits = writes and sign > 0
+    emitting = wp.uint32(warp_ballot(-1, wp.where(emits, 1, 0)))
+    if emits:
+        index = popcount_below(emitting, lane)
+        out_stars[p, index, 0] = p
+        out_stars[p, index, 1] = q
+        out_stars[p, index, 2] = other
+    if lane == 0:
+        out_counts[p] = popcount32(emitting)
 
 
 @wp.kernel

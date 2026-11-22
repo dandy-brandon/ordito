@@ -1200,6 +1200,14 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   8 us, `cholesky`'s 15 -> 1.8 us on bunny; now `connected_components.ecl_flatten`'s counts and
   `scatter.count_occurrences`), cluster members 0.5x; CPU at par.
 - **CPU code generation on Warp 1.19 (SLP vectorization):** 1.18 -> 1.19 over every ordito CPU benchmark row at `--size small` (two interleaved passes, CUDA hidden): geomean 0.876 / 0.885, 450 rows faster than 0.9x in both passes, 21 slower than 1.1x. The largest gains: `face_tangent_frames` 0.22-0.31x, `vertex_normals` 0.39-0.42x, `fast_marching_distance` 0.49x, `principal_curvature_taubin` and `marching_cubes_lewiner` 0.52x, `isotropic_remesh` and `flip_to_delaunay` 0.57x. SLP is nearly all of it: with `-fno-slp-vectorize` the same rows read 0.94-1.02x, and also dropping loop vectorization changes nothing further. The stable losses are SLP too: `mls_principal_curvature` rimls 1.18-1.26x and apss 1.12-1.21x (0.4-1.7 s rows; 0.98x without SLP), `upsample_polyline` 1.14-1.17x (0.93x without), and other polyline rows and `parametric_surface` at 1.13-1.2x (not flag-tested). Declined: a module-wide flag on `kernels/curvature.py` would forfeit taubin's 0.52x along with MLS's loss, and CUDA is the target (§9). Only MLS kernels in a module of their own could take it. CUDA over the same rows (`--size small,medium`): geomean 0.995 / 1.006 with pass-to-pass correlation 0.00, so nothing moved except `descend_field` 0.88x and the Laplacian rows 0.77-0.81x. Ray queries (GH-1840), hash grid (GH-2119 / GH-2163) and the newly unrolled `continue` loops (GH-1552) were flat at 0.975-1.009 module geomeans. The §14 CPU verdicts above were measured on 1.18; the one-launch forms sped up with everything else.
+- **A per-point `float64` neighbourhood chain runs a warp a point, a neighbour a lane** (2026-11-22,
+  `kernels/points.local_triangulation_stars_warp`): a thread a point held its row in zero-filled
+  local rows and ran every slot's `float64` projection, `atan2` and drop test in turn; lanes hold
+  a slot each in registers, rank by counting smaller keys, and replay an in-order drop loop
+  exactly (the first drop past a cursor by ballot, decisions cached by their neighbours). It won
+  at every size, 0.30x on 2 562 points to 0.47x on 14 M, because every lane's `float64` work is
+  useful; the per-point serial part (an `svd3`) must stay a thread a point in a pass of its own,
+  since masked lanes still issue it (1.84x on 2 562 points).
 - **A one-thread serial walk of dependent loads on CUDA data runs on the CPU device** (2026-11-21,
   `boolean`: the topology collapses and swaps, the coplanar flood past its rounds, the ear clipping
   and halfedge pairing of a polygon of 256 or more sides): one GPU thread waits a load's latency
@@ -1453,12 +1461,8 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   high-valence vertices cost ~148 us each in one GPU thread (80 ms a pass), and the CPU's round
   trip of the 8 M-halfedge prefixes about as much (`_solid._SERIAL_DEVICE_BASE`): a pass that
   moves only the halfedges it touches would serve both.
-- **`points.local_triangulation` is one long `float64` chain a point** (2026-11-22): after the
-  linked kept-slot list (0.77-0.87x) a star still costs one thread ~0.8 ms on `sphere_small`
-  (2 562 points) and the call 263 ms on `lucy`; the drop loop and writes are ~2/3 of it, the
-  `atan2` keys ~4 %, the normal fit ~11 %. A warp a point (lanes over the row: projection, each
-  angle's rank by a count of smaller keys, the drop rounds by ballot) would trade the chain for
-  lanes; the stars must stay byte-identical to the serial loop (the heat solver's tufted cover
-  reads them). `reconstruction.local_fan` walks its dropped `-1` slots with `cycle_next` /
-  `cycle_prev` as the stars did before the list: the same list should pay there (out of the
-  `points` sweep, not priced).
+- **`reconstruction.local_fan` walks its dropped `-1` slots** with `cycle_next` / `cycle_prev`
+  (2026-11-22): `points.local_triangulation`'s stars took a register mask of kept slots (two bit
+  scans a neighbour, no scratch row), which removes the objection a linked ring was declined for
+  there (0.91x on `rebuild_grown_local_triangulations`, for its extra row); the grown fans'
+  128 slots need a two-word mask. Not priced.

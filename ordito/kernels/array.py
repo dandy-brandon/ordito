@@ -2272,6 +2272,32 @@ def popcount32(x: wp.uint32) -> wp.int32:
     return native_popcount32(x)
 
 
+# The lowest and highest set bit of a non-zero ``uint64`` word, one instruction each.
+_LOWEST_BIT64 = """
+#if defined(__CUDA_ARCH__)
+return __ffsll((long long)x) - 1;
+#else
+return __builtin_ctzll(x);
+#endif
+"""
+
+_HIGHEST_BIT64 = """
+#if defined(__CUDA_ARCH__)
+return 63 - __clzll((long long)x);
+#else
+return 63 - __builtin_clzll(x);
+#endif
+"""
+
+
+@wp.func_native(_LOWEST_BIT64)
+def lowest_bit64(x: wp.uint64) -> wp.int32: ...
+
+
+@wp.func_native(_HIGHEST_BIT64)
+def highest_bit64(x: wp.uint64) -> wp.int32: ...
+
+
 @wp.func
 def popcount_below(word: wp.uint32, bit: wp.int32) -> wp.int32:
     # Set bits of ``word`` below bit ``bit`` (0-31): a position's rank within its word, the step

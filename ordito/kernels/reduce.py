@@ -992,6 +992,26 @@ def warp_broadcast(lanes: wp.int32, value: wp.int32, source: wp.int32) -> wp.int
 def warp_broadcast_float(lanes: wp.int32, value: wp.float64, source: wp.int32) -> wp.float64: ...
 
 
+@wp.func_native(_WARP_BROADCAST)
+def warp_broadcast_uint64(lanes: wp.int32, value: wp.uint64, source: wp.int32) -> wp.uint64: ...
+
+
+_WARP_BROADCAST_VEC3 = """
+#if defined(__CUDA_ARCH__)
+return wp::vec3(
+    __shfl_sync((unsigned)lanes, value[0], source),
+    __shfl_sync((unsigned)lanes, value[1], source),
+    __shfl_sync((unsigned)lanes, value[2], source));
+#else
+return value;
+#endif
+"""
+
+
+@wp.func_native(_WARP_BROADCAST_VEC3)
+def warp_broadcast_vec3(lanes: wp.int32, value: wp.vec3, source: wp.int32) -> wp.vec3: ...
+
+
 # The inclusive sum of ``value`` over a whole warp's lanes up to each lane (a shuffle scan), the
 # value itself on the CPU device. Every lane of the warp must call it.
 _WARP_INCLUSIVE_SUM = """

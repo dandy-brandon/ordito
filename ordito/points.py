@@ -163,6 +163,9 @@ _MAT33_BYTES = 9 * 4
 # measured equal device time to 2 048 blocks (2 M points) and 1.11x the separate launch's at 14 k
 # (``lucy``); the reproducible commit elects its last block anyway and always fuses.
 _FIT_TICKET_MAX_BLOCKS = 1 << 11
+# The most points ``local_triangulation`` gives a warp each (``kernels/points``), whose thread
+# index is an ``int32``.
+_WARP_STAR_POINTS = 2**26
 
 for _kernel in (kernel_points.radius_outlier_flags_tiled, kernel_points.normal_outlier_flags_tiled):
     kernel_array.declare_block_dims(_kernel, (kernel_neighbors.TILED_BALL_WALK_BLOCK_DIM,))
@@ -1701,16 +1704,32 @@ def local_triangulation(
         return _launch.empty(0, dtype=wp.int32, device=device)
     # A star has at most one triangle per neighbour it keeps, and it keeps at most ``width - 1``.
     rows = width - 1
-    stars = _launch.empty(3 * n * rows, dtype=wp.int32, device=device).reshape((n, rows, 3))
-    counts = _launch.empty(n, dtype=wp.int32, device=device)
+    frames = odt.empty_2d((n, 3), wp.vec3d, device=device)
     _launch.launch(
-        kernel_points.local_triangulation_stars,
+        kernel_points.cloud_frames,
         dim=n,
         inputs=[
             points,
             neighbor_idx,
             _launch.empty(0, dtype=wp.vec3, device=device) if normals is None else normals,
         ],
+        outputs=[frames],
+        device=device,
+    )
+    stars = _launch.empty(3 * n * rows, dtype=wp.int32, device=device).reshape((n, rows, 3))
+    counts = _launch.empty(n, dtype=wp.int32, device=device)
+    if (
+        wp.get_device(device).is_cuda
+        and width <= kernel_points.WARP_STAR_COLUMNS
+        and n < _WARP_STAR_POINTS
+    ):
+        kernel, dim = kernel_points.local_triangulation_stars_warp, 32 * n
+    else:
+        kernel, dim = kernel_points.LOCAL_TRIANGULATION_KERNELS[32 if rows <= 32 else 64], n
+    _launch.launch(
+        kernel,
+        dim=dim,
+        inputs=[points, neighbor_idx, frames],
         outputs=[stars, counts],
         device=device,
     )

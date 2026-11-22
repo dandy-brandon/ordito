@@ -2617,8 +2617,8 @@
  },
  "benchmarks/test_heat.py::test_point_cloud_extend_scalar[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 29,
-   "alloc": 37,
+   "launch": 30,
+   "alloc": 38,
    "readback": 10,
    "scan": 1,
    "sort": 4
@@ -2633,8 +2633,8 @@
  },
  "benchmarks/test_heat.py::test_point_cloud_heat_distance[sphere_small-ordito-cpu-full]": {
   "counts": {
-   "launch": 35,
-   "alloc": 37,
+   "launch": 36,
+   "alloc": 38,
    "readback": 10,
    "scan": 1,
    "sort": 4
@@ -2642,8 +2642,8 @@
  },
  "benchmarks/test_heat.py::test_point_cloud_heat_signed_distance[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 38,
-   "alloc": 46,
+   "launch": 39,
+   "alloc": 47,
    "readback": 11,
    "scan": 2,
    "sort": 4
@@ -2651,16 +2651,16 @@
  },
  "benchmarks/test_heat.py::test_point_cloud_heat_solver[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 5,
-   "alloc": 10,
+   "launch": 6,
+   "alloc": 11,
    "readback": 2,
    "scan": 1
   }
  },
  "benchmarks/test_heat.py::test_point_cloud_log_map[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 38,
-   "alloc": 40,
+   "launch": 39,
+   "alloc": 41,
    "readback": 10,
    "scan": 1,
    "sort": 4
@@ -2668,8 +2668,8 @@
  },
  "benchmarks/test_heat.py::test_point_cloud_transport_tangent_vectors[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 32,
-   "alloc": 45,
+   "launch": 33,
+   "alloc": 46,
    "h2h": 1,
    "readback": 9,
    "scan": 1,
@@ -5518,8 +5518,8 @@
  },
  "benchmarks/test_points.py::test_local_triangulation[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 4,
-   "alloc": 6,
+   "launch": 5,
+   "alloc": 7,
    "readback": 2,
    "scan": 1
   }

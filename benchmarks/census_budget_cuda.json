@@ -2851,8 +2851,8 @@
  },
  "benchmarks/test_heat.py::test_point_cloud_extend_scalar[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 32,
-   "alloc": 37,
+   "launch": 33,
+   "alloc": 38,
    "memset": 14,
    "d2d": 1,
    "d2h": 10,
@@ -2871,8 +2871,8 @@
  },
  "benchmarks/test_heat.py::test_point_cloud_heat_distance[sphere_small-ordito-cuda-full]": {
   "counts": {
-   "launch": 39,
-   "alloc": 37,
+   "launch": 40,
+   "alloc": 38,
    "memset": 15,
    "d2d": 2,
    "d2h": 11,
@@ -2882,8 +2882,8 @@
  },
  "benchmarks/test_heat.py::test_point_cloud_heat_signed_distance[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 42,
-   "alloc": 46,
+   "launch": 43,
+   "alloc": 47,
    "memset": 17,
    "d2d": 2,
    "d2h": 11,
@@ -2893,8 +2893,8 @@
  },
  "benchmarks/test_heat.py::test_point_cloud_heat_solver[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 5,
-   "alloc": 10,
+   "launch": 6,
+   "alloc": 11,
    "memset": 1,
    "d2h": 2,
    "scan": 1
@@ -2902,8 +2902,8 @@
  },
  "benchmarks/test_heat.py::test_point_cloud_log_map[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 42,
-   "alloc": 40,
+   "launch": 43,
+   "alloc": 41,
    "memset": 15,
    "d2d": 2,
    "d2h": 11,
@@ -2913,8 +2913,8 @@
  },
  "benchmarks/test_heat.py::test_point_cloud_transport_tangent_vectors[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 35,
-   "alloc": 45,
+   "launch": 36,
+   "alloc": 46,
    "memset": 13,
    "d2d": 1,
    "h2d": 1,
@@ -6101,8 +6101,8 @@
  },
  "benchmarks/test_points.py::test_local_triangulation[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 4,
-   "alloc": 6,
+   "launch": 5,
+   "alloc": 7,
    "memset": 1,
    "d2h": 2,
    "scan": 1
