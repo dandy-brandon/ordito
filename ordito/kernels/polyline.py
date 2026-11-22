@@ -4377,9 +4377,247 @@ def ec_intrusion(
     return total
 
 
+# The intruder query over a kd-tree, for a polygon of ``EC_TREE_FROM`` vertices or more (a plane
+# cut's cap): ``ec_ear_cost``'s slab held ~480 live vertices an ear on a nearly cocircular
+# 1 482-gon, whose near-tied ears are clipped fan-wise into long ones, and the cap was quadratic.
+# The tree prunes them exactly. Every vertex in the box adds at least ``-eps - scale d^2``
+# (``d`` its distance from the ear's open side's midpoint): an intruder adds its intrusion,
+# ``>= -eps``, any other that value itself. A vertex certainly beyond the open side (its
+# ``ec_intrusion`` term there below ``-eps`` whatever the rounding) is not an intruder, so once a
+# contributing vertex at ``best`` is evaluated, one beyond the side and farther than ``best``
+# cannot raise the cost: the walk skips a node whose box is outside the ear's box, holds no live
+# vertex, or lies wholly beyond the side and farther than ``best``, and evaluates every other
+# vertex through ``ec_intrusion``, nearest node first. The cost is the slab's bit for bit; on the
+# 1 482-gon an ear needs ~4 such evaluations against ~480. Nodes are the polygon's vertices
+# ordered by median splits on the wider axis (node ``[lo, hi)`` at ``mid = (lo + hi) // 2``, its
+# halves ``[lo, mid)`` and ``[mid + 1, hi)``), in ``by_x``; while ``ec_triangulate_poly`` runs,
+# the keyhole stage's rows are free and hold each node's box (``hole_box``) and live count
+# (``outers``), each vertex's node (``stack``) and the walk's stack (``holes``).
+EC_TREE_FROM = wp.int32(256)
+# A distance bound's slack against rounding (``ec_intrusion`` forms ``d^2`` its own way), and the
+# open-side margin, relative to the coordinates' magnitude.
+EC_TREE_SLACK = wp.float64(1e-9)
+EC_TREE_MARGIN = wp.float64(1e-12)
+# A node of at most this many vertices is a leaf, its vertices scanned in turn.
+EC_TREE_LEAF = wp.int32(8)
+# An ear whose slab holds at most this many vertices scans it instead of walking the tree.
+EC_TREE_SLAB = wp.int32(128)
+
+
+@wp.func
+def ec_tree_key(ec: EarClipState, base: wp.int32, k: wp.int32, axis: wp.int32) -> wp.float64:
+    return ec.pos[ec.starts[base + k]][axis]
+
+
+@wp.func
+def ec_tree_build(ec: EarClipState, base: wp.int32, n: wp.int32) -> wp.bool:
+    # The polygon's vertices (``ec.collider[base:]``) as a kd-tree in ``ec.starts[base:]``, or
+    # ``False`` (nothing built) when a position is not finite.
+    for c in range(n):
+        u = ec.collider[base + c]
+        q = ec.pos[u]
+        if not (wp.isfinite(q[0]) and wp.isfinite(q[1])):
+            return False
+        ec.starts[base + c] = u
+    ec.holes[base] = 0
+    ec.holes[base + 1] = n
+    top = wp.int32(2)
+    while top > 0:
+        top -= 2
+        lo = ec.holes[base + top]
+        hi = ec.holes[base + top + 1]
+        if lo >= hi:
+            continue
+        first = ec.pos[ec.starts[base + lo]]
+        box_lo = first
+        box_hi = first
+        for k in range(lo + 1, hi):
+            q = ec.pos[ec.starts[base + k]]
+            box_lo = wp.min(box_lo, q)
+            box_hi = wp.max(box_hi, q)
+        mid = (lo + hi) // 2
+        ec.hole_box[base + mid] = wp.vec4d(box_lo[0], box_lo[1], box_hi[0], box_hi[1])
+        ec.outers[base + mid] = hi - lo
+        if hi - lo <= EC_TREE_LEAF:
+            continue
+        axis = wp.where(box_hi[0] - box_lo[0] >= box_hi[1] - box_lo[1], 0, 1)
+        # Quickselect: the median along ``axis`` at ``mid``, smaller keys before it.
+        left = lo
+        right = hi - 1
+        while left < right:
+            pivot = ec_tree_key(ec, base, (left + right) // 2, axis)
+            i = left
+            j = right
+            while i <= j:
+                while ec_tree_key(ec, base, i, axis) < pivot:
+                    i += 1
+                while ec_tree_key(ec, base, j, axis) > pivot:
+                    j -= 1
+                if i <= j:
+                    swap = ec.starts[base + i]
+                    ec.starts[base + i] = ec.starts[base + j]
+                    ec.starts[base + j] = swap
+                    i += 1
+                    j -= 1
+            if mid <= j:
+                right = j
+            elif mid >= i:
+                left = i
+            else:
+                break
+        ec.holes[base + top] = lo
+        ec.holes[base + top + 1] = mid
+        ec.holes[base + top + 2] = mid + 1
+        ec.holes[base + top + 3] = hi
+        top += 4
+    for c in range(n):
+        ec.stack[ec.starts[base + c]] = c
+    return True
+
+
+@wp.func
+def ec_tree_clip(ec: EarClipState, base: wp.int32, n: wp.int32, v: wp.int32):
+    # Vertex ``v`` clipped: one live vertex fewer in each node from the root to its own.
+    position = ec.stack[v]
+    lo = wp.int32(0)
+    hi = n
+    while lo < hi:
+        mid = (lo + hi) // 2
+        ec.outers[base + mid] -= 1
+        if position == mid or hi - lo <= EC_TREE_LEAF:
+            break
+        if position < mid:
+            hi = mid
+        else:
+            lo = mid + 1
+
+
+@wp.func
+def ec_tree_gap(box: wp.vec4d, center: wp.vec2d) -> wp.float64:
+    # The squared distance from ``center`` to a node's box.
+    dx = wp.max(wp.max(box[0] - center[0], center[0] - box[2]), wp.float64(0.0))
+    dy = wp.max(wp.max(box[1] - center[1], center[1] - box[3]), wp.float64(0.0))
+    return dx * dx + dy * dy
+
+
+@wp.func
+def ec_tree_beyond(q: wp.vec2d, open_side: wp.vec2d, right: wp.vec2d, eps: wp.float64) -> wp.bool:
+    # Whether ``q`` is certainly beyond the ear's open side: its ``ec_intrusion`` term there
+    # (``cross2(open_side, q - right)``) below ``-eps`` by more than either rounding.
+    margin = EC_TREE_MARGIN * (wp.abs(q[0]) + wp.abs(q[1]) + wp.abs(right[0]) + wp.abs(right[1]))
+    return cross2(open_side, q - right) < wp.float64(0.0) - eps - margin
+
+
+@wp.func
+def ec_tree_node_beyond(
+    box: wp.vec4d, open_side: wp.vec2d, right: wp.vec2d, eps: wp.float64
+) -> wp.bool:
+    # Whether a node's whole box is certainly beyond the open side (the term is linear).
+    return (
+        ec_tree_beyond(wp.vec2d(box[0], box[1]), open_side, right, eps)
+        and ec_tree_beyond(wp.vec2d(box[2], box[1]), open_side, right, eps)
+        and ec_tree_beyond(wp.vec2d(box[0], box[3]), open_side, right, eps)
+        and ec_tree_beyond(wp.vec2d(box[2], box[3]), open_side, right, eps)
+    )
+
+
+@wp.func
+def ec_tree_push(
+    ec: EarClipState, base: wp.int32, top: wp.int32, lo: wp.int32, hi: wp.int32
+) -> wp.int32:
+    ec.holes[base + top] = lo
+    ec.holes[base + top + 1] = hi
+    return top + 2
+
+
+@wp.func
+def ec_tree_ear_cost(
+    ec: EarClipState,
+    v: wp.int32,
+    base: wp.int32,
+    n: wp.int32,
+    box_lo: wp.vec2d,
+    box_hi: wp.vec2d,
+    center: wp.vec2d,
+    open_side: wp.vec2d,
+    scale: wp.float64,
+    eps: wp.float64,
+    start: wp.float64,
+) -> wp.float64:
+    # ``ec_ear_cost``'s slab scan as a pruned walk of the tree (``EC_TREE_FROM``).
+    total = start
+    right = ec.pos[ec.right[v]]
+    corner_v = ec.idx[v]
+    corner_left = ec.idx[ec.left[v]]
+    corner_right = ec.idx[ec.right[v]]
+    best = wp.float64(1.0e308) * wp.float64(10.0)
+    top = ec_tree_push(ec, base, wp.int32(0), wp.int32(0), n)
+    while top > 0:
+        top -= 2
+        lo = ec.holes[base + top]
+        hi = ec.holes[base + top + 1]
+        if lo >= hi:
+            continue
+        mid = (lo + hi) // 2
+        if ec.outers[base + mid] == 0:
+            continue
+        box = ec.hole_box[base + mid]
+        if box[2] < box_lo[0] or box[0] > box_hi[0] or box[3] < box_lo[1] or box[1] > box_hi[1]:
+            continue
+        if ec_tree_gap(box, center) > best + EC_TREE_SLACK * best:
+            if ec_tree_node_beyond(box, open_side, right, eps):
+                continue
+        # A leaf's vertices, or an inner node's own (its median).
+        first = mid
+        last = mid + 1
+        leaf = hi - lo <= EC_TREE_LEAF
+        if leaf:
+            first = lo
+            last = hi
+        for k in range(first, last):
+            test = ec.starts[base + k]
+            q = ec.pos[test]
+            if q[0] < box_lo[0] or q[1] < box_lo[1] or q[0] > box_hi[0] or q[1] > box_hi[1]:
+                continue
+            if ec_clipped(ec, test):
+                continue
+            diff = q - center
+            d2 = wp.dot(diff, diff)
+            if d2 <= best + EC_TREE_SLACK * best or not ec_tree_beyond(q, open_side, right, eps):
+                total = ec_intrusion(
+                    ec, v, test, box_lo, box_hi, center, open_side, scale, eps, total
+                )
+                tid = ec.idx[test]
+                if tid != corner_v and tid != corner_left and tid != corner_right:
+                    best = wp.min(best, d2)
+        if leaf:
+            continue
+        # The nearer half last, so it is walked first.
+        near_lo = lo
+        near_hi = mid
+        far_lo = mid + 1
+        far_hi = hi
+        if far_lo < far_hi and near_lo < near_hi:
+            if ec_tree_gap(ec.hole_box[base + (far_lo + far_hi) // 2], center) < ec_tree_gap(
+                ec.hole_box[base + (near_lo + near_hi) // 2], center
+            ):
+                near_lo = mid + 1
+                near_hi = hi
+                far_lo = lo
+                far_hi = mid
+        top = ec_tree_push(ec, base, top, far_lo, far_hi)
+        top = ec_tree_push(ec, base, top, near_lo, near_hi)
+    return total
+
+
 @wp.func
 def ec_ear_cost(
-    ec: EarClipState, v: wp.int32, eps: wp.float64, collider_base: wp.int32, n_collider: wp.int32
+    ec: EarClipState,
+    v: wp.int32,
+    eps: wp.float64,
+    collider_base: wp.int32,
+    n_collider: wp.int32,
+    tree: wp.bool,
 ) -> wp.float64:
     # ``Vert::EarCost``: how far the worst vertex in the ear's box intrudes, the Delaunay term
     # ranking the valid ears. The box's vertices are those of the slab of x it spans in the
@@ -4408,6 +4646,26 @@ def ec_ear_cost(
             lo = mid + 1
         else:
             hi = mid
+    if tree:
+        # A wide slab takes the tree; a narrow one is scanned, as cheap as the walk's descent.
+        # One probe tells them apart: the slab is wider than ``EC_TREE_SLAB`` when the vertex that
+        # many places on is still inside it.
+        probe = lo + EC_TREE_SLAB
+        if probe < n_collider:
+            if ec.pos[ec.by_x[collider_base + probe]][0] <= box_hi[0]:
+                return ec_tree_ear_cost(
+                    ec,
+                    v,
+                    collider_base,
+                    n_collider,
+                    box_lo,
+                    box_hi,
+                    center,
+                    open_side,
+                    scale,
+                    eps,
+                    total,
+                )
     k = lo
     while k < n_collider:
         test = ec.by_x[collider_base + k]
@@ -4461,6 +4719,7 @@ def ec_process_ear(
     eps: wp.float64,
     collider_base: wp.int32,
     n_collider: wp.int32,
+    tree: wp.bool,
     next_seq: wp.int32,
 ) -> wp.int32:
     # ``ProcessEar``: requeue v at its new cost, or drop it while it is reflex. Queue order is
@@ -4471,7 +4730,7 @@ def ec_process_ear(
         ec.seq[v] = next_seq
         return next_seq + 1
     if ec_is_convex(ec, v, wp.float64(2.0) * eps):
-        ec.cost[v] = ec_ear_cost(ec, v, eps, collider_base, n_collider)
+        ec.cost[v] = ec_ear_cost(ec, v, eps, collider_base, n_collider, tree)
         ec.seq[v] = next_seq
         return next_seq + 1
     ec.cost[v] = wp.float64(1.0)
@@ -4616,6 +4875,9 @@ def ec_triangulate_poly(
         ec.seq[u] = -1
         ec.heap_pos[u] = -1
     ec_sort_by_x(ec, base, n_collider)
+    tree = wp.bool(False)
+    if n_collider >= EC_TREE_FROM:
+        tree = ec_tree_build(ec, base, n_collider)
     num_tri = wp.int32(-2)
     next_seq = wp.int32(0)
     size = wp.int32(0)
@@ -4623,7 +4885,7 @@ def ec_triangulate_poly(
     walk = ec_loop(ec, start, ec.visit, base, limit)
     for i in range(walk[0]):
         u = ec.visit[base + i]
-        next_seq = ec_process_ear(ec, u, eps, base, n_collider, next_seq)
+        next_seq = ec_process_ear(ec, u, eps, base, n_collider, tree, next_seq)
         unordered = unordered or (ec.seq[u] >= 0 and wp.isnan(ec.cost[u]))
         size = ec_heap_fix(ec, base, u, size)
         num_tri += 1
@@ -4655,12 +4917,14 @@ def ec_triangulate_poly(
             if not unordered:
                 size = ec_heap_fix(ec, base, v, size)
         count = ec_clip_ear(ec, v, base, count)
+        if tree:
+            ec_tree_clip(ec, base, n_collider, v)
         num_tri -= 1
         for side in range(2):
             u = ec.left[v]
             if side == 1:
                 u = ec.right[v]
-            next_seq = ec_process_ear(ec, u, eps, base, n_collider, next_seq)
+            next_seq = ec_process_ear(ec, u, eps, base, n_collider, tree, next_seq)
             unordered = unordered or (ec.seq[u] >= 0 and wp.isnan(ec.cost[u]))
             if not unordered:
                 size = ec_heap_fix(ec, base, u, size)

@@ -1208,6 +1208,15 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   at every size, 0.30x on 2 562 points to 0.47x on 14 M, because every lane's `float64` work is
   useful; the per-point serial part (an `svd3`) must stay a thread a point in a pass of its own,
   since masked lanes still issue it (1.84x on 2 562 points).
+- **An exact maximum over a box query prunes by a bound every candidate attains** (2026-11-22,
+  `kernels/polyline.ec_tree_ear_cost`): Manifold's ear cost is the largest intrusion of the
+  vertices in the ear's box, and on a plane cut's nearly cocircular cap the boxes held ~480 live
+  vertices an ear (no box index finds fewer). Every vertex adds at least `-eps - scale d^2`, and
+  one certainly beyond the open side adds exactly that, so a kd-tree walked nearest first skips
+  any node beyond the side and farther than the nearest contributor, and evaluates the rest
+  through the same `ec_intrusion`: ~4 evaluations an ear, the cost bit for bit. A slab of at
+  most 128 vertices is still scanned (one probe decides), since the walk's descent costs more on
+  small ears. Look for a bound every candidate meets before calling such a query inherent.
 - **A one-thread serial walk of dependent loads on CUDA data runs on the CPU device** (2026-11-21,
   `boolean`: the topology collapses and swaps, the coplanar flood past its rounds, the ear clipping
   and halfedge pairing of a polygon of 256 or more sides): one GPU thread waits a load's latency
@@ -1453,13 +1462,3 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `offset_mesh(method="meshlib")` against MeshLib's `offsetMesh`, whose extraction is ported
   (`marching_cubes(method="openvdb")`, Class A) and whose OpenVDB `meshToLevelSet` band field is
   not. Scoped, with source availability and licensing, in `reference/component-status.md` (16.0b).
-- **`boolean`'s ear clipper on a nearly cocircular cap** (2026-11-22): a plane cut of a round
-  body leaves a cap whose near-tied ears are clipped in a fan-like order, so the late ears' boxes
-  hold ~490 live vertices each on a 1 482-gon (8.7 M box tests for 17 760 ear costs): ~60 of the
-  91 ms of a 1.3 M-face sphere's `split_by_plane`, quadratic in the cap's sides (1 450 / 2 900 /
-  5 800 points 8.3 / 31 / 124 ms on the CPU). No box index finds fewer vertices, and a distance
-  bound cannot prune them: an outside vertex contributes `-eps - scale d^2`, and when the open
-  side is near a diameter the box's circle is the cap's, so every box vertex contributes about
-  `-1 - eps` and the exact maximum needs them all. The triangles must stay manifold3d's
-  (Class A), which fixes the clipping order; what is left is constant factors (the slab's
-  positions and liveness in x order, read sequentially), not priced.
