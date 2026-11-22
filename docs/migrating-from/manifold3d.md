@@ -13,6 +13,12 @@ GPU, and the test suite compares its output with `manifold3d`'s array for array,
 `float32` inputs you get the same mesh back: for the Booleans and plane cuts the same vertices
 and triangles in the same order, and elsewhere the same mesh up to vertex numbering and face order.
 
+One difference in what "the same inputs" means: building a `Manifold` from a `Mesh` cleans it,
+collapsing edges shorter than Manifold's precision and swapping away degenerate triangles, and
+ordito takes the mesh as given. On clean meshes this changes nothing; a scan often has a few
+hundred degenerate triangles, and there the two agree when ordito is given Manifold's cleaned mesh,
+`Manifold(mesh).to_mesh()`.
+
 ```python
 import manifold3d as m3  # before
 import ordito as od  # after

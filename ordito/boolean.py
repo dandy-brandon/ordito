@@ -9,7 +9,11 @@ and return a closed, consistently wound mesh; [`union_all`][ordito.boolean.union
 [`split_by_mesh`][ordito.boolean.split_by_mesh], [`split_by_plane`][ordito.boolean.split_by_plane]
 and [`trim_by_plane`][ordito.boolean.trim_by_plane] cut a solid into capped parts. Mirrors
 ``trimesh.boolean``, and gives the answers of its default engine, the Manifold library, whose
-Boolean this module ports: the same meshes, vertex and triangle order included.
+Boolean this module ports: the same meshes, vertex and triangle order included, on the meshes
+Manifold itself operates on. Manifold cleans a mesh as it builds a solid from it, collapsing edges
+shorter than its precision and swapping away degenerate triangles; ordito takes the mesh as given.
+On an input with such triangles (a scan often has a few hundred), the two agree from Manifold's
+cleaned mesh, ``Manifold(mesh).to_mesh()``, not from the raw one.
 
 Every crossing of an edge of one mesh with a face of the other, and every vertex's winding number
 with respect to the other mesh, is decided exactly from the ``float32`` coordinates. Ties --
@@ -128,7 +132,10 @@ def union(
     A port of the Boolean of Manifold (https://github.com/elalish/manifold, Apache-2.0), the
     engine [`trimesh.boolean.union`][] calls by default: the same exact predicates and symbolic
     perturbation, the same polygon triangulation and the same topology cleanup, so on the same
-    ``float32`` inputs the two return the same mesh up to vertex numbering and face order.
+    ``float32`` inputs the two return the same mesh up to vertex numbering and face order. Inputs
+    are the same when they have no degenerate triangles: Manifold collapses and swaps those away as
+    it builds its solids, and ordito does not, so on such an input it matches Manifold run on
+    Manifold's own cleaned mesh (``Manifold(mesh).to_mesh()``).
 
     Examples
     --------
@@ -402,7 +409,8 @@ def split_by_plane(
     Notes
     -----
     Manifold's ``Manifold.split_by_plane``, whose half-space this builds the same way: the
-    answers are the same meshes.
+    answers are the same meshes, from an input with no degenerate triangles (see
+    [`union`][ordito.boolean.union]).
 
     Examples
     --------
@@ -527,7 +535,8 @@ def union_all(
     Notes
     -----
     Manifold's ``Manifold.batch_boolean`` with ``OpType.Add``: the same grouping of disjoint
-    meshes and the same order of unions, so the same mesh.
+    meshes and the same order of unions, so the same mesh, from inputs with no degenerate
+    triangles (see [`union`][ordito.boolean.union]).
 
     Examples
     --------
