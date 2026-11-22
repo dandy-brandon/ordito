@@ -20,6 +20,7 @@ from ordito.kernels.array import (
     sort3,
     sorted_run_end,
     sorted_run_start,
+    splitmix64_finalize,
     update_argmin_pair,
     walk_item,
 )
@@ -1991,19 +1992,14 @@ def sever_barrier_twins(
 # its edges' words is (but for a 2**-64 chance per class that a non-empty set of words xors to
 # zero, which can only hide a loop, never present a separating one as non-separating).
 
-# The ``splitmix64`` finalizer: distinct well-mixed words for consecutive loop indices.
+# ``splitmix64``'s increment: distinct well-mixed words for consecutive loop indices.
 _LOOP_WORD_INCREMENT = wp.uint64(0x9E3779B97F4A7C15)
-_LOOP_WORD_MIX_1 = wp.uint64(0xBF58476D1CE4E5B9)
-_LOOP_WORD_MIX_2 = wp.uint64(0x94D049BB133111EB)
 
 
 @wp.func
 def tunnel_loop_word(i: wp.int32) -> wp.uint64:
     """Return basis loop ``i``'s cocycle word: ``splitmix64`` of ``i + 1``."""
-    z = wp.uint64(i + 1) * _LOOP_WORD_INCREMENT
-    z = (z ^ (z >> wp.uint64(30))) * _LOOP_WORD_MIX_1
-    z = (z ^ (z >> wp.uint64(27))) * _LOOP_WORD_MIX_2
-    return z ^ (z >> wp.uint64(31))
+    return splitmix64_finalize(wp.uint64(i + 1) * _LOOP_WORD_INCREMENT)
 
 
 @wp.func

@@ -102,10 +102,12 @@ def meshes_allclose(
     Notes
     -----
     The match is by nearest neighbour, not by sorting coordinates, so it does not depend on how two
-    nearly equal coordinates of different vertices round on either side. It does require the
-    tolerance to be smaller than half the distance between any two vertices of ``b``: two vertices
-    of ``a`` within tolerance of one vertex of ``b`` both match it, and the meshes compare unequal.
-    Weld coincident vertices
+    nearly equal coordinates of different vertices round on either side. Vertices of ``b`` at one
+    place (bit-equal coordinates, as an unwelded seam or a soup has) are paired with those of ``a``
+    by the faces each copy carries, and the meshes are equal when that pairing carries the faces of
+    ``a`` onto those of ``b``. Distinct vertices of ``b`` closer together than twice the tolerance
+    are not: two vertices of ``a`` within tolerance of one of them both match it, and the meshes
+    compare unequal. Weld such vertices
     ([`remove_duplicated_vertices`][ordito.repair.remove_duplicated_vertices]) before comparing, or
     compare the triangles alone with
     [`triangles_allclose`][ordito.equality.triangles_allclose].
@@ -158,6 +160,16 @@ def meshes_allclose(
     match = _flag_unmatched_points(vertices_a, vertices_b, rtol, atol, unequal)
     # A failed match still leaves every entry of ``match`` a valid ``b`` index, so the faces are
     # compared either way and the one readback below answers both.
+    _flag_unequal_faces(faces_a, match, faces_b, n_vertices, unequal)
+    # The answer is a host ``bool``.
+    if int(read_scalar(unequal, 0)) == 0:
+        return True
+    rematched = _match_coincident_points(
+        vertices_a, vertices_b, match, rtol, atol, faces_a, faces_b
+    )
+    if rematched is None:
+        return False
+    match, unequal = rematched
     _flag_unequal_faces(faces_a, match, faces_b, n_vertices, unequal)
     # The answer is a host ``bool``.
     return int(read_scalar(unequal, 0)) == 0
@@ -355,9 +367,10 @@ def points_allclose(
     Notes
     -----
     As in [`meshes_allclose`][ordito.equality.meshes_allclose], the tolerance must be smaller than
-    half the distance between any two points of ``b``: two points of ``a`` within tolerance of one
-    point of ``b`` both match it, and the sets compare unequal. A set holding a point twice equals
-    only another holding it twice, and only at a tolerance the duplicates themselves pass.
+    half the distance between any two distinct points of ``b``: two points of ``a`` within
+    tolerance of one point of ``b`` both match it, and the sets compare unequal. Points of ``b`` at
+    one place (bit-equal coordinates) count with their multiplicity: a set holding a point twice
+    equals another holding it twice.
 
     See Also
     --------
@@ -386,9 +399,15 @@ def points_allclose(
     if points_a.size == 0:
         return True
     unequal = _launch.zeros(1, dtype=wp.int32, device=points_a.device)
-    _flag_unmatched_points(points_a, points_b, rtol, atol, unequal)
+    match = _flag_unmatched_points(points_a, points_b, rtol, atol, unequal)
     # The answer is a host ``bool``.
-    return int(read_scalar(unequal, 0)) == 0
+    if int(read_scalar(unequal, 0)) == 0:
+        return True
+    rematched = _match_coincident_points(points_a, points_b, match, rtol, atol)
+    if rematched is None:
+        return False
+    # The answer is a host ``bool``.
+    return int(read_scalar(rematched[1], 0)) == 0
 
 
 def _flag_unmatched_points(
@@ -416,6 +435,84 @@ def _flag_unmatched_points(
         device=points_a.device,
     )
     return match
+
+
+def _match_coincident_points(
+    points_a: wp.array[wp.vec3],
+    points_b: wp.array[wp.vec3],
+    match: odt.Array1dInt32,
+    rtol: float,
+    atol: float,
+    faces_a: wp.array[wp.int32] | None = None,
+    faces_b: wp.array[wp.int32] | None = None,
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]] | None:
+    """
+    Match ``a`` to ``b`` again through ``b``'s coincident points; ``None`` if it has none.
+
+    The nearest-point match sends every point of ``a`` at a place ``b`` holds twice to one of the
+    copies. Here each point of ``a`` takes the class of the ``b`` point it matched (``b``'s points
+    of bit-equal coordinates), and the members of a class pair off in the order of a signature:
+    the sum of a word per incident face, read in classes from that point's corner, which tells a
+    seam's copies apart by the faces they carry (no faces: by index). Returns the new match and a
+    flag of its own, raised unless the classes agree and the match is a bijection within
+    tolerance; the caller's face comparison then decides, so a pairing the signatures got wrong
+    can only answer ``False``.
+    """
+    device = points_a.device
+    n = points_a.size
+    # Host readback inside ``unique_rows``: the class count decides whether there is anything to
+    # pair, on a path only an unequal first match reaches.
+    unique, inverse = od.grouping.unique_rows(points_b, return_inverse=True)
+    if unique.size == n:
+        return None
+    signatures_a = signatures_b = None
+    if faces_a is not None and faces_b is not None:
+        signatures_a = _launch.zeros(n, dtype=wp.uint64, device=device)
+        signatures_b = _launch.zeros(n, dtype=wp.uint64, device=device)
+        for faces, side_match, signatures in (
+            (faces_a, match, signatures_a),
+            (faces_b, None, signatures_b),
+        ):
+            if faces.size > 0:
+                _launch.launch(
+                    kernel_equality.coincidence_signatures,
+                    dim=faces.size // 3,
+                    inputs=[faces, inverse, side_match],
+                    outputs=[signatures],
+                    device=device,
+                )
+    keys_a, order_a, keys_b, order_b = _launch.carve_typed(
+        ((wp.uint64, 2 * n), (wp.int32, 2 * n)) * 2, device
+    )
+    for side_match, signatures, keys, order in (
+        (match, signatures_a, keys_a, order_a),
+        (None, signatures_b, keys_b, order_b),
+    ):
+        _launch.launch(
+            kernel_equality.coincidence_keys,
+            dim=n,
+            inputs=[inverse, side_match, signatures],
+            outputs=[keys, order],
+            device=device,
+        )
+        _launch.radix_sort_pairs(keys, order, n)
+    rematch = _launch.empty(n, dtype=wp.int32, device=device)
+    unequal = _launch.zeros(1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_equality.pair_coincident_vertices,
+        dim=n,
+        inputs=[keys_a, order_a, keys_b, order_b],
+        outputs=[rematch, unequal],
+        device=device,
+    )
+    hits = _launch.zeros(n, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_equality.flag_unmatched_vertices,
+        dim=n,
+        inputs=[points_a, points_b, rematch, wp.float32(rtol), wp.float32(atol), hits, unequal],
+        device=device,
+    )
+    return rematch, unequal
 
 
 def faces_equal(

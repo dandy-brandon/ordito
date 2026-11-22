@@ -14,6 +14,7 @@ from ordito.kernels.array import (
     nth_bit_position,
     point_curve_code,
     ravel_index,
+    splitmix64_finalize,
     store_counted_ballot_bit,
     unravel_index,
 )
@@ -1818,11 +1819,7 @@ def level_set_insert(
     mask = wp.uint64(size - 1)
     for e in range(n_entries):
         key = keys_in[e]
-        x = key
-        x = (x ^ (x >> wp.uint64(30))) * wp.uint64(0xBF58476D1CE4E5B9)
-        x = (x ^ (x >> wp.uint64(27))) * wp.uint64(0x94D049BB133111EB)
-        x = x ^ (x >> wp.uint64(31))
-        slot = wp.int32(x & mask)
+        slot = wp.int32(splitmix64_finalize(key) & mask)
         while out_keys[slot] != LEVEL_SET_OPEN:
             slot = (slot + 1) & (size - 1)
         out_keys[slot] = key
@@ -1835,11 +1832,7 @@ def level_set_lookup(
 ) -> wp.int32:
     # ``operator[]``: the entry under ``key``, or -1 (the empty slot's default ``GridVert``).
     size = keys.shape[0]
-    x = key
-    x = (x ^ (x >> wp.uint64(30))) * wp.uint64(0xBF58476D1CE4E5B9)
-    x = (x ^ (x >> wp.uint64(27))) * wp.uint64(0x94D049BB133111EB)
-    x = x ^ (x >> wp.uint64(31))
-    slot = wp.int32(x & wp.uint64(size - 1))
+    slot = wp.int32(splitmix64_finalize(key) & wp.uint64(size - 1))
     while True:
         k = keys[slot]
         if k == key:

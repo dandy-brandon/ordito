@@ -168,6 +168,45 @@ def test_meshes_allclose_needs_a_bijection(device: str) -> None:
     assert od.equality.meshes_allclose(vertices_b_wp, faces_wp, vertices_b_wp, faces_wp)
 
 
+def test_meshes_allclose_coincident_vertices(device: str) -> None:
+    """
+    Not a parity assert: meshes holding one place twice compare by their faces, not by luck.
+
+    A tetrahedron with one corner split into two coincident copies, the faces divided between
+    them, equals itself and its renumbered, reordered and rotated copy, where the nearest-vertex
+    match sends both copies to one. Moving the one face that uses the second copy onto the first
+    leaves the same positions and faces as triangles but another mesh (the second copy unused),
+    and one face flipped is another mesh too. An unwelded box, every corner held three to six
+    times, equals its own shuffle.
+    """
+    vertices_np = np.array(
+        [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 0, 0]], dtype=np.float32
+    )
+    faces_np = np.array([[0, 2, 1], [0, 4, 3], [1, 2, 3], [0, 3, 2]])
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+
+    def allclose(other_vertices_np: np.ndarray, other_faces_np: np.ndarray) -> bool:
+        other_vertices_wp, other_faces_wp = numpy_to_warp(other_vertices_np, other_faces_np, device)
+        return od.equality.meshes_allclose(vertices_wp, faces_wp, other_vertices_wp, other_faces_wp)
+
+    assert allclose(vertices_np, faces_np)
+    for seed in range(4):
+        assert allclose(*_shuffled(vertices_np, faces_np, seed))
+    welded_np = faces_np.copy()
+    welded_np[1, 1] = 1
+    assert not allclose(vertices_np, welded_np)
+    flipped_np = faces_np.copy()
+    flipped_np[3] = flipped_np[3, ::-1]
+    assert not allclose(vertices_np, flipped_np)
+
+    box_tm = tm.creation.box()
+    soup_np = np.asarray(box_tm.vertices, dtype=np.float32)[box_tm.faces].reshape(-1, 3)
+    soup_faces_np = np.arange(len(soup_np)).reshape(-1, 3)
+    soup_wp, soup_faces_wp = numpy_to_warp(soup_np, soup_faces_np, device)
+    shuffled_wp, shuffled_faces_wp = numpy_to_warp(*_shuffled(soup_np, soup_faces_np, 7), device)
+    assert od.equality.meshes_allclose(soup_wp, soup_faces_wp, shuffled_wp, shuffled_faces_wp)
+
+
 def test_meshes_allclose_edge_cases(device: str) -> None:
     """Not a parity assert: empty meshes, different counts, an out-of-range corner, bad sizes."""
     mesh_tm = tm.creation.box()
@@ -319,7 +358,8 @@ def test_points_allclose(request: pytest.FixtureRequest, mesh_name: str) -> None
     Not a library comparison: no reference compares point sets up to order; a constructed answer.
 
     A shuffled copy is equal, also moved by a tenth of the tolerance; one point moved by ten times
-    the tolerance, one point replaced by a copy of another and a missing point are not.
+    the tolerance, one point replaced by a copy of another and a missing point are not. A set with
+    a point held twice equals its own shuffle.
     """
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     device = mesh_wp.device
@@ -342,6 +382,16 @@ def test_points_allclose(request: pytest.FixtureRequest, mesh_name: str) -> None
     duplicated_np[5] = duplicated_np[6]
     assert not allclose(duplicated_np)
     assert not allclose(shuffled_np[1:])
+    # A set holding a point twice equals its own shuffle, and not a set holding another point
+    # twice instead.
+    rng = np.random.default_rng(4)
+    duplicated_wp = points_to_warp(duplicated_np, device)
+    assert od.equality.points_allclose(
+        duplicated_wp, points_to_warp(duplicated_np[rng.permutation(len(points_np))], device)
+    )
+    other_np = shuffled_np.copy()
+    other_np[7] = other_np[8]
+    assert not od.equality.points_allclose(duplicated_wp, points_to_warp(other_np, device))
 
 
 @pytest.mark.parametrize("width", [1, 2, 3])

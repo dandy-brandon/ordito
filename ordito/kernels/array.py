@@ -2557,6 +2557,15 @@ def lowbias32(x: wp.uint32) -> wp.uint32:
 
 
 @wp.func
+def splitmix64_finalize(x: wp.uint64) -> wp.uint64:
+    # The ``splitmix64`` finalizer: a bijection of 64-bit words that spreads every input bit over
+    # the output, for hash slots and words that must look independent.
+    x = (x ^ (x >> wp.uint64(30))) * wp.uint64(0xBF58476D1CE4E5B9)
+    x = (x ^ (x >> wp.uint64(27))) * wp.uint64(0x94D049BB133111EB)
+    return x ^ (x >> wp.uint64(31))
+
+
+@wp.func
 def pack_directed_key(a: wp.int32, b: wp.int32, base: wp.uint64) -> wp.uint64:
     """Key of directed pair ``(a, b)``; ``(a, b)`` and ``(b, a)`` get different keys."""
     return wp.uint64(wp.uint32(a)) + wp.uint64(wp.uint32(b)) * base

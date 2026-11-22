@@ -1,6 +1,12 @@
 import warp as wp
 
-from ordito.kernels.array import pack_directed_key, pack_index_triple, rotate_min_first, to_vec3d
+from ordito.kernels.array import (
+    pack_directed_key,
+    pack_index_triple,
+    rotate_min_first,
+    splitmix64_finalize,
+    to_vec3d,
+)
 from ordito.kernels.triangles import corner_triple
 
 wp.set_module_options({"enable_backward": False})
@@ -296,6 +302,87 @@ def flag_unmatched_vertices(
         return
     if wp.atomic_add(hits, m, wp.int32(1)) != wp.int32(0):
         out_unequal[0] = wp.int32(1)
+
+
+@wp.func
+def coincidence_class(
+    inverse: wp.array[wp.int32], match: wp.array[wp.int32], v: wp.int32
+) -> wp.int32:
+    # Vertex ``v``'s class of coincident ``b`` vertices: ``inverse`` of its ``b`` match, ``v``
+    # itself on the ``b`` side (``match`` is ``None``).
+    if match.shape[0] == 0:
+        return inverse[v]
+    return inverse[match[v]]
+
+
+@wp.func
+def class_corner_word(c0: wp.int32, c1: wp.int32, c2: wp.int32) -> wp.uint64:
+    # A face as one corner reads it, in coincidence classes: the three classes from that corner on,
+    # mixed into one word. A rotation of the face is another corner's word.
+    h = splitmix64_finalize(wp.uint64(c0) + wp.uint64(1))
+    h = splitmix64_finalize(h ^ wp.uint64(c1))
+    return splitmix64_finalize(h ^ wp.uint64(c2))
+
+
+@wp.kernel
+def coincidence_signatures(
+    faces: wp.array[wp.int32],
+    inverse: wp.array[wp.int32],
+    match: wp.array[wp.int32],
+    out_signatures: wp.array[wp.uint64],
+) -> None:
+    # Each corner adds its face's word to its vertex's signature, which tells apart the coincident
+    # copies of a seam or a pinch by the faces they carry. An integer sum, so the arrival order
+    # cannot change it. A face with a corner outside the buffer adds nothing: the face comparison
+    # rejects it.
+    f = wp.int32(wp.tid())
+    i0, i1, i2 = corner_triple(faces, f)
+    n = out_signatures.shape[0]
+    if i0 < 0 or i0 >= n or i1 < 0 or i1 >= n or i2 < 0 or i2 >= n:
+        return
+    c0 = coincidence_class(inverse, match, i0)
+    c1 = coincidence_class(inverse, match, i1)
+    c2 = coincidence_class(inverse, match, i2)
+    wp.atomic_add(out_signatures, i0, class_corner_word(c0, c1, c2))
+    wp.atomic_add(out_signatures, i1, class_corner_word(c1, c2, c0))
+    wp.atomic_add(out_signatures, i2, class_corner_word(c2, c0, c1))
+
+
+@wp.kernel
+def coincidence_keys(
+    inverse: wp.array[wp.int32],
+    match: wp.array[wp.int32],
+    signatures: wp.array[wp.uint64],
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # Vertex ``v``'s sort key, its class in the high word and its signature's high half below, with
+    # the identity payload, into the leading halves of the radix sort's double-width buffers.
+    # ``signatures`` is ``None`` for a point set.
+    v = wp.int32(wp.tid())
+    key = wp.uint64(coincidence_class(inverse, match, v)) << wp.uint64(32)
+    if signatures.shape[0] > 0:
+        key = key | (signatures[v] >> wp.uint64(32))
+    out_keys[v] = key
+    out_order[v] = v
+
+
+@wp.kernel
+def pair_coincident_vertices(
+    keys_a: wp.array[wp.uint64],
+    order_a: wp.array[wp.int32],
+    keys_b: wp.array[wp.uint64],
+    order_b: wp.array[wp.int32],
+    out_match: wp.array[wp.int32],
+    out_unequal: wp.array[wp.int32],
+) -> None:
+    # Sorted position ``i`` pairs the two sides' vertices there. Equal class sequences make each
+    # class's members pair among themselves; any difference raises ``out_unequal[0]`` (a plain
+    # store: every writer stores 1).
+    i = wp.int32(wp.tid())
+    if (keys_a[i] >> wp.uint64(32)) != (keys_b[i] >> wp.uint64(32)):
+        out_unequal[0] = wp.int32(1)
+    out_match[order_a[i]] = order_b[i]
 
 
 @wp.kernel
