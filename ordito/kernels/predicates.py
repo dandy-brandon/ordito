@@ -60,11 +60,18 @@ def float_inf(sample: wp.Float) -> wp.Float:
 
 @wp.func
 def ordered_dot(a: Any, b: Any):
-    # A 3-vector dot product summed in component order, as C++ ports' own ``dot`` (Manifold's
-    # linalg, vcg's ``Point3``, libigl's serial fill) form it. Not ``wp.dot``: that starts from
-    # ``0 + a[0] * b[0]``, which turns a first term of ``-0.0`` into ``+0.0`` where the port keeps
-    # it.
+    # A 3-vector dot product summed in component order, as C++ ports' own ``dot`` (vcg's
+    # ``Point3``, libigl's serial fill) form it: three products of ``-0.0`` sum to ``-0.0``.
+    # Manifold's linalg starts from zero instead (``linalg_dot``).
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+@wp.func
+def linalg_dot(a: Any, b: Any):
+    # Manifold's ``la::dot``: ``sum(a * b)``, a fold from ``T(0)``, so ``((0 + x) + y) + z``. It
+    # differs from ``ordered_dot`` only where every product is ``-0.0``: the sum is then ``+0.0``,
+    # a sign ``rotation_quat``'s ``copysign`` carries into a frame.
+    return type(a[0])(0.0) + a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 
 
 @wp.func

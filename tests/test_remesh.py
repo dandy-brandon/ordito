@@ -5561,6 +5561,10 @@ def _smooth_mesh_tm(request: pytest.FixtureRequest, shape: str) -> tm.Trimesh:
     """Return a smoothing case: quads, flat caps, needles, a smooth torus or a CSG result."""
     if shape == "torus":
         return float32_trimesh(tm.creation.torus(1.0, 0.3, 16, 8))
+    if shape == "plate_and_boss":
+        plate_m3 = m3.Manifold.cube((2.0, 1.2, 0.4), center=True)
+        boss_m3 = m3.Manifold.cylinder(0.9, 0.45, circular_segments=10).translate((0.4, 0.0, 0.0))
+        return manifold3d_to_trimesh(plate_m3 + boss_m3)
     if shape == "box_minus_ball":
         ball_tm = float32_trimesh(tm.creation.icosphere(subdivisions=2, radius=0.7))
         return manifold3d_to_trimesh(
@@ -5581,7 +5585,12 @@ _SMOOTH_CASES = [
     ("sphere_irregular", "tolerance", 30.0, 0.5),
     ("box_minus_ball", "tolerance", 52.5, 0.3),
     ("torus", "tolerance", 52.5, 0.0),
+    ("plate_and_boss", "tolerance", 52.5, 0.1),
 ]
+# A tolerance fraction of the extent other than 1 %: the plate's long thin faces split as obtuse
+# triangles whose base share exceeds their short side, where Manifold's partition height takes
+# ``std::max(1., NaN)`` (ordito raised a math domain error there until 0.5.0).
+_SMOOTH_TOLERANCE = {"plate_and_boss": 0.0025}
 
 
 @pytest.mark.parity("subdivide_smooth", "manifold3d")
@@ -5601,7 +5610,8 @@ def test_subdivide_smooth_matches_manifold3d(
     against ``refine_to_tolerance``. The box smooths its faces as quads, the cylinder keeps its
     caps flat and its rims creased, ``sphere_irregular``'s needles take the Bezier patches'
     degenerate branches, and the box less a ball holds flat faces, sharp creases and a curved
-    cavity at once; a nonzero smoothness leaves the creases partly smooth.
+    cavity at once; a nonzero smoothness leaves the creases partly smooth. The plate with a
+    ten-sided boss refines long thin faces through the partition's obtuse branch.
     """
     mesh_tm = _smooth_mesh_tm(request, shape)
     extent = float(np.ptp(mesh_tm.vertices, axis=0).max())
@@ -5622,11 +5632,12 @@ def test_subdivide_smooth_matches_manifold3d(
             min_smoothness=min_smoothness,
         )
     else:
-        result_m3 = smoothed_m3.refine_to_tolerance(0.01 * extent)
+        tolerance = _SMOOTH_TOLERANCE.get(shape, 0.01) * extent
+        result_m3 = smoothed_m3.refine_to_tolerance(tolerance)
         result = od.remesh.subdivide_smooth(
             vertices,
             faces,
-            tolerance=0.01 * extent,
+            tolerance=tolerance,
             min_sharp_angle=min_sharp_angle,
             min_smoothness=min_smoothness,
         )
@@ -5635,7 +5646,11 @@ def test_subdivide_smooth_matches_manifold3d(
 
 
 def test_subdivide_smooth_takes_exactly_one_refinement(device: str) -> None:
-    """None or two of ``n``, ``length``, ``tolerance`` raise. Not a library comparison: guards."""
+    """
+    None or two of ``n``, ``length``, ``tolerance`` raise, and so does ``n`` below one.
+
+    Not a library comparison: guards.
+    """
     box_tm = tm.creation.box(bounds=[[0, 0, 0], [1, 1, 1]])
     vertices, faces = numpy_to_warp(box_tm.vertices, box_tm.faces, device)
     with pytest.raises(ValueError, match="exactly one"):
@@ -5644,3 +5659,5 @@ def test_subdivide_smooth_takes_exactly_one_refinement(device: str) -> None:
         od.remesh.subdivide_smooth(vertices, faces, 2, length=0.1)
     with pytest.raises(ValueError, match="must be finite and nonzero"):
         od.remesh.subdivide_smooth(vertices, faces, tolerance=0.0)
+    with pytest.raises(ValueError, match="n must be at least 1"):
+        od.remesh.subdivide_smooth(vertices, faces, 0)

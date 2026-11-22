@@ -68,8 +68,8 @@ from ordito.kernels.predicates import (
     float_inf,
     is_unfold_quadrangle_convex,
     law_of_cosines_angle,
+    linalg_dot,
     mincircle_diameter_sq,
-    ordered_dot,
     orient2d,
     project_out_normal,
     segment_segment_distance_sq,
@@ -7273,7 +7273,7 @@ def quadric_pass_tail(
 # ``subdivide_smooth``: Manifold's ``Subdivide``, ``SmoothOut`` and ``InterpTri``. Its kernels build
 # unfused, each in a module of its own (``fuse_fp`` is a module option), so every vertex is
 # Manifold's bit for bit.
-# (linalg's ``dot`` is ``predicates.ordered_dot``; ``cross``, ``lerp``, ``*`` and ``/`` round as
+# (linalg's ``dot`` is ``predicates.linalg_dot``; ``cross``, ``lerp``, ``*`` and ``/`` round as
 # linalg's and are Warp's own.)
 
 
@@ -7285,7 +7285,7 @@ def negated3(a: wp.vec3d) -> wp.vec3d:
 @wp.func
 def la_normalize(a: wp.vec3d) -> wp.vec3d:
     # ``la::normalize``: divided by its length, NaN for zero.
-    return a / wp.sqrt(ordered_dot(a, a))
+    return a / wp.sqrt(linalg_dot(a, a))
 
 
 @wp.func
@@ -7410,12 +7410,12 @@ def refine_edge_added(
         edge_norm = la_normalize(d)
         t_start = xyz(tangents[h])
         t_end = xyz(tangents[twins[h]])
-        a = t_start - (edge_norm) * (ordered_dot(edge_norm, t_start))
-        b = t_end - (edge_norm) * (ordered_dot(edge_norm, t_end))
+        a = t_start - (edge_norm) * (linalg_dot(edge_norm, t_start))
+        b = t_end - (edge_norm) * (linalg_dot(edge_norm, t_end))
         ab = a - b
-        bulge = wp.float64(0.5) * (
-            wp.sqrt(ordered_dot(a, a)) + wp.sqrt(ordered_dot(b, b))
-        ) + wp.sqrt(ordered_dot(ab, ab))
+        bulge = wp.float64(0.5) * (wp.sqrt(linalg_dot(a, a)) + wp.sqrt(linalg_dot(b, b))) + wp.sqrt(
+            linalg_dot(ab, ab)
+        )
         # A crease corner's ``0 / 0`` smoothness leaves NaN tangents, whose count Manifold
         # converts without a check (undefined, and in practice unbounded); none are added here.
         count = 0
@@ -7784,7 +7784,7 @@ mat24d = wp.types.matrix(shape=(2, 4), dtype=wp.float64)
 @wp.func
 def angle_between(a: wp.vec3d, b: wp.vec3d) -> wp.float64:
     # ``AngleBetween`` of unit vectors.
-    d = ordered_dot(a, b)
+    d = linalg_dot(a, b)
     if d >= wp.float64(1.0):
         return wp.float64(0.0)
     if d <= wp.float64(-1.0):
@@ -7796,8 +7796,8 @@ def angle_between(a: wp.vec3d, b: wp.vec3d) -> wp.float64:
 def circular_tangent(tangent: wp.vec3d, edge: wp.vec3d) -> wp.vec4d:
     # ``CircularTangent``: the weighted cubic Bezier tangent of a circular arc along ``edge``.
     direction = safe_normalize(tangent)
-    weight = wp.max(wp.float64(0.5), ordered_dot(direction, safe_normalize(edge)))
-    bz2 = ((direction) * (wp.float64(0.5))) * (wp.sqrt(ordered_dot(edge, edge)))
+    weight = wp.max(wp.float64(0.5), linalg_dot(direction, safe_normalize(edge)))
+    bz2 = ((direction) * (wp.float64(0.5))) * (wp.sqrt(linalg_dot(edge, edge)))
     t = wp.float64(2.0) / wp.float64(3.0)
     bz3 = wp.lerp(
         wp.vec4d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0), wp.float64(1.0)),
@@ -7919,7 +7919,7 @@ def initial_tangents(
     edge = positions[faces[halfedge_next(h)]] - positions[start]
     edge_normal = face_normals[h // 3] + face_normals[twins[h] // 3]
     bi_tangent = wp.cross(normal, edge)
-    if ordered_dot(normal, edge_normal) < wp.float64(0.0):
+    if linalg_dot(normal, edge_normal) < wp.float64(0.0):
         bi_tangent = wp.cross(edge_normal, edge)
     out_tangents[h] = circular_tangent(wp.cross(bi_tangent, normal), edge)
 
@@ -8227,7 +8227,7 @@ def distribute_tangents(
                 current_angle = SMOOTH_TWO_PI
             else:
                 current_angle = angle_between(this_tangent, first_tangent)
-                if ordered_dot(approx_normal, wp.cross(this_tangent, first_tangent)) < wp.float64(
+                if linalg_dot(approx_normal, wp.cross(this_tangent, first_tangent)) < wp.float64(
                     0.0
                 ):
                     current_angle = SMOOTH_TWO_PI - current_angle
@@ -8237,7 +8237,7 @@ def distribute_tangents(
         steps += 1
         if fixed[current] != 0:
             break
-    if count == 1 or ordered_dot(normal, normal) == wp.float64(0.0):
+    if count == 1 or linalg_dot(normal, normal) == wp.float64(0.0):
         return
     end = current
     scale = current_angle / desired
@@ -8257,7 +8257,7 @@ def distribute_tangents(
                 angle = SMOOTH_TWO_PI
                 if current != h:
                     angle = angle_between(this_tangent, first_tangent)
-                    if ordered_dot(
+                    if linalg_dot(
                         approx_normal, wp.cross(this_tangent, first_tangent)
                     ) < wp.float64(0.0):
                         angle = SMOOTH_TWO_PI - angle
@@ -8289,7 +8289,7 @@ def distribute_tangents(
             angle_now = SMOOTH_TWO_PI
             if current != h:
                 angle_now = angle_between(this_tangent, first_tangent)
-                if ordered_dot(approx_normal, wp.cross(this_tangent, first_tangent)) < wp.float64(
+                if linalg_dot(approx_normal, wp.cross(this_tangent, first_tangent)) < wp.float64(
                     0.0
                 ):
                     angle_now = SMOOTH_TWO_PI - angle_now
@@ -8366,9 +8366,9 @@ def cubic_lerp_point(p0: wp.vec4d, p1: wp.vec4d, p2: wp.vec4d, x: wp.float64) ->
 @wp.func
 def orthogonal_to(v: wp.vec3d, alt: wp.vec3d, ref: wp.vec3d) -> wp.vec3d:
     # ``OrthogonalTo``.
-    out = v - (ref) * (ordered_dot(v, ref))
-    if ordered_dot(out, out) < SMOOTH_PRECISION * ordered_dot(v, v):
-        out = alt - (ref) * (ordered_dot(alt, ref))
+    out = v - (ref) * (linalg_dot(v, ref))
+    if linalg_dot(out, out) < SMOOTH_PRECISION * linalg_dot(v, v):
+        out = alt - (ref) * (linalg_dot(alt, ref))
     return safe_normalize(out)
 
 
@@ -8424,12 +8424,12 @@ def qconj(q: wp.vec4d) -> wp.vec4d:
 @wp.func
 def vector_quat(orig: wp.vec3d, dest: wp.vec3d) -> wp.vec4d:
     # ``rotation_quat(orig, dest)``: the shortest rotation between unit vectors.
-    cos_theta = ordered_dot(orig, dest)
+    cos_theta = linalg_dot(orig, dest)
     if cos_theta >= wp.float64(1.0) - SMOOTH_DBL_EPSILON:
         return wp.vec4d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0), wp.float64(1.0))
     if cos_theta < wp.float64(-1.0) + SMOOTH_DBL_EPSILON:
         axis = wp.cross(wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(1.0)), orig)
-        if ordered_dot(axis, axis) < SMOOTH_DBL_EPSILON:
+        if linalg_dot(axis, axis) < SMOOTH_DBL_EPSILON:
             axis = wp.cross(wp.vec3d(wp.float64(1.0), wp.float64(0.0), wp.float64(0.0)), orig)
         return axis_angle_quat(la_normalize(axis), SMOOTH_PI)
     axis = wp.cross(orig, dest)
@@ -8497,7 +8497,7 @@ def bezier_to_bezier(
     q0 = matrix_quat(n0, bi0, wp.cross(n0, bi0))
     q1 = matrix_quat(n1, bi1, wp.cross(n1, bi1))
     edge = c1 - c0
-    long_way = ordered_dot(n0, edge) + ordered_dot(n1, edge) < wp.float64(0.0)
+    long_way = linalg_dot(n0, edge) + linalg_dot(n1, edge) < wp.float64(0.0)
     q_tmp = slerp(q0, q1, x, long_way)
     q = qmul(vector_quat(qxdir(q_tmp), tangent), q_tmp)
     delta = wp.lerp(rotate_from_to(xyz(ty0), q0, q), rotate_from_to(xyz(ty1), q1, q), x)

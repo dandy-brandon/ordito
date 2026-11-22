@@ -7497,7 +7497,10 @@ def _triangle_partition(
         )
     else:  # obtuse: split into two acute
         ns = min(n[0] - 2, int(_round_half_away((f - n[1] * n[1]) / (2 * n[0]))))
-        nh = int(max(1.0, _round_half_away(math.sqrt(n[2] * n[2] - ns * ns))))
+        # Height from n[0], at most n[2]. Where ns exceeds n[2] Manifold's ``std::sqrt`` is NaN
+        # and ``std::max(1., NaN)`` returns its first argument, so the height is one piece.
+        height_sq = n[2] * n[2] - ns * ns
+        nh = int(max(1.0, _round_half_away(math.sqrt(height_sq)))) if height_sq > 0 else 1
         h_offset = len(bary)
         middle = bary[offsets[0] + ns - 1]
         for j in range(1, nh):
