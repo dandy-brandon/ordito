@@ -24,9 +24,44 @@ from the one matching its tag — so prose sections do not belong between them.
 
 ### Added
 
-- `points.local_triangulation` takes `frames=`: `(n, 3)` `float64` tangent frames to build the
-  stars in, in place of the ones it estimates. `heat.PointCloudHeatSolver` hands it the frames it
-  keeps, so they are formed once.
+- `ordito.boolean`, exact Booleans of closed, consistently wound meshes on the GPU: `union`,
+  `intersection` and `difference` of two solids, `union_all`, `intersection_all` and
+  `difference_all` of many, `split_by_mesh` (both pieces of a solid cut by another), and
+  `split_by_plane` / `trim_by_plane` (capped cuts by a plane). A port of the Manifold library's
+  Boolean, the engine behind `trimesh.boolean` and `manifold3d`: exact `float32` predicates with
+  one symbolic perturbation for touching and coplanar inputs, so every result is closed and
+  manifold, and the same mesh Manifold returns, vertex and triangle order included.
+  `collapse_collinear=False` keeps the crossing vertices an exact-arithmetic Boolean (libigl's,
+  PyMeshLab's) keeps along straight creases.
+- `levelset.function_level_set`: the closed solid where a `@wp.func` of position is positive,
+  meshed from a body-centred cubic lattice with no grid to allocate (Manifold's `level_set`).
+- `remesh.subdivide_smooth`: refinement onto a smooth surface through the vertices that keeps
+  edges sharper than `min_sharp_angle` as creases and coplanar regions flat, by a count, an edge
+  length or a tolerance (Manifold's `smooth_out` and `refine*`). `remesh.simplify`: the vertices
+  that do not shape a closed mesh (inside flat regions, along straight edges) removed within a
+  tolerance (Manifold's `simplify`).
+- `polyline.triangulate_polygons` and `triangulate_polygons_from_offsets`: triangles of a planar
+  region given as outer loops and holes, every triangle indexing the input points, robust to
+  touching loops (Manifold's triangulator: the same triangles in the same order).
+- `ray.segment_hits`: every crossing of each segment with a closed mesh, in order along it,
+  decided by the Booleans' exact predicates, so a segment through an edge or a vertex crosses
+  once there (Manifold's `ray_cast`, for many segments at once).
+- Point-cloud preprocessing in `ordito.points`, each matching its Open3D, PCL or pytorch3d
+  counterpart: `orient_normals` (minimum-spanning-tree propagation),
+  `smooth_normals`, `smooth_points` (Laplacian or Taubin over a fixed neighbour table),
+  `smooth_points_mls`, `smooth_points_bilateral`, `cluster_labels` (DBSCAN, Open3D's labels),
+  `point_boundary_mask`, `point_visible_mask` (hidden point removal on the exact hull),
+  `point_covariances` and `point_frames` (principal frames and spreads).
+- `points.local_triangulation`: each point's star in the Delaunay triangulation of its neighbours
+  in its tangent plane, as one triangle buffer (`potpourri3d.PointCloudLocalTriangulation`); it
+  takes `frames=` to build the stars in given tangent frames.
+- `heat.PointCloudHeatSolver`: the heat method on a bare point cloud (geometry-central's
+  point-cloud solver): `distance`, `signed_distance` to curves through the cloud,
+  `extend_scalar`, `transport_tangent_vectors` and `log_map`, on the tufted cover of the local
+  triangulations, its factorizations kept for every later call.
+- Documentation: a [Solids and Booleans](https://lucagrementieri.github.io/ordito/examples/solids/)
+  gallery page, point-cloud and point-cloud-geodesic examples, a manifold3d migration guide, and
+  the new modules and functions on the benchmark pages.
 
 ### Changed
 

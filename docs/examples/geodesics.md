@@ -1,12 +1,13 @@
 ---
 head_title: "Geodesic distance and tangent fields on the GPU"
 description: >-
-  Heat-method geodesic distance, shortest paths, straightest geodesics, signed distance to curves, parallel transport and the log map on meshes, in Python on the GPU.
+  Heat-method geodesic distance, shortest paths, straightest geodesics, signed distance to curves, parallel transport and the log map on meshes and point clouds, in Python on the GPU.
 ---
 
 # Geodesics and tangent fields
 
-Heat-method distances, geodesic paths and tracing, vector transport and the log map.
+Heat-method distances, geodesic paths and tracing, vector transport and the log map, on meshes
+and on bare point clouds.
 
 ## Geodesic distance with the heat method {#g1}
 
@@ -406,4 +407,63 @@ edges without first getting longer, which is why it does not settle exactly on t
 equator.
 
 Modelled on: [potpourri3d: geodesic loops](https://github.com/nmwsharp/potpourri3d)
+{: .ordito-credits }
+
+## Geodesics on a point cloud {#g9}
+
+[`PointCloudHeatSolver`][ordito.heat.PointCloudHeatSolver] runs the heat method on a bare
+point cloud, geometry-central's point-cloud solver (`potpourri3d.PointCloudHeatSolver`).
+Each point builds its star in the Delaunay triangulation of its nearest neighbours in its
+tangent plane ([`local_triangulation`][ordito.points.local_triangulation]); the union of
+the stars is given its tufted cover, an intrinsic mesh on which the cotangent weights are
+never negative, and the mesh solvers run on that. One solver answers
+[`distance`][ordito.heat.PointCloudHeatSolver.distance],
+[`signed_distance`][ordito.heat.PointCloudHeatSolver.signed_distance] to curves,
+[`extend_scalar`][ordito.heat.PointCloudHeatSolver.extend_scalar],
+[`transport_tangent_vectors`][ordito.heat.PointCloudHeatSolver.transport_tangent_vectors]
+and [`log_map`][ordito.heat.PointCloudHeatSolver.log_map], each factoring its system once
+and reusing it for every later call. Its distances are compared here with the heat method
+on the bunny mesh the cloud was sampled from.
+
+```python
+import numpy as np
+import warp as wp
+
+import ordito as od
+from examples import data
+
+points = data.load_points("bunny_cloud", device)
+normals = wp.array(data.cloud_normals("bunny_cloud"), dtype=wp.vec3, device=device)
+solver = od.heat.PointCloudHeatSolver(points, normals=normals)
+
+source = int(np.argmax(points.numpy()[:, 1]))  # the tip of an ear
+distance = solver.distance(wp.array([source], dtype=wp.int32, device=device)).numpy()
+coordinates = solver.log_map(source).numpy()
+print(f"farthest point: {distance.max():.4f} away")
+print(
+    "log-map radius equals the distance:",
+    np.allclose(np.linalg.norm(coordinates, axis=1), distance, atol=2e-3),
+)
+
+# The heat method on the mesh the cloud was sampled from, at each point's nearest vertex.
+vertices, faces = data.load("bunny", device)
+nearest, _ = od.neighbors.query_nearest(vertices, points)
+start = wp.array(nearest.numpy()[[source]], dtype=wp.int32, device=device)
+on_mesh = od.heat.heat_geodesic(vertices, faces, start, method="potpourri3d")
+on_mesh = on_mesh.numpy()[nearest.numpy()]
+difference = np.abs(distance - on_mesh) / on_mesh.max()
+print(
+    f"against the mesh: median difference {np.median(difference):.2%} of the largest distance"
+)
+```
+
+```text title="Output"
+farthest point: 0.2365 away
+log-map radius equals the distance: True
+against the mesh: median difference 0.22% of the largest distance
+```
+
+![Geodesics on a point cloud](../assets/examples/g9.webp)
+
+Modelled on: [potpourri3d: point cloud distance](https://github.com/nmwsharp/potpourri3d#point-cloud-distance--vector-heat) · [geometry-central: point cloud heat solver](https://geometry-central.net/pointcloud/algorithms/heat_solver/)
 {: .ordito-credits }

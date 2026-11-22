@@ -65,6 +65,25 @@ Every one of these is lazily computed and cached on first access, exactly like t
 | `mesh.split()` | [`combine.split`][ordito.combine.split] |
 | `mesh.subdivide()` | [`remesh.subdivide`][ordito.remesh.subdivide] |
 | `mesh.simplify_quadric_decimation` | [`remesh.quadric_decimate`][ordito.remesh.quadric_decimate] |
+| `trimesh.creation.triangulate_polygon(polygon)` | [`polyline.triangulate_polygons(loops)`][ordito.polyline.triangulate_polygons] (outer loops counter-clockwise, holes clockwise; no Shapely, no Triangle) |
+| `trimesh.creation.extrude_triangulation` | [`creation.extrude_triangulation`][ordito.creation.extrude_triangulation] |
+
+## Booleans and capped cuts
+
+[`ordito.boolean`][ordito.boolean] ports Manifold, the engine `trimesh.boolean` calls by default,
+so the answers are the meshes trimesh gets back from it, computed on the GPU.
+
+| trimesh | ordito |
+|---|---|
+| `mesh_a.union(mesh_b)`, `trimesh.boolean.union([a, b])` | [`boolean.union(*a, *b)`][ordito.boolean.union] |
+| `mesh_a.intersection(mesh_b)` | [`boolean.intersection`][ordito.boolean.intersection] |
+| `mesh_a.difference(mesh_b)` | [`boolean.difference`][ordito.boolean.difference] |
+| `trimesh.boolean.union(meshes)` (a list) | [`boolean.union_all(meshes)`][ordito.boolean.union_all], likewise [`intersection_all`][ordito.boolean.intersection_all], [`difference_all`][ordito.boolean.difference_all] |
+| `mesh.slice_plane(origin, normal, cap=True)` | [`boolean.trim_by_plane(vertices, faces, normal, offset)`][ordito.boolean.trim_by_plane] (exact, closed result); [`intersection.slice_mesh_with_plane`][ordito.intersection.slice_mesh_with_plane] for an open cut of any surface (`cap=False`) |
+| two `slice_plane(..., cap=True)` calls, one per side | [`boolean.split_by_plane`][ordito.boolean.split_by_plane] (both sides in one call) |
+| `mesh.ray.intersects_location` counted for parity | [`ray.segment_hits`][ordito.ray.segment_hits] (exact at edges and vertices: a crossing there counts once) |
+
+The [Solids and Booleans](../examples/solids.md) gallery shows each of them at work.
 
 ## What's different, not just renamed
 
@@ -76,6 +95,12 @@ Every one of these is lazily computed and cached on first access, exactly like t
 - **No in-place mutation.** `mesh.remove_duplicate_faces()` and similar trimesh calls mutate the
   object; ordito functions always return new arrays (e.g.
   [`repair.resolve_duplicated_faces`][ordito.repair.resolve_duplicated_faces]).
+- **Booleans take solids, and a plane is a normal and an offset.** Like trimesh's Manifold
+  engine, [`ordito.boolean`][ordito.boolean] requires closed, consistently wound inputs
+  (`mesh.is_volume`) and raises `ValueError` otherwise, where trimesh may hand back an empty mesh;
+  [`repair.make_solid`][ordito.repair.make_solid] repairs one first. Plane cuts take the plane as
+  a normal and its signed offset from the origin along the unit normal (`dot(x, n) == offset`),
+  not as a point on it: `offset = dot(origin, normal / |normal|)`.
 - **`isotropic_remesh` is a superset of trimesh's `subdivide_to_size`.** trimesh's crack-free
   `remesh.subdivide_to_size` only splits; ordito's
   [`remesh.isotropic_remesh`][ordito.remesh.isotropic_remesh] also collapses, flips, and smooths

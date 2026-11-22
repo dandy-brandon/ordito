@@ -32,6 +32,7 @@ Shelving decisions that are not obvious from the section titles:
     * [Remeshing and simplification](examples/remesh.md)
     * [Repairing meshes](examples/repair.md)
     * [Offsets, voxels and implicit surfaces](examples/volumes.md)
+    * [Solids and Booleans](examples/solids.md)
     * [Spatial queries](examples/queries.md)
     * [Cutting, slicing and selection](examples/cutting.md)
     * [Point clouds](examples/points.md)
@@ -43,6 +44,7 @@ Shelving decisions that are not obvious from the section titles:
     * [Open3D](migrating-from/open3d.md)
     * [MeshLab / PyMeshLab](migrating-from/meshlab.md)
     * [potpourri3d](migrating-from/potpourri3d.md)
+    * [manifold3d](migrating-from/manifold3d.md)
     * [PyTorch3D](migrating-from/pytorch3d.md)
 * [Benchmarks](benchmarks/index.md)
     * Primitives & creation
@@ -68,6 +70,7 @@ Shelving decisions that are not obvious from the section titles:
         * [repair](benchmarks/repair.md)
         * [holes](benchmarks/holes.md)
         * [combine](benchmarks/combine.md)
+        * [boolean](benchmarks/boolean.md)
         * [remesh](benchmarks/remesh.md)
         * [smoothing](benchmarks/smoothing.md)
         * [seams](benchmarks/seams.md)
@@ -95,6 +98,8 @@ Shelving decisions that are not obvious from the section titles:
         * [heat](benchmarks/heat.md)
     * Curves
         * [polyline](benchmarks/polyline.md)
+    * Attributes & I/O
+        * [texture](benchmarks/texture.md)
     * Arrays & infrastructure
         * [array](benchmarks/array.md)
         * [reduce](benchmarks/reduce.md)

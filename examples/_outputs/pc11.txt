@@ -1,0 +1,5 @@
+    noisy: median distance to the surface 0.000536
+Laplacian: median distance to the surface 0.000217
+   Taubin: median distance to the surface 0.000246
+      MLS: median distance to the surface 0.000205
+bilateral: median distance to the surface 0.000272

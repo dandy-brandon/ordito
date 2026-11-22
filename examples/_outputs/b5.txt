@@ -1,0 +1,4 @@
+lattice: 4260228 triangles
+infill: 1120154 triangles, 33% of the volume
+voids: 1142826 triangles, 67% of the volume
+both solids: True

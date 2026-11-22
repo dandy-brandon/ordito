@@ -1,13 +1,14 @@
 ---
 head_title: "Point cloud processing on the GPU in Python"
 description: >-
-  Down-sample, sample, estimate normals, remove outliers, interpolate and compute exact convex hulls of point clouds on the GPU in Python.
+  Down-sample, sample, estimate and orient normals, smooth, cluster, remove outliers, find boundary and visible points, and compute exact convex hulls of point clouds on the GPU in Python.
 ---
 
 # Point clouds
 
-Down-sampling, surface sampling, normal estimation, outlier removal, interpolation and exact
-convex hulls.
+Down-sampling, surface sampling, normal estimation and orientation, outlier removal,
+interpolation, exact convex hulls, smoothing, DBSCAN clustering, boundary and visible points, and
+local frames.
 
 ## Down-sampling: voxel grid, farthest point and blue noise {#pc1}
 
@@ -427,4 +428,290 @@ The rules for degenerate input:
   as there is no volume to bound.
 
 Modelled on: [trimesh: convex](https://trimesh.org/trimesh.convex.html)
+{: .ordito-credits }
+
+## Orienting and smoothing normals {#pc10}
+
+[`estimate_normals`][ordito.points.estimate_normals] fits each normal's direction but
+can only guess its sign locally, so some normals point inward ([PC3](#pc3)).
+[`orient_normals`][ordito.points.orient_normals] makes the signs agree across the whole
+cloud: it builds the minimum spanning tree of the neighbour graph, weighting each edge by how
+far its two normals are from parallel, and flips every normal to agree with its parent's,
+Hoppe's propagation as Open3D's `orient_normals_consistent_tangent_plane` runs it. On a
+closed surface every normal then faces one side.
+[`smooth_normals`][ordito.points.smooth_normals]
+averages each normal over its neighbours, sign-aligned to its own, which takes out the
+noise of the plane fits. The cloud below is the bunny sample of [PC3](#pc3) jittered by
+scanner-like noise, scored against the exact normals of the surface it was sampled from.
+
+```python
+import numpy as np
+import warp as wp
+
+import ordito as od
+from examples import data
+
+clean = data.arrays("bunny_cloud")[0]
+truth = data.cloud_normals("bunny_cloud")  # the exact normals of the sampled surface
+jitter = np.random.default_rng(3).normal(0.0, 0.0008, clean.shape)  # a noisy scan
+points = wp.array(clean + jitter, dtype=wp.vec3, device=device)
+neighbours, _ = od.neighbors.query_nearest(points, points, k=16)
+
+def report(name: str, normals: np.ndarray) -> None:
+    cosine = np.sum(normals * truth, axis=1)
+    angle = np.degrees(np.arccos(np.clip(np.abs(cosine), 0.0, 1.0)))
+    outward = (cosine > 0).mean()
+    print(f"{name:>9}: outward {outward:6.1%}, median angle {np.median(angle):.2f} degrees")
+
+estimated = od.points.estimate_normals(points, neighbours)
+oriented = od.points.orient_normals(points, estimated, neighbours)
+smoothed = od.points.smooth_normals(oriented, neighbours, iterations=2)
+report("estimated", estimated.numpy())
+report("oriented", oriented.numpy())
+report("smoothed", smoothed.numpy())
+```
+
+```text title="Output"
+estimated: outward  46.1%, median angle 13.68 degrees
+ oriented: outward  99.7%, median angle 13.68 degrees
+ smoothed: outward  99.7%, median angle 9.01 degrees
+```
+
+![Orienting and smoothing normals](../assets/examples/pc10.webp)
+
+Modelled on: [Open3D: normal orientation](https://www.open3d.org/docs/release/tutorial/geometry/pointcloud.html) · [PCL: normal estimation](https://pcl.readthedocs.io/projects/tutorials/en/latest/normal_estimation.html)
+{: .ordito-credits }
+
+## Smoothing a noisy cloud {#pc11}
+
+Four ways to take the noise out of a scan without a mesh, scored by each point's distance to
+the surface the clean cloud was sampled from.
+[`smooth_points`][ordito.points.smooth_points] moves each point towards the mean of its
+neighbours (Laplacian steps, which also shrink the cloud) or, given `mu`, alternates a
+step out (Taubin's filter, which does not);
+[`smooth_points_mls`][ordito.points.smooth_points_mls] projects each point onto the plane
+fitted to its neighbourhood, a moving least squares step that also returns normals; and
+[`smooth_points_bilateral`][ordito.points.smooth_points_bilateral] averages with weights that
+fall off along the normal, so it spares creases. All four are Open3D's point-cloud filters,
+run over a fixed neighbour table.
+
+```python
+import numpy as np
+import warp as wp
+
+import ordito as od
+from examples import data
+
+clean = data.arrays("bunny_cloud")[0]
+rng = np.random.default_rng(3)
+noisy = wp.array(clean + rng.normal(0.0, 0.0008, clean.shape), dtype=wp.vec3, device=device)
+bunny = data.load("bunny", device)
+neighbours, _ = od.neighbors.query_nearest(noisy, noisy, k=16)
+normals = od.points.estimate_normals(noisy, neighbours)
+
+smoothed = {
+    "noisy": noisy,
+    "Laplacian": od.points.smooth_points(noisy, neighbours, iterations=5),
+    "Taubin": od.points.smooth_points(noisy, neighbours, iterations=5, mu=-0.53),
+    "MLS": od.points.smooth_points_mls(noisy, neighbours)[0],
+    "bilateral": od.points.smooth_points_bilateral(
+        noisy, normals, neighbours, sigma_s=0.003, sigma_r=0.001
+    ),
+}
+for name, points in smoothed.items():
+    _, distance, _ = od.proximity.closest_point_on_mesh(*bunny, points)
+    print(f"{name:>9}: median distance to the surface {np.median(distance.numpy()):.6f}")
+```
+
+```text title="Output"
+    noisy: median distance to the surface 0.000536
+Laplacian: median distance to the surface 0.000217
+   Taubin: median distance to the surface 0.000246
+      MLS: median distance to the surface 0.000205
+bilateral: median distance to the surface 0.000272
+```
+
+![Smoothing a noisy cloud](../assets/examples/pc11.webp)
+
+Modelled on: [Open3D: point cloud filters](https://www.open3d.org/docs/release/python_api/open3d.geometry.PointCloud.html) · [PCL: moving least squares](https://pcl.readthedocs.io/projects/tutorials/en/latest/resampling.html)
+{: .ordito-credits }
+
+## DBSCAN clustering {#pc12}
+
+[`cluster_labels`][ordito.points.cluster_labels] labels each point with its DBSCAN cluster:
+a point with at least `min_points` others within `radius` is a core point, core points
+within reach of each other share a cluster, the points they reach join it, and the rest are
+noise (`-1`). The labels are Open3D's `cluster_dbscan` labels, cluster numbers included, not
+only the same partition. Here a scan of six separate parts, with 400 stray points in their
+bounding box. The parts come out as five clusters: the box and the torus pass within 2 mm
+of each other, closer than the radius, and DBSCAN rightly joins them, while the sphere and
+the cone, 4 cm apart, stay separate. Most strays come out as noise; the rest landed within
+the radius of a part, where they are border points of its cluster.
+
+```python
+import open3d as o3d
+import warp as wp
+
+import ordito as od
+from examples import data
+
+samples, _ = data.sample_points("parts", 120_000, seed=4)
+rng = np.random.default_rng(5)
+strays = rng.uniform(samples.min(axis=0), samples.max(axis=0), (400, 3)).astype(np.float32)
+cloud = np.vstack([samples, strays])
+points = wp.array(cloud, dtype=wp.vec3, device=device)
+
+labels = od.points.cluster_labels(points, radius=0.025, min_points=8).numpy()
+print(f"{labels.max() + 1} clusters, {np.sum(labels == -1)} noise points")
+print(f"strays labelled noise: {np.mean(labels[len(samples) :] == -1):.0%}")
+
+reference = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(cloud.astype(np.float64)))
+labels_o3d = np.asarray(reference.cluster_dbscan(eps=0.025, min_points=8))
+print(f"same labels as Open3D: {np.array_equal(labels, labels_o3d)}")
+```
+
+```text title="Output"
+5 clusters, 339 noise points
+strays labelled noise: 85%
+same labels as Open3D: True
+```
+
+![DBSCAN clustering](../assets/examples/pc12.webp)
+
+Modelled on: [Open3D: DBSCAN clustering](https://www.open3d.org/docs/release/tutorial/geometry/pointcloud.html) · [scikit-learn: DBSCAN](https://scikit-learn.org/stable/modules/clustering.html#dbscan)
+{: .ordito-credits }
+
+## Boundary points of a scan {#pc13}
+
+[`point_boundary_mask`][ordito.points.point_boundary_mask] finds the rim of a sampled
+surface without meshing it: each point's neighbours are projected into its tangent plane,
+and a point with an empty wedge wider than `max_gap` around it is on the boundary, PCL's
+boundary estimation as Open3D's `compute_boundary_points` runs it. The cloud below samples
+the bunny with its holes cut open; the flagged points trace the holes' rims, and nearly all
+of them lie within a few spacings of a rim of the mesh the cloud came from. The
+neighbourhood must be wide enough that random sampling gaps do not look like an edge: with
+16 neighbours many interior points of this area-uniform sample have an empty wedge.
+
+```python
+import numpy as np
+import warp as wp
+
+import ordito as od
+from examples import data
+
+samples, sample_normals = data.sample_points("holey_bunny", 60_000, seed=6)
+points = wp.array(samples, dtype=wp.vec3, device=device)
+normals = wp.array(sample_normals, dtype=wp.vec3, device=device)
+neighbours, _ = od.neighbors.query_nearest(points, points, k=40)
+on_rim = od.points.point_boundary_mask(points, normals, neighbours).numpy()
+print(f"{on_rim.sum()} of {len(samples)} points flagged as boundary")
+
+# Check against the rims of the mesh the cloud was sampled from.
+vertices, faces = data.load("holey_bunny", device)
+loops = od.boundary.boundary_loops(vertices, faces)
+rim = np.vstack([vertices.numpy()[loop.numpy()] for loop in loops])
+_, distance = od.neighbors.query_nearest(wp.array(rim, dtype=wp.vec3, device=device), points)
+spacing = np.median(od.neighbors.nearest_neighbor_distance(points).numpy())
+near = distance.numpy()[on_rim] < 6 * spacing
+print(
+    f"{len(loops)} rims in the mesh; "
+    f"{near.mean():.1%} of flagged points within 6 spacings of one"
+)
+```
+
+```text title="Output"
+801 of 60000 points flagged as boundary
+11 rims in the mesh; 92.6% of flagged points within 6 spacings of one
+```
+
+![Boundary points of a scan](../assets/examples/pc13.webp)
+
+Modelled on: [Open3D: boundary points](https://www.open3d.org/docs/release/python_api/open3d.t.geometry.PointCloud.html) · [PCL: boundary estimation](https://pointclouds.org/documentation/classpcl_1_1_boundary_estimation.html)
+{: .ordito-credits }
+
+## Points visible from a viewpoint {#pc14}
+
+[`point_visible_mask`][ordito.points.point_visible_mask] keeps the points a camera would
+see, from the points alone: Katz, Tal and Basri's hidden point removal flips the cloud
+about a large sphere centred on the camera, and the points whose images lie on the convex
+hull of the flipped cloud are the visible ones. The hull is
+[`convex_hull`][ordito.points.convex_hull]'s, exact. To check it, each point is also tested
+by casting a ray from the camera at the bunny mesh the cloud was sampled from: a point is
+visible when the first hit is (within a small distance) the point itself.
+
+```python
+import warp as wp
+
+import ordito as od
+
+points = data.load_points("bunny_cloud", device)
+cloud = points.numpy()
+diameter = float(np.linalg.norm(cloud.max(axis=0) - cloud.min(axis=0)))
+camera = cloud.mean(axis=0) + np.array([0.0, 0.05, 0.4])
+visible = od.points.point_visible_mask(points, wp.vec3(*camera), radius=100 * diameter).numpy()
+print(f"{visible.sum()} of {len(cloud)} points visible")
+
+# Reference: a ray from the camera to each point, against the bunny mesh.
+vertices, faces = data.load("bunny", device)
+mesh = wp.Mesh(points=vertices, indices=faces)
+origins = wp.array(np.repeat([camera], len(cloud), axis=0), dtype=wp.vec3, device=device)
+directions = wp.array(cloud - camera, dtype=wp.vec3, device=device)
+hit, index, _ = od.ray.intersects_location(mesh, origins, directions)
+first = np.full(len(cloud), np.inf)
+reach = np.linalg.norm(hit.numpy() - camera, axis=1)
+np.minimum.at(first, index.numpy(), reach)
+seen = first > np.linalg.norm(cloud - camera, axis=1) - 0.001
+print(f"agreement with ray casting: {np.mean(visible == seen):.1%}")
+```
+
+```text title="Output"
+8720 of 30000 points visible
+agreement with ray casting: 87.5%
+```
+
+![Points visible from a viewpoint](../assets/examples/pc14.webp)
+
+The flip radius sets how generous the test is: larger radii count more grazing points as
+visible. Katz et al. suggest about a hundred times the cloud's size, used here.
+
+Modelled on: [Open3D: hidden point removal](https://www.open3d.org/docs/release/tutorial/geometry/pointcloud.html)
+{: .ordito-credits }
+
+## Local frames and surface variation {#pc15}
+
+[`point_frames`][ordito.points.point_frames] gives every point the principal axes of its
+neighbourhood, widest first, as the rows of a rotation, together with the spreads along
+them: the eigen-decomposition of [`point_covariances`][ordito.points.point_covariances], with
+the axes' signs fixed by the SHOT rule as pytorch3d's
+`estimate_pointcloud_local_coord_frames` fixes them. The smallest spread over their sum, the
+*surface variation*, is near zero on flat patches and rises at creases and corners, a
+curvature proxy that needs no mesh: here it picks out the sharp edges of a machined part.
+
+```python
+import numpy as np
+import warp as wp
+
+import ordito as od
+from examples import data
+
+samples, _ = data.sample_points("cad_part", 50_000, seed=7)
+points = wp.array(samples, dtype=wp.vec3, device=device)
+neighbours, _ = od.neighbors.query_nearest(points, points, k=24)
+frames, spreads = od.points.point_frames(points, neighbours)
+
+spread = spreads.numpy()
+variation = spread[:, 2] / spread.sum(axis=1)
+normals = frames.numpy()[:, 2]  # the last row is the fitted normal
+print(f"surface variation: median {np.median(variation):.4f}, max {variation.max():.3f}")
+print(f"points on a crease (variation > 0.02): {np.mean(variation > 0.02):.1%}")
+```
+
+```text title="Output"
+surface variation: median 0.0000, max 0.201
+points on a crease (variation > 0.02): 13.7%
+```
+
+![Local frames and surface variation](../assets/examples/pc15.webp)
+
+Modelled on: [pytorch3d: local coordinate frames](https://pytorch3d.readthedocs.io/en/latest/modules/ops.html) · [Open3D: covariances](https://www.open3d.org/docs/release/python_api/open3d.geometry.PointCloud.html)
 {: .ordito-credits }

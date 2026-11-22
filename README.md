@@ -33,8 +33,8 @@ and falls back to CPU otherwise, with the same code.
   (normals, adjacency, boundary loops, manifoldness and watertightness predicates, BVH) for
   when an object API is more convenient than free functions.
 - **Fully typed** (`py.typed`), documented per module at
-  <https://lucagrementieri.github.io/ordito/>, and validated function-by-function against eleven
-  reference implementations — nine established geometry-processing libraries plus SciPy and
+  <https://lucagrementieri.github.io/ordito/>, and validated function-by-function against twelve
+  reference implementations — ten established geometry-processing libraries plus SciPy and
   NumPy (see below).
 
 ## Learn more
@@ -45,12 +45,12 @@ and falls back to CPU otherwise, with the same code.
   examples with the images they produce: cleaning a scan, point clouds to watertight surfaces,
   geodesic distance fields, aligning two scans, and many more.
 - **[Migrating from another library](https://lucagrementieri.github.io/ordito/migrating-from/)**
-  — already know trimesh, libigl, Open3D, MeshLab, potpourri3d, or PyTorch3D? Start here for a
-  function-by-function map.
+  — already know trimesh, libigl, Open3D, MeshLab, potpourri3d, manifold3d, or PyTorch3D? Start
+  here for a function-by-function map.
 - **[Performance](https://lucagrementieri.github.io/ordito/performance/)** — why the GPU path is
   fast, and how to check any speed claim yourself.
 
-## One GPU library instead of nine
+## One GPU library instead of ten
 
 Mesh processing in Python has long meant stitching together several excellent — but mostly
 CPU-bound and stylistically different — libraries. ordito consolidates the functionality it needs
@@ -60,17 +60,18 @@ from each of them behind a single GPU-accelerated API:
 |---|---|---|
 | [trimesh](https://github.com/mikedh/trimesh) | Mesh bookkeeping: edges, adjacency, boundary, validation, primitives, sampling, proximity | `edges`, `adjacency`, `boundary`, `validation`, `creation`, `sample`, `proximity`, the `Trimesh` class |
 | [libigl](https://libigl.github.io/) ([Python bindings](https://github.com/libigl/libigl-python-bindings)) | Discrete differential geometry: cotangent Laplacians, mass matrices, curvature, parametrization, heat-method geodesics | `laplacian`, `energies`, `curvature`, `parametrization`, `heat` |
-| [Open3D](https://www.open3d.org/) | Point clouds, registration, and surface reconstruction: ICP, screened Poisson, ball pivoting | `points`, `registration`, `reconstruction` |
+| [Open3D](https://www.open3d.org/) | Point clouds, registration, and surface reconstruction: normal estimation and orientation, smoothing, DBSCAN clustering, hidden point removal, ICP, screened Poisson, ball pivoting | `points`, `registration`, `reconstruction` |
 | [MeshLab](https://www.meshlab.net/) ([PyMeshLab](https://github.com/cnr-isti-vislab/PyMeshLab)) | Mesh editing filters: isotropic remeshing, decimation, smoothing, hole filling, uniform resampling | `remesh`, `smoothing`, `holes`, `repair` |
 | [PyVista](https://pyvista.org/) (VTK) | The VTK toolkit: feature edges, cell-quality metrics, contouring and clipping, point location, arc-length and polyline measures, voxelization | `edges`, `triangles`, `intersection`, `levelset`, `proximity`, `polyline`, `voxels` |
 | [MeshLib](https://meshlib.io/) | Minimum-weight hole filling and stitching, self-intersection repair, voxel offsets and booleans, projection queries, spike and outlier detection | `holes`, `repair`, `levelset`, `voxels`, `proximity`, `points` |
 | [PyMeshFix](https://github.com/pyvista/pymeshfix) (MeshFix / TMesh) | The repair pipeline end to end: a broken digitised surface in, one watertight solid out | `repair`, `holes`, `validation` |
-| [potpourri3d](https://github.com/nmwsharp/potpourri3d) (geometry-central) | The heat-method family: vector heat, parallel transport, log maps, signed distance, tangent frames | `heat`, `tangent_space` |
+| [potpourri3d](https://github.com/nmwsharp/potpourri3d) (geometry-central) | The heat-method family on meshes and point clouds: vector heat, parallel transport, log maps, signed distance, tangent frames, local triangulations | `heat`, `tangent_space`, `points` |
+| [manifold3d](https://github.com/elalish/manifold) (Manifold) | Exact Booleans of solids, batch Booleans, capped plane cuts, level sets of functions, smooth refinement, simplification, polygon triangulation, exact segment crossings | `boolean`, `levelset`, `remesh`, `polyline`, `ray` |
 | [PyTorch3D](https://pytorch3d.org/) | Batched neighbour and Chamfer primitives, the mesh regularization losses, cubify and marching cubes | `metrics`, `neighbors`, `energies`, `registration`, `levelset`, `voxels` |
 
 [SciPy](https://scipy.org/)'s `spatial.KDTree` and `sparse.csgraph` (covered by `neighbors`,
 `graph` and `proximity`) and NumPy's array primitives (`array`, `reduce`, `grouping`, `linalg`)
-round the set out to the eleven reference implementations the suite measures against.
+round the set out to the twelve reference implementations the suite measures against.
 
 These libraries are not runtime dependencies; they are **test oracles**. Wherever one of them
 computes the same quantity as an ordito function, a regression test compares the two outputs
@@ -156,16 +157,16 @@ close, stray debris to drop — see the
 | **Primitives** | `creation` | Boxes, spheres, platonic solids, capsules, tori; extrusion, revolution, sweeps, 2D polygon triangulation |
 | **Structure & topology** | `mesh`, `vertices`, `edges`, `triangles`, `halfedge`, `adjacency`, `boundary`, `selection`, `validation`, `homology`, `tangent_space` | Edge/face adjacency, half-edge structure, boundary loops, manifold/watertight/orientability predicates, submesh selection, homology generators, tangent frames |
 | **Measures & shape descriptors** | `measures`, `curvature`, `bounds`, `visibility` | Volume, centroid, and inertia integrals; discrete mean/Gaussian curvature and principal directions; axis-aligned and oriented bounding boxes; ambient occlusion, shape diameter, thickness |
-| **Editing & repair** | `transform`, `repair`, `holes`, `combine`, `remesh`, `smoothing`, `seams`, `levelset` | Rigid transforms, hole filling, winding repair, isotropic remeshing, quadric and clustering decimation, Loop and midpoint subdivision, Laplacian/Taubin smoothing, seam cutting, level-set offsets and marching cubes |
+| **Editing & repair** | `transform`, `repair`, `holes`, `combine`, `boolean`, `remesh`, `smoothing`, `seams`, `levelset` | Rigid transforms, hole filling, winding repair, exact Booleans (union, intersection, difference, batches, capped plane cuts), isotropic remeshing, quadric and clustering decimation, Loop, midpoint and crease-preserving smooth subdivision, Laplacian/Taubin smoothing, seam cutting, level-set offsets, marching cubes and solids from signed distance functions |
 | **Spatial queries** | `proximity`, `ray`, `neighbors`, `intersection`, `metrics` | Closest point, signed distance, winding number, ray casting, BVH and hash-grid neighbor queries, triangle-triangle intersection, chamfer and Hausdorff distance (differentiable via `wp.Tape`) |
-| **Point clouds, voxels & reconstruction** | `points`, `sample`, `voxels`, `reconstruction`, `registration` | Poisson-disk and blue-noise sampling, farthest-point and voxel down-sampling, screened Poisson reconstruction, ball pivoting, marching cubes, Delaunay triangulation, Procrustes and ICP (point-to-point, point-to-plane) |
+| **Point clouds, voxels & reconstruction** | `points`, `sample`, `voxels`, `reconstruction`, `registration` | Poisson-disk and blue-noise sampling, farthest-point and voxel down-sampling, normal orientation, point smoothing (Laplacian, Taubin, MLS, bilateral), DBSCAN clustering, boundary and hidden-point detection, screened Poisson reconstruction, ball pivoting, marching cubes, Delaunay triangulation, Procrustes and ICP (point-to-point, point-to-plane) |
 | **Operators & solvers** | `laplacian`, `energies`, `linalg`, `interpolation`, `parametrization` | Cotangent Laplacian, mass matrices, discrete energies, sparse conjugate-gradient solvers (Jacobi and multigrid-preconditioned), harmonic, LSCM, and ARAP parametrization |
-| **Geodesics & heat methods** | `geodesic_walk`, `heat` | Straightest-geodesic walks (exponential map), heat-method geodesic distance, vector heat / parallel transport / log maps, signed heat method |
-| **Curves** | `polyline` | Polyline resampling, simplification, and measures |
+| **Geodesics & heat methods** | `geodesic_walk`, `heat` | Straightest-geodesic walks (exponential map), heat-method geodesic distance, vector heat / parallel transport / log maps, signed heat method, on meshes and on point clouds |
+| **Curves** | `polyline` | Polyline resampling, simplification, and measures; triangulation of polygons with holes |
 | **Attributes & I/O** | `texture`, `io` | Per-vertex/face attribute handling, meshio-backed mesh loading |
 | **Arrays & infrastructure** | `array`, `reduce`, `grouping`, `graph`, `typing`, `constants` | GPU sort/scan/unique/group primitives, reductions, graph algorithms (connected components, shortest paths, cycles), typed array aliases |
 
-50 public modules in total — the full API reference, generated per module, lives at
+55 public modules in total — the full API reference, generated per module, lives at
 <https://lucagrementieri.github.io/ordito/>.
 
 ## Design
@@ -185,7 +186,7 @@ close, stray debris to drop — see the
 ## Status
 
 ordito is pre-1.0 (`0.x`): the test suite is extensive (thousands of tests per device, an
-eleven-library parity gate with no uncovered pair) and the library is safe to build on, but a
+twelve-library parity gate with no uncovered pair) and the library is safe to build on, but a
 public signature may still shift a positional argument to a keyword or gain a required parameter
 between minor versions until 1.0. Released versions are recorded in
 [CHANGELOG.md](CHANGELOG.md).

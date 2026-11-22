@@ -1,7 +1,7 @@
 ---
 head_title: "Migrating to ordito from trimesh, libigl, Open3D and more"
 description: >-
-  Move a Python mesh-processing pipeline onto the GPU: function-by-function maps from trimesh, libigl, Open3D, MeshLab, potpourri3d and PyTorch3D to ordito.
+  Move a Python mesh-processing pipeline onto the GPU: function-by-function maps from trimesh, libigl, Open3D, MeshLab, potpourri3d, manifold3d and PyTorch3D to ordito.
 ---
 
 # Migrating from another library
@@ -13,11 +13,12 @@ library doesn't expose, or an algorithm that's genuinely different rather than m
 
 | Coming from | For | Page |
 |---|---|---|
-| [trimesh](https://trimesh.org) | Mesh bookkeeping — edges, adjacency, boundary, validation, primitives, sampling, proximity | [trimesh →](trimesh.md) |
+| [trimesh](https://trimesh.org) | Mesh bookkeeping — edges, adjacency, boundary, validation, primitives, sampling, proximity, Booleans | [trimesh →](trimesh.md) |
 | [libigl](https://libigl.github.io/) | Discrete differential geometry — cotangent Laplacians, curvature, parametrization, heat geodesics | [libigl →](igl.md) |
-| [Open3D](https://www.open3d.org/) | Point clouds, registration, surface reconstruction | [Open3D →](open3d.md) |
+| [Open3D](https://www.open3d.org/) | Point clouds (normals, smoothing, clustering, visibility), registration, surface reconstruction | [Open3D →](open3d.md) |
 | [MeshLab](https://www.meshlab.net/) / [PyMeshLab](https://github.com/cnr-isti-vislab/PyMeshLab) | Editing filters — remeshing, decimation, smoothing, hole filling | [MeshLab →](meshlab.md) |
-| [potpourri3d](https://github.com/nmwsharp/potpourri3d) | The heat-method family — vector heat, parallel transport, log maps, signed distance | [potpourri3d →](potpourri3d.md) |
+| [potpourri3d](https://github.com/nmwsharp/potpourri3d) | The heat-method family — vector heat, parallel transport, log maps, signed distance, on meshes and point clouds | [potpourri3d →](potpourri3d.md) |
+| [manifold3d](https://github.com/elalish/manifold) | Exact Booleans of solids, plane cuts, level sets, smooth refinement, polygon triangulation | [manifold3d →](manifold3d.md) |
 | [PyTorch3D](https://pytorch3d.org/) | Batched neighbour/Chamfer primitives, mesh regularization losses | [PyTorch3D →](pytorch3d.md) |
 
 Three things worth knowing before diving into a specific mapping:

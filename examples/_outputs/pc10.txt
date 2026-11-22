@@ -1,0 +1,3 @@
+estimated: outward  46.1%, median angle 13.68 degrees
+ oriented: outward  99.7%, median angle 13.68 degrees
+ smoothed: outward  99.7%, median angle 9.01 degrees

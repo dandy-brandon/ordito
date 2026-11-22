@@ -234,7 +234,7 @@ Benchmarks of [`ordito.holes`](../api/ordito/holes.md) against every library tha
     | bunny_decimated | 136.6 µs | 5.80 ms |
     | bunny | 133.3 µs | 2.29 ms |
     | dragon | 128.1 µs | 21.41 ms |
-    | lucy | 1.03 ms | crashed (segfault) |
+    | lucy | 1.03 ms | crashed (not run: segfault) (predicted) |
 
 ## `bridge_edges_smooth`
 
@@ -258,7 +258,7 @@ Benchmarks of [`ordito.holes`](../api/ordito/holes.md) against every library tha
     | bunny_decimated | 363.5 µs | 6.00 ms |
     | bunny | 369.3 µs | 2.10 ms |
     | dragon | 365.0 µs | 26.97 ms |
-    | lucy | 1.50 ms | crashed (segfault) |
+    | lucy | 1.50 ms | crashed (not run: segfault) (predicted) |
 
 ## `join_closest_components`
 

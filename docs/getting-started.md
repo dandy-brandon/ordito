@@ -35,7 +35,7 @@ much of it is *verified*, not how much of it is meant to work.
 
 | Platform | Status |
 |---|---|
-| **Linux + CUDA** | The developed and measured target. Every performance figure in these docs is this configuration, and the full test suite plus the eleven-library comparison suite run here on every release. |
+| **Linux + CUDA** | The developed and measured target. Every performance figure in these docs is this configuration, and the full test suite plus the twelve-library comparison suite run here on every release. |
 | **Linux, CPU only** | Fully supported and correctness-tested on every change, via Warp's CPU backend. Not performance-tuned: the CPU backend runs a launch grid far less parallel than a GPU does, and tuning decisions in ordito are made on the CUDA measurement. |
 | **macOS (Apple Silicon)** | Tested by hand on macOS 26 (arm64), CPU backend only: there is no CUDA, and Metal is not a Warp backend. The full development environment installs, the type and lint gates pass, and the test suite passes except for a handful of comparison tests that crash inside pymeshlab's macOS build. Not part of CI and not performance-tuned. |
 | **Windows** | Untested. `warp-lang` supports it, ordito is not checked against it. |
@@ -220,13 +220,14 @@ print(all(0.0 <= value <= 1.0 for value in (*lower, *upper)))  # True
 
 ## Where to next
 
-- **[Concepts](concepts.md)** — the four ideas worth understanding before writing anything
-  nontrivial: arrays in/arrays out, the device follows the data, host syncs are budgeted, and
-  everything is measured rather than assumed.
+- **[Concepts](concepts.md)** — the five ideas worth understanding before writing anything
+  nontrivial: arrays in/arrays out, the device follows the data, host syncs are budgeted, solids
+  are checked and decided exactly, and everything is measured rather than assumed.
 - **[Examples](examples/index.md)** — a gallery of runnable examples with the images they
   produce: cleaning a scan, point clouds to watertight surfaces, geodesic distance fields,
   aligning two scans, and many more.
 - **[Migrating from another library](migrating-from/index.md)** — already know trimesh, libigl,
-  Open3D, MeshLab, potpourri3d, or PyTorch3D? Start here for a function-by-function map.
+  Open3D, MeshLab, potpourri3d, manifold3d, or PyTorch3D? Start here for a function-by-function
+  map.
 - **[API Reference](reference.md)** — a task index and a map of every module; each module page
   documents every function with a runnable example.

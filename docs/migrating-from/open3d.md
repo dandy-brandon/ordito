@@ -20,7 +20,15 @@ import ordito as od  # after
 
 | Open3D | ordito |
 |---|---|
-| `pcd.estimate_normals()` | [`points.estimate_normals(points, neighbor_idx)`][ordito.points.estimate_normals] (neighbourhood built explicitly via [`neighbors.query_nearest`][ordito.neighbors.query_nearest]; normals oriented away from the cloud's centroid, where Open3D leaves the sign arbitrary until an `orient_normals_*` call) |
+| `pcd.estimate_normals()` | [`points.estimate_normals(points, neighbor_idx)`][ordito.points.estimate_normals] (neighbourhood built explicitly via [`neighbors.query_nearest`][ordito.neighbors.query_nearest]; each sign follows its neighbourhood by default, or points away from the centroid with `orientation="centroid"`, where Open3D leaves the sign arbitrary until an `orient_normals_*` call) |
+| `pcd.orient_normals_consistent_tangent_plane(k)` | [`points.orient_normals(points, normals, neighbor_idx)`][ordito.points.orient_normals] (the same minimum-spanning-tree propagation, over the table you pass) |
+| `pcd.estimate_covariances(search)` | [`points.point_covariances`][ordito.points.point_covariances]; principal frames and spreads from [`points.point_frames`][ordito.points.point_frames] |
+| `pcd.smooth_laplacian(...)`, `pcd.smooth_taubin(...)` (fixed neighbourhoods) | [`points.smooth_points`][ordito.points.smooth_points] (`mu=` for Taubin) |
+| `pcd.smooth_mls(search)` | [`points.smooth_points_mls`][ordito.points.smooth_points_mls] (also returns the fitted normals) |
+| `pcd.smooth_bilateral(search, sigma_s, sigma_r)` | [`points.smooth_points_bilateral`][ordito.points.smooth_points_bilateral] |
+| `pcd.cluster_dbscan(eps, min_points)` | [`points.cluster_labels(points, radius, min_points)`][ordito.points.cluster_labels] (the same labels, cluster numbers included) |
+| `pcd.hidden_point_removal(camera, radius)` | [`points.point_visible_mask(points, camera, radius)`][ordito.points.point_visible_mask] (a mask, where Open3D returns a mesh and indices) |
+| `o3d.t.geometry.PointCloud.compute_boundary_points(radius, max_nn)` | [`points.point_boundary_mask(points, normals, neighbor_idx)`][ordito.points.point_boundary_mask] (the angle threshold in radians, `max_gap`) |
 | `pcd.remove_radius_outlier(nb_points, radius)` | [`points.radius_outlier_mask`][ordito.points.radius_outlier_mask] (returns a mask of the outliers; keep the rest with [`array.flatnonzero`][ordito.array.flatnonzero] and a gather) |
 | `pcd.remove_statistical_outlier(nb_neighbors, std_ratio)` | [`points.statistical_outlier_mask`][ordito.points.statistical_outlier_mask] (also a mask) |
 | `pcd.voxel_down_sample(voxel_size)` | [`voxels.voxel_down_sample`][ordito.voxels.voxel_down_sample] |
@@ -64,6 +72,12 @@ import ordito as od  # after
   `self` after mutating in place (`.remove_duplicated_vertices()`, `.compute_vertex_normals()`,
   ...) is a ordito function returning a new array, e.g.
   [`repair.remove_duplicated_vertices`][ordito.repair.remove_duplicated_vertices].
+- **Neighbourhoods are an argument, not a search parameter.** Where an Open3D filter takes a
+  `KDTreeSearchParam*` and searches on every call, ordito's point filters take the `(n, k)`
+  neighbour table [`neighbors.query_nearest`][ordito.neighbors.query_nearest] returns, so one
+  search serves normals, orientation, smoothing and boundary detection alike. A radius or hybrid
+  search is `query_nearest(points, points, k, max_radius=radius)`; Open3D's search includes the
+  point itself, as a self-query's table does.
 - **Legacy vs. tensor API distinction doesn't apply.** ordito has one API; there's no separate
   `o3d.t.geometry` GPU path to choose — every function already runs on whatever device its input
   arrays are on.

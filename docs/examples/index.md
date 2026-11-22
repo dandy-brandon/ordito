@@ -200,6 +200,10 @@ own output.
 
     [Shortening non-contractible loops](geodesics.md#g8)
 
+-   [![Geodesics on a point cloud](../assets/examples/g9-thumb.webp)](geodesics.md#g9)
+
+    [Geodesics on a point cloud](geodesics.md#g9)
+
 </div>
 
 ## [Parametrization and textures](parametrization.md)
@@ -360,6 +364,44 @@ own output.
 
 </div>
 
+## [Solids and Booleans](solids.md)
+
+<div class="grid cards ordito-gallery" markdown>
+
+-   [![Union, intersection and difference](../assets/examples/b1-thumb.webp)](solids.md#b1)
+
+    [Union, intersection and difference](solids.md#b1)
+
+-   [![A CSG tree](../assets/examples/b2-thumb.webp)](solids.md#b2)
+
+    [A CSG tree](solids.md#b2)
+
+-   [![Capped cuts by a plane](../assets/examples/b3-thumb.webp)](solids.md#b3)
+
+    [Capped cuts by a plane](solids.md#b3)
+
+-   [![Solids from a signed distance function](../assets/examples/b4-thumb.webp)](solids.md#b4)
+
+    [Solids from a signed distance function](solids.md#b4)
+
+-   [![Lattice infill: splitting a solid by another](../assets/examples/b5-thumb.webp)](solids.md#b5)
+
+    [Lattice infill: splitting a solid by another](solids.md#b5)
+
+-   [![Smooth refinement that keeps creases, and simplification](../assets/examples/b6-thumb.webp)](solids.md#b6)
+
+    [Smooth refinement that keeps creases, and simplification](solids.md#b6)
+
+-   [![Polygons with holes, extruded and countersunk](../assets/examples/b7-thumb.webp)](solids.md#b7)
+
+    [Polygons with holes, extruded and countersunk](solids.md#b7)
+
+-   [![Exact segment crossings](../assets/examples/b8-thumb.webp)](solids.md#b8)
+
+    [Exact segment crossings](solids.md#b8)
+
+</div>
+
 ## [Spatial queries](queries.md)
 
 <div class="grid cards ordito-gallery" markdown>
@@ -463,6 +505,30 @@ own output.
 -   [![Convex hulls of degenerate clouds](../assets/examples/pc9-thumb.webp)](points.md#pc9)
 
     [Convex hulls of degenerate clouds](points.md#pc9)
+
+-   [![Orienting and smoothing normals](../assets/examples/pc10-thumb.webp)](points.md#pc10)
+
+    [Orienting and smoothing normals](points.md#pc10)
+
+-   [![Smoothing a noisy cloud](../assets/examples/pc11-thumb.webp)](points.md#pc11)
+
+    [Smoothing a noisy cloud](points.md#pc11)
+
+-   [![DBSCAN clustering](../assets/examples/pc12-thumb.webp)](points.md#pc12)
+
+    [DBSCAN clustering](points.md#pc12)
+
+-   [![Boundary points of a scan](../assets/examples/pc13-thumb.webp)](points.md#pc13)
+
+    [Boundary points of a scan](points.md#pc13)
+
+-   [![Points visible from a viewpoint](../assets/examples/pc14-thumb.webp)](points.md#pc14)
+
+    [Points visible from a viewpoint](points.md#pc14)
+
+-   [![Local frames and surface variation](../assets/examples/pc15-thumb.webp)](points.md#pc15)
+
+    [Local frames and surface variation](points.md#pc15)
 
 </div>
 

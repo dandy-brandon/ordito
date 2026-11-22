@@ -1,0 +1,4 @@
+6 loops, 210 points -> 218 triangles
+packed form, same triangles: True
+plate solid: True
+countersunk: solid True, 0.0560 removed

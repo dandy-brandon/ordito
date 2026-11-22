@@ -1,0 +1,2 @@
+surface variation: median 0.0000, max 0.201
+points on a crease (variation > 0.02): 13.7%

@@ -1,0 +1,2 @@
+801 of 60000 points flagged as boundary
+11 rims in the mesh; 92.6% of flagged points within 6 spacings of one

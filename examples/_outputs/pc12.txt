@@ -1,0 +1,3 @@
+5 clusters, 339 noise points
+strays labelled noise: 85%
+same labels as Open3D: True

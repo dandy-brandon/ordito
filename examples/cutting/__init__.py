@@ -6,7 +6,7 @@ DESCRIPTION = (
     "Slice triangle meshes with planes, clip and cap them, clip by a scalar field, crop to a "
     "box, grow and shrink selections and process polylines, on the GPU."
 )
-ORDER = 12
+ORDER = 13
 INTRO = """
 Plane sections, clipping, cropping, growing selections and polyline processing.
 """

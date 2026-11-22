@@ -1,8 +1,9 @@
 # ordito benchmarks
 
-Performance benchmarks comparing `ordito` against the ten CPU references **trimesh**, **libigl
+Performance benchmarks comparing `ordito` against the eleven CPU references **trimesh**, **libigl
 (`igl`)**, **open3d**, **scipy**, **numpy**, **potpourri3d** (geometry-central), **pymeshlab**
-(MeshLab / VCGlib), **pyvista** (VTK), **meshlib** and **pymeshfix** (MeshFix / TMesh) — plus
+(MeshLab / VCGlib), **pyvista** (VTK), **meshlib**, **pymeshfix** (MeshFix / TMesh) and
+**manifold3d** (Manifold) — plus
 **pytorch3d**, the one reference with CUDA kernels of its own, which therefore takes two rows and
 gives the suite its only GPU-against-GPU comparison. Built on
 [pytest-benchmark](https://pytest-benchmark.readthedocs.io).

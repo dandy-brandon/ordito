@@ -1,0 +1,5 @@
+bunny solid: 69658 triangles, valid True
+       union:  75212 triangles, solid True, manifold3d's True
+intersection:  18362 triangles, solid True, manifold3d's True
+  difference:  69588 triangles, solid True, manifold3d's True
+inclusion-exclusion holds to 9e-08 of the volume

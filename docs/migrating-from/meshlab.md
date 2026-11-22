@@ -52,6 +52,14 @@ import ordito as od  # after
 | `compute_scalar_by_shape_diameter_function_per_vertex` | [`visibility.shape_diameter`][ordito.visibility.shape_diameter] |
 | `compute_scalar_ambient_occlusion` | [`visibility.ambient_occlusion`][ordito.visibility.ambient_occlusion] |
 
+## Booleans and point clouds
+
+| PyMeshLab | ordito |
+|---|---|
+| `generate_boolean_union`, `generate_boolean_intersection`, `generate_boolean_difference` | [`boolean.union`][ordito.boolean.union], [`intersection`][ordito.boolean.intersection], [`difference`][ordito.boolean.difference] (PyMeshLab's filters are libigl's exact CGAL Boolean; pass `collapse_collinear=False` for its vertex set, which keeps every vertex where flat faces cross along straight lines) |
+| `apply_normal_point_cloud_smoothing` | [`points.smooth_normals`][ordito.points.smooth_normals] |
+| `compute_normal_for_point_clouds` | [`points.estimate_normals`][ordito.points.estimate_normals], then [`points.orient_normals`][ordito.points.orient_normals] for one consistent side |
+
 ## Reconstruction and resampling
 
 | PyMeshLab | ordito |

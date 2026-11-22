@@ -1,0 +1,2 @@
+8720 of 30000 points visible
+agreement with ray casting: 87.5%

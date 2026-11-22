@@ -1,0 +1,3 @@
+farthest point: 0.2365 away
+log-map radius equals the distance: True
+against the mesh: median difference 0.22% of the largest distance

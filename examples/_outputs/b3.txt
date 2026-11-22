@@ -1,0 +1,4 @@
+halves are solids: (True, True)
+their volumes add up to the whole within 5e-07
+slice_mesh_with_plane's half is a solid: False
+slab: 10064 triangles, solid True

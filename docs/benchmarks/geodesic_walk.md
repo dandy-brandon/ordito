@@ -14,7 +14,7 @@ Benchmarks of [`ordito.geodesic_walk`](../api/ordito/geodesic_walk.md) against e
 ## Summary
 
 <figure class="bench-figure">
-<svg class="bench-chart" width="640" height="82" viewBox="0 0 640 82" role="img" aria-label="geodesic_walk: time relative to ordito"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="64"/><text class="bench-tick" x="196.0" y="77" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="274.0" y1="0" x2="274.0" y2="64"/><text class="bench-tick" x="274.0" y="77" text-anchor="middle">1x</text><line class="bench-grid" x1="352.0" y1="0" x2="352.0" y2="64"/><text class="bench-tick" x="352.0" y="77" text-anchor="middle">10x</text><line class="bench-grid" x1="430.0" y1="0" x2="430.0" y2="64"/><text class="bench-tick" x="430.0" y="77" text-anchor="middle">100x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="64"/><text class="bench-tick" x="508.0" y="77" text-anchor="middle">1000x</text><g><title>ordito (CUDA): the reference, 1x</title><rect class="bench-subject" x="196" y="9.0" width="78.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="279.0" y="18.0">1x</text></g><g><title>potpourri3d: 85x ordito&#x27;s time, geometric mean over 6 functions; slower than ordito in 6</title><rect class="bench-reference" x="196" y="29.0" width="228.4" height="10"/><text class="bench-label" x="166" y="38.0" text-anchor="end">potpourri3d</text><text class="bench-value" x="429.4" y="38.0">85x  (6)</text></g><g><title>libigl: 251x ordito&#x27;s time, geometric mean over 1 functions; slower than ordito in 1</title><rect class="bench-reference" x="196" y="49.0" width="265.2" height="10"/><text class="bench-label" x="166" y="58.0" text-anchor="end">libigl</text><text class="bench-value" x="466.2" y="58.0">251x  (1)</text></g></svg>
+<svg class="bench-chart" width="640" height="102" viewBox="0 0 640 102" role="img" aria-label="geodesic_walk: time relative to ordito"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="84"/><text class="bench-tick" x="196.0" y="97" text-anchor="middle">0.01x</text><line class="bench-grid" x1="258.4" y1="0" x2="258.4" y2="84"/><text class="bench-tick" x="258.4" y="97" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="320.8" y1="0" x2="320.8" y2="84"/><text class="bench-tick" x="320.8" y="97" text-anchor="middle">1x</text><line class="bench-grid" x1="383.2" y1="0" x2="383.2" y2="84"/><text class="bench-tick" x="383.2" y="97" text-anchor="middle">10x</text><line class="bench-grid" x1="445.6" y1="0" x2="445.6" y2="84"/><text class="bench-tick" x="445.6" y="97" text-anchor="middle">100x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="84"/><text class="bench-tick" x="508.0" y="97" text-anchor="middle">1000x</text><g><title>MeshLib: 0.56x ordito&#x27;s time, geometric mean over 2 functions; slower than ordito in 1</title><rect class="bench-reference" x="196" y="9.0" width="109.1" height="10"/><image class="bench-logo bench-logo-meshlib" href="../assets/logos/meshlib.png" x="172.0" y="7.5" width="18.0" height="13.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end">MeshLib</text><text class="bench-value" x="310.1" y="18.0">0.56x  (2)</text></g><g><title>ordito (CUDA): the reference, 1x</title><rect class="bench-subject" x="196" y="29.0" width="124.8" height="10"/><image class="bench-logo bench-logo-ordito" href="../assets/logos/ordito.png" x="172.4" y="25.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="38.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="325.8" y="38.0">1x</text></g><g><title>potpourri3d: 85x ordito&#x27;s time, geometric mean over 6 functions; slower than ordito in 6</title><rect class="bench-reference" x="196" y="49.0" width="245.1" height="10"/><text class="bench-label" x="166" y="58.0" text-anchor="end">potpourri3d</text><text class="bench-value" x="446.1" y="58.0">85x  (6)</text></g><g><title>libigl: 251x ordito&#x27;s time, geometric mean over 1 functions; slower than ordito in 1</title><rect class="bench-reference" x="196" y="69.0" width="274.5" height="10"/><text class="bench-label" x="166" y="78.0" text-anchor="end">libigl</text><text class="bench-value" x="475.5" y="78.0">251x  (1)</text></g></svg>
 <figcaption>Time relative to ordito (CUDA), geometric mean over the geodesic_walk functions both implement; in parentheses, the number of functions. Log scale. Runs stopped at the time limit are left out.</figcaption>
 </figure>
 
@@ -22,6 +22,7 @@ Benchmarks of [`ordito.geodesic_walk`](../api/ordito/geodesic_walk.md) against e
 
     | Library | Time relative to ordito | Functions compared | ordito faster in |
     |---|---|---|---|
+    | MeshLib | 0.56x | 2 | 1 |
     | potpourri3d | 85x | 6 | 6 |
     | libigl | 251x | 1 | 1 |
 
@@ -93,7 +94,7 @@ Benchmarks of [`ordito.geodesic_walk`](../api/ordito/geodesic_walk.md) against e
 ## `geodesic_path`
 
 <figure class="bench-figure">
-<svg class="bench-chart" width="640" height="82" viewBox="0 0 640 82" role="img" aria-label="geodesic_path on sphere_med (81 920 faces) · n_paths=1"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="64"/><text class="bench-tick" x="196.0" y="77" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="274.0" y1="0" x2="274.0" y2="64"/><text class="bench-tick" x="274.0" y="77" text-anchor="middle">1x</text><line class="bench-grid" x1="352.0" y1="0" x2="352.0" y2="64"/><text class="bench-tick" x="352.0" y="77" text-anchor="middle">10x</text><line class="bench-grid" x1="430.0" y1="0" x2="430.0" y2="64"/><text class="bench-tick" x="430.0" y="77" text-anchor="middle">100x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="64"/><text class="bench-tick" x="508.0" y="77" text-anchor="middle">1000x</text><g><title>ordito (CUDA): 7.30 ms, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="9.0" width="78.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="279.0" y="18.0">1x · 7.30 ms</text></g><g><title>potpourri3d: 95.10 ms, 13x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="29.0" width="164.9" height="10"/><text class="bench-label" x="166" y="38.0" text-anchor="end">potpourri3d</text><text class="bench-value" x="365.9" y="38.0">13x · 95.10 ms</text></g><g><title>libigl: 1.838 s, 252x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="49.0" width="265.3" height="10"/><text class="bench-label" x="166" y="58.0" text-anchor="end">libigl</text><text class="bench-value" x="466.3" y="58.0">252x · 1.838 s</text></g></svg>
+<svg class="bench-chart" width="640" height="102" viewBox="0 0 640 102" role="img" aria-label="geodesic_path on sphere_med (81 920 faces) · n_paths=1"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="84"/><text class="bench-tick" x="196.0" y="97" text-anchor="middle">0.01x</text><line class="bench-grid" x1="258.4" y1="0" x2="258.4" y2="84"/><text class="bench-tick" x="258.4" y="97" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="320.8" y1="0" x2="320.8" y2="84"/><text class="bench-tick" x="320.8" y="97" text-anchor="middle">1x</text><line class="bench-grid" x1="383.2" y1="0" x2="383.2" y2="84"/><text class="bench-tick" x="383.2" y="97" text-anchor="middle">10x</text><line class="bench-grid" x1="445.6" y1="0" x2="445.6" y2="84"/><text class="bench-tick" x="445.6" y="97" text-anchor="middle">100x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="84"/><text class="bench-tick" x="508.0" y="97" text-anchor="middle">1000x</text><g><title>MeshLib: 2.26 ms, 0.31x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="9.0" width="93.0" height="10"/><image class="bench-logo bench-logo-meshlib" href="../assets/logos/meshlib.png" x="172.0" y="7.5" width="18.0" height="13.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end">MeshLib</text><text class="bench-value" x="294.0" y="18.0">0.31x · 2.26 ms</text></g><g><title>ordito (CUDA): 7.30 ms, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="29.0" width="124.8" height="10"/><image class="bench-logo bench-logo-ordito" href="../assets/logos/ordito.png" x="172.4" y="25.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="38.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="325.8" y="38.0">1x · 7.30 ms</text></g><g><title>potpourri3d: 95.10 ms, 13x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="49.0" width="194.4" height="10"/><text class="bench-label" x="166" y="58.0" text-anchor="end">potpourri3d</text><text class="bench-value" x="395.4" y="58.0">13x · 95.10 ms</text></g><g><title>libigl: 1.838 s, 252x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="69.0" width="274.6" height="10"/><text class="bench-label" x="166" y="78.0" text-anchor="end">libigl</text><text class="bench-value" x="475.6" y="78.0">252x · 1.838 s</text></g></svg>
 <figcaption>sphere_med (81 920 faces) · n_paths=1 · time relative to ordito, log scale</figcaption>
 </figure>
 
@@ -101,17 +102,18 @@ Benchmarks of [`ordito.geodesic_walk`](../api/ordito/geodesic_walk.md) against e
 
     | Library | Median | Relative to ordito |
     |---|---|---|
+    | MeshLib | 2.26 ms | 0.31x |
     | ordito (CUDA) | 7.30 ms | 1x |
     | potpourri3d | 95.10 ms | 13x |
     | libigl | 1.838 s | 252x |
 
 ??? note "All inputs"
 
-    | Input | ordito (CUDA) | libigl | potpourri3d |
-    |---|---|---|---|
-    | sphere_med n_paths=1 | 7.30 ms | 1.838 s | 95.10 ms |
-    | sphere_med n_paths=64 | 7.56 ms | 1.895 s | 622.30 ms |
-    | sphere_med n_paths=4096 | 9.57 ms |  |  |
+    | Input | ordito (CUDA) | libigl | MeshLib | potpourri3d |
+    |---|---|---|---|---|
+    | sphere_med n_paths=1 | 7.30 ms | 1.838 s | 2.26 ms | 95.10 ms |
+    | sphere_med n_paths=64 | 7.56 ms | 1.895 s | 107.04 ms | 622.30 ms |
+    | sphere_med n_paths=4096 | 9.57 ms |  |  |  |
 
 ## `geodesic_path_potpourri3d`
 
@@ -155,12 +157,33 @@ Benchmarks of [`ordito.geodesic_walk`](../api/ordito/geodesic_walk.md) against e
     | handles_1 | 987.4 µs | 90.16 ms |
     | handles_64 | 1.28 ms | 152.17 ms |
 
+## `descend_field`
+
+<figure class="bench-figure">
+<svg class="bench-chart" width="640" height="62" viewBox="0 0 640 62" role="img" aria-label="descend_field on sphere_med (81 920 faces) · n_paths=1"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="44"/><text class="bench-tick" x="196.0" y="57" text-anchor="middle">0.001x</text><line class="bench-grid" x1="300.0" y1="0" x2="300.0" y2="44"/><text class="bench-tick" x="300.0" y="57" text-anchor="middle">0.01x</text><line class="bench-grid" x1="404.0" y1="0" x2="404.0" y2="44"/><text class="bench-tick" x="404.0" y="57" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="508.0" y1="0" x2="508.0" y2="44"/><text class="bench-tick" x="508.0" y="57" text-anchor="middle">1x</text><g><title>MeshLib: 22.1 µs, 0.03x ordito&#x27;s time</title><rect class="bench-reference" x="196" y="9.0" width="150.6" height="10"/><image class="bench-logo bench-logo-meshlib" href="../assets/logos/meshlib.png" x="172.0" y="7.5" width="18.0" height="13.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end">MeshLib</text><text class="bench-value" x="351.6" y="18.0">0.03x · 22.1 µs</text></g><g><title>ordito (CUDA): 788.7 µs, 1x ordito&#x27;s time</title><rect class="bench-subject" x="196" y="29.0" width="312.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../assets/logos/ordito.png" x="172.4" y="25.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="38.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="513.0" y="38.0">1x · 788.7 µs</text></g></svg>
+<figcaption>sphere_med (81 920 faces) · n_paths=1 · time relative to ordito, log scale</figcaption>
+</figure>
+
+??? note "Values"
+
+    | Library | Median | Relative to ordito |
+    |---|---|---|
+    | MeshLib | 22.1 µs | 0.03x |
+    | ordito (CUDA) | 788.7 µs | 1x |
+
+??? note "All inputs"
+
+    | Input | ordito (CUDA) | MeshLib |
+    |---|---|---|
+    | sphere_med n_paths=1 | 788.7 µs | 22.1 µs |
+    | sphere_med n_paths=64 | 1.07 ms | 854.8 µs |
+    | sphere_med n_paths=4096 | 1.27 ms |  |
+
 ## Without a reference
 
 No other library computes these, so they have no comparison. ordito (CUDA)'s median time on the largest input it was measured on:
 
 | Function | Input | ordito (CUDA) |
 |---|---|---|
-| `descend_field` | sphere_med n_paths=4096 | 1.27 ms |
 | `shorten_loop_with_offsets` | handles_64 | 910.6 µs |
 

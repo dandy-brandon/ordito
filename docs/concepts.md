@@ -6,7 +6,7 @@ description: >-
 
 # Concepts
 
-Four ideas shape every function in ordito. Each is a constraint the whole library is built
+Five ideas shape every function in ordito. Each is a constraint the whole library is built
 around, so knowing them up front explains most signatures before you read them.
 
 ## Arrays in, arrays out
@@ -98,19 +98,49 @@ vertex_faces, offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=ver
 The answer is the same either way. A value you pass is trusted, not checked, so it must be a true
 bound (here, larger than every index in `faces`), as each such docstring states.
 
+## Solids are checked, and decided exactly
+
+Most functions accept any triangle soup. The ones that treat a mesh as a *solid*, the Booleans
+of [`ordito.boolean`][ordito.boolean], [`subdivide_smooth`][ordito.remesh.subdivide_smooth],
+[`simplify`][ordito.remesh.simplify] and [`segment_hits`][ordito.ray.segment_hits], require it to
+be closed (every edge shared by exactly two faces) and consistently wound, check that before
+doing anything else, and raise `ValueError` if it is not: an answer about the inside of a surface
+with a hole in it would be a guess. [`make_solid`][ordito.repair.make_solid] repairs a scan into a
+valid input. In return, every inside/outside decision is an exact sign computed from the
+`float32` coordinates, and inputs that touch, share a plane or coincide are resolved by one
+consistent rule, so the result is again a closed solid whatever the inputs' relative position,
+on the CPU and on CUDA alike:
+
+```python
+import ordito as od
+
+# Two unit cubes sharing a face: the worst case for a tolerance, routine for exact signs.
+left = od.creation.box(bounds=[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
+right = od.creation.box(bounds=[[1.0, 0.0, 0.0], [2.0, 1.0, 1.0]])
+vertices, faces = od.boolean.union(*left, *right)
+print(f"{od.measures.volume(vertices, faces):.4f}")  # 2.0000
+print(od.validation.is_watertight(vertices, faces))  # True
+
+# A cube with one triangle missing is not a solid: the Boolean refuses it.
+try:
+    od.boolean.union(left[0], left[1][3:], *right)
+except ValueError:
+    print("not a closed solid")  # not a closed solid
+```
+
 ## Measured, not assumed
 
 Every public module has a test file and a benchmark file. Wherever an established library
 computes the same quantity (trimesh, libigl, Open3D, PyMeshLab, PyVista, MeshLib, PyMeshFix,
-potpourri3d, PyTorch3D, SciPy or NumPy), a test compares ordito's output with it value by value,
-not just its shape. Where libraries define a quantity differently (Chamfer distance squared or
-not, a signed distance negative inside or outside), the docstring says which convention ordito
-follows and how to get the other. Performance changes land with a before/after measurement;
+potpourri3d, manifold3d, PyTorch3D, SciPy or NumPy), a test compares ordito's output with it
+value by value, not just its shape. Where libraries define a quantity differently (Chamfer
+distance squared or not, a signed distance negative inside or outside), the docstring says which
+convention ordito follows and how to get the other. Performance changes land with a before/after measurement;
 [Benchmarks](benchmarks/index.md) shows how to reproduce any published number.
 
 ## Where to next
 
-- **[Examples](examples/index.md)**: these four ideas applied to real tasks.
+- **[Examples](examples/index.md)**: these five ideas applied to real tasks.
 - **[Reproducible results](reproducibility.md)**: why a GPU sum can change its last bits
   from call to call, and the one setting that stops it.
 - **[Migrating from another library](migrating-from/index.md)**: how these conventions map onto

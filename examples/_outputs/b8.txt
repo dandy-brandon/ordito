@@ -1,0 +1,3 @@
+2562 segments through vertices and edge midpoints
+segment_hits: crossings per segment [1]
+intersects_location: hits per ray {1: 2562}

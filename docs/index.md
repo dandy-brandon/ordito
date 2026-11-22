@@ -60,13 +60,13 @@ and falls back to CPU otherwise, with the same code.
 - **Optional `Trimesh` object.** A frozen mesh class with lazily cached derived quantities
   (normals, adjacency, boundary loops, manifoldness and watertightness predicates, BVH) for when
   an object API is more convenient than free functions.
-- **Exact where it matters.** [Convex hulls](examples/points.md#pc8) and other topological
-  decisions take exact orientation signs, so the answer does not depend on a tolerance or on the
-  device.
+- **Exact where it matters.** [Mesh Booleans](examples/solids.md#b1),
+  [convex hulls](examples/points.md#pc8) and other topological decisions take exact orientation
+  signs, so the answer does not depend on a tolerance or on the device.
 - **Reproducible on demand.** One switch, `od.set_deterministic(True)`, makes results repeat bit
   for bit on CUDA; see [Reproducible results](reproducibility.md).
-- **Fully typed** (`py.typed`) and validated function-by-function against eleven reference
-  implementations — nine established geometry-processing libraries plus SciPy and NumPy, all
+- **Fully typed** (`py.typed`) and validated function-by-function against twelve reference
+  implementations — ten established geometry-processing libraries plus SciPy and NumPy, all
   listed below.
 
 ## Install
@@ -115,13 +115,14 @@ repair-then-remesh pipeline on a realistically broken mesh), or jump straight to
   nontrivial.
 - **[Examples](examples/index.md)** — a gallery of runnable examples, each with the image it
   produces: creation, inspection, curvature, geodesics, parametrization, smoothing, remeshing,
-  repair, voxels, queries, cutting, point clouds, reconstruction and registration.
+  repair, voxels, solids and Booleans, queries, cutting, point clouds, reconstruction and
+  registration.
 - **[Migrating from another library](migrating-from/index.md)** — already know trimesh, libigl,
-  Open3D, MeshLab, potpourri3d, or PyTorch3D? Start here.
+  Open3D, MeshLab, potpourri3d, manifold3d, or PyTorch3D? Start here.
 - **[Benchmarks](benchmarks/index.md)** — a curated set of ordito-vs-reference comparisons, rendered as
   charts, each library named by its own logo.
 
-## One GPU library instead of nine
+## One GPU library instead of ten
 
 Mesh processing in Python has long meant stitching together several excellent — but mostly
 CPU-bound and stylistically different — libraries. ordito consolidates the functionality it needs
@@ -131,17 +132,18 @@ from each of them behind a single GPU-accelerated API:
 |---|---|---|
 | [trimesh](https://github.com/mikedh/trimesh) | Mesh bookkeeping: edges, adjacency, boundary, validation, primitives, sampling, proximity | `edges`, `adjacency`, `boundary`, `validation`, `creation`, `sample`, `proximity`, the `Trimesh` class |
 | [libigl](https://libigl.github.io/) ([Python bindings](https://github.com/libigl/libigl-python-bindings)) | Discrete differential geometry: cotangent Laplacians, mass matrices, curvature, parametrization, heat-method geodesics | `laplacian`, `energies`, `curvature`, `parametrization`, `heat` |
-| [Open3D](https://www.open3d.org/) | Point clouds, registration, and surface reconstruction: ICP, screened Poisson, ball pivoting | `points`, `registration`, `reconstruction` |
+| [Open3D](https://www.open3d.org/) | Point clouds, registration, and surface reconstruction: normal estimation and orientation, smoothing, DBSCAN clustering, hidden point removal, ICP, screened Poisson, ball pivoting | `points`, `registration`, `reconstruction` |
 | [MeshLab](https://www.meshlab.net/) ([PyMeshLab](https://github.com/cnr-isti-vislab/PyMeshLab)) | Mesh editing filters: isotropic remeshing, decimation, smoothing, hole filling, uniform resampling | `remesh`, `smoothing`, `holes`, `repair` |
 | [PyVista](https://pyvista.org/) (VTK) | The VTK toolkit: feature edges, cell-quality metrics, contouring and clipping, point location, arc-length and polyline measures, voxelization | `edges`, `triangles`, `intersection`, `levelset`, `proximity`, `polyline`, `voxels` |
 | [MeshLib](https://meshlib.io/) | Minimum-weight hole filling and stitching, self-intersection repair, voxel offsets and booleans, projection queries, spike and outlier detection | `holes`, `repair`, `levelset`, `voxels`, `proximity`, `points` |
 | [PyMeshFix](https://github.com/pyvista/pymeshfix) (MeshFix / TMesh) | The repair pipeline end to end: a broken digitised surface in, one watertight solid out | `repair`, `holes`, `validation` |
-| [potpourri3d](https://github.com/nmwsharp/potpourri3d) (geometry-central) | The heat-method family: vector heat, parallel transport, log maps, signed distance, tangent frames | `heat`, `tangent_space` |
+| [potpourri3d](https://github.com/nmwsharp/potpourri3d) (geometry-central) | The heat-method family on meshes and point clouds: vector heat, parallel transport, log maps, signed distance, tangent frames, local triangulations | `heat`, `tangent_space`, `points` |
+| [manifold3d](https://github.com/elalish/manifold) (Manifold) | Exact Booleans of solids, batch Booleans, capped plane cuts, level sets of functions, smooth refinement, simplification, polygon triangulation, exact segment crossings | `boolean`, `levelset`, `remesh`, `polyline`, `ray` |
 | [PyTorch3D](https://pytorch3d.org/) | Batched neighbour and Chamfer primitives, the mesh regularization losses, cubify and marching cubes | `metrics`, `neighbors`, `energies`, `registration`, `levelset`, `voxels` |
 
 [SciPy](https://scipy.org/)'s `spatial.KDTree` and `sparse.csgraph` (covered by `neighbors`,
 `graph` and `proximity`) and NumPy's array primitives (`array`, `reduce`, `grouping`, `linalg`)
-round the set out to the eleven reference implementations the suite measures against.
+round the set out to the twelve reference implementations the suite measures against.
 
 These libraries are not runtime dependencies; they are **test oracles**. Wherever one of them
 computes the same quantity as an ordito function, a regression test compares the two outputs

@@ -6,7 +6,7 @@ DESCRIPTION = (
     "Screened Poisson reconstruction, ball pivoting and local triangulation of point clouds, "
     "and rigid, robust ICP and Procrustes registration on the GPU."
 )
-ORDER = 14
+ORDER = 15
 INTRO = """
 Surfaces from point clouds, and rigid alignment of two scans.
 """

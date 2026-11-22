@@ -27,7 +27,7 @@ cd ordito
 uv sync --all-groups        # runtime + dev + test + docs + bench
 ```
 
-`uv sync --all-groups` installs the eleven reference implementations the comparison suite needs.
+`uv sync --all-groups` installs the twelve reference implementations the comparison suite needs.
 It is a large environment — it builds PyTorch3D from source against a CUDA torch — and the build
 is cached, so the first sync is slow and later ones are not. A bare `uv sync` will *uninstall*
 the test dependencies, because there is no `default-groups` setting; always pass the groups.

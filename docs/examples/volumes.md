@@ -196,14 +196,17 @@ Modelled on: [trimesh: voxel morphology](https://trimesh.org/trimesh.voxel.morph
 
 ## Voxel CSG (approximate booleans) {#v6}
 
-ordito has no exact mesh booleans. What it has is set algebra on voxels: both solids are
-voxelized on one lattice with [`voxelize_mesh`][ordito.voxels.voxelize_mesh], combined
-cell by cell with [`union`][ordito.voxels.union],
+Set algebra on voxels: both solids are voxelized on one lattice with
+[`voxelize_mesh`][ordito.voxels.voxelize_mesh], combined cell by cell with
+[`union`][ordito.voxels.union],
 [`intersection`][ordito.voxels.intersection] and [`difference`][ordito.voxels.difference],
 and meshed back through [`to_field`][ordito.voxels.to_field] and
 [`marching_cubes`][ordito.levelset.marching_cubes]. The result is only as accurate as the
 voxel size: sharp edges are rounded off at that scale and the output is resampled
-everywhere, not just near the intersection curve.
+everywhere, not just near the intersection curve. For closed meshes the exact Booleans of
+[`ordito.boolean`][ordito.boolean] keep every input triangle away from the intersection
+curve ([B1](solids.md#b1)); the voxel route remains for inputs that are not closed solids,
+and for results that should be resampled anyway.
 
 ```python
 import warp as wp

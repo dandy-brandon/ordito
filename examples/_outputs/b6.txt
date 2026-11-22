@@ -1,0 +1,5 @@
+input: 54 triangles
+creases kept: 8476 triangles
+all smooth: 8476 triangles
+simplified: 254 triangles, Hausdorff distance 0.0000
+subdivided box: 386 vertices -> simplified: 8
