@@ -1457,7 +1457,9 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   body leaves a cap whose near-tied ears are clipped in a fan-like order, so the late ears' boxes
   hold ~490 live vertices each on a 1 482-gon (8.7 M box tests for 17 760 ear costs): ~60 of the
   91 ms of a 1.3 M-face sphere's `split_by_plane`, quadratic in the cap's sides (1 450 / 2 900 /
-  5 800 points 8.3 / 31 / 124 ms on the CPU). No box index finds fewer vertices; a bound pruning
-  far ones (an outside vertex contributes `-eps - scale d^2`) must respect `ec_signed_dist`'s
-  fallback to a vertex's neighbours within `eps` of an edge line. The triangles must stay
-  manifold3d's (Class A).
+  5 800 points 8.3 / 31 / 124 ms on the CPU). No box index finds fewer vertices, and a distance
+  bound cannot prune them: an outside vertex contributes `-eps - scale d^2`, and when the open
+  side is near a diameter the box's circle is the cap's, so every box vertex contributes about
+  `-1 - eps` and the exact maximum needs them all. The triangles must stay manifold3d's
+  (Class A), which fixes the clipping order; what is left is constant factors (the slab's
+  positions and liveness in x order, read sequentially), not priced.
