@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Sequence
 from typing import Protocol
 
@@ -13,6 +14,7 @@ import warp as wp
 from meshlib import mrmeshpy as mm
 
 import ordito as od
+import ordito.boolean as od_boolean
 from tests.comparisons import assert_same_as_manifold3d, assert_same_cut_faces
 from tests.conftest import CLOSED_MESHES
 from tests.conversions import (
@@ -343,6 +345,11 @@ _PLANES = [
     ((1.0, 1.0, 0.0), 0.0),
     ((0.3, -0.5, 0.8), 0.1),
     ((-1.0, 2.0, 3.0), -0.2),
+    ((0.0, 0.0, -1.0), -0.25),
+    ((-1.0, 0.0, 0.0), -0.5),
+    ((0.0, -1.0, 0.0), 0.0),
+    ((-1.0, -1.0, 0.2), 0.0),
+    ((0.3, -0.5, -0.8), 0.1),
     ((0.0, 0.0, 1.0), 5.0),
 ]
 
@@ -359,8 +366,9 @@ def test_plane_cuts_match_manifold3d(
 
     Class A. Manifold cuts with a cube it scales, moves and turns onto the plane in ``float64``,
     its rotation from its own ``sin`` / ``cos`` of degrees; ordito builds the same cube the same
-    way, so planes through the box's vertices and edges tie exactly as Manifold's do. The last
-    plane misses the mesh: everything on one side.
+    way, so planes through the box's vertices and edges tie exactly as Manifold's do. Normals
+    along each negative axis and in every quadrant take each special case of that rotation's
+    ``asin`` and ``atan2``. The last plane misses the mesh: everything on one side.
     """
     mesh_tm = {
         "box": _box([0, 0, 0], [1, 1, 1]),
@@ -377,6 +385,27 @@ def test_plane_cuts_match_manifold3d(
     assert_same_as_manifold3d(od.boolean.trim_by_plane(*mesh_wp, normal, offset), trimmed_m3)
 
 
+def test_cuts_of_an_empty_mesh_are_empty(device: str) -> None:
+    """
+    An empty mesh cut leaves empty parts; an empty cutter leaves the whole mesh outside it.
+
+    Not a library comparison: Manifold builds no solid from an empty mesh to compare with.
+    """
+    box_tm = _box([0, 0, 0], [1, 1, 1])
+    box_wp = numpy_to_warp(box_tm.vertices, box_tm.faces, device)
+    empty_wp = (warp_empty(0, wp.vec3, device), warp_empty(0, wp.int32, device))
+    above, below = od.boolean.split_by_plane(*empty_wp, (0.0, 0.0, 1.0), 0.5)
+    assert above[1].size == 0
+    assert below[1].size == 0
+    assert od.boolean.trim_by_plane(*empty_wp, (0.0, 0.0, 1.0), 0.5)[1].size == 0
+    inside, outside = od.boolean.split_by_mesh(*empty_wp, *box_wp)
+    assert inside[1].size == 0
+    assert outside[1].size == 0
+    inside, outside = od.boolean.split_by_mesh(*box_wp, *empty_wp)
+    assert inside[1].size == 0
+    assert od.equality.meshes_allclose(*outside, *box_wp)
+
+
 def test_plane_cut_rejects_a_zero_normal(device: str) -> None:
     """A zero normal raises ``ValueError``. Not a library comparison: the guard."""
     box_tm = _box([0, 0, 0], [1, 1, 1])
@@ -385,8 +414,74 @@ def test_plane_cut_rejects_a_zero_normal(device: str) -> None:
         od.boolean.split_by_plane(*mesh_wp, (0.0, 0.0, 0.0))
 
 
+_ATAN2_CASES = [
+    (math.nan, 1.0),
+    (1.0, math.nan),
+    (0.5, 1.0),
+    (0.0, -1.0),
+    (-0.0, -1.0),
+    (0.0, 1.0),
+    (-0.0, 1.0),
+    (1.0, 0.0),
+    (-1.0, -0.0),
+    (math.inf, math.inf),
+    (math.inf, -math.inf),
+    (-math.inf, math.inf),
+    (-math.inf, -math.inf),
+    (1.0, math.inf),
+    (-1.0, math.inf),
+    (1.0, -math.inf),
+    (-1.0, -math.inf),
+    (math.inf, 2.0),
+    (1e300, 1e-300),
+    (1e-300, -1e300),
+    (1.0, 2.0),
+    (1.0, -2.0),
+    (-1.0, -2.0),
+    (-1.0, 2.0),
+    (3.0, 0.7),
+    (0.2, 0.15),
+    (1e20, 1.0),
+    (1e-10, 1.0),
+]
+_ASIN_CASES = [math.nan, 2.0, -2.0, math.inf, 1.0, -1.0, 0.0, 1e-20, 0.3, -0.45, 0.7, -0.9]
+
+
+def test_manifold_math_matches_libm() -> None:
+    """
+    The ports of Manifold's ``math::atan2``, ``acos`` and ``asin`` agree with the C library's.
+
+    Not a library comparison: Manifold's own functions are not exposed to Python, so the
+    reference is Python's ``math`` (the platform libm), which the first two reimplement. Special
+    values (NaN, signed zeros, infinities, both arguments infinite, ratios past ``2**64``) must
+    match exactly, sign of zero included; every other value within an ulp. Manifold defines
+    ``asin(x)`` as ``pi / 2 - acos(x)``, so it is held to an ulp of ``pi / 2`` instead (it returns
+    zero for ``1e-20``). The plane cuts build their half-space's rotation from ``asin`` and
+    ``atan2``.
+    """
+
+    def same(value: float, reference: float, tolerance: float = 0.0) -> bool:
+        if math.isnan(reference):
+            return math.isnan(value)
+        if math.isinf(reference) or (reference == 0.0 and tolerance == 0.0):
+            return value == reference and math.copysign(1.0, value) == math.copysign(1.0, reference)
+        return abs(value - reference) <= (tolerance or math.ulp(reference))
+
+    for y, x in _ATAN2_CASES:
+        assert same(od_boolean._m_atan2(y, x), math.atan2(y, x)), (y, x)  # pyright: ignore[reportPrivateUsage]
+    half_pi_ulp = math.ulp(math.pi / 2)
+    for x in _ASIN_CASES:
+        inside = -1.0 <= x <= 1.0
+        acos_reference = math.acos(x) if inside else math.nan
+        assert same(od_boolean._m_acos(x), acos_reference), x  # pyright: ignore[reportPrivateUsage]
+        asin_reference = math.asin(x) if inside else math.nan
+        assert same(od_boolean._m_asin(x), asin_reference, half_pi_ulp), x  # pyright: ignore[reportPrivateUsage]
+
+
 def _batch_meshes(case: str) -> list[tm.Trimesh]:
-    """Return a batch case's meshes: touching in a row, scattered, or apart beside a bar."""
+    """Return a batch case's meshes: one, touching in a row, scattered, or apart beside a bar."""
+    if case == "single":
+        return [float32_trimesh(tm.creation.icosphere(subdivisions=2))]
     if case == "row":
         return [_box([0.75 * i, 0, 0], [0.75 * i + 1, 1, 1]) for i in range(3)]
     rng = np.random.default_rng(3 if case == "scattered" else 5)
@@ -404,7 +499,7 @@ def _batch_meshes(case: str) -> list[tm.Trimesh]:
 @pytest.mark.parity("union_all", "manifold3d")
 @pytest.mark.parity("intersection_all", "manifold3d")
 @pytest.mark.parity("difference_all", "manifold3d")
-@pytest.mark.parametrize("case", ["row", "scattered", "apart"])
+@pytest.mark.parametrize("case", ["single", "row", "scattered", "apart"])
 @pytest.mark.parametrize(
     ("function", "op_m3"),
     [
@@ -422,7 +517,7 @@ def test_batch_booleans_match_manifold3d(
 
     Class A. ``apart`` holds spheres whose boxes do not touch, which Manifold composes rather
     than intersects, then joins to the bar across them; ``scattered`` overlaps in a chain the
-    pairing order decides; ``row`` touches face to face.
+    pairing order decides; ``row`` touches face to face; ``single`` is one mesh, returned as it is.
     """
     meshes_tm = _batch_meshes(case)
     result_m3 = m3.Manifold.batch_boolean(

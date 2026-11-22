@@ -278,6 +278,14 @@ def test_transforms_of_no_vectors_are_empty(
             ),
             "out_faces must have length",
         ),
+        (
+            lambda points, device: od.transform.transform_mesh(
+                points,
+                wp.array([0, 1, 2], dtype=wp.int32, device=device),
+                wp.array([_ROTATION, _ROTATION], dtype=wp.mat44, device=device),
+            ),
+            "length-1",
+        ),
     ],
     ids=[
         "out_scalar_matrix",
@@ -288,6 +296,7 @@ def test_transforms_of_no_vectors_are_empty(
         "out_faces",
         "out_vertices_host_matrix",
         "out_faces_device_matrix",
+        "mesh_matrix_array_two",
     ],
 )
 def test_mismatched_lengths_raise(

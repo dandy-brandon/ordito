@@ -803,3 +803,13 @@ def test_segment_hits_match_pyvista(request: pytest.FixtureRequest, device: str,
         assert np.allclose(points_np[ours], crossings_pv[order], rtol=1e-5, atol=1e-5)
         counts_pv.append(order.size)
     assert 0 < np.count_nonzero(counts_pv) < len(counts_pv)
+
+
+def test_segment_hits_rejects_unpaired_segments(device: str) -> None:
+    """Origins and endpoints of different lengths raise. Not a library comparison: the guard."""
+    box_tm = tm.creation.box()
+    vertices, faces = numpy_to_warp(box_tm.vertices, box_tm.faces, device)
+    origins = points_to_warp(np.zeros((2, 3)), device)
+    endpoints = points_to_warp(np.ones((3, 3)), device)
+    with pytest.raises(ValueError, match="must match in length"):
+        od.ray.segment_hits(vertices, faces, origins, endpoints)

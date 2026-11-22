@@ -2059,7 +2059,25 @@ def test_function_level_set_matches_manifold3d(
 
 
 def test_function_level_set_rejects_a_bad_grid(device: str) -> None:
-    """Inverted bounds and a zero edge length raise. Not a library comparison: guards."""
+    """
+    Malformed bounds, a grid too coarse, too fine or too large to index raise.
+
+    Not a library comparison: guards. Each is checked before the function is evaluated: bounds of
+    the wrong length or not finite, an edge longer than the box (one point along an axis), more
+    than ``2**28`` points along an axis, and a grid of 1 000 points a side, whose index fields
+    need more than 30 bits.
+    """
+    sdf = level_set_functions.cube_sdf
+    with pytest.raises(ValueError, match="six finite values"):
+        od.levelset.function_level_set(sdf, [0, 0, 0, 1, 1], 0.1, device=device)
+    with pytest.raises(ValueError, match="six finite values"):
+        od.levelset.function_level_set(sdf, [0, 0, 0, 1, 1, math.inf], 0.1, device=device)
+    with pytest.raises(ValueError, match="two points along each axis"):
+        od.levelset.function_level_set(sdf, [0, 0, 0, 1, 1, 1], 2.0, device=device)
+    with pytest.raises(ValueError, match="the grid is too large: "):
+        od.levelset.function_level_set(sdf, [0, 0, 0, 1, 1, 1], 1e-9, device=device)
+    with pytest.raises(ValueError, match="too large to index"):
+        od.levelset.function_level_set(sdf, [0, 0, 0, 1, 1, 1], 1.0 / 999.0, device=device)
     with pytest.raises(ValueError, match="upper corner"):
         od.levelset.function_level_set(
             level_set_functions.cube_sdf, [1, 1, 1, 0, 0, 0], 0.1, device=device
