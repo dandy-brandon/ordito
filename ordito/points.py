@@ -1993,7 +1993,9 @@ def statistical_outlier_mask(
     # The three sums -- counted rows, distance total, squared deviation -- stay on the device: the
     # moments pass folds the first two, the deviation pass reads the mean from them and the mask
     # launch the threshold from all three, so nothing is read back. Each is summed in a fixed
-    # order, so the mask repeats on CUDA.
+    # order, so the mask repeats on CUDA. Carving the four tables from one allocation (the two
+    # commits zeroed in place) bought nothing: CUDA new/old 0.93-1.04x to dragon, 1.07x on lucy;
+    # ``outlier_probability``'s three likewise (1.0-1.04x, 1.11x on lucy), 2026-11-22.
     mean_distance, _rms, count, totals = _neighbor_distance_moments(
         neighbor_distance, mean_and_count=True, rms=False, totals=True
     )

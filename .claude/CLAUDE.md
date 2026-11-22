@@ -1453,3 +1453,12 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   high-valence vertices cost ~148 us each in one GPU thread (80 ms a pass), and the CPU's round
   trip of the 8 M-halfedge prefixes about as much (`_solid._SERIAL_DEVICE_BASE`): a pass that
   moves only the halfedges it touches would serve both.
+- **`points.local_triangulation` is one long `float64` chain a point** (2026-11-22): after the
+  linked kept-slot list (0.77-0.87x) a star still costs one thread ~0.8 ms on `sphere_small`
+  (2 562 points) and the call 263 ms on `lucy`; the drop loop and writes are ~2/3 of it, the
+  `atan2` keys ~4 %, the normal fit ~11 %. A warp a point (lanes over the row: projection, each
+  angle's rank by a count of smaller keys, the drop rounds by ballot) would trade the chain for
+  lanes; the stars must stay byte-identical to the serial loop (the heat solver's tufted cover
+  reads them). `reconstruction.local_fan` walks its dropped `-1` slots with `cycle_next` /
+  `cycle_prev` as the stars did before the list: the same list should pay there (out of the
+  `points` sweep, not priced).
