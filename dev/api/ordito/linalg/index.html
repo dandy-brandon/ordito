@@ -256,6 +256,8 @@
       
         
       
+        
+      
     
     
     
@@ -583,6 +585,8 @@
       
         
       
+        
+      
     
     
     
@@ -669,6 +673,33 @@
     
   
   Reproducible results
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../streams/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Sharing the GPU
 
     
   </span>
@@ -8822,15 +8853,7 @@ builds the factorization only when the iteration's result fails its verification
 
                   <details class="mkdocstrings-source">
                     <summary>Source code in <code>ordito/linalg.py</code></summary>
-                    <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">655</span>
-<span class="normal">656</span>
-<span class="normal">657</span>
-<span class="normal">658</span>
-<span class="normal">659</span>
-<span class="normal">660</span>
-<span class="normal">661</span>
-<span class="normal">662</span>
-<span class="normal">663</span>
+                    <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">663</span>
 <span class="normal">664</span>
 <span class="normal">665</span>
 <span class="normal">666</span>
@@ -8849,7 +8872,15 @@ builds the factorization only when the iteration's result fails its verification
 <span class="normal">679</span>
 <span class="normal">680</span>
 <span class="normal">681</span>
-<span class="normal">682</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+<span class="normal">682</span>
+<span class="normal">683</span>
+<span class="normal">684</span>
+<span class="normal">685</span>
+<span class="normal">686</span>
+<span class="normal">687</span>
+<span class="normal">688</span>
+<span class="normal">689</span>
+<span class="normal">690</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
     <span class="bp">self</span><span class="p">,</span>
     <span class="n">q</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">SparseMatrix</span><span class="p">,</span>
     <span class="n">fixed_mask</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
@@ -9045,15 +9076,7 @@ builds the factorization only when the iteration's result fails its verification
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">769</span>
-<span class="normal">770</span>
-<span class="normal">771</span>
-<span class="normal">772</span>
-<span class="normal">773</span>
-<span class="normal">774</span>
-<span class="normal">775</span>
-<span class="normal">776</span>
-<span class="normal">777</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">777</span>
 <span class="normal">778</span>
 <span class="normal">779</span>
 <span class="normal">780</span>
@@ -9078,7 +9101,15 @@ builds the factorization only when the iteration's result fails its verification
 <span class="normal">799</span>
 <span class="normal">800</span>
 <span class="normal">801</span>
-<span class="normal">802</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">matches</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">fixed_mask</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="normal">802</span>
+<span class="normal">803</span>
+<span class="normal">804</span>
+<span class="normal">805</span>
+<span class="normal">806</span>
+<span class="normal">807</span>
+<span class="normal">808</span>
+<span class="normal">809</span>
+<span class="normal">810</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">matches</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">fixed_mask</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Whether ``fixed_mask`` pins exactly the set this system was built for.</span>
 
@@ -9349,15 +9380,7 @@ could be factored and the iteration does not reach a verified solution.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">804</span>
-<span class="normal">805</span>
-<span class="normal">806</span>
-<span class="normal">807</span>
-<span class="normal">808</span>
-<span class="normal">809</span>
-<span class="normal">810</span>
-<span class="normal">811</span>
-<span class="normal">812</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">812</span>
 <span class="normal">813</span>
 <span class="normal">814</span>
 <span class="normal">815</span>
@@ -9439,7 +9462,15 @@ could be factored and the iteration does not reach a verified solution.</p>
 <span class="normal">891</span>
 <span class="normal">892</span>
 <span class="normal">893</span>
-<span class="normal">894</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">solve</span><span class="p">(</span>
+<span class="normal">894</span>
+<span class="normal">895</span>
+<span class="normal">896</span>
+<span class="normal">897</span>
+<span class="normal">898</span>
+<span class="normal">899</span>
+<span class="normal">900</span>
+<span class="normal">901</span>
+<span class="normal">902</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">solve</span><span class="p">(</span>
     <span class="bp">self</span><span class="p">,</span>
     <span class="n">fixed_values</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNdFloat64</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
@@ -9561,10 +9592,10 @@ could be factored and the iteration does not reach a verified solution.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">922</span>
-<span class="normal">923</span>
-<span class="normal">924</span>
-<span class="normal">925</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">release</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">930</span>
+<span class="normal">931</span>
+<span class="normal">932</span>
+<span class="normal">933</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">release</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""Drop the factorization; later solves iterate, verified, until it is built again."""</span>
     <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">factorization</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">factorization</span><span class="o">.</span><span class="n">release</span><span class="p">()</span>
@@ -9847,16 +9878,7 @@ is dropped.</p>
 
                   <details class="mkdocstrings-source">
                     <summary>Source code in <code>ordito/linalg.py</code></summary>
-                    <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2250</span>
-<span class="normal">2251</span>
-<span class="normal">2252</span>
-<span class="normal">2253</span>
-<span class="normal">2254</span>
-<span class="normal">2255</span>
-<span class="normal">2256</span>
-<span class="normal">2257</span>
-<span class="normal">2258</span>
-<span class="normal">2259</span>
+                    <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2259</span>
 <span class="normal">2260</span>
 <span class="normal">2261</span>
 <span class="normal">2262</span>
@@ -9884,7 +9906,16 @@ is dropped.</p>
 <span class="normal">2284</span>
 <span class="normal">2285</span>
 <span class="normal">2286</span>
-<span class="normal">2287</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+<span class="normal">2287</span>
+<span class="normal">2288</span>
+<span class="normal">2289</span>
+<span class="normal">2290</span>
+<span class="normal">2291</span>
+<span class="normal">2292</span>
+<span class="normal">2293</span>
+<span class="normal">2294</span>
+<span class="normal">2295</span>
+<span class="normal">2296</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
     <span class="bp">self</span><span class="p">,</span>
     <span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">SparseMatrix</span><span class="p">,</span>
     <span class="n">coordinates</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -10191,16 +10222,7 @@ which is remembered so the attempt is not repeated.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2321</span>
-<span class="normal">2322</span>
-<span class="normal">2323</span>
-<span class="normal">2324</span>
-<span class="normal">2325</span>
-<span class="normal">2326</span>
-<span class="normal">2327</span>
-<span class="normal">2328</span>
-<span class="normal">2329</span>
-<span class="normal">2330</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2330</span>
 <span class="normal">2331</span>
 <span class="normal">2332</span>
 <span class="normal">2333</span>
@@ -10257,7 +10279,16 @@ which is remembered so the attempt is not repeated.</p>
 <span class="normal">2384</span>
 <span class="normal">2385</span>
 <span class="normal">2386</span>
-<span class="normal">2387</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">factor</span><span class="p">(</span>
+<span class="normal">2387</span>
+<span class="normal">2388</span>
+<span class="normal">2389</span>
+<span class="normal">2390</span>
+<span class="normal">2391</span>
+<span class="normal">2392</span>
+<span class="normal">2393</span>
+<span class="normal">2394</span>
+<span class="normal">2395</span>
+<span class="normal">2396</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">factor</span><span class="p">(</span>
     <span class="bp">self</span><span class="p">,</span> <span class="n">sharing</span><span class="p">:</span> <span class="n">OperatorFactorization</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">expandable</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -10397,16 +10428,7 @@ was); <code>False</code> when it fits, is held, or the operator is too small to 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2389</span>
-<span class="normal">2390</span>
-<span class="normal">2391</span>
-<span class="normal">2392</span>
-<span class="normal">2393</span>
-<span class="normal">2394</span>
-<span class="normal">2395</span>
-<span class="normal">2396</span>
-<span class="normal">2397</span>
-<span class="normal">2398</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2398</span>
 <span class="normal">2399</span>
 <span class="normal">2400</span>
 <span class="normal">2401</span>
@@ -10434,7 +10456,16 @@ was); <code>False</code> when it fits, is held, or the operator is too small to 
 <span class="normal">2423</span>
 <span class="normal">2424</span>
 <span class="normal">2425</span>
-<span class="normal">2426</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">exceeds_budget</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="normal">2426</span>
+<span class="normal">2427</span>
+<span class="normal">2428</span>
+<span class="normal">2429</span>
+<span class="normal">2430</span>
+<span class="normal">2431</span>
+<span class="normal">2432</span>
+<span class="normal">2433</span>
+<span class="normal">2434</span>
+<span class="normal">2435</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">exceeds_budget</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Whether the operator is too large to factor within the memory budget, asked ahead.</span>
 
@@ -10623,16 +10654,7 @@ reads it.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2438</span>
-<span class="normal">2439</span>
-<span class="normal">2440</span>
-<span class="normal">2441</span>
-<span class="normal">2442</span>
-<span class="normal">2443</span>
-<span class="normal">2444</span>
-<span class="normal">2445</span>
-<span class="normal">2446</span>
-<span class="normal">2447</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2447</span>
 <span class="normal">2448</span>
 <span class="normal">2449</span>
 <span class="normal">2450</span>
@@ -10651,7 +10673,16 @@ reads it.</p>
 <span class="normal">2463</span>
 <span class="normal">2464</span>
 <span class="normal">2465</span>
-<span class="normal">2466</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">solve</span><span class="p">(</span>
+<span class="normal">2466</span>
+<span class="normal">2467</span>
+<span class="normal">2468</span>
+<span class="normal">2469</span>
+<span class="normal">2470</span>
+<span class="normal">2471</span>
+<span class="normal">2472</span>
+<span class="normal">2473</span>
+<span class="normal">2474</span>
+<span class="normal">2475</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">solve</span><span class="p">(</span>
     <span class="bp">self</span><span class="p">,</span> <span class="n">rhs</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">,</span> <span class="n">solution</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">tol</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">componentwise</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -10711,12 +10742,12 @@ reads it.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2468</span>
-<span class="normal">2469</span>
-<span class="normal">2470</span>
-<span class="normal">2471</span>
-<span class="normal">2472</span>
-<span class="normal">2473</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">release</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2477</span>
+<span class="normal">2478</span>
+<span class="normal">2479</span>
+<span class="normal">2480</span>
+<span class="normal">2481</span>
+<span class="normal">2482</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">release</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""Drop the factorization and forget a refused attempt; the next ``factor`` builds anew."""</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_factorization</span> <span class="o">=</span> <span class="kc">None</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_refused</span> <span class="o">=</span> <span class="kc">False</span>
@@ -10852,16 +10883,7 @@ binds a set of working vectors to the column layout of each solve that uses it.<
 
                   <details class="mkdocstrings-source">
                     <summary>Source code in <code>ordito/linalg.py</code></summary>
-                    <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5368</span>
-<span class="normal">5369</span>
-<span class="normal">5370</span>
-<span class="normal">5371</span>
-<span class="normal">5372</span>
-<span class="normal">5373</span>
-<span class="normal">5374</span>
-<span class="normal">5375</span>
-<span class="normal">5376</span>
-<span class="normal">5377</span>
+                    <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5377</span>
 <span class="normal">5378</span>
 <span class="normal">5379</span>
 <span class="normal">5380</span>
@@ -10897,7 +10919,16 @@ binds a set of working vectors to the column layout of each solve that uses it.<
 <span class="normal">5410</span>
 <span class="normal">5411</span>
 <span class="normal">5412</span>
-<span class="normal">5413</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+<span class="normal">5413</span>
+<span class="normal">5414</span>
+<span class="normal">5415</span>
+<span class="normal">5416</span>
+<span class="normal">5417</span>
+<span class="normal">5418</span>
+<span class="normal">5419</span>
+<span class="normal">5420</span>
+<span class="normal">5421</span>
+<span class="normal">5422</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
     <span class="bp">self</span><span class="p">,</span> <span class="n">laplacian</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">weight_sums</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""Build ``M_ff`` and its transpose from ``L`` and ``D``, and fix the interval."""</span>
@@ -11097,16 +11128,7 @@ casts them on first use.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5456</span>
-<span class="normal">5457</span>
-<span class="normal">5458</span>
-<span class="normal">5459</span>
-<span class="normal">5460</span>
-<span class="normal">5461</span>
-<span class="normal">5462</span>
-<span class="normal">5463</span>
-<span class="normal">5464</span>
-<span class="normal">5465</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5465</span>
 <span class="normal">5466</span>
 <span class="normal">5467</span>
 <span class="normal">5468</span>
@@ -11146,7 +11168,16 @@ casts them on first use.</p>
 <span class="normal">5502</span>
 <span class="normal">5503</span>
 <span class="normal">5504</span>
-<span class="normal">5505</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@classmethod</span>
+<span class="normal">5505</span>
+<span class="normal">5506</span>
+<span class="normal">5507</span>
+<span class="normal">5508</span>
+<span class="normal">5509</span>
+<span class="normal">5510</span>
+<span class="normal">5511</span>
+<span class="normal">5512</span>
+<span class="normal">5513</span>
+<span class="normal">5514</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@classmethod</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">from_factors</span><span class="p">(</span>
     <span class="bp">cls</span><span class="p">,</span>
     <span class="n">factor</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span>
@@ -11228,21 +11259,21 @@ casts them on first use.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5507</span>
-<span class="normal">5508</span>
-<span class="normal">5509</span>
-<span class="normal">5510</span>
-<span class="normal">5511</span>
-<span class="normal">5512</span>
-<span class="normal">5513</span>
-<span class="normal">5514</span>
-<span class="normal">5515</span>
-<span class="normal">5516</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5516</span>
 <span class="normal">5517</span>
 <span class="normal">5518</span>
 <span class="normal">5519</span>
 <span class="normal">5520</span>
-<span class="normal">5521</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bind</span><span class="p">(</span>
+<span class="normal">5521</span>
+<span class="normal">5522</span>
+<span class="normal">5523</span>
+<span class="normal">5524</span>
+<span class="normal">5525</span>
+<span class="normal">5526</span>
+<span class="normal">5527</span>
+<span class="normal">5528</span>
+<span class="normal">5529</span>
+<span class="normal">5530</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bind</span><span class="p">(</span>
     <span class="bp">self</span><span class="p">,</span>
     <span class="n">n_columns</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
     <span class="n">stride</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
@@ -11286,22 +11317,22 @@ casts them on first use.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5583</span>
-<span class="normal">5584</span>
-<span class="normal">5585</span>
-<span class="normal">5586</span>
-<span class="normal">5587</span>
-<span class="normal">5588</span>
-<span class="normal">5589</span>
-<span class="normal">5590</span>
-<span class="normal">5591</span>
-<span class="normal">5592</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5592</span>
 <span class="normal">5593</span>
 <span class="normal">5594</span>
 <span class="normal">5595</span>
 <span class="normal">5596</span>
 <span class="normal">5597</span>
-<span class="normal">5598</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">narrowed</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]]:</span>
+<span class="normal">5598</span>
+<span class="normal">5599</span>
+<span class="normal">5600</span>
+<span class="normal">5601</span>
+<span class="normal">5602</span>
+<span class="normal">5603</span>
+<span class="normal">5604</span>
+<span class="normal">5605</span>
+<span class="normal">5606</span>
+<span class="normal">5607</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">narrowed</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Return ``B``'s and ``Bᵀ``'s values in ``float32``, built once.</span>
 
@@ -11735,15 +11766,7 @@ coordinates:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">373</span>
-<span class="normal">374</span>
-<span class="normal">375</span>
-<span class="normal">376</span>
-<span class="normal">377</span>
-<span class="normal">378</span>
-<span class="normal">379</span>
-<span class="normal">380</span>
-<span class="normal">381</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">381</span>
 <span class="normal">382</span>
 <span class="normal">383</span>
 <span class="normal">384</span>
@@ -11884,7 +11907,15 @@ coordinates:</p>
 <span class="normal">519</span>
 <span class="normal">520</span>
 <span class="normal">521</span>
-<span class="normal">522</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">min_quad_with_fixed</span><span class="p">(</span>
+<span class="normal">522</span>
+<span class="normal">523</span>
+<span class="normal">524</span>
+<span class="normal">525</span>
+<span class="normal">526</span>
+<span class="normal">527</span>
+<span class="normal">528</span>
+<span class="normal">529</span>
+<span class="normal">530</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">min_quad_with_fixed</span><span class="p">(</span>
     <span class="n">q</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">SparseMatrix</span><span class="p">,</span>
     <span class="n">fixed_mask</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
     <span class="n">fixed_values</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNdFloat64</span><span class="p">,</span>
@@ -12234,15 +12265,7 @@ holds no factorization and its solves run <code>min_quad_with_fixed</code>'s ver
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">525</span>
-<span class="normal">526</span>
-<span class="normal">527</span>
-<span class="normal">528</span>
-<span class="normal">529</span>
-<span class="normal">530</span>
-<span class="normal">531</span>
-<span class="normal">532</span>
-<span class="normal">533</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">533</span>
 <span class="normal">534</span>
 <span class="normal">535</span>
 <span class="normal">536</span>
@@ -12305,7 +12328,15 @@ holds no factorization and its solves run <code>min_quad_with_fixed</code>'s ver
 <span class="normal">593</span>
 <span class="normal">594</span>
 <span class="normal">595</span>
-<span class="normal">596</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">min_quad_with_fixed_precompute</span><span class="p">(</span>
+<span class="normal">596</span>
+<span class="normal">597</span>
+<span class="normal">598</span>
+<span class="normal">599</span>
+<span class="normal">600</span>
+<span class="normal">601</span>
+<span class="normal">602</span>
+<span class="normal">603</span>
+<span class="normal">604</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">min_quad_with_fixed_precompute</span><span class="p">(</span>
     <span class="n">q</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">SparseMatrix</span><span class="p">,</span>
     <span class="n">fixed_mask</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -12497,15 +12528,7 @@ entries at the pinned 0 and 3 are not meaningful:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">938</span>
-<span class="normal">939</span>
-<span class="normal">940</span>
-<span class="normal">941</span>
-<span class="normal">942</span>
-<span class="normal">943</span>
-<span class="normal">944</span>
-<span class="normal">945</span>
-<span class="normal">946</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">946</span>
 <span class="normal">947</span>
 <span class="normal">948</span>
 <span class="normal">949</span>
@@ -12538,7 +12561,15 @@ entries at the pinned 0 and 3 are not meaningful:</p>
 <span class="normal">976</span>
 <span class="normal">977</span>
 <span class="normal">978</span>
-<span class="normal">979</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">free_partition</span><span class="p">(</span><span class="n">fixed_mask</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="nb">int</span><span class="p">]:</span>
+<span class="normal">979</span>
+<span class="normal">980</span>
+<span class="normal">981</span>
+<span class="normal">982</span>
+<span class="normal">983</span>
+<span class="normal">984</span>
+<span class="normal">985</span>
+<span class="normal">986</span>
+<span class="normal">987</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">free_partition</span><span class="p">(</span><span class="n">fixed_mask</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="nb">int</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Compact remap of the *unpinned* degrees of freedom, plus their count.</span>
 
@@ -12764,15 +12795,7 @@ through.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 982</span>
-<span class="normal"> 983</span>
-<span class="normal"> 984</span>
-<span class="normal"> 985</span>
-<span class="normal"> 986</span>
-<span class="normal"> 987</span>
-<span class="normal"> 988</span>
-<span class="normal"> 989</span>
-<span class="normal"> 990</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 990</span>
 <span class="normal"> 991</span>
 <span class="normal"> 992</span>
 <span class="normal"> 993</span>
@@ -12830,7 +12853,15 @@ through.</p>
 <span class="normal">1045</span>
 <span class="normal">1046</span>
 <span class="normal">1047</span>
-<span class="normal">1048</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">free_coordinates</span><span class="p">(</span>
+<span class="normal">1048</span>
+<span class="normal">1049</span>
+<span class="normal">1050</span>
+<span class="normal">1051</span>
+<span class="normal">1052</span>
+<span class="normal">1053</span>
+<span class="normal">1054</span>
+<span class="normal">1055</span>
+<span class="normal">1056</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">free_coordinates</span><span class="p">(</span>
     <span class="n">coordinates</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">fixed_mask</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
     <span class="n">free_map</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
@@ -13203,15 +13234,7 @@ the interior <code>x</code> coordinates solve it exactly:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1051</span>
-<span class="normal">1052</span>
-<span class="normal">1053</span>
-<span class="normal">1054</span>
-<span class="normal">1055</span>
-<span class="normal">1056</span>
-<span class="normal">1057</span>
-<span class="normal">1058</span>
-<span class="normal">1059</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1059</span>
 <span class="normal">1060</span>
 <span class="normal">1061</span>
 <span class="normal">1062</span>
@@ -13363,7 +13386,15 @@ the interior <code>x</code> coordinates solve it exactly:</p>
 <span class="normal">1208</span>
 <span class="normal">1209</span>
 <span class="normal">1210</span>
-<span class="normal">1211</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">assemble_interior_system</span><span class="p">(</span>
+<span class="normal">1211</span>
+<span class="normal">1212</span>
+<span class="normal">1213</span>
+<span class="normal">1214</span>
+<span class="normal">1215</span>
+<span class="normal">1216</span>
+<span class="normal">1217</span>
+<span class="normal">1218</span>
+<span class="normal">1219</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">assemble_interior_system</span><span class="p">(</span>
     <span class="n">q</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">SparseMatrix</span><span class="p">,</span>
     <span class="n">fixed_mask</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
     <span class="n">free_map</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
@@ -13804,15 +13835,7 @@ those of the two-step form, entry for entry.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1214</span>
-<span class="normal">1215</span>
-<span class="normal">1216</span>
-<span class="normal">1217</span>
-<span class="normal">1218</span>
-<span class="normal">1219</span>
-<span class="normal">1220</span>
-<span class="normal">1221</span>
-<span class="normal">1222</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1222</span>
 <span class="normal">1223</span>
 <span class="normal">1224</span>
 <span class="normal">1225</span>
@@ -13921,7 +13944,15 @@ those of the two-step form, entry for entry.</p>
 <span class="normal">1328</span>
 <span class="normal">1329</span>
 <span class="normal">1330</span>
-<span class="normal">1331</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">partitioned_interior_system</span><span class="p">(</span>
+<span class="normal">1331</span>
+<span class="normal">1332</span>
+<span class="normal">1333</span>
+<span class="normal">1334</span>
+<span class="normal">1335</span>
+<span class="normal">1336</span>
+<span class="normal">1337</span>
+<span class="normal">1338</span>
+<span class="normal">1339</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">partitioned_interior_system</span><span class="p">(</span>
     <span class="n">q</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">SparseMatrix</span><span class="p">,</span>
     <span class="n">fixed_mask</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
     <span class="n">fixed_values</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat</span><span class="p">,</span>
@@ -14390,15 +14421,7 @@ against the lumped masses recovers the constant:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1348</span>
-<span class="normal">1349</span>
-<span class="normal">1350</span>
-<span class="normal">1351</span>
-<span class="normal">1352</span>
-<span class="normal">1353</span>
-<span class="normal">1354</span>
-<span class="normal">1355</span>
-<span class="normal">1356</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1356</span>
 <span class="normal">1357</span>
 <span class="normal">1358</span>
 <span class="normal">1359</span>
@@ -14529,7 +14552,16 @@ against the lumped masses recovers the constant:</p>
 <span class="normal">1484</span>
 <span class="normal">1485</span>
 <span class="normal">1486</span>
-<span class="normal">1487</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">solve_spd</span><span class="p">(</span>
+<span class="normal">1487</span>
+<span class="normal">1488</span>
+<span class="normal">1489</span>
+<span class="normal">1490</span>
+<span class="normal">1491</span>
+<span class="normal">1492</span>
+<span class="normal">1493</span>
+<span class="normal">1494</span>
+<span class="normal">1495</span>
+<span class="normal">1496</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">solve_spd</span><span class="p">(</span>
     <span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">SparseMatrix</span><span class="p">,</span>
     <span class="n">rhs</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">,</span>
     <span class="n">solution</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">,</span>
@@ -14649,23 +14681,24 @@ against the lumped masses recovers the constant:</p>
         <span class="k">if</span> <span class="n">check_every</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
             <span class="n">_warn_if_not_converged</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="n">iteration_cap</span><span class="p">,</span> <span class="n">name</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">result</span>
-    <span class="n">result</span> <span class="o">=</span> <span class="n">wpl</span><span class="o">.</span><span class="n">cg</span><span class="p">(</span>
-        <span class="n">matrix</span><span class="p">,</span>
-        <span class="n">rhs</span><span class="p">,</span>
-        <span class="n">solution</span><span class="p">,</span>
-        <span class="n">tol</span><span class="o">=</span><span class="n">tol</span><span class="p">,</span>
-        <span class="c1"># ``atol=0.0`` rather than omitted: ``warp.optim.linear``'s own tolerance resolution sets</span>
-        <span class="c1"># ``atol := tol`` whenever ``atol`` is left ``None``, silently turning this "relative</span>
-        <span class="c1"># residual tolerance" into an *absolute* floor of the same numeric value -- a right-hand</span>
-        <span class="c1"># side whose own norm falls below ``tol`` then "converges" at the untouched initial guess</span>
-        <span class="c1"># in zero iterations, which looks like a correct answer rather than a failure.</span>
-        <span class="c1"># ``_BatchedCg`` below already passes an explicit zero for the same</span>
-        <span class="c1"># reason.</span>
-        <span class="n">atol</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span>
-        <span class="n">maxiter</span><span class="o">=</span><span class="n">iteration_cap</span><span class="p">,</span>
-        <span class="n">M</span><span class="o">=</span><span class="n">wpl</span><span class="o">.</span><span class="n">preconditioner</span><span class="p">(</span><span class="n">matrix</span><span class="p">,</span> <span class="s2">"diag"</span><span class="p">)</span> <span class="k">if</span> <span class="n">preconditioner</span> <span class="ow">is</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">preconditioner</span><span class="p">,</span>
-        <span class="n">check_every</span><span class="o">=</span><span class="n">_supported_check_every</span><span class="p">(</span><span class="n">check_every</span><span class="p">),</span>
-    <span class="p">)</span>
+    <span class="k">with</span> <span class="n">recordable_stream</span><span class="p">(</span><span class="n">rhs</span><span class="o">.</span><span class="n">device</span><span class="p">):</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="n">wpl</span><span class="o">.</span><span class="n">cg</span><span class="p">(</span>
+            <span class="n">matrix</span><span class="p">,</span>
+            <span class="n">rhs</span><span class="p">,</span>
+            <span class="n">solution</span><span class="p">,</span>
+            <span class="n">tol</span><span class="o">=</span><span class="n">tol</span><span class="p">,</span>
+            <span class="c1"># ``atol=0.0`` rather than omitted: ``warp.optim.linear``'s own tolerance resolution</span>
+            <span class="c1"># sets ``atol := tol`` whenever ``atol`` is left ``None``, silently turning this</span>
+            <span class="c1"># "relative residual tolerance" into an *absolute* floor of the same numeric value --</span>
+            <span class="c1"># a right-hand side whose own norm falls below ``tol`` then "converges" at the</span>
+            <span class="c1"># untouched initial guess in zero iterations, which looks like a correct answer rather</span>
+            <span class="c1"># than a failure. ``_BatchedCg`` below already passes an explicit zero for the same</span>
+            <span class="c1"># reason.</span>
+            <span class="n">atol</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span>
+            <span class="n">maxiter</span><span class="o">=</span><span class="n">iteration_cap</span><span class="p">,</span>
+            <span class="n">M</span><span class="o">=</span><span class="n">wpl</span><span class="o">.</span><span class="n">preconditioner</span><span class="p">(</span><span class="n">matrix</span><span class="p">,</span> <span class="s2">"diag"</span><span class="p">)</span> <span class="k">if</span> <span class="n">preconditioner</span> <span class="ow">is</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">preconditioner</span><span class="p">,</span>
+            <span class="n">check_every</span><span class="o">=</span><span class="n">_supported_check_every</span><span class="p">(</span><span class="n">check_every</span><span class="p">),</span>
+        <span class="p">)</span>
     <span class="n">converged</span> <span class="o">=</span> <span class="n">cast</span><span class="p">(</span><span class="s2">"tuple[int, float, float]"</span><span class="p">,</span> <span class="n">result</span><span class="p">)</span>
     <span class="n">_warn_if_not_converged</span><span class="p">(</span><span class="n">converged</span><span class="p">,</span> <span class="n">iteration_cap</span><span class="p">,</span> <span class="n">name</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">converged</span>
@@ -14789,16 +14822,7 @@ through <code>warp.optim.linear.cg</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1581</span>
-<span class="normal">1582</span>
-<span class="normal">1583</span>
-<span class="normal">1584</span>
-<span class="normal">1585</span>
-<span class="normal">1586</span>
-<span class="normal">1587</span>
-<span class="normal">1588</span>
-<span class="normal">1589</span>
-<span class="normal">1590</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1590</span>
 <span class="normal">1591</span>
 <span class="normal">1592</span>
 <span class="normal">1593</span>
@@ -14844,7 +14868,16 @@ through <code>warp.optim.linear.cg</code>.</p>
 <span class="normal">1633</span>
 <span class="normal">1634</span>
 <span class="normal">1635</span>
-<span class="normal">1636</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">jacobi_preconditioner</span><span class="p">(</span><span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">SparseMatrix</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wpl</span><span class="o">.</span><span class="n">LinearOperator</span><span class="p">:</span>
+<span class="normal">1636</span>
+<span class="normal">1637</span>
+<span class="normal">1638</span>
+<span class="normal">1639</span>
+<span class="normal">1640</span>
+<span class="normal">1641</span>
+<span class="normal">1642</span>
+<span class="normal">1643</span>
+<span class="normal">1644</span>
+<span class="normal">1645</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">jacobi_preconditioner</span><span class="p">(</span><span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">SparseMatrix</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wpl</span><span class="o">.</span><span class="n">LinearOperator</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Jacobi preconditioner for a symmetric positive-definite operator.</span>
 
@@ -15348,16 +15381,7 @@ there.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1639</span>
-<span class="normal">1640</span>
-<span class="normal">1641</span>
-<span class="normal">1642</span>
-<span class="normal">1643</span>
-<span class="normal">1644</span>
-<span class="normal">1645</span>
-<span class="normal">1646</span>
-<span class="normal">1647</span>
-<span class="normal">1648</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1648</span>
 <span class="normal">1649</span>
 <span class="normal">1650</span>
 <span class="normal">1651</span>
@@ -15570,7 +15594,16 @@ there.</p>
 <span class="normal">1858</span>
 <span class="normal">1859</span>
 <span class="normal">1860</span>
-<span class="normal">1861</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">solve_spd_columns</span><span class="p">(</span>
+<span class="normal">1861</span>
+<span class="normal">1862</span>
+<span class="normal">1863</span>
+<span class="normal">1864</span>
+<span class="normal">1865</span>
+<span class="normal">1866</span>
+<span class="normal">1867</span>
+<span class="normal">1868</span>
+<span class="normal">1869</span>
+<span class="normal">1870</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">solve_spd_columns</span><span class="p">(</span>
     <span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span>
     <span class="n">rhs</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat</span><span class="p">,</span>
     <span class="n">solution</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat</span><span class="p">,</span>
@@ -16132,16 +16165,7 @@ it solves by its own factorization:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2003</span>
-<span class="normal">2004</span>
-<span class="normal">2005</span>
-<span class="normal">2006</span>
-<span class="normal">2007</span>
-<span class="normal">2008</span>
-<span class="normal">2009</span>
-<span class="normal">2010</span>
-<span class="normal">2011</span>
-<span class="normal">2012</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2012</span>
 <span class="normal">2013</span>
 <span class="normal">2014</span>
 <span class="normal">2015</span>
@@ -16260,7 +16284,16 @@ it solves by its own factorization:</p>
 <span class="normal">2128</span>
 <span class="normal">2129</span>
 <span class="normal">2130</span>
-<span class="normal">2131</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">spd_column_solver</span><span class="p">(</span>
+<span class="normal">2131</span>
+<span class="normal">2132</span>
+<span class="normal">2133</span>
+<span class="normal">2134</span>
+<span class="normal">2135</span>
+<span class="normal">2136</span>
+<span class="normal">2137</span>
+<span class="normal">2138</span>
+<span class="normal">2139</span>
+<span class="normal">2140</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">spd_column_solver</span><span class="p">(</span>
     <span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span>
     <span class="n">rhs</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat</span><span class="p">,</span>
     <span class="n">solution</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat</span><span class="p">,</span>
@@ -16772,16 +16805,7 @@ not <code>None</code> or <code>matrix</code>'s own Jacobi preconditioner, or <co
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2476</span>
-<span class="normal">2477</span>
-<span class="normal">2478</span>
-<span class="normal">2479</span>
-<span class="normal">2480</span>
-<span class="normal">2481</span>
-<span class="normal">2482</span>
-<span class="normal">2483</span>
-<span class="normal">2484</span>
-<span class="normal">2485</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2485</span>
 <span class="normal">2486</span>
 <span class="normal">2487</span>
 <span class="normal">2488</span>
@@ -17009,7 +17033,16 @@ not <code>None</code> or <code>matrix</code>'s own Jacobi preconditioner, or <co
 <span class="normal">2710</span>
 <span class="normal">2711</span>
 <span class="normal">2712</span>
-<span class="normal">2713</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">solve_spd_settled</span><span class="p">(</span>
+<span class="normal">2713</span>
+<span class="normal">2714</span>
+<span class="normal">2715</span>
+<span class="normal">2716</span>
+<span class="normal">2717</span>
+<span class="normal">2718</span>
+<span class="normal">2719</span>
+<span class="normal">2720</span>
+<span class="normal">2721</span>
+<span class="normal">2722</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">solve_spd_settled</span><span class="p">(</span>
     <span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">SparseMatrix</span><span class="p">,</span>
     <span class="n">rhs</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">,</span>
     <span class="n">solution</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">,</span>
@@ -17396,16 +17429,7 @@ lumped masses:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4881</span>
-<span class="normal">4882</span>
-<span class="normal">4883</span>
-<span class="normal">4884</span>
-<span class="normal">4885</span>
-<span class="normal">4886</span>
-<span class="normal">4887</span>
-<span class="normal">4888</span>
-<span class="normal">4889</span>
-<span class="normal">4890</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4890</span>
 <span class="normal">4891</span>
 <span class="normal">4892</span>
 <span class="normal">4893</span>
@@ -17497,7 +17521,16 @@ lumped masses:</p>
 <span class="normal">4979</span>
 <span class="normal">4980</span>
 <span class="normal">4981</span>
-<span class="normal">4982</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">replicated_operator</span><span class="p">(</span>
+<span class="normal">4982</span>
+<span class="normal">4983</span>
+<span class="normal">4984</span>
+<span class="normal">4985</span>
+<span class="normal">4986</span>
+<span class="normal">4987</span>
+<span class="normal">4988</span>
+<span class="normal">4989</span>
+<span class="normal">4990</span>
+<span class="normal">4991</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">replicated_operator</span><span class="p">(</span>
     <span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">]</span> <span class="o">|</span> <span class="n">wpl</span><span class="o">.</span><span class="n">LinearOperator</span><span class="p">,</span> <span class="n">n_columns</span><span class="p">:</span> <span class="nb">int</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wpl</span><span class="o">.</span><span class="n">LinearOperator</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -17811,16 +17844,7 @@ that did not help.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4985</span>
-<span class="normal">4986</span>
-<span class="normal">4987</span>
-<span class="normal">4988</span>
-<span class="normal">4989</span>
-<span class="normal">4990</span>
-<span class="normal">4991</span>
-<span class="normal">4992</span>
-<span class="normal">4993</span>
-<span class="normal">4994</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4994</span>
 <span class="normal">4995</span>
 <span class="normal">4996</span>
 <span class="normal">4997</span>
@@ -17923,7 +17947,16 @@ that did not help.</p>
 <span class="normal">5094</span>
 <span class="normal">5095</span>
 <span class="normal">5096</span>
-<span class="normal">5097</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">multigrid_preconditioner</span><span class="p">(</span>
+<span class="normal">5097</span>
+<span class="normal">5098</span>
+<span class="normal">5099</span>
+<span class="normal">5100</span>
+<span class="normal">5101</span>
+<span class="normal">5102</span>
+<span class="normal">5103</span>
+<span class="normal">5104</span>
+<span class="normal">5105</span>
+<span class="normal">5106</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">multigrid_preconditioner</span><span class="p">(</span>
     <span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">n_columns</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">seed</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wpl</span><span class="o">.</span><span class="n">LinearOperator</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -18225,16 +18258,7 @@ preconditioner apply is always <code>z = M x</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5100</span>
-<span class="normal">5101</span>
-<span class="normal">5102</span>
-<span class="normal">5103</span>
-<span class="normal">5104</span>
-<span class="normal">5105</span>
-<span class="normal">5106</span>
-<span class="normal">5107</span>
-<span class="normal">5108</span>
-<span class="normal">5109</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5109</span>
 <span class="normal">5110</span>
 <span class="normal">5111</span>
 <span class="normal">5112</span>
@@ -18322,7 +18346,16 @@ preconditioner apply is always <code>z = M x</code>.</p>
 <span class="normal">5194</span>
 <span class="normal">5195</span>
 <span class="normal">5196</span>
-<span class="normal">5197</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">chebyshev_preconditioner</span><span class="p">(</span>
+<span class="normal">5197</span>
+<span class="normal">5198</span>
+<span class="normal">5199</span>
+<span class="normal">5200</span>
+<span class="normal">5201</span>
+<span class="normal">5202</span>
+<span class="normal">5203</span>
+<span class="normal">5204</span>
+<span class="normal">5205</span>
+<span class="normal">5206</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">chebyshev_preconditioner</span><span class="p">(</span>
     <span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">n_columns</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wpl</span><span class="o">.</span><span class="n">LinearOperator</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -18666,16 +18699,7 @@ square of its interior Laplacian block (<code>D = 1</code>), agrees with a direc
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5200</span>
-<span class="normal">5201</span>
-<span class="normal">5202</span>
-<span class="normal">5203</span>
-<span class="normal">5204</span>
-<span class="normal">5205</span>
-<span class="normal">5206</span>
-<span class="normal">5207</span>
-<span class="normal">5208</span>
-<span class="normal">5209</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5209</span>
 <span class="normal">5210</span>
 <span class="normal">5211</span>
 <span class="normal">5212</span>
@@ -18778,7 +18802,16 @@ square of its interior Laplacian block (<code>D = 1</code>), agrees with a direc
 <span class="normal">5309</span>
 <span class="normal">5310</span>
 <span class="normal">5311</span>
-<span class="normal">5312</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">squared_laplacian_preconditioner</span><span class="p">(</span>
+<span class="normal">5312</span>
+<span class="normal">5313</span>
+<span class="normal">5314</span>
+<span class="normal">5315</span>
+<span class="normal">5316</span>
+<span class="normal">5317</span>
+<span class="normal">5318</span>
+<span class="normal">5319</span>
+<span class="normal">5320</span>
+<span class="normal">5321</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">squared_laplacian_preconditioner</span><span class="p">(</span>
     <span class="n">laplacian</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span>
     <span class="n">weight_sums</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
