@@ -8,6 +8,7 @@ byte for byte.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 
 import numpy as np
@@ -62,3 +63,52 @@ def test_recordings_run_on_the_legacy_stream(
         assert device.stream.cuda_stream == 0
         actual_np = run(mesh_wp.points, mesh_wp.indices).numpy()
     assert np.array_equal(actual_np, expected_np)
+
+
+def test_recordings_beside_legacy_stream_work_in_another_thread(
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: a recording answers alike beside another thread's legacy stream.
+
+    That is PyTorch running on its default stream in a second thread. While a *blocking* stream
+    records, CUDA refuses the other thread's legacy-stream work ("operation would make the legacy
+    stream depend on a capturing blocking stream") and invalidates the recording, so both failed
+    until ``_common.scoped_capture`` recorded on a non-blocking stream. Only ordito's own
+    recordings are covered: a ``warp.optim.linear`` solver still records on a blocking stream
+    (``_common.recordable_stream``), so the BiCGSTAB call is not run here.
+    """
+    _, mesh_wp = saddle_graded
+    device = wp.get_device(mesh_wp.device)
+    if not device.is_cuda:
+        pytest.skip("only a CUDA device has streams")
+    run = _CALLS["fixed_point"]
+    expected_np = run(mesh_wp.points, mesh_wp.indices).numpy()
+
+    source = wp.zeros(1 << 16, dtype=wp.float32, device=device)
+    target = wp.zeros_like(source)
+    started, stop = threading.Event(), threading.Event()
+    errors: list[BaseException] = []
+
+    def use_legacy_stream() -> None:
+        try:
+            with wp.ScopedStream(wp.Stream(device, cuda_stream=0)):
+                while not stop.is_set():
+                    wp.copy(target, source)
+                    started.set()
+                wp.synchronize_device(device)
+        except BaseException as error:  # noqa: BLE001 -- reported by the main thread
+            errors.append(error)
+            started.set()
+
+    worker = threading.Thread(target=use_legacy_stream)
+    worker.start()
+    try:
+        started.wait()
+        results_np = [run(mesh_wp.points, mesh_wp.indices).numpy() for _ in range(10)]
+    finally:
+        stop.set()
+        worker.join()
+    assert not errors
+    for actual_np in results_np:
+        assert np.array_equal(actual_np, expected_np)

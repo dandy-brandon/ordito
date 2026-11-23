@@ -77,9 +77,14 @@ or against Warp's own stream. Two consequences:
 While a graph is being recorded on a *blocking* stream, CUDA refuses work on the legacy default
 stream from any thread: torch raises `cudaErrorStreamCaptureImplicit` ("operation would make the
 legacy stream depend on a capturing blocking stream") and the recording fails with it. ordito
-records on a blocking stream whenever it runs on Warp's own stream or on torch's default stream.
-If another thread runs torch on its default stream at the same time, run ordito on a torch side
-stream instead, which is non-blocking:
+records its own loops on a private *non-blocking* stream, whatever stream it runs on, so those
+recordings are safe beside torch in another thread.
+
+Warp's iterative solvers (`warp.optim.linear`, which some calls fall back to, such as
+`smoothing.filter_laplacian` at a large `lamb`) still record on a blocking stream when ordito runs
+on Warp's own stream or on torch's default stream, because they launch work as well as recording
+it. If another thread runs torch on its default stream at the same time as one of those, run
+ordito on a torch side stream instead, which is non-blocking:
 
 ```python
 import torch

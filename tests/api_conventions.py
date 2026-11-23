@@ -3124,8 +3124,9 @@ def stream_recording_problems() -> list[str]:
     CUDA cannot record on the legacy default stream (Warp does not register it, so the capture
     fails with ``Warp error: unknown stream``), and that is Warp's current stream whenever a caller
     runs ordito under ``wp.ScopedStream(wp.stream_from_torch())`` while torch is on its default
-    stream. [`_common.recordable_stream`][ordito._common.recordable_stream] moves the block to a
-    private blocking stream there. So ``wp.ScopedCapture`` is opened only by
+    stream. [`_common.scoped_capture`][ordito._common.scoped_capture] records on a private
+    non-blocking stream, and [`_common.recordable_stream`][ordito._common.recordable_stream] moves
+    a solver block to a private blocking stream there. So ``wp.ScopedCapture`` is opened only by
     [`_common.scoped_capture`][ordito._common.scoped_capture], and a call into
     ``warp.optim.linear``'s solvers, which capture by themselves, sits inside a
     ``with recordable_stream(...)`` block.

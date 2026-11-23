@@ -12,9 +12,11 @@ lives in ``_launch``.
 
 from __future__ import annotations
 
+import ctypes
 import itertools
 import math
 import os
+import sys
 import threading
 import warnings
 import weakref
@@ -201,15 +203,24 @@ def scoped_capture(
     """
     ``wp.ScopedCapture`` of the enclosed launches that records under any current stream.
 
-    Every graph ordito records goes through here, never through ``wp.ScopedCapture`` directly, so
-    that it records under [`recordable_stream`][ordito._common.recordable_stream]. Recording
-    issues no work, so the caller replays the graph with ``wp.capture_launch`` on its own stream
-    once the block exits: a graph is not tied to the stream that recorded it, its allocations
-    included.
+    Every graph ordito records goes through here, never through ``wp.ScopedCapture`` directly.
+    On CUDA the recording runs on this thread's private *non-blocking* stream
+    ([`_capture_stream`][ordito._common._capture_stream]), whatever the current stream is.
+    Recording issues no work, so it needs no order against any stream, and the caller replays
+    the graph with ``wp.capture_launch`` on its own stream once the block exits: a graph is not
+    tied to the stream that recorded it, its allocations included.
+
+    Non-blocking matters when another thread uses the legacy default stream meanwhile (PyTorch on
+    its default stream, for one). While a *blocking* stream records, CUDA refuses that thread's
+    legacy-stream work (``cudaErrorStreamCaptureImplicit``, "operation would make the legacy
+    stream depend on a capturing blocking stream") and invalidates the recording, so both calls
+    fail. A non-blocking stream has no implicit dependency on the legacy stream to violate.
     """
+    resolved = wp.get_device(device)
+    stream = _capture_stream(resolved) if resolved.is_cuda else None
     with (
-        recordable_stream(device),
-        wp.ScopedCapture(device, force_module_load=force_module_load) as capture,
+        wp.ScopedStream(stream, sync_enter=False),
+        wp.ScopedCapture(resolved, force_module_load=force_module_load) as capture,
     ):
         yield capture
 
@@ -225,9 +236,15 @@ def recordable_stream(device: wp.DeviceLike) -> Generator[None]:
     block runs on a private stream of this thread's instead. Warp creates its streams blocking,
     so work issued on that stream starts after the legacy stream's earlier work and the legacy
     stream's later work waits for it: the block is ordered exactly as on the caller's stream, with
-    no event. Any other current stream is kept. Besides ordito's own recordings
-    ([`scoped_capture`][ordito._common.scoped_capture]), a call into ``warp.optim.linear``, whose
-    solvers record their loop on the current stream, runs under it.
+    no event. Any other current stream is kept. A call into ``warp.optim.linear``, whose solvers
+    launch work as well as recording their loop on the current stream, runs under it.
+
+    The stream stays blocking because the block launches work: Warp frees a pool array on the
+    legacy stream, which does not wait for a non-blocking one, so a temporary dropped inside the
+    block could be freed under a running kernel. A recording here can therefore still collide with
+    another thread's legacy-stream work; ordito's own recordings avoid that through
+    [`scoped_capture`][ordito._common.scoped_capture], which issues no work and so records on a
+    non-blocking stream.
     """
     resolved = wp.get_device(device)
     if resolved.is_cuda and not resolved.stream.cuda_stream:
@@ -254,6 +271,51 @@ def _recording_stream(device: wp.Device) -> wp.Stream:
 
 
 _RECORDING_STREAMS = threading.local()
+
+
+def _capture_stream(device: wp.Device) -> wp.Stream:
+    """
+    Return this thread's non-blocking capture stream for ``device``, created on first use.
+
+    One per thread, as for [`_recording_stream`][ordito._common._recording_stream]. Warp creates
+    only blocking streams, so the stream is created through the driver (``cuStreamCreate`` with
+    ``CU_STREAM_NON_BLOCKING``) and handed to Warp as an external stream, which Warp registers but
+    does not own; it is destroyed when the ``wp.Stream`` wrapping it is collected.
+    """
+    streams: dict[str, wp.Stream] | None = getattr(_CAPTURE_STREAMS, "streams", None)
+    if streams is None:
+        streams = _CAPTURE_STREAMS.streams = {}
+    stream = streams.get(device.alias)
+    if stream is None:
+        stream = streams[device.alias] = _non_blocking_stream(device)
+    return stream
+
+
+_CAPTURE_STREAMS = threading.local()
+
+_CU_STREAM_NON_BLOCKING = 0x1
+
+
+def _non_blocking_stream(device: wp.Device) -> wp.Stream:
+    """
+    Create a ``wp.Stream`` on ``device`` with ``CU_STREAM_NON_BLOCKING``.
+
+    Raises:
+        RuntimeError: The driver could not create the stream.
+    """
+    libcuda = ctypes.CDLL("nvcuda.dll" if sys.platform == "win32" else "libcuda.so.1")
+    handle = ctypes.c_void_p()
+    with wp.ScopedDevice(device):  # makes the device's CUDA context current for the driver call
+        result = libcuda.cuStreamCreate(
+            ctypes.byref(handle), ctypes.c_uint(_CU_STREAM_NON_BLOCKING)
+        )
+    if result != 0 or not handle.value:
+        raise RuntimeError(
+            f"cuStreamCreate(CU_STREAM_NON_BLOCKING) failed on {device} (CUresult {result})"
+        )
+    stream = wp.Stream(device, cuda_stream=handle.value)
+    weakref.finalize(stream, libcuda.cuStreamDestroy_v2, handle)
+    return stream
 
 
 def items_per_slice(device: wp.DeviceLike) -> int:

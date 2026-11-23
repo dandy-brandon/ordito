@@ -22,6 +22,16 @@ from the one matching its tag — so prose sections do not belong between them.
 
 ## [Unreleased]
 
+### Fixed
+
+- A function that records a CUDA graph no longer fails when another thread uses CUDA's legacy
+  default stream meanwhile, as PyTorch on its default stream does. The recording and the other
+  thread's work both raised `cudaErrorStreamCaptureImplicit` ("operation would make the legacy
+  stream depend on a capturing blocking stream"). ordito now records its own graphs on a private
+  non-blocking stream. A solve that falls back to `warp.optim.linear` (a caller's own
+  preconditioner, or a system ordito's batched CG does not take) still records on a blocking
+  stream; see [Sharing the GPU](https://lucagrementieri.github.io/ordito/streams/).
+
 ## [0.5.1] - 2026-11-23
 
 ### Added
