@@ -22,6 +22,8 @@ from the one matching its tag — so prose sections do not belong between them.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-23
+
 ### Added
 
 - `ordito.boolean`, exact Booleans of closed, consistently wound meshes on the GPU: `union`,
@@ -346,7 +348,8 @@ The first public release.
 - Runs on CUDA when available and on Warp's CPU backend otherwise; see
   [Platform support](https://lucagrementieri.github.io/ordito/getting-started/#platform-support).
 
-[Unreleased]: https://github.com/lucagrementieri/ordito/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/lucagrementieri/ordito/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/lucagrementieri/ordito/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/lucagrementieri/ordito/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/lucagrementieri/ordito/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/lucagrementieri/ordito/compare/v0.2.0...v0.3.0
