@@ -137,7 +137,15 @@ import warp.optim.linear as wpl
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import read_array, read_scalar, read_values, require_same_device, scan_count
+from ordito._common import (
+    read_array,
+    read_scalar,
+    read_values,
+    recordable_stream,
+    require_same_device,
+    scan_count,
+    scoped_capture,
+)
 from ordito.cholesky import (
     NotPositiveDefiniteError,
     SparseCholesky,
@@ -1465,23 +1473,24 @@ def solve_spd(
         if check_every > 0:
             _warn_if_not_converged(result, iteration_cap, name)
         return result
-    result = wpl.cg(
-        matrix,
-        rhs,
-        solution,
-        tol=tol,
-        # ``atol=0.0`` rather than omitted: ``warp.optim.linear``'s own tolerance resolution sets
-        # ``atol := tol`` whenever ``atol`` is left ``None``, silently turning this "relative
-        # residual tolerance" into an *absolute* floor of the same numeric value -- a right-hand
-        # side whose own norm falls below ``tol`` then "converges" at the untouched initial guess
-        # in zero iterations, which looks like a correct answer rather than a failure.
-        # ``_BatchedCg`` below already passes an explicit zero for the same
-        # reason.
-        atol=0.0,
-        maxiter=iteration_cap,
-        M=wpl.preconditioner(matrix, "diag") if preconditioner is None else preconditioner,
-        check_every=_supported_check_every(check_every),
-    )
+    with recordable_stream(rhs.device):
+        result = wpl.cg(
+            matrix,
+            rhs,
+            solution,
+            tol=tol,
+            # ``atol=0.0`` rather than omitted: ``warp.optim.linear``'s own tolerance resolution
+            # sets ``atol := tol`` whenever ``atol`` is left ``None``, silently turning this
+            # "relative residual tolerance" into an *absolute* floor of the same numeric value --
+            # a right-hand side whose own norm falls below ``tol`` then "converges" at the
+            # untouched initial guess in zero iterations, which looks like a correct answer rather
+            # than a failure. ``_BatchedCg`` below already passes an explicit zero for the same
+            # reason.
+            atol=0.0,
+            maxiter=iteration_cap,
+            M=wpl.preconditioner(matrix, "diag") if preconditioner is None else preconditioner,
+            check_every=_supported_check_every(check_every),
+        )
     converged = cast("tuple[int, float, float]", result)
     _warn_if_not_converged(converged, iteration_cap, name)
     return converged
@@ -4315,7 +4324,7 @@ class _BatchedCg:
             # after the loop's own stop takes no step (``cg_step_scalars``), so the block costs at
             # most ``check_rounds - 1`` idle rounds at the very end.
             body = self._iteration if self._settle is None else self._settle_block
-            with wp.ScopedCapture(self._device) as capture:
+            with scoped_capture(self._device) as capture:
                 self._seed()
                 wp.capture_while(cast("wp.array[int]", condition), body)
                 self._capped_residual()

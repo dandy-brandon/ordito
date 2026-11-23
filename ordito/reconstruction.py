@@ -48,6 +48,7 @@ from ordito._common import (
     read_values,
     require_same_device,
     run_device_loop,
+    scoped_capture,
 )
 from ordito.config import is_deterministic
 from ordito.constants import INT32_MAX, TILE_1D
@@ -2308,7 +2309,7 @@ def _octree_cascade(
         # ``wave_base`` and every sweep launched (those with no slice on a wave return). The waves'
         # module is loaded (``octree_sweep_brick_rows`` just ran), so no other is.
         group = _OCTREE_WAVE_GROUP
-        with wp.ScopedCapture(device, force_module_load=False) as capture:
+        with scoped_capture(device, force_module_load=False) as capture:
             for offset in range(group):
                 for colour in range(4):
                     _launch.launch(

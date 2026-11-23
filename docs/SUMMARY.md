@@ -21,6 +21,7 @@ Shelving decisions that are not obvious from the section titles:
 * [Getting started](getting-started.md)
 * [Concepts](concepts.md)
     * [Reproducible results](reproducibility.md)
+    * [Sharing the GPU](streams.md)
 * [Examples](examples/index.md)
     * [The Trimesh object](examples/trimesh-object.md)
     * [Creating meshes](examples/creation.md)

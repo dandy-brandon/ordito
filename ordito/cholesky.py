@@ -53,6 +53,7 @@ from ordito._common import (
     read_values,
     record_device_loop,
     require_same_device,
+    scoped_capture,
 )
 from ordito.graph import connected_component_labels
 from ordito.kernels import array as kernel_array
@@ -250,7 +251,7 @@ class SparseCholesky:
             device = wp.get_device(self.device)
             if device.is_cuda:
                 if self._factor_graph is None:
-                    with wp.ScopedCapture(device) as capture:
+                    with scoped_capture(device) as capture:
                         _factor(plan, matrix, self._numeric, sign, fronts)
                     self._factor_graph = capture.graph
                 wp.capture_launch(self._factor_graph)
@@ -1798,7 +1799,7 @@ class _Solve:
                 and (self.caller_recorded_for is None or self.caller_recorded_for[0] != identity)
                 and not _overlap(rhs, solution)
             ):
-                with wp.ScopedCapture(device) as capture:
+                with scoped_capture(device) as capture:
                     self._body(rhs, solution)
                 self.caller_graph = capture.graph
                 self.caller_recorded_for = (identity, buffers)
@@ -1807,7 +1808,7 @@ class _Solve:
             _launch.copy(self.rhs, rhs)
             _launch.copy(self.solution, solution)
             if self.graph is None or self.recorded_for != identity:
-                with wp.ScopedCapture(device) as capture:
+                with scoped_capture(device) as capture:
                     self._body(self.rhs, self.solution)
                 self.graph = capture.graph
                 self.recorded_for = identity

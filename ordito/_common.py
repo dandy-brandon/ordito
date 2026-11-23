@@ -15,9 +15,11 @@ from __future__ import annotations
 import itertools
 import math
 import os
+import threading
 import warnings
 import weakref
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Generator, Iterable, Sequence
+from contextlib import contextmanager
 from typing import Any, TypeVar, cast
 
 import numpy as np
@@ -184,12 +186,74 @@ def record_device_loop(
     # actually decides. A caller already inside a capture must not call this at all -- it nests by
     # calling ``wp.capture_while`` directly, as ``remesh._quadric_collapse_rounds`` does.
     if resolved.is_cuda and wp.is_conditional_graph_supported():
-        with wp.ScopedCapture(resolved) as capture:
+        with scoped_capture(resolved) as capture:
             wp.capture_while(cast("wp.array[int]", condition), body)
         graph = capture.graph
         assert graph is not None
         return lambda: wp.capture_launch(graph)
     return lambda: wp.capture_while(cast("wp.array[int]", condition), body)
+
+
+@contextmanager
+def scoped_capture(
+    device: wp.DeviceLike, *, force_module_load: bool | None = None
+) -> Generator[wp.ScopedCapture]:
+    """
+    ``wp.ScopedCapture`` of the enclosed launches that records under any current stream.
+
+    Every graph ordito records goes through here, never through ``wp.ScopedCapture`` directly, so
+    that it records under [`recordable_stream`][ordito._common.recordable_stream]. Recording
+    issues no work, so the caller replays the graph with ``wp.capture_launch`` on its own stream
+    once the block exits: a graph is not tied to the stream that recorded it, its allocations
+    included.
+    """
+    with (
+        recordable_stream(device),
+        wp.ScopedCapture(device, force_module_load=force_module_load) as capture,
+    ):
+        yield capture
+
+
+@contextmanager
+def recordable_stream(device: wp.DeviceLike) -> Generator[None]:
+    """
+    Make Warp's current stream on ``device`` one CUDA can record a graph on, for the block.
+
+    CUDA cannot record on the legacy default stream, and Warp does not register it, so a capture
+    on it fails with ``Warp error: unknown stream``. It is the stream a caller hands Warp with
+    ``wp.ScopedStream(wp.stream_from_torch())`` while torch runs on its default stream. There the
+    block runs on a private stream of this thread's instead. Warp creates its streams blocking,
+    so work issued on that stream starts after the legacy stream's earlier work and the legacy
+    stream's later work waits for it: the block is ordered exactly as on the caller's stream, with
+    no event. Any other current stream is kept. Besides ordito's own recordings
+    ([`scoped_capture`][ordito._common.scoped_capture]), a call into ``warp.optim.linear``, whose
+    solvers record their loop on the current stream, runs under it.
+    """
+    resolved = wp.get_device(device)
+    if resolved.is_cuda and not resolved.stream.cuda_stream:
+        with wp.ScopedStream(_recording_stream(resolved), sync_enter=False):
+            yield
+        return
+    yield
+
+
+def _recording_stream(device: wp.Device) -> wp.Stream:
+    """
+    Return this thread's recording stream for ``device``, created on first use.
+
+    One per thread, since two threads recording on one stream would collide (``Graph capture
+    already in progress on this stream``).
+    """
+    streams: dict[str, wp.Stream] | None = getattr(_RECORDING_STREAMS, "streams", None)
+    if streams is None:
+        streams = _RECORDING_STREAMS.streams = {}
+    stream = streams.get(device.alias)
+    if stream is None:
+        stream = streams[device.alias] = wp.Stream(device)
+    return stream
+
+
+_RECORDING_STREAMS = threading.local()
 
 
 def items_per_slice(device: wp.DeviceLike) -> int:

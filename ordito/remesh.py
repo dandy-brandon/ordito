@@ -44,6 +44,7 @@ from ordito._common import (
     require_same_device,
     scan_count,
     scatter_normal_sums,
+    scoped_capture,
 )
 from ordito._solid import (
     Solid,
@@ -1865,7 +1866,7 @@ def _flip_interior_edges(
             # The claim tables are armed before recording, so the recorded round -- whose refresh
             # re-arms them -- carries no fill.
             topology.arm_claims()
-            with wp.ScopedCapture(device) as capture:
+            with scoped_capture(device) as capture:
                 flip_round(count)
             graph = capture.graph
             assert graph is not None
@@ -3501,7 +3502,7 @@ class _DecimationBuffers:
         else:
             self._tighten(int(counts[0]), int(counts[2]))
             if self._passes > 0 and self._device.is_cuda and wp.is_conditional_graph_supported():
-                with wp.ScopedCapture(self._device) as capture:
+                with scoped_capture(self._device) as capture:
                     self._issue_pass()
                 self._graph = capture.graph
                 assert self._graph is not None
@@ -3982,7 +3983,7 @@ class _DecimationBuffers:
 
         condition = odt.as_dense(self._round_state[kernel_array.LOOP_CONDITION_VIEW])
         if device.is_cuda and not device.is_capturing and wp.is_conditional_graph_supported():
-            with wp.ScopedCapture(device) as capture:
+            with scoped_capture(device) as capture:
                 wp.capture_while(condition, round_body)
             self._rounds_graph = capture.graph
             assert self._rounds_graph is not None

@@ -91,6 +91,7 @@ other type its own module constant (`GROUP_SUM_NONFINITE_WORD`).
 - `wp.launch(kernel=..., dim=..., inputs=[...], device=...)`. Always forward `device` from the input arrays: a memory-safety rule (§3.9, check 15).
 - Prefix output arguments `out_` and put them after all inputs (check 13). Exempt (`_KERNEL_OUTPUT_ALLOWLIST`): in-place arguments and scratch / persistent-state buffers, which are named for what they hold. A read-only input never wears `out_`.
 - Derive the face count as `f = faces.shape[0] // 3`.
+- Every launch runs on Warp's current stream, which the caller owns (`docs/streams.md`); ordito never picks one. A graph is recorded through `_common.scoped_capture`, never `wp.ScopedCapture`, and a `warp.optim.linear` solver (which records on its own) is called inside `with _common.recordable_stream(device):` (check 33). Both move the work to a private blocking stream when the current one is the legacy default stream, on which CUDA cannot record (§12.1).
 
 ### 2.2 A lane-parallel kernel strides by `wp.block_dim()`, or it stays lane-free
 
@@ -437,7 +438,7 @@ Renaming a keyword argument also needs a grep of the old name alone (`**splat` `
 
 ### 4.5 The mechanical gate: `tests/api_conventions.py`
 
-Thirty-two checks fail the default `pytest` run. Read an allowlist entry's reason before adding one; prefer fixing the code.
+Thirty-three checks fail the default `pytest` run. Read an allowlist entry's reason before adding one; prefer fixing the code.
 
 1. Summary line naming a reference library (§6).
 2. `*_mask` producer not returning `wp.array[wp.bool]`.
@@ -471,6 +472,7 @@ Thirty-two checks fail the default `pytest` run. Read an allowlist entry's reaso
 30. `warp.utils.array_cast` under `ordito/` (§3.6).
 31. Public function or method that no `benchmarks/` row names (`od.<module>.<name>`; a method by name), outside `_BENCHMARK_EXEMPT` (§4.2).
 32. `.numpy()` readback under `ordito/` outside `_common.py` (§3.10).
+33. `wp.ScopedCapture` outside `_common.py`, or a `warp.optim.linear` solver call outside `with recordable_stream(...)` (§2.1).
 
 Two rules about the gate itself:
 
@@ -850,6 +852,7 @@ builtins), `warp.md` (Python scope), `sparse.md`, `utils.md`, `fem_linalg.md`.
 - A zero-triangle `wp.Mesh` corrupts CUDA allocator state (error 700 on the next allocation; NVIDIA/warp#1765). Never build one on CUDA, tests included.
 - Python-scope gather ignores a non-contiguous index view's stride (§3.4); `wp.copy(..., count=0)` copies the whole source; `wp.copy` into pinned memory is async with no event (use `_common.read_scalar`, safe for scalars only).
 - CPU work is ~36x slower once CUDA is initialised in the process, hence two-process coverage (§7.2).
+- **Streams** (Warp 1.19, 2026-11-23): Warp registers every stream it wraps except the legacy default stream (handle 0), so a capture on it fails with `Warp error: unknown stream`; that is Warp's current stream under `wp.ScopedStream(wp.stream_from_torch())` while torch is on its default stream, and every recording function failed there. Warp creates its own streams blocking (`CU_STREAM_DEFAULT`), so their work orders against the legacy stream both ways with no event, and a graph recorded on one replays on the legacy stream (`tests/test_common.py`, byte-identical). A pool array is freed with `cudaFreeAsync(ptr, NULL)` on the legacy stream whatever the current stream (deferred while any capture is open), which does not wait for a non-blocking (torch side) stream.
 
 ### 12.2 `wp.launch_tiled` runs one lane per block on the CPU
 

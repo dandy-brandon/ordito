@@ -53,6 +53,7 @@ from ordito._common import (
     read_values,
     require_same_device,
     run_device_loop,
+    scoped_capture,
     space_filling_order,
     staging_pool,
 )
@@ -1781,7 +1782,7 @@ def _run_sweeps(sweep: _LoopSweep) -> list[int]:
             _issue_sweep(sweep)
             values = [int(v) for v in read_values(sweep.state, 0, n_state)]
         return values
-    with wp.ScopedCapture(device) as capture:
+    with scoped_capture(device) as capture:
         for _ in range(_SHORTEN_LOOP_GRAPH_SWEEPS):
             _issue_sweep(sweep)
     graph = capture.graph

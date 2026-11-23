@@ -143,5 +143,7 @@ convention ordito follows and how to get the other. Performance changes land wit
 - **[Examples](examples/index.md)**: these five ideas applied to real tasks.
 - **[Reproducible results](reproducibility.md)**: why a GPU sum can change its last bits
   from call to call, and the one setting that stops it.
+- **[Sharing the GPU](streams.md)**: which stream ordito runs on, and how to keep it in order
+  with PyTorch.
 - **[Migrating from another library](migrating-from/index.md)**: how these conventions map onto
   the API you already know.

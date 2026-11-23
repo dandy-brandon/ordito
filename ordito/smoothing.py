@@ -67,9 +67,11 @@ from ordito._common import (
     read_array,
     read_scalar,
     read_values,
+    recordable_stream,
     require_same_device,
     scan_count,
     scan_count_checked,
+    scoped_capture,
 )
 from ordito.cholesky import SparseCholesky, sparse_cholesky
 from ordito.config import is_deterministic
@@ -422,7 +424,7 @@ def filter_laplacian(
             if graph is not None:
                 wp.capture_launch(graph)
             elif index > 0 and wp.get_device(device).is_cuda:
-                with wp.ScopedCapture(device) as capture:
+                with scoped_capture(device) as capture:
                     _implicit_fixed_point_pass(
                         operator, coeff, steps, long_rows, positions, scratch
                     )
@@ -451,15 +453,16 @@ def filter_laplacian(
             # Seeded with the right-hand side, which is the current position component.
             _launch.copy(solutions, components)
             for column in range(3):
-                wpl.bicgstab(
-                    system,
-                    component_rows[column],
-                    solution_rows[column],
-                    tol=twl.CG_TOLERANCE,
-                    atol=0.0,
-                    maxiter=10 * n,
-                    M=preconditioner,
-                )
+                with recordable_stream(device):
+                    wpl.bicgstab(
+                        system,
+                        component_rows[column],
+                        solution_rows[column],
+                        tol=twl.CG_TOLERANCE,
+                        atol=0.0,
+                        maxiter=10 * n,
+                        M=preconditioner,
+                    )
             _launch.map(
                 kernel_smoothing.combine_components,
                 solution_rows[0],

@@ -70,6 +70,7 @@ from tests.api_conventions import (
     private_import_problems,
     scan_package,
     shape_spelling_problems,
+    stream_recording_problems,
     triplet_build_problems,
     uncitable_reference_problems,
     undocumented_raise_problems,
@@ -1041,6 +1042,17 @@ def test_readbacks_go_through_read_array() -> None:
     problem.
     """
     _fail("readback(s) through .numpy():", numpy_readback_problems())
+
+
+def test_graphs_record_under_recordable_stream() -> None:
+    """
+    No ``ordito/`` code records a graph on Warp's current stream outside ``recordable_stream``.
+
+    Not a library comparison: this is a property of ordito's own source. Check 33. The probe that
+    shows it bites: restoring ``wp.ScopedCapture`` in ``holes`` and dropping the
+    ``recordable_stream`` block around ``linalg.solve_spd``'s ``wpl.cg`` reports two problems.
+    """
+    _fail("graph recording(s) outside recordable_stream:", stream_recording_problems())
 
 
 def test_every_public_callable_has_a_benchmark() -> None:

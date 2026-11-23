@@ -95,6 +95,11 @@ follows is the one-line claim each check makes, so a failure message reads in co
 32. **A readback under ``ordito/`` is ``_common.read_array(arr)``, not ``arr.numpy()``**: it reads
     a CUDA array back in ~7 us less and is ``.numpy()`` everywhere else. Docstring examples and a
     write through the host view (``arr.numpy()[...] = ...``) are not readbacks.
+33. **A graph is recorded under ``_common.recordable_stream``**: no ``wp.ScopedCapture`` outside
+    ``_common.py`` (``_common.scoped_capture`` instead), and every ``warp.optim.linear`` solver
+    call inside a ``with recordable_stream(...)`` block. CUDA cannot record on the legacy default
+    stream, which is Warp's current stream under ``wp.ScopedStream(wp.stream_from_torch())`` while
+    torch runs on its default stream.
 
 Why a static scan rather than importing ``ordito``
 ---------------------------------------------------
@@ -165,6 +170,7 @@ _EXTRA_TEST_FILES = frozenset(
         "aggregate",  # covers benchmarks.results and benchmarks.tools.aggregate: tooling
         "launch",  # covers ordito._launch, the private launcher every wrapper module calls
         "serial_mesh",  # covers ordito._serial_mesh, the host editing behind method="meshlib"
+        "common",  # covers ordito._common's graph recording under any current stream
         "docs_examples",  # runs the README's and docs/ pages' code blocks, which span modules
         "examples",  # covers the examples/ gallery package (pages in step with code), not ordito
     }
@@ -3097,5 +3103,65 @@ def numpy_readback_problems() -> list[str]:
             ):
                 problems.append(
                     f"{site}:{node.lineno}: reads back through .numpy() -- use _common.read_array"
+                )
+    return problems
+
+
+# --- check 33 -----------------------------------------------------------------------------------
+
+# The one module that may open ``wp.ScopedCapture`` itself: it holds ``scoped_capture``.
+_CAPTURE_HOME = "ordito/_common.py"
+# ``warp.optim.linear``'s solvers, which record their loop on Warp's current stream, and the alias
+# every module imports it under.
+_RECORDING_SOLVERS = frozenset({"bicgstab", "cg", "cr", "gmres"})
+_WARP_LINEAR_ALIAS = "wpl"
+
+
+def stream_recording_problems() -> list[str]:
+    """
+    Check 33: a graph recorded on Warp's current stream without ``_common.recordable_stream``.
+
+    CUDA cannot record on the legacy default stream (Warp does not register it, so the capture
+    fails with ``Warp error: unknown stream``), and that is Warp's current stream whenever a caller
+    runs ordito under ``wp.ScopedStream(wp.stream_from_torch())`` while torch is on its default
+    stream. [`_common.recordable_stream`][ordito._common.recordable_stream] moves the block to a
+    private blocking stream there. So ``wp.ScopedCapture`` is opened only by
+    [`_common.scoped_capture`][ordito._common.scoped_capture], and a call into
+    ``warp.optim.linear``'s solvers, which capture by themselves, sits inside a
+    ``with recordable_stream(...)`` block.
+    """
+    problems: list[str] = []
+    for path in sorted(_PACKAGE_DIR.rglob("*.py")):
+        site = path.relative_to(_REPO_ROOT)
+        try:
+            tree = _parse_source(path)
+        except SyntaxError:
+            continue  # check 12 and the suite itself report an unparseable module
+        covered: set[int] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.With) and any(
+                isinstance(item.context_expr, ast.Call)
+                and _dotted(item.context_expr.func)[-1:] == ("recordable_stream",)
+                for item in node.items
+            ):
+                covered.update(id(inner) for inner in ast.walk(node))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            parts = _dotted(node.func)
+            if parts[-1:] == ("ScopedCapture",) and str(site) != _CAPTURE_HOME:
+                problems.append(
+                    f"{site}:{node.lineno}: opens wp.ScopedCapture -- record through "
+                    "_common.scoped_capture"
+                )
+            elif (
+                len(parts) == 2
+                and parts[0] == _WARP_LINEAR_ALIAS
+                and parts[1] in _RECORDING_SOLVERS
+                and id(node) not in covered
+            ):
+                problems.append(
+                    f"{site}:{node.lineno}: calls {'.'.join(parts)} outside "
+                    "_common.recordable_stream"
                 )
     return problems

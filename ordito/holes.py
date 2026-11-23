@@ -78,7 +78,7 @@ from warp._src.codegen import StructInstance
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch, _serial_mesh
-from ordito._common import read_array, read_scalar, read_values, require_same_device
+from ordito._common import read_array, read_scalar, read_values, require_same_device, scoped_capture
 from ordito.config import is_deterministic
 from ordito.constants import TOLERANCE_ZERO
 from ordito.kernels import array as kernel_array
@@ -1332,7 +1332,7 @@ def _run_hole_dp(
             issue(span, loops.max_size - span)
         return
     group = kernel_holes.HOLE_DP_GRAPH_SPANS
-    with wp.ScopedCapture(resolved) as capture:
+    with scoped_capture(resolved) as capture:
         for offset in range(group):
             # Sized for the first group, which is the widest any later one needs.
             issue(offset + 2, max(n_spans - offset, 1))
