@@ -22,6 +22,21 @@ from the one matching its tag — so prose sections do not belong between them.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-23
+
+### Added
+
+- Documentation: a [Sharing the GPU](https://lucagrementieri.github.io/ordito/streams/) page,
+  which states the stream ordito runs on, how to keep it in order with PyTorch, what to do when
+  PyTorch runs in another thread, and how the two memory pools share the device.
+
+### Fixed
+
+- Every function that records a CUDA graph (solvers, smoothing, remeshing, hole filling, heat
+  geodesics, `arap_parametrization` and more) now runs when Warp's current stream is CUDA's legacy
+  default stream, as it is under `wp.ScopedStream(wp.stream_from_torch())` while PyTorch runs on
+  its default stream. They raised `RuntimeError: Warp error: unknown stream` there.
+
 ## [0.5.0] - 2026-11-23
 
 ### Added
@@ -348,7 +363,8 @@ The first public release.
 - Runs on CUDA when available and on Warp's CPU backend otherwise; see
   [Platform support](https://lucagrementieri.github.io/ordito/getting-started/#platform-support).
 
-[Unreleased]: https://github.com/lucagrementieri/ordito/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/lucagrementieri/ordito/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/lucagrementieri/ordito/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/lucagrementieri/ordito/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/lucagrementieri/ordito/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/lucagrementieri/ordito/compare/v0.3.0...v0.3.1
