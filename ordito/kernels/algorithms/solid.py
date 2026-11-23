@@ -34,12 +34,19 @@ PRECISION = 1e-12
 # -- per-mesh preparation --------------------------------------------------------------------------
 
 
+# ``spread_bits3``'s masks above ``INT32_MAX``, typed at module scope: an inline ``wp.uint32(...)``
+# of such a literal is generated as an ``int32`` temporary first, which the C++ compilers warn
+# narrows the value.
+SPREAD_BITS3_MASK_8 = wp.uint32(0xFF0000FF)
+SPREAD_BITS3_MASK_2 = wp.uint32(0xC30C30C3)
+
+
 @wp.func
 def spread_bits3(v: wp.uint32) -> wp.uint32:
     # ``collider_internal::SpreadBits3``: ten bits spread to every third bit.
-    v = wp.uint32(0xFF0000FF) & (v * wp.uint32(0x00010001))
+    v = SPREAD_BITS3_MASK_8 & (v * wp.uint32(0x00010001))
     v = wp.uint32(0x0F00F00F) & (v * wp.uint32(0x00000101))
-    v = wp.uint32(0xC30C30C3) & (v * wp.uint32(0x00000011))
+    v = SPREAD_BITS3_MASK_2 & (v * wp.uint32(0x00000011))
     v = wp.uint32(0x49249249) & (v * wp.uint32(0x00000005))
     return v
 

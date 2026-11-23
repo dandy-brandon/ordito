@@ -544,6 +544,8 @@ def next_up(x: wp.float32) -> wp.float32:
 # is generated as an ``int32`` temporary first, which the C++ compilers warn narrows the value.
 UINT32_SIGN_BIT = wp.uint32(0x80000000)
 UINT32_ALL_BITS = wp.uint32(0xFFFFFFFF)
+# ``ordered_float_bits``' key of the positive quiet ``NaN`` (``0x7fc00000`` with the sign bit set).
+UINT32_QUIET_NAN_KEY = wp.uint32(0xFFC00000)
 # The second multiplier of the ``lowbias32`` integer hash (``index_hash``).
 LOWBIAS32_MULTIPLIER = wp.uint32(0x846CA68B)
 # Knuth's multiplicative hash, ``floor(2**32 / phi)``.
@@ -563,7 +565,7 @@ def ordered_float_bits(x: wp.float32) -> wp.uint32:
     # CUDA (``0xffc00000``) and not on the CPU (``0x7fc00000``), so a key formed from it ranked
     # every NaN below ``-inf`` on CUDA alone.
     if wp.isnan(x):
-        return wp.uint32(0xFFC00000)
+        return UINT32_QUIET_NAN_KEY
     value = x
     if value == wp.float32(0.0):
         value = wp.float32(0.0)
